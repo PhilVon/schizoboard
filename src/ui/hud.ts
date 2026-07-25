@@ -30,6 +30,10 @@ export interface HudStats {
   awakeParticles: number;
   /** Encoded document size in bytes. */
   docBytes: number;
+  /** Items in the scene mirror. */
+  items: number;
+  /** Items the renderer is actually presenting — the gap is culling. */
+  mounted: number;
 }
 
 function formatBytes(bytes: number): string {
@@ -117,6 +121,7 @@ export class Hud {
     rows.push('<div class="hud-sep"></div>');
     rows.push(this.stat("zoom", `${(s.zoom * 100).toFixed(0)}%`));
     rows.push(this.stat("camera", `${Math.round(s.cameraX)}, ${Math.round(s.cameraY)}`));
+    rows.push(this.stat("items", `${s.mounted} / ${s.items}`));
     rows.push(this.stat("awake", String(s.awakeParticles)));
     rows.push(this.stat("dom", String(this.domNodes)));
     rows.push(

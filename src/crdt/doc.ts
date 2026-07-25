@@ -95,6 +95,17 @@ export function mutate<T>(board: BoardDoc, origin: OriginTag, fn: () => T): T {
 }
 
 /**
+ * Encoded size of the whole document, in bytes.
+ *
+ * The dev HUD alerts past 25 MB (DESIGN section 9.5), and ink-heavy boards are
+ * the growth risk (risk 5). Not free on a large document, so callers should
+ * measure at human speed rather than per frame.
+ */
+export function encodedSize(board: BoardDoc): number {
+  return Y.encodeStateAsUpdate(board.doc).byteLength;
+}
+
+/**
  * A new id that is not already present in `map`.
  *
  * Generic in the map's value type on purpose: `Y.Map<T>` is invariant in `T`,

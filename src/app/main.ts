@@ -1,52 +1,74 @@
 /**
- * Entry point. Builds the layer stack, wires the nine phases, starts the loop.
+ * Entry point. Builds the layer stack, binds the document, wires the nine
+ * phases, starts the loop.
  *
- * Phase 0 (T-1): an infinite cork board that pans and zooms, one rAF driving
- * everything, and a HUD reporting what each phase costs. There is no document
- * and no scene mirror yet — those arrive with items in phase 1.
+ * This is the one module allowed to know about every layer at once — it is
+ * where `crdt/`, `state/` and `render/` are introduced to each other. The
+ * one-way flow they form is the whole architecture:
+ *
+ *     interaction -> crdt/ops -> Y.Doc -> observer -> binding -> Scene -> render
  */
 
+import { Binding } from "@/crdt/binding";
+import { boardSeed, encodedSize, initialiseBoard, openBoardDoc } from "@/crdt/doc";
+import { createItems } from "@/crdt/ops";
+import { initPlatform } from "@/platform";
 import { Cork } from "@/render/cork";
+import { DomItemLayer } from "@/render/items/dom";
 import { FrameLoop } from "@/render/loop";
 import { World } from "@/render/world";
 import { Camera } from "@/state/camera";
+import { DirtySets } from "@/state/dirty";
 import { Navigation } from "@/state/navigation";
-import { initPlatform, type Platform } from "@/platform";
+import { Scene } from "@/state/scene";
 import { Hud, type HudStats } from "@/ui/hud";
 
-/**
- * Per-board texture seed. Lives in the document's `meta` map from phase 1 —
- * see DATA-MODEL. Fixed until then so the cork is stable across reloads.
- */
-const BOARD_SEED = 0x5c1201;
-
 async function boot(): Promise<void> {
-  // Chooses the Tauri bridge or the browser mocks and loads only that one.
-  // Nothing else in the codebase decides which shell it is in.
   const native = await initPlatform();
 
   const root = document.querySelector<HTMLDivElement>("#board-root");
   if (!root) throw new Error("#board-root missing from index.html");
 
+  // --- document ------------------------------------------------------------
+  const board = openBoardDoc();
+  initialiseBoard(board);
+
+  const scene = new Scene();
+  const dirty = new DirtySets();
+  const binding = new Binding(board, scene, dirty);
+  binding.start();
+
+  // --- presentation --------------------------------------------------------
   const camera = new Camera();
   const world = new World(root);
-  const cork = new Cork(world.layers.cork, BOARD_SEED);
+  const cork = new Cork(world.layers.cork, boardSeed(board));
+  const items = new DomItemLayer(world.layers.world, (sha) => native.assetUrl(sha));
   const loop = new FrameLoop();
-  const navigation = new Navigation(camera, root);
-
-  const stats = (): HudStats => ({
-    zoom: camera.zoom,
-    cameraX: camera.x + camera.width / (2 * camera.zoom),
-    cameraY: camera.y + camera.height / (2 * camera.zoom),
-    awakeParticles: 0, // sim/ropes.ts, T-40
-    docBytes: 0, // crdt/doc.ts, T-18
+  const navigation = new Navigation(camera, root, {
+    contentBounds: () => scene.contentBounds(),
   });
-  const hud = new Hud(world.layers.ui, loop, stats);
 
-  // Nothing subscribes to world.onRasterize yet. Item ink will (T-63): its
-  // canvases *are* inside the scaled world layer and do go stale. The cork is
-  // not, and wiring it here cost three 250 ms frames before the spike caught
-  // it — see the note on Cork.generate().
+  const hud = new Hud(world.layers.ui, loop, () => stats());
+  let docBytes = 0;
+  let docMeasuredAt = 0;
+  const stats = (): HudStats => {
+    // Encoding the whole document is cheap now and will not always be, so it
+    // is measured at 1 Hz rather than at the HUD's 5 Hz paint rate.
+    const now = performance.now();
+    if (now - docMeasuredAt > 1000) {
+      docMeasuredAt = now;
+      docBytes = encodedSize(board);
+    }
+    return {
+      zoom: camera.zoom,
+      cameraX: camera.x + camera.width / (2 * camera.zoom),
+      cameraY: camera.y + camera.height / (2 * camera.zoom),
+      awakeParticles: 0, // sim/ropes.ts, T-40
+      docBytes,
+      items: scene.size,
+      mounted: items.mounted,
+    };
+  };
 
   const resize = (): void => {
     const { innerWidth: w, innerHeight: h } = window;
@@ -55,67 +77,94 @@ async function boot(): Promise<void> {
   };
   window.addEventListener("resize", resize);
   resize();
-  camera.centreOn(0, 0);
 
-  // ---- the nine phases (docs/ARCHITECTURE.md section 3) -------------------
+  // --- the nine phases (docs/ARCHITECTURE.md section 3) ---------------------
 
   loop.on("input", () => {
     navigation.flush();
     if (navigation.gestured) world.gestureTick(camera.zoom);
   });
 
-  // 2 PRESENCE  T-72   3 SIM  T-39   4 LAYOUT  T-24
+  // 2 PRESENCE  T-72   3 SIM  T-39
+
+  loop.on("layout", () => {
+    // World pin positions for items that moved. Nothing reads the DOM.
+    if (dirty.all) scene.layoutPins();
+    else if (dirty.items.size > 0) scene.layoutPins(dirty.items);
+  });
 
   loop.on("dom", () => {
     world.applyCamera(camera);
     cork.apply(camera);
+    // Culling is T-27; until then every item is a candidate, which the spike
+    // (D-12) says is fine up to a few hundred and expensive past that.
+    items.sync(scene, dirty, null);
   });
 
   // 6 INK  T-57   7 ROPES  T-43
 
   loop.on("overlay", (frame) => hud.update(frame.now));
 
-  // 9 FLUSH  T-71
+  loop.on("flush", () => {
+    // Everything downstream has consumed this frame's changes.
+    dirty.clear();
+  });
+
+  seedDemoBoard(board);
+  camera.fit(scene.contentBounds() ?? { minX: -400, minY: -300, maxX: 400, maxY: 300 }, 120);
 
   loop.start();
-
-  devScaffolding(world, hud, native);
-}
-
-/**
- * Temporary. Removed when real item views land (T-24).
- *
- * Crisp-edged objects at known board coordinates, so that panning and zooming
- * have something to be measured against and so the DOM-raster-blur risk
- * (DESIGN section 11.1, risk 1) is visible the moment it appears.
- */
-function devScaffolding(world: World, hud: Hud, native: Platform): void {
-  const marks: [number, number, number, number, string][] = [
-    [-40, -40, 80, 80, "0,0"],
-    [400, -260, 220, 160, "400,-260"],
-    [-560, 120, 300, 200, "-560,120"],
-    [180, 420, 160, 240, "180,420"],
-    [-900, -700, 120, 120, "-900,-700"],
-    [1100, 600, 260, 180, "1100,600"],
-  ];
-  for (const [x, y, w, h, label] of marks) {
-    const el = document.createElement("div");
-    el.className = "dev-marker";
-    el.style.left = `${x}px`;
-    el.style.top = `${y}px`;
-    el.style.width = `${w}px`;
-    el.style.height = `${h}px`;
-    el.textContent = label;
-    world.layers.world.append(el);
-  }
 
   const hint = document.createElement("div");
   hint.className = "hint";
   hint.textContent =
-    `platform: ${native.kind} · space+drag or middle-drag to pan · wheel to zoom · \` for the HUD`;
+    `platform: ${native.kind} · space+drag or middle-drag to pan · wheel to zoom · ` +
+    `Ctrl+0 fit · \` for the HUD`;
   world.layers.ui.append(hint);
+  hud.toggle();
+}
 
-  hud.toggle(); // on by default while phase 0 is the whole application
+/**
+ * Temporary. Removed when paste lands (T-23) and there is a real way to get
+ * things onto the board.
+ *
+ * The polaroids deliberately have no asset. That is not a placeholder for a
+ * missing feature — it is the state DESIGN section 7.5 says must be fully
+ * usable: an item is pinnable, stringable and annotatable before its
+ * photograph has arrived, because its dimensions are in the document.
+ */
+function seedDemoBoard(board: ReturnType<typeof openBoardDoc>): void {
+  if (board.items.size > 0) return;
+  createItems(board, [
+    { type: "polaroid", x: -420, y: -180, w: 300, h: 340 },
+    { type: "polaroid", x: -60, y: -230, w: 260, h: 300 },
+    { type: "polaroid", x: 300, y: -160, w: 320, h: 280 },
+    {
+      type: "note",
+      x: -380,
+      y: 220,
+      w: 260,
+      h: 200,
+      text: "the string is the product\n\neverything else is in\nservice of getting string\nbetween things",
+    },
+    {
+      type: "card",
+      x: 20,
+      y: 200,
+      w: 300,
+      h: 180,
+      text: "mess is a feature.\nnothing snaps to a grid.",
+    },
+    { type: "scrap", x: 360, y: 210, w: 200, h: 200 },
+    {
+      type: "note",
+      x: 640,
+      y: 40,
+      w: 220,
+      h: 160,
+      text: "nothing arrives\nstraight",
+    },
+  ]);
 }
 
 /**
