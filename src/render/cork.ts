@@ -21,6 +21,7 @@
  * guessing before measuring is how renderers end up complicated for nothing.
  */
 
+import { mulberry32 } from "@/render/seed";
 import type { Camera } from "@/state/camera";
 
 /**
@@ -66,18 +67,6 @@ const GRAIN_FADE_IN = 0.45;
 /** Cork is warm, mid-brown and fairly desaturated. Shadows elsewhere in the
  *  app are drawn from this, never from black (DESIGN section 4.1). */
 const CORK_BASE = { r: 173, g: 130, b: 84 };
-
-/** Deterministic, tiny, good enough for texture. */
-function mulberry32(seed: number): () => number {
-  let a = seed >>> 0;
-  return () => {
-    a = (a + 0x6d2b79f5) >>> 0;
-    let t = a;
-    t = Math.imul(t ^ (t >>> 15), t | 1);
-    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
-    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
-  };
-}
 
 function smoothstep(t: number): number {
   return t * t * (3 - 2 * t);

@@ -14,7 +14,9 @@
   },
   "dependencies": {
     "@tauri-apps/api": "^2",
-    "@tauri-apps/plugin-opener": "^2"
+    "@tauri-apps/plugin-opener": "^2",
+    "fractional-indexing": "^4.0.0",
+    "yjs": "^13.6.31"
   },
   "devDependencies": {
     "@tauri-apps/cli": "^2",

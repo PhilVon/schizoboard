@@ -30,6 +30,7 @@ import "@/spike/spike.css";
 
 import { Cork } from "@/render/cork";
 import { FrameLoop } from "@/render/loop";
+import { mulberry32 } from "@/render/seed";
 import { World } from "@/render/world";
 import { Camera } from "@/state/camera";
 
@@ -80,18 +81,6 @@ function percentile(sorted: number[], p: number): number {
   if (sorted.length === 0) return 0;
   const i = Math.min(sorted.length - 1, Math.floor((sorted.length - 1) * p));
   return sorted[i]!;
-}
-
-/** Deterministic scatter, so two runs are comparable photo for photo. */
-function mulberry32(seed: number): () => number {
-  let a = seed >>> 0;
-  return () => {
-    a = (a + 0x6d2b79f5) >>> 0;
-    let t = a;
-    t = Math.imul(t ^ (t >>> 15), t | 1);
-    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
-    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
-  };
 }
 
 interface Placed {
