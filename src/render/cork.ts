@@ -21,7 +21,7 @@
  * guessing before measuring is how renderers end up complicated for nothing.
  */
 
-import { mulberry32 } from "@/render/seed";
+import { mulberry32 } from "@/lib/seed";
 import type { Camera } from "@/state/camera";
 
 /**

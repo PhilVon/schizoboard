@@ -30,7 +30,7 @@ import "@/spike/spike.css";
 
 import { Cork } from "@/render/cork";
 import { FrameLoop } from "@/render/loop";
-import { mulberry32 } from "@/render/seed";
+import { mulberry32 } from "@/lib/seed";
 import { World } from "@/render/world";
 import { Camera } from "@/state/camera";
 

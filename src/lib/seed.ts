@@ -1,6 +1,12 @@
 /**
  * Deterministic per-item variation.
  *
+ * Lives in `lib/` rather than `render/` because both sides of the one-way
+ * data flow need it and neither may import the other. `scatterAngle` produces
+ * the *authored* rotation stored in `item.rot`, so `crdt/ops/` calls it at
+ * creation; everything else here is a render derivation. `lib/` is
+ * dependency-free primitives, importable by anyone.
+ *
  * docs/DATA-MODEL.md section 3: `item.seed` is "assigned once at creation,
  * never changed", and drives *all* of it — scatter rotation, paper grain
  * offset, edge raggedness, ageing, handwriting jitter.

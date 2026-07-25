@@ -9,7 +9,7 @@ import {
   streamFor,
   valueAt,
   wear,
-} from "@/render/seed";
+} from "@/lib/seed";
 
 const SEED = 0x1234abcd;
 
