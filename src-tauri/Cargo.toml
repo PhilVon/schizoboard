@@ -1,0 +1,36 @@
+[package]
+name = "schizoboard"
+version = "0.1.0"
+description = "An infinite corkboard for organising information that hasn't decided what shape it is yet."
+authors = ["Phil Wheatley"]
+edition = "2021"
+
+[lib]
+# The `_lib` suffix keeps the lib name distinct from the bin name, which
+# otherwise collides on Windows (rust-lang/cargo#8519).
+name = "schizoboard_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+tauri-plugin-opener = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[profile.dev]
+# Rope solving and image decode are unusable at opt-level 0; the app itself
+# still builds unoptimised so incremental dev rebuilds stay fast.
+opt-level = 1
+
+[profile.dev.package."*"]
+opt-level = 3
+
+[profile.release]
+codegen-units = 1
+lto = true
+opt-level = "s"
+panic = "abort"
+strip = true

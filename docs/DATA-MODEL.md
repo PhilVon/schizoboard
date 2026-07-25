@@ -1,0 +1,389 @@
+# Schizoboard — Data Model
+
+**Companion to [`DESIGN.md`](./DESIGN.md).** This is the contract every other part of the system depends on, which is why it lives in its own document.
+
+---
+
+## 1. The governing rule
+
+> **A field is a CRDT type only if two people can meaningfully edit different parts of it at the same time. Everything else is a plain value inside a `Y.Map`, so it gets clean last-write-wins.**
+
+Note text is a `Y.Text`, because two people can type into the same note and both edits should survive. Item position is a plain number, because two concurrent drags should resolve to one position or the other — merging them into a midpoint would put the item somewhere neither person moved it.
+
+Applying this rule inconsistently is how CRDT documents end up with fields that merge into nonsense. When adding a field, answer the question explicitly.
+
+---
+
+## 2. Root structure
+
+```js
+doc.getMap('meta')      // board metadata
+doc.getMap('items')     // itemId   → Y.Map
+doc.getMap('pins')      // pinId    → Y.Map
+doc.getMap('strings')   // stringId → Y.Map
+doc.getMap('assets')    // sha256   → Y.Map   (metadata only — never bytes)
+doc.getMap('boardInk')  // tileKey  → Y.Map<strokeId, Y.Map>
+```
+
+**Keyed maps, not arrays.** Constant-time lookup, no index churn when something is deleted, and concurrent creation never contends over positions. Ordering is an explicit `z` field (§7), never array position.
+
+**`boardInk` is tiled** into 2048-unit cells, keyed by the floor-divided coordinates of each stroke's bounding-box centre. Tiles give culling, observer granularity and future lazy loading a natural unit. A stroke larger than a tile is assigned to its centre tile; the renderer culls by the stroke's own bounds anyway, so tiles are only a coarse bucket.
+
+### `meta`
+
+| Field | Type | Notes |
+|---|---|---|
+| `schemaVersion` | number | Drives migration (§10) |
+| `title` | string | |
+| `corkSeed` | number | Deterministic cork texture variation |
+| `createdAt` | number | Epoch ms |
+| `boardEpoch` | number | Reference point for ageing (§4.7 of DESIGN) |
+
+---
+
+## 3. Items
+
+```js
+items: {
+  [itemId]: Y.Map {
+    type, x, y, rot, w, h, z, seed,
+    assetId, crop,
+    text:    Y.Text,
+    style:   Y.Map,
+    strokes: Y.Map<strokeId, Y.Map>,
+    createdBy, createdAt
+  }
+}
+```
+
+| Field | CRDT type | Rationale |
+|---|---|---|
+| `type` | plain string | `'polaroid' \| 'note' \| 'scrap' \| 'card'`. Immutable after creation. |
+| `x`, `y` | plain number | Board coordinates of the item's **centre**. LWW is exactly right — two concurrent drags must resolve to one of them, never a midpoint. |
+| `rot` | plain number | Authored rotation in radians. The physics swing is a **local visual offset** and is never stored here. |
+| `w`, `h` | plain number | Intrinsic size in board units. **Present even when the asset is missing**, so layout never reflows when bytes arrive. |
+| `z` | plain string | Fractional index (§7). |
+| `seed` | plain number | Drives all deterministic per-item variation: scatter rotation, paper grain offset, edge raggedness, ageing, handwriting jitter. Assigned once at creation, never changed. |
+| `assetId` | plain string \| null | SHA-256 hex. |
+| `crop` | plain object | `{sx, sy, sw, sh}`. Small and always changed as a unit, so it's one value rather than four fields. |
+| `text` | **`Y.Text`** | Note body or polaroid caption. Character-level concurrent editing. |
+| `style` | **`Y.Map`** | `paperStock`, `tint`, `tapeStyle`, `fontFamily`, `fontSize`, `torn`, `agingEnabled`. A `Y.Map` so two people adjusting different properties don't clobber each other. |
+| `strokes` | **`Y.Map`** | Nested deliberately — see below. |
+| `createdBy`, `createdAt` | plain | Provenance and tie-breaking. |
+
+**Why `strokes` is nested inside the item.** Ink dies with the item it was drawn on, and undoing a delete must restore the ink atomically. Nesting gives both for free: deleting the item's map deletes the strokes with it, and one undo entry restores everything. Pins can't work this way (they're referenced by strings and can outlive the item), which is why they're top-level and need explicit cascade code (§8).
+
+---
+
+## 4. Pins
+
+```js
+pins: {
+  [pinId]: Y.Map {
+    parent,      // itemId | null
+    lx, ly,      // item-local un-rotated coords if parented; board coords if free
+    kind, color,
+    createdBy, createdAt
+  }
+}
+```
+
+| Field | CRDT type | Notes |
+|---|---|---|
+| `parent` | plain string \| null | `null` means free-floating in the cork. **The single source of truth for ownership.** |
+| `lx`, `ly` | plain number | Interpretation depends entirely on `parent`. When parented, these are item-local and **un-rotated**, which is why rotating an item transports its pins with no work. |
+| `kind` | plain string | `'pushpin' \| 'thumbtack' \| 'nail'` |
+| `color` | plain string | |
+
+**Re-parenting is a two-field write inside one transaction:** set `parent`, convert `lx/ly` into the new frame. That is the entire drag-a-pin-onto-a-note feature at the data layer.
+
+**Do not add an `item.pinIds` array.** Denormalising ownership means a concurrent item-delete and pin-add can leave the two views disagreeing. `pin.parent` is authoritative; the reverse index `Map<itemId, Set<pinId>>` is **derived locally** and rebuilt from observers.
+
+---
+
+## 5. Strings
+
+```js
+strings: {
+  [stringId]: Y.Map {
+    nodes: Y.Array<Y.Map { nodeId, pin, slackAfter }>,
+    color, thickness, material,
+    layer,       // 'over' | 'under'
+    closed,      // bool
+    createdBy, createdAt
+  }
+}
+```
+
+| Field | CRDT type | Notes |
+|---|---|---|
+| `nodes` | **`Y.Array` of `Y.Map`** | The ordered run. See below. |
+| `color` | plain string | Default is the cotton red, not a pure red. |
+| `thickness` | plain number | |
+| `material` | plain string | `'string' \| 'yarn' \| 'wire'` — affects sag stiffness and texture. |
+| `layer` | plain string | `'over'` draws above items and collides with them; `'under'` draws beneath and doesn't. |
+| `closed` | plain bool | Loops the last node back to the first. |
+
+### 5.1 Why slack lives on the node
+
+**This is the single most important schema decision for strings.**
+
+The obvious model — `pins: Y.Array<pinId>` plus `slack: Y.Array<number>` — desynchronises the instant two clients insert at different indices. The arrays end up different lengths, with slack values attached to the wrong gaps, and there is no way to recover the intent.
+
+Making each element a `Y.Map` node that carries its own reference *and* its own slack makes concurrent insertion correct by construction. Hub pins still work, because the node holds a **reference** to a pin rather than being one — any number of nodes across any number of strings may point at the same pin.
+
+### 5.2 Slack is a ratio
+
+```
+restLength(i) = chord(P_i, P_i+1) × (1 + slackAfter_i)
+```
+
+Scale-invariant, and it makes the mid-string split (§5.3) jump-free without special maths.
+
+Constraints:
+
+- `slackAfter` must be **strictly greater than zero**, clamped to a small minimum. At rest length equal to the chord the solver has no slack to absorb error and the rope jitters visibly.
+- Typical range is 0.05 to 0.3. Presets `1`–`9` map across this range.
+
+**`slackAfter` on the terminal node of an open string is unused and undefined.** When `closed` is `true` it becomes the wrap-around segment. State this explicitly or someone will write a bug against it.
+
+### 5.3 Insertion and removal
+
+**Inserting a node** at index *i*, splitting the segment at arc-length fraction *t*:
+
+- Insert the new node so the run reads `… P_i, P_new, P_i+1 …`.
+- Split the slack so the two child rest lengths **sum to the parent's**, apportioned by *t*.
+
+Anything else changes the total sag at the instant of insertion, which reads unmistakably as a bug.
+
+**Removing a node** in the middle: the neighbouring segments merge, with rest lengths summed and converted back to a ratio against the new chord. Removing a terminal node just drops it. A string left with fewer than two valid nodes deletes itself.
+
+### 5.4 Concurrent insertion into the same segment
+
+Two clients splitting the same segment simultaneously both compute their split from the same prior state, so the total rest length changes once. Accepted:
+
+- Read the prior state **inside** the transaction.
+- Take an advisory lock on the segment over awareness, purely as a UX hint — never as a correctness mechanism.
+- Accept the one-time sag change in this rare conflict. The result is always valid; it just sags slightly differently than either user expected.
+
+---
+
+## 6. Strokes
+
+Identical shape whether nested under an item or under a board-ink tile.
+
+```js
+stroke: Y.Map {
+  id, tool, color, size, opacity, seed,
+  bbox: [x0, y0, x1, y1],
+  z,
+  pts: Uint8Array          // packed
+}
+```
+
+| Field | Notes |
+|---|---|
+| `tool` | `'marker' \| 'highlighter' \| 'erase'` |
+| `seed` | Deterministic texture variation along the stroke |
+| `bbox` | In the stroke's own coordinate space. Used for culling and hit-testing without unpacking `pts`. |
+| `z` | Ordering within the item or tile |
+| `pts` | Packed input points (§6.1) |
+
+**Coordinate space** is item-local for item strokes, board for board ink. It is decided at pen-down and never changes.
+
+### 6.1 Point packing
+
+On pen-up, in one transaction:
+
+1. Simplify with Ramer–Douglas–Peucker, epsilon around 0.4 units at 100% zoom.
+2. Quantise to eighths of a unit.
+3. Delta-encode `(dx, dy, dPressure)`.
+4. Varint-pack into a `Uint8Array`.
+
+Roughly 3–4 bytes per point against 50-odd for JSON floats. Yjs stores `Uint8Array` natively in its binary update format, so this costs nothing extra on the wire.
+
+**Store input points, never the generated outline.** The outline is about ten times the data and can't be re-tuned if stroke parameters change later.
+
+### 6.2 One stroke, one record
+
+Everything up to pen-up is local and ephemeral (§9). The commit is a single `Y.Map` insertion — which makes a stroke atomic for undo, deletion and hit-testing.
+
+**Erasing deletes stroke records.** The smudge eraser is itself stored as a normal stroke with `tool: 'erase'`, rendered with `destination-out`. Ink is never rasterised and flattened; that would destroy both undo and merge.
+
+---
+
+## 7. Z-ordering
+
+Fractional indexing. `item.z` is a base-62 string key; the total order is `(z, clientId, itemId)` so concurrent identical keys still sort deterministically and identically on every peer.
+
+`bringToFront` generates a key after the current maximum. `sendToBack` generates one before the minimum.
+
+**The known hazard is key growth.** Two clients repeatedly bringing items to front generate ever-longer keys, and a rebalance rewrites every item — a huge update that conflicts with everything in flight.
+
+Mitigations:
+
+- Append four random base-62 characters to every generated key. Concurrent generations then essentially never collide, and growth stays bounded in practice.
+- If a rebalance is ever genuinely needed, make it an explicit user-invoked *compact layers* operation, guarded by an advisory lock, executed in one transaction, and **untracked by undo**.
+
+Strings don't participate in item z-order — they're on two canvas layers selected by `layer`.
+
+---
+
+## 8. Cascades
+
+**Every cascade runs in a single transaction, or undo is not atomic.**
+
+**Deleting an item:**
+1. Its `strokes` map goes with it (nested — automatic).
+2. Delete every pin whose `parent` is this item.
+3. Remove those pins' nodes from every string that references them.
+4. Delete any string left with fewer than two valid nodes.
+
+**Deleting a pin:**
+1. Remove its nodes from every string.
+2. Merge slack across each removal (§5.3).
+3. Delete any string left with fewer than two nodes.
+
+**`Shift+Delete` on an item:** re-parent its pins to `null`, converting their coordinates to board space, then delete only the item. Everything else survives.
+
+### 8.1 Dangling references are tolerated, never repaired on read
+
+A pin whose parent has vanished renders as **free-floating at its last known board position**, computed locally with no write. A string node pointing at a missing pin is skipped at render time. A string with fewer than two valid nodes is hidden.
+
+Repairing on read causes write storms in a shared session — every client racing to fix the same inconsistency — and makes undo incoherent. Instead, a single elected client (lowest present client id) compacts a few seconds later under a maintenance origin that undo doesn't track.
+
+---
+
+## 9. Awareness (ephemeral state)
+
+One state object per client, flushed at most every other frame. Never persisted; dropped on disconnect, which is correct.
+
+```js
+{
+  user:      { id, name, color },
+  cam:       { x, y, zoom },
+  cursor:    { x, y, tool },
+  selection: [itemId, …],
+  grab:      null | { kind, ids, pose, seq, t, phase },
+  wet:       null | { id, target, tool, color, size, base, pts: [...] },
+  impulse:   [ { kind, id, wx, wy, ix, iy, t } ],
+  locks:     { segments: [...] }
+}
+```
+
+**`cam` earns its place** — it lets a seeding peer push assets a collaborator is about to look at, before they ask.
+
+### 9.1 Wet ink over a last-write-wins channel
+
+Awareness has no append semantics, so naively sending the whole in-progress polyline grows without bound.
+
+Instead send a **sliding window**: a `base` index plus the last 64 points. The receiver keeps everything it has ever seen for that stroke id and splices. This is self-healing across dropped updates as long as the window covers the gap — 64 points at 30 Hz is about two seconds — and the payload is constant-size.
+
+Points are decimated to roughly one per six screen pixels before sending. The remote render is a preview, not an archive; the real stroke arrives on commit.
+
+### 9.2 The handoff race
+
+`wet` clearing (awareness) and the committed stroke arriving (document) land in arbitrary order.
+
+**Rule: keep rendering the ghost, keyed by stroke id, until the document contains that stroke id.** Correct in both orderings — no flash, no double-draw.
+
+The same rule applies to drags: hold the awareness pose until the document position matches within epsilon, or a 250 ms grace period expires.
+
+### 9.3 Remote motion smoothing
+
+Buffer `(pose, remoteTime, localReceiveTime)` samples and render at `now − 100 ms`, interpolating between the two straddling samples. Extrapolate at most 80 ms across a gap, then freeze. This turns a 20 Hz update stream into 60 fps motion.
+
+**The interpolated pose — not the raw sample — drives the rope anchor.** Feed raw samples in and the rope visibly jitters at the update rate. Velocity for the swing comes from the derivative of the interpolation, so velocity is never transmitted.
+
+### 9.4 What never goes on awareness
+
+Anything durable. Awareness is dropped on disconnect by design, so anything that must survive a reconnect belongs in the document.
+
+---
+
+## 10. Assets
+
+```js
+assets: {
+  [sha256]: Y.Map { w, h, mime, size, origName, addedBy, addedAt }
+}
+```
+
+**Metadata only. Bytes never enter the document.**
+
+Because `w` and `h` are here, an item renders at its correct size — frame, caption, tape, pins, shadow — from the instant it exists. Nothing reflows when the bytes arrive.
+
+Local per-asset state, **never** in the document:
+
+```
+unknown → requesting → transferring(pct) → ready | unavailable
+```
+
+Garbage collection refcounts from `assets` union the set of referenced `item.assetId`s, keeps a 30-day trash tier, and never collects on a peer that may be the only holder without first confirming another peer has it.
+
+---
+
+## 11. Undo
+
+```js
+new Y.UndoManager(
+  [items, pins, strings, boardInk],
+  { trackedOrigins: new Set([LOCAL_USER, DRAG_THROTTLE, INK_COMMIT]),
+    captureTimeout: 400 }
+)
+```
+
+`UndoManager` tracks only the `null` origin by default, so **every origin must be registered explicitly** — forgetting this silently produces an undo stack that ignores most of the application.
+
+| Origin | Tracked | Notes |
+|---|---|---|
+| `LOCAL_USER` | yes | All direct user edits |
+| `DRAG_THROTTLE` | yes | Crash-safety writes during a drag; merged into the same entry by `captureTimeout` |
+| `INK_COMMIT` | yes | One stroke, one entry |
+| remote | no | Not local, by definition |
+| `MIGRATION`, `JANITOR`, `ASSET_GC` | no | Maintenance must be invisible to undo |
+| physics | — | **Does not exist.** Physics never writes. |
+
+**Undo is origin-scoped**, so it reverts your operations rather than the last thing that happened. It can still surprise — if someone moved an item after you did, your undo restores your prior value and their move is lost. Flash-highlight affected items on undo so this is never silent.
+
+Call `stopCapturing()` on pointer-up, tool change and selection change. Explicit boundaries beat time-based grouping.
+
+**Camera and selection** aren't in the document, but are stashed in each undo entry's metadata and restored on the way back, so undo returns you to where you were.
+
+Cap the stack at around 200 entries.
+
+---
+
+## 12. Persistence and migration
+
+**On disk:** an append-only log of opaque document updates plus a periodic snapshot. Compaction writes a fresh snapshot and truncates the log.
+
+**Bundle format** — `.schizo`, a zip containing:
+
+```
+manifest.json      schemaVersion, title, asset list
+snapshot.bin       document state
+assets/<sha256>    the bytes
+```
+
+**Export always embeds assets.** A board you hand to someone is never half a board.
+
+**Migration** is driven by `meta.schemaVersion`, run under a maintenance origin that undo doesn't track, by the first client to open a document at a lower version, guarded by an advisory lock so ten simultaneous joiners don't all migrate at once.
+
+**Prefer additive migrations.** In a CRDT, destructive migrations are genuinely dangerous: an old client that reconnects can resurrect the old shape, and the merge will accept it.
+
+---
+
+## 13. Invariants
+
+The fuzz harness (Risk 3 in `DESIGN.md`) runs two documents through randomised concurrent operation sequences and asserts all of these after every merge:
+
+1. No numeric field is ever `NaN` or infinite.
+2. Every `slackAfter` is greater than zero.
+3. No string survives with fewer than two valid nodes.
+4. Every node's `pin` either resolves or is skipped cleanly at render.
+5. Every pin's `parent` either resolves or the pin renders free-floating.
+6. Merging never produces an item with zero or negative dimensions.
+7. A stroke's `bbox` always contains its unpacked points.
+8. Cascades leave no orphaned strokes.
+9. Every `z` key is a valid fractional index and the total order is identical on both documents.

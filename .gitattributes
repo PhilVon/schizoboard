@@ -1,0 +1,8 @@
+# Keep the working tree LF everywhere — this is a cross-platform Rust + TS repo
+# and mixed line endings make binary-ish diffs of packed stroke fixtures noisy.
+* text=auto eol=lf
+
+*.png binary
+*.ico binary
+*.icns binary
+*.schizo binary

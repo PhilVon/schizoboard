@@ -1,0 +1,80 @@
+/*
+ * Global chrome only. Board content is styled by render/ — nothing in here
+ * may animate or transition, because the frame loop owns all motion.
+ * See docs/ARCHITECTURE.md section 3.
+ */
+
+:root {
+  --ui-font: ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  --ui-mono: ui-monospace, "Cascadia Mono", "Consolas", monospace;
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  padding: 0;
+  width: 100%;
+  height: 100%;
+  overflow: hidden; /* the camera pans; the page never scrolls */
+  background: #2a1d12;
+  color: #e8ded2;
+  font-family: var(--ui-font);
+  /* The board is a direct-manipulation surface, not a document. */
+  overscroll-behavior: none;
+  -webkit-user-select: none;
+  user-select: none;
+  touch-action: none;
+}
+
+#board-root {
+  position: fixed;
+  inset: 0;
+  contain: strict;
+}
+
+/* --- temporary boot panel, replaced once render/ lands (T-12, T-13) --- */
+
+.boot {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  text-align: center;
+  font-family: var(--ui-mono);
+  font-size: 13px;
+  line-height: 1.9;
+  opacity: 0.75;
+}
+
+.boot h1 {
+  font-family: var(--ui-font);
+  font-size: 28px;
+  font-weight: 600;
+  letter-spacing: -0.02em;
+  margin: 0 0 4px;
+  opacity: 0.9;
+}
+
+.boot dt {
+  display: inline-block;
+  width: 9ch;
+  text-align: right;
+  margin-right: 1ch;
+  opacity: 0.55;
+}
+
+.boot dd {
+  display: inline;
+  margin: 0;
+}
+
+.boot dd::after {
+  content: "";
+  display: block;
+}
