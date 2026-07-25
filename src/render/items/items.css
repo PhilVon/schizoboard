@@ -5,9 +5,9 @@
  *
  * **No drop shadows.** DESIGN 9.4: `filter: drop-shadow` is CPU-rasterised and
  * catastrophic across hundreds of nodes, and `box-shadow` interacts badly with
- * rotation. Every item shadow is a pre-baked nine-slice sprite (T-26). The
- * inset shadows below are a different thing — static, tiny, and inside the
- * item rather than around it, which is the case 9.4 calls acceptable.
+ * rotation. Every item shadow is a pre-baked nine-slice sprite — see
+ * `shadow.ts`. The inset shadow on the photograph window is the exception 9.4
+ * itself allows: static, tiny, and inside the item rather than around it.
  *
  * **No transitions.** The frame loop owns all motion (ARCHITECTURE 3). A CSS
  * transition on board content would animate outside the loop, off the dirty
@@ -19,26 +19,47 @@
   left: 0;
   top: 0;
   transform-origin: 50% 50%;
-  /* Containment is nearly free and stops one item's repaint reaching the
-   * others (DESIGN 9.1). Not `content-visibility` — culling is ours (T-27),
-   * and two systems deciding what to skip is one too many. */
-  contain: layout style paint;
+  /*
+   * Layout and style containment only. `paint` would clip the shadow, which
+   * deliberately extends past the item's own box.
+   */
+  contain: layout style;
   will-change: auto;
   backface-visibility: hidden;
 }
 
-.item.is-selected {
-  outline: 1.5px solid rgba(255, 244, 214, 0.9);
+.item.is-selected .pol-frame,
+.item.is-selected .paper-surface {
+  outline: 1.5px solid rgba(255, 244, 214, 0.92);
   outline-offset: 2px;
+}
+
+/* Carried, not teleported — DESIGN 3.2. The 2% is applied by the drag
+ * controller as part of the transform, not as a CSS transition. */
+.item.is-lifted {
+  z-index: 9999;
+}
+
+/* --- the shadow ----------------------------------------------------------- */
+
+.item-shadow {
+  position: absolute;
+  /* inset, border-width and border-image are written by ShadowNode, because
+   * the slice depends on which sprite is in use. */
+  border-style: solid;
+  border-color: transparent;
+  border-image-repeat: stretch;
+  pointer-events: none;
 }
 
 /* --- polaroid, DESIGN 4.3 ------------------------------------------------- */
 
-.item-polaroid {
+.pol-frame {
+  position: absolute;
+  inset: 0;
   /* Frame thickness is written in pixels by the view — see FRAME_SIDE. */
   /* Very slightly off-white, and warmer at the edges. */
-  background:
-    radial-gradient(120% 100% at 50% 40%, #fdfbf6 55%, #f3ece0 100%);
+  background: radial-gradient(120% 100% at 50% 40%, #fdfbf6 55%, #f3ece0 100%);
   border-radius: 1px;
 }
 
@@ -87,7 +108,6 @@
   /* Placeholder hand. The real handwriting faces, and the per-character
    * jitter that keeps them from looking typeset, are T-81. */
   font-family: "Segoe Script", "Bradley Hand", "Comic Sans MS", cursive;
-  font-size: 15px;
   line-height: 1.15;
   color: #3f3428;
   white-space: pre-wrap;
@@ -100,10 +120,12 @@
 
 /* --- paper: note, scrap, card. DESIGN 4.4 --------------------------------- */
 
-.item-paper {
+.paper-surface {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
   background-repeat: repeat;
   border-radius: 1px;
-  overflow: hidden;
 }
 
 .paper-grain {

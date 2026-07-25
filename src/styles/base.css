@@ -221,21 +221,3 @@ body {
   text-shadow: 0 1px 2px rgba(var(--shadow-warm), 0.6);
 }
 
-/*
- * A crisp-edged reference object at a known board coordinate. Its job is to
- * make the zoom-raster problem visible: if DOM under a CSS scale() is going to
- * go blurry, it goes blurry here first, in front of a texture too noisy to
- * show it. See DESIGN section 6.6 and the T-16 spike.
- */
-.dev-marker {
-  position: absolute;
-  display: grid;
-  place-items: center;
-  border: 1px solid rgba(30, 20, 10, 0.55);
-  border-radius: 2px;
-  background: #f3ece0;
-  color: #4a3a2a;
-  font-family: var(--ui-mono);
-  font-size: 11px;
-  box-shadow: 0 1px 0 rgba(255, 255, 255, 0.5) inset;
-}

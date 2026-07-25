@@ -34,6 +34,7 @@ import {
   stockBase,
   stockRuling,
 } from "@/render/items/paper";
+import { counterRotate, shadowSprite, type Elevation } from "@/render/items/shadow";
 import type { ItemLayer } from "@/render/items/view";
 import type { DirtySets } from "@/state/dirty";
 import type { ItemCold, Scene } from "@/state/scene";
@@ -51,7 +52,57 @@ interface View {
   readonly archetype: Archetype;
   bind(cold: ItemCold, assetUrl: AssetResolver): void;
   transform(x: number, y: number, rot: number, w: number, h: number): void;
+  setElevation(elevation: Elevation): void;
   release(): void;
+}
+
+/**
+ * The item's shadow, as a nine-slice sitting behind it.
+ *
+ * It is a child of the item so its silhouette rotates with the item, and its
+ * offset is counter-rotated so the *light* does not. Every item on the board
+ * therefore agrees about where the light is, which is the single cheapest
+ * thing that makes a surface read as real (DESIGN section 4.1).
+ */
+class ShadowNode {
+  readonly el: HTMLDivElement;
+  private elevation: Elevation = "rest";
+  private sprite = shadowSprite("rest");
+  private writtenRot = Number.NaN;
+
+  constructor() {
+    this.el = document.createElement("div");
+    this.el.className = "item-shadow";
+    this.applySprite();
+  }
+
+  setElevation(elevation: Elevation): void {
+    if (elevation === this.elevation) return;
+    this.elevation = elevation;
+    this.sprite = shadowSprite(elevation);
+    this.applySprite();
+    this.writtenRot = Number.NaN;
+  }
+
+  private applySprite(): void {
+    const { url, slice } = this.sprite;
+    if (!url) return;
+    this.el.style.inset = `${-slice}px`;
+    this.el.style.borderWidth = `${slice}px`;
+    this.el.style.borderImageSource = `url(${url})`;
+    this.el.style.borderImageSlice = `${slice} fill`;
+  }
+
+  update(rot: number): void {
+    if (rot === this.writtenRot) return;
+    this.writtenRot = rot;
+    const offset = counterRotate(this.sprite.offsetX, this.sprite.offsetY, rot);
+    this.el.style.transform = `translate(${offset.x.toFixed(2)}px, ${offset.y.toFixed(2)}px)`;
+  }
+
+  reset(): void {
+    this.setElevation("rest");
+  }
 }
 
 /** Shared by both views: position, rotation, size. */
@@ -101,9 +152,17 @@ class PolaroidView implements View {
   private boundAsset: string | null = null;
   private framedFor = -1;
 
+  private readonly shadow = new ShadowNode();
+  private readonly frame: HTMLDivElement;
+
   constructor() {
     this.el = document.createElement("div");
     this.el.className = "item item-polaroid";
+
+    // The frame is a separate box from the item so the shadow can extend past
+    // the item's edge without being clipped by the frame's own containment.
+    this.frame = document.createElement("div");
+    this.frame.className = "pol-frame";
 
     const window_ = document.createElement("div");
     window_.className = "pol-window";
@@ -121,7 +180,8 @@ class PolaroidView implements View {
     this.caption.className = "pol-caption";
 
     window_.append(this.photo, gloss);
-    this.el.append(window_, this.caption);
+    this.frame.append(window_, this.caption);
+    this.el.append(this.shadow.el, this.frame);
   }
 
   bind(cold: ItemCold, assetUrl: AssetResolver): void {
@@ -146,21 +206,29 @@ class PolaroidView implements View {
       this.framedFor = w;
       const side = w * FRAME_SIDE;
       const bottom = w * FRAME_BOTTOM;
-      this.el.style.padding = `${side.toFixed(1)}px ${side.toFixed(1)}px ${bottom.toFixed(1)}px`;
+      this.frame.style.padding = `${side.toFixed(1)}px ${side.toFixed(1)}px ${bottom.toFixed(1)}px`;
       this.caption.style.fontSize = `${Math.max(9, w * 0.055).toFixed(1)}px`;
     }
     writeTransform(this.el, x, y, rot, w, h);
+    this.shadow.update(rot);
+  }
+
+  setElevation(elevation: Elevation): void {
+    this.shadow.setElevation(elevation);
   }
 
   release(): void {
     this.caption.textContent = "";
     this.el.classList.remove("is-selected");
+    this.shadow.reset();
   }
 }
 
 class PaperView implements View {
   readonly archetype = "paper" as const;
   readonly el: HTMLDivElement;
+  private readonly shadow = new ShadowNode();
+  private readonly surface: HTMLDivElement;
   private readonly grain: HTMLDivElement;
   private readonly body: HTMLDivElement;
 
@@ -168,33 +236,44 @@ class PaperView implements View {
     this.el = document.createElement("div");
     this.el.className = "item item-paper";
 
+    // The sheet clips its own grain and text; the shadow lives outside it.
+    this.surface = document.createElement("div");
+    this.surface.className = "paper-surface";
+
     this.grain = document.createElement("div");
     this.grain.className = "paper-grain";
 
     this.body = document.createElement("div");
     this.body.className = "paper-text";
 
-    this.el.append(this.grain, this.body);
+    this.surface.append(this.grain, this.body);
+    this.el.append(this.shadow.el, this.surface);
   }
 
   bind(cold: ItemCold, _assetUrl: AssetResolver): void {
     const stock = defaultStock(cold.type, cold.seed);
     this.el.dataset["stock"] = stock;
-    this.el.style.background = stockBase(stock);
-    this.el.style.backgroundImage = stockRuling(stock);
+    this.surface.style.background = stockBase(stock);
+    this.surface.style.backgroundImage = stockRuling(stock);
     this.grain.style.backgroundImage = `url(${paperGrainUrl(cold.seed)})`;
     this.grain.style.backgroundPosition = grainPosition(cold.seed);
-    this.el.style.filter = sheetTint(cold.seed);
+    this.surface.style.filter = sheetTint(cold.seed);
     this.body.textContent = cold.text;
   }
 
   transform(x: number, y: number, rot: number, w: number, h: number): void {
     writeTransform(this.el, x, y, rot, w, h);
+    this.shadow.update(rot);
+  }
+
+  setElevation(elevation: Elevation): void {
+    this.shadow.setElevation(elevation);
   }
 
   release(): void {
     this.body.textContent = "";
     this.el.classList.remove("is-selected");
+    this.shadow.reset();
   }
 }
 
@@ -328,6 +407,19 @@ export class DomItemLayer implements ItemLayer {
   setSelected(ids: ReadonlySet<string>): void {
     for (const [id, view] of this.views) {
       view.el.classList.toggle("is-selected", ids.has(id));
+    }
+  }
+
+  /**
+   * Lift items being carried. "its shadow lifts and softens, it scales up by
+   * about 2%" (DESIGN section 3.2) — the item is being carried, not
+   * teleported. Driven by the drag controller (T-25).
+   */
+  setLifted(ids: ReadonlySet<string>): void {
+    for (const [id, view] of this.views) {
+      const lifted = ids.has(id);
+      view.setElevation(lifted ? "lift" : "rest");
+      view.el.classList.toggle("is-lifted", lifted);
     }
   }
 
