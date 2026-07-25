@@ -116,4 +116,16 @@ function devScaffolding(world: World, hud: Hud, native: Platform): void {
   hud.toggle(); // on by default while phase 0 is the whole application
 }
 
-void boot();
+/**
+ * The phase-0 fidelity spike replaces the whole application when asked for.
+ * `import.meta.env` is statically replaced, so with the variable unset this
+ * branch and the module behind it are eliminated from the bundle entirely.
+ *
+ *   $env:VITE_SPIKE=1;      npm run tauri dev    # will-change discipline
+ *   $env:VITE_SPIKE=pinned; npm run tauri dev    # the blurry control
+ */
+if (import.meta.env["VITE_SPIKE"]) {
+  void import("@/spike/fidelity").then((spike) => spike.run());
+} else {
+  void boot();
+}

@@ -1,0 +1,66 @@
+/*
+ * Phase-0 fidelity spike only. Nothing here is product styling — the real
+ * polaroid lands with render/items/ (T-24). What matters for the spike is
+ * that these are ordinary DOM nodes under one CSS scale(), because that is
+ * the thing being measured.
+ */
+
+.spike-photo {
+  position: absolute;
+  background: #fbf8f1;
+  padding: 12px 12px 44px;
+  border-radius: 1px;
+  /*
+   * No box-shadow, deliberately. DESIGN 9.4 rules it out for items in favour
+   * of pre-baked nine-slice sprites (T-26); including one here would fold an
+   * unrelated cost into a measurement about rasterisation.
+   */
+}
+
+.spike-photo img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  background: #d8cfc2;
+}
+
+.spike-photo b {
+  position: absolute;
+  left: 14px;
+  bottom: 12px;
+  font-family: var(--ui-mono);
+  font-size: 13px;
+  font-weight: 400;
+  color: #6a5847;
+}
+
+.spike-report {
+  position: absolute;
+  left: 12px;
+  top: 12px;
+  max-width: 620px;
+  max-height: calc(100vh - 24px);
+  overflow: auto;
+  padding: 12px 14px;
+  border-radius: 7px;
+  background: rgba(14, 10, 7, 0.88);
+  backdrop-filter: blur(6px);
+  color: #ded4c7;
+  font-family: var(--ui-mono);
+  font-size: 11.5px;
+  line-height: 1.6;
+  white-space: pre;
+}
+
+.spike-report b {
+  color: #fff;
+}
+
+.spike-good {
+  color: #9fd18f;
+}
+
+.spike-bad {
+  color: #ff8b6b;
+}
