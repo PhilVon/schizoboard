@@ -1,0 +1,102 @@
+/**
+ * @vitest-environment happy-dom
+ */
+
+import { beforeAll, describe, expect, it } from "vitest";
+
+import { MockPlatform } from "@/platform/mock";
+
+beforeAll(() => {
+  // happy-dom has no image decoder. The mock's job here is to put the decoded
+  // dimensions into the meta, so stub the decode rather than skip the
+  // assertion — dimensions in the document are what let an item be usable
+  // before its bytes arrive (DESIGN section 7.5).
+  globalThis.createImageBitmap = (async () => ({
+    width: 1,
+    height: 1,
+    close: () => {},
+  })) as unknown as typeof createImageBitmap;
+});
+
+/** A real 1x1 PNG, so the hash and the decode are both doing actual work. */
+const PNG_1X1 = Uint8Array.from(
+  atob(
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==",
+  ),
+  (c) => c.charCodeAt(0),
+);
+
+describe("MockPlatform", () => {
+  it("content-addresses, so the same bytes ingest once", async () => {
+    const platform = new MockPlatform();
+    const first = await platform.assetIngestBytes(PNG_1X1);
+    const second = await platform.assetIngestBytes(PNG_1X1.slice());
+
+    expect(first.sha256).toMatch(/^[0-9a-f]{64}$/);
+    expect(second.sha256).toBe(first.sha256);
+    expect(platform.assetUrl(first.sha256)).toBe(platform.assetUrl(second.sha256));
+  });
+
+  it("sniffs the mime type and reports the real size", async () => {
+    const platform = new MockPlatform();
+    const meta = await platform.assetIngestBytes(PNG_1X1);
+    expect(meta.mime).toBe("image/png");
+    expect(meta.size).toBe(PNG_1X1.byteLength);
+    expect([meta.w, meta.h]).toEqual([1, 1]);
+  });
+
+  it("returns an empty url for an asset it has never seen", () => {
+    const platform = new MockPlatform();
+    expect(platform.assetUrl("0".repeat(64))).toBe("");
+  });
+
+  it("answers assetHas per hash", async () => {
+    const platform = new MockPlatform();
+    const { sha256 } = await platform.assetIngestBytes(PNG_1X1);
+    expect(await platform.assetHas([sha256, "0".repeat(64)])).toEqual([true, false]);
+  });
+
+  it("keeps the document log append-only until a compaction replaces it", async () => {
+    const platform = new MockPlatform();
+    await platform.docAppendUpdate(Uint8Array.of(1, 2));
+    await platform.docAppendUpdate(Uint8Array.of(3));
+    expect(await platform.docLoad()).toEqual({
+      snapshot: null,
+      updates: [Uint8Array.of(1, 2), Uint8Array.of(3)],
+    });
+
+    await platform.docCompact(Uint8Array.of(9, 9));
+    expect(await platform.docLoad()).toEqual({
+      snapshot: Uint8Array.of(9, 9),
+      updates: [],
+    });
+  });
+
+  it("frees everything outside the keep set", async () => {
+    const platform = new MockPlatform();
+    const a = await platform.assetIngestBytes(PNG_1X1);
+    const b = await platform.assetIngestBytes(Uint8Array.of(1, 2, 3, 4, 5, 6));
+    const { freedBytes } = await platform.assetGc([a.sha256]);
+    expect(freedBytes).toBe(b.size);
+    expect(await platform.assetHas([a.sha256, b.sha256])).toEqual([true, false]);
+  });
+
+  it("says what it cannot do instead of pretending", async () => {
+    const platform = new MockPlatform();
+    await expect(platform.assetIngestPath()).rejects.toThrow(/native shell/);
+    await expect(platform.assetIngestUrl()).rejects.toThrow(/native shell/);
+    await expect(platform.syncStart({ mode: "lan", boardId: "x" })).rejects.toThrow(
+      /native shell/,
+    );
+  });
+
+  it("delivers Rust-side events to listeners and stops on unlisten", async () => {
+    const platform = new MockPlatform();
+    const seen: string[] = [];
+    const unlisten = await platform.on("asset:ready", (p) => seen.push(p.sha256));
+    platform.emit("asset:ready", { sha256: "abc" });
+    unlisten();
+    platform.emit("asset:ready", { sha256: "def" });
+    expect(seen).toEqual(["abc"]);
+  });
+});

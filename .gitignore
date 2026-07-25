@@ -17,5 +17,6 @@ dist-ssr
 # Kanban board — local DB, server token, runtime state
 .kanban/
 
-# Fidelity-spike photo corpus (T-16) — never commit hundreds of MB of photos
-/spike-assets/
+# Fidelity-spike photo corpus (T-16) — never commit hundreds of MB of photos.
+# Fetch it with `npm run spike:fetch`.
+/public/spike/

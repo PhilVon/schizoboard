@@ -11,7 +11,7 @@ import { FrameLoop } from "@/render/loop";
 import { World } from "@/render/world";
 import { Camera } from "@/state/camera";
 import { Navigation } from "@/state/navigation";
-import { host } from "@/platform/env";
+import { initPlatform, type Platform } from "@/platform";
 import { Hud, type HudStats } from "@/ui/hud";
 
 /**
@@ -20,7 +20,11 @@ import { Hud, type HudStats } from "@/ui/hud";
  */
 const BOARD_SEED = 0x5c1201;
 
-function boot(): void {
+async function boot(): Promise<void> {
+  // Chooses the Tauri bridge or the browser mocks and loads only that one.
+  // Nothing else in the codebase decides which shell it is in.
+  const native = await initPlatform();
+
   const root = document.querySelector<HTMLDivElement>("#board-root");
   if (!root) throw new Error("#board-root missing from index.html");
 
@@ -73,7 +77,7 @@ function boot(): void {
 
   loop.start();
 
-  devScaffolding(world, hud);
+  devScaffolding(world, hud, native);
 }
 
 /**
@@ -83,7 +87,7 @@ function boot(): void {
  * have something to be measured against and so the DOM-raster-blur risk
  * (DESIGN section 11.1, risk 1) is visible the moment it appears.
  */
-function devScaffolding(world: World, hud: Hud): void {
+function devScaffolding(world: World, hud: Hud, native: Platform): void {
   const marks: [number, number, number, number, string][] = [
     [-40, -40, 80, 80, "0,0"],
     [400, -260, 220, 160, "400,-260"],
@@ -106,10 +110,10 @@ function devScaffolding(world: World, hud: Hud): void {
   const hint = document.createElement("div");
   hint.className = "hint";
   hint.textContent =
-    `${host()} · space+drag or middle-drag to pan · wheel to zoom · \` for the HUD`;
+    `platform: ${native.kind} · space+drag or middle-drag to pan · wheel to zoom · \` for the HUD`;
   world.layers.ui.append(hint);
 
   hud.toggle(); // on by default while phase 0 is the whole application
 }
 
-boot();
+void boot();
