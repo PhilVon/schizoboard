@@ -88,6 +88,7 @@ export class Camera {
   /** Move the camera by a screen-space delta — a drag of the surface itself,
    *  so content follows the cursor and the camera moves the other way. */
   panByScreen(dxScreen: number, dyScreen: number): void {
+    if (!Number.isFinite(dxScreen) || !Number.isFinite(dyScreen)) return;
     if (dxScreen === 0 && dyScreen === 0) return;
     this.x -= dxScreen / this.zoom;
     this.y -= dyScreen / this.zoom;
@@ -95,6 +96,7 @@ export class Camera {
   }
 
   panByBoard(dx: number, dy: number): void {
+    if (!Number.isFinite(dx) || !Number.isFinite(dy)) return;
     if (dx === 0 && dy === 0) return;
     this.x += dx;
     this.y += dy;
@@ -107,6 +109,10 @@ export class Camera {
    * window is being scaled.
    */
   zoomTo(zoom: number, sx: number, sy: number): void {
+    // A single NaN here is unrecoverable and invisible: the transform becomes
+    // "translate(NaNpx, NaNpx)", the browser drops it, and the board simply
+    // stops responding with nothing in the console. Cheaper to refuse.
+    if (!Number.isFinite(zoom) || !Number.isFinite(sx) || !Number.isFinite(sy)) return;
     const next = clampZoom(zoom);
     if (next === this.zoom) return;
     // The board point under the cursor, before the change.

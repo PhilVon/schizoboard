@@ -1,0 +1,140 @@
+/**
+ * The dev HUD.
+ *
+ * docs/DESIGN.md section 9.5: per-phase frame timings, awake particle count,
+ * DOM node count and document size, "with a hard alert if the document passes
+ * 25 MB. Performance problems that aren't measured become 'it feels slow
+ * lately', which is unfixable."
+ *
+ * It ships from phase 0 precisely so that a regression shows up as a number
+ * rather than as a feeling. Two rules keep it from becoming the thing it
+ * measures:
+ *
+ *   - it writes DOM at 5 Hz, not 60 — the numbers are unreadable faster anyway;
+ *   - it reads nothing from the DOM except a node count, and that only on the
+ *     same 5 Hz tick, never inside the loop's read phases.
+ */
+
+import { PHASES, type FrameLoop } from "@/render/loop";
+
+const REFRESH_MS = 200;
+/** DESIGN section 9.5 — hard alert past this document size. */
+const DOC_SIZE_ALERT_BYTES = 25 * 1024 * 1024;
+
+/** Numbers the HUD cannot compute for itself. */
+export interface HudStats {
+  zoom: number;
+  cameraX: number;
+  cameraY: number;
+  /** Rope particles currently being stepped (DESIGN section 5.3). */
+  awakeParticles: number;
+  /** Encoded document size in bytes. */
+  docBytes: number;
+}
+
+function formatBytes(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} kB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+export class Hud {
+  visible = false;
+
+  private readonly el: HTMLDivElement;
+  private readonly loop: FrameLoop;
+  private readonly stats: () => HudStats;
+  private readonly smoothed = new Float32Array(PHASES.length);
+  private lastPaint = 0;
+  private domNodes = 0;
+  private readonly disposers: (() => void)[] = [];
+
+  constructor(host: HTMLElement, loop: FrameLoop, stats: () => HudStats) {
+    this.loop = loop;
+    this.stats = stats;
+
+    this.el = document.createElement("div");
+    this.el.className = "hud";
+    this.el.hidden = true;
+    host.append(this.el);
+
+    const onKey = (e: KeyboardEvent): void => {
+      // Backquote — F12 belongs to devtools and Escape belongs to the tools.
+      if (e.code !== "Backquote" || e.ctrlKey || e.metaKey || e.altKey) return;
+      this.toggle();
+      e.preventDefault();
+    };
+    window.addEventListener("keydown", onKey);
+    this.disposers.push(() => window.removeEventListener("keydown", onKey));
+  }
+
+  toggle(): void {
+    this.visible = !this.visible;
+    this.el.hidden = !this.visible;
+    if (this.visible) this.lastPaint = 0;
+  }
+
+  /**
+   * OVERLAY phase (8). Timings are smoothed every frame — sampling them at
+   * 5 Hz would report whichever frame happened to land on the tick — but the
+   * DOM is only written on the tick.
+   */
+  update(now: number): void {
+    if (!this.visible) return;
+
+    const timings = this.loop.timings;
+    for (let i = 0; i < timings.length; i++) {
+      this.smoothed[i] = this.smoothed[i]! * 0.9 + timings[i]! * 0.1;
+    }
+
+    if (now - this.lastPaint < REFRESH_MS) return;
+    this.lastPaint = now;
+    this.paint();
+  }
+
+  private paint(): void {
+    const s = this.stats();
+    // A live HTMLCollection's length forces no layout, and 5 Hz is cheap.
+    this.domNodes = document.getElementsByTagName("*").length;
+
+    const frameMs = this.loop.frameMs;
+    const fps = frameMs > 0 ? Math.min(999, 1000 / Math.max(frameMs, 1000 / 240)) : 0;
+
+    const rows: string[] = [];
+    rows.push(
+      `<div class="hud-head"><b>${frameMs.toFixed(2)}</b> ms &nbsp;<span>${fps.toFixed(0)} fps</span></div>`,
+    );
+    for (let i = 0; i < PHASES.length; i++) {
+      const ms = this.smoothed[i]!;
+      // 16.7 ms is the whole budget, so bar width is share-of-frame.
+      const pct = Math.min(100, (ms / 16.7) * 100);
+      rows.push(
+        `<div class="hud-row"><span class="hud-k">${PHASES[i]}</span>` +
+          `<span class="hud-bar"><i style="width:${pct.toFixed(1)}%"></i></span>` +
+          `<span class="hud-v">${ms.toFixed(2)}</span></div>`,
+      );
+    }
+    rows.push('<div class="hud-sep"></div>');
+    rows.push(this.stat("zoom", `${(s.zoom * 100).toFixed(0)}%`));
+    rows.push(this.stat("camera", `${Math.round(s.cameraX)}, ${Math.round(s.cameraY)}`));
+    rows.push(this.stat("awake", String(s.awakeParticles)));
+    rows.push(this.stat("dom", String(this.domNodes)));
+    rows.push(
+      this.stat("doc", formatBytes(s.docBytes), s.docBytes > DOC_SIZE_ALERT_BYTES),
+    );
+
+    this.el.innerHTML = rows.join("");
+  }
+
+  private stat(key: string, value: string, alert = false): string {
+    return (
+      `<div class="hud-row"><span class="hud-k">${key}</span>` +
+      `<span class="hud-v${alert ? " hud-alert" : ""}">${value}</span></div>`
+    );
+  }
+
+  destroy(): void {
+    for (const dispose of this.disposers) dispose();
+    this.el.remove();
+  }
+}

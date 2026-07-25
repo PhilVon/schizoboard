@@ -7,6 +7,8 @@
 :root {
   --ui-font: ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
   --ui-mono: ui-monospace, "Cascadia Mono", "Consolas", monospace;
+  /* Drawn from the cork, never black — docs/DESIGN.md section 4.1. */
+  --shadow-warm: 38, 24, 12;
 }
 
 *,
@@ -38,43 +40,202 @@ body {
   contain: strict;
 }
 
-/* --- temporary boot panel, replaced once render/ lands (T-12, T-13) --- */
+/* --- the layer stack, docs/DESIGN.md section 6.2 --------------------------- */
 
-.boot {
+.layer {
   position: absolute;
-  top: 50%;
-  left: 50%;
-  transform: translate(-50%, -50%);
-  text-align: center;
-  font-family: var(--ui-mono);
-  font-size: 13px;
-  line-height: 1.9;
-  opacity: 0.75;
+  inset: 0;
 }
 
-.boot h1 {
-  font-family: var(--ui-font);
-  font-size: 28px;
-  font-weight: 600;
-  letter-spacing: -0.02em;
-  margin: 0 0 4px;
-  opacity: 0.9;
+.layer-cork {
+  z-index: 0;
+  pointer-events: none;
+  /* mix-blend-mode on the cork sublayers must not reach past the cork. */
+  isolation: isolate;
 }
 
-.boot dt {
-  display: inline-block;
-  width: 9ch;
-  text-align: right;
-  margin-right: 1ch;
+.layer-ropes-under {
+  z-index: 1;
+  pointer-events: none;
+}
+
+/*
+ * The world wrapper is a *point*, not a surface: zero-sized at the viewport
+ * origin, carrying the one camera transform. Item nodes are absolutely
+ * positioned inside it in board coordinates and overflow it in every
+ * direction, which is exactly right for a board with no edges.
+ */
+.layer-world {
+  z-index: 2;
+  inset: auto;
+  top: 0;
+  left: 0;
+  width: 0;
+  height: 0;
+  overflow: visible;
+  transform-origin: 0 0;
+}
+
+.layer-ropes-over {
+  z-index: 3;
+  pointer-events: none;
+}
+
+.layer-overlay {
+  z-index: 4;
+  pointer-events: none;
+}
+
+.layer-pins {
+  z-index: 5;
+  pointer-events: none;
+}
+
+.layer-pins > * {
+  pointer-events: auto;
+}
+
+.layer-ui {
+  z-index: 6;
+  pointer-events: none;
+}
+
+.layer-ui > * {
+  pointer-events: auto;
+}
+
+/* --- cork, docs/DESIGN.md section 4.2 ------------------------------------- */
+
+.cork-layer {
+  position: absolute;
+  inset: 0;
+  background-repeat: repeat;
+}
+
+/* Breaks the grain's repeat. Anchored to the world at a 4x longer period. */
+.cork-blotch {
+  mix-blend-mode: overlay;
+  opacity: 0.4;
+}
+
+/* A room's worth of light falling across the board, also world-anchored, so
+ * panning moves across a surface that is not uniformly lit. */
+.cork-light {
+  mix-blend-mode: soft-light;
   opacity: 0.55;
 }
 
-.boot dd {
-  display: inline;
-  margin: 0;
+/* Viewport-anchored, so it never moves and costs no camera update. */
+.cork-vignette {
+  position: absolute;
+  inset: 0;
+  background: radial-gradient(
+    ellipse at 50% 42%,
+    rgba(var(--shadow-warm), 0) 42%,
+    rgba(var(--shadow-warm), 0.18) 72%,
+    rgba(var(--shadow-warm), 0.46) 100%
+  );
 }
 
-.boot dd::after {
-  content: "";
+/* --- dev HUD, docs/DESIGN.md section 9.5 ---------------------------------- */
+
+.hud {
+  position: absolute;
+  top: 12px;
+  right: 12px;
+  min-width: 232px;
+  padding: 9px 11px 10px;
+  border-radius: 7px;
+  background: rgba(16, 12, 9, 0.82);
+  backdrop-filter: blur(6px);
+  color: #d9cfc2;
+  font-family: var(--ui-mono);
+  font-size: 11px;
+  line-height: 1.55;
+  letter-spacing: 0.01em;
+}
+
+.hud[hidden] {
+  display: none;
+}
+
+.hud-head {
+  margin-bottom: 5px;
+  font-size: 13px;
+}
+
+.hud-head span {
+  opacity: 0.5;
+}
+
+.hud-row {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+}
+
+.hud-k {
+  width: 8ch;
+  opacity: 0.5;
+}
+
+.hud-v {
+  margin-left: auto;
+  font-variant-numeric: tabular-nums;
+}
+
+.hud-alert {
+  color: #ff8b6b;
+  font-weight: 700;
+}
+
+.hud-bar {
+  flex: 1;
+  height: 4px;
+  border-radius: 2px;
+  background: rgba(255, 255, 255, 0.09);
+  overflow: hidden;
+}
+
+.hud-bar i {
   display: block;
+  height: 100%;
+  background: #8fb98a;
+}
+
+.hud-sep {
+  height: 1px;
+  margin: 6px 0 5px;
+  background: rgba(255, 255, 255, 0.12);
+}
+
+/* --- phase-0 scaffolding, removed once items land (T-24) ------------------- */
+
+.hint {
+  position: absolute;
+  left: 14px;
+  bottom: 12px;
+  font-family: var(--ui-mono);
+  font-size: 11px;
+  color: rgba(232, 222, 210, 0.5);
+  text-shadow: 0 1px 2px rgba(var(--shadow-warm), 0.6);
+}
+
+/*
+ * A crisp-edged reference object at a known board coordinate. Its job is to
+ * make the zoom-raster problem visible: if DOM under a CSS scale() is going to
+ * go blurry, it goes blurry here first, in front of a texture too noisy to
+ * show it. See DESIGN section 6.6 and the T-16 spike.
+ */
+.dev-marker {
+  position: absolute;
+  display: grid;
+  place-items: center;
+  border: 1px solid rgba(30, 20, 10, 0.55);
+  border-radius: 2px;
+  background: #f3ece0;
+  color: #4a3a2a;
+  font-family: var(--ui-mono);
+  font-size: 11px;
+  box-shadow: 0 1px 0 rgba(255, 255, 255, 0.5) inset;
 }
