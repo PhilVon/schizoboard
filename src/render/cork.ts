@@ -303,22 +303,30 @@ export class Cork {
       { el: light, tile: LIGHT_TILE, url: "" },
     ];
 
-    this.rasterize(1);
+    this.generate();
   }
 
   /**
-   * Regenerate the tiles. Called once at construction and again from the
-   * world's debounced gesture end with dpr * zoom, which is the same
-   * re-raster discipline item ink follows (DESIGN section 6.6).
+   * Generate the tiles. **Once, at construction, and never again.**
+   *
+   * Cork was originally wired to the world's debounced gesture end, on the
+   * assumption that it needed the same re-raster discipline as item ink. It
+   * does not, and the phase-0 spike (D-11, T-88) caught the mistake: three
+   * separate 250 ms frames, every one of them this function running a
+   * million-pixel loop and ten thousand ellipse fills on the main thread the
+   * instant a zoom gesture ended.
+   *
+   * The reason it does not need it is structural. These layers are never
+   * transformed — they are viewport-sized divs whose `background-size` tracks
+   * the camera, so the browser rasterises the background afresh at the size it
+   * is actually painting. There is no cached layer to go stale. The only thing
+   * tile resolution buys is sharpness under upscale, and the spike showed a
+   * 512-pixel tile reads correctly as cork at the 400% ceiling — which is
+   * unsurprising for a texture whose entire content is noise.
    */
-  rasterize(scale: number): void {
-    // 2x is 4 texels per board unit, which is sharp at the 400% zoom ceiling.
-    // Past that the extra pixels buy nothing but a generation hitch — a
-    // 2048-square tile is a four-million-iteration loop for noise nobody can
-    // resolve. Only the grain is dense enough to be worth re-rastering at all.
-    const k = Math.min(2, Math.max(1, scale));
+  private generate(): void {
     const bitmaps = [
-      grainTile(this.seed, Math.round(GRAIN_PX * k)),
+      grainTile(this.seed, GRAIN_PX),
       blotchTile(this.seed, BLOTCH_PX),
       lightTile(this.seed, LIGHT_PX),
     ];

@@ -43,8 +43,10 @@ async function boot(): Promise<void> {
   });
   const hud = new Hud(world.layers.ui, loop, stats);
 
-  // The gesture-end re-raster, one hop: world debounces, cork regenerates.
-  world.onRasterize((scale) => cork.rasterize(scale));
+  // Nothing subscribes to world.onRasterize yet. Item ink will (T-63): its
+  // canvases *are* inside the scaled world layer and do go stale. The cork is
+  // not, and wiring it here cost three 250 ms frames before the spike caught
+  // it — see the note on Cork.generate().
 
   const resize = (): void => {
     const { innerWidth: w, innerHeight: h } = window;

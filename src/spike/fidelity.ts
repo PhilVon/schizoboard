@@ -140,7 +140,6 @@ export async function run(): Promise<void> {
   const world = new World(root);
   const cork = new Cork(world.layers.cork, 0x5c1201);
   const loop = new FrameLoop();
-  world.onRasterize((scale) => cork.rasterize(scale));
 
   const report = document.createElement("div");
   report.className = "spike-report";
@@ -210,6 +209,11 @@ export async function run(): Promise<void> {
   let stageFromX = camera.x;
   let stageFromY = camera.y;
   let finished = false;
+  // The loop clamps the dt it hands to phases at 250 ms so a backgrounded tab
+  // cannot detonate the solver. That clamp is right for the solver and wrong
+  // for a measurement — a stall reported as "250" could be 260 or 2000. The
+  // spike times its own frames.
+  let previousFrame = 0;
 
   const visibleCount = (): number => {
     const b = camera.visibleBounds();
@@ -249,7 +253,9 @@ export async function run(): Promise<void> {
     }
     if (stage.gesture && !pinned) world.gestureTick(camera.zoom);
 
-    samples.push({ stage: stage.name, dt: frame.dt, visible: visibleCount() });
+    const raw = previousFrame === 0 ? frame.dt : frame.now - previousFrame;
+    previousFrame = frame.now;
+    samples.push({ stage: stage.name, dt: raw, visible: visibleCount() });
 
     if (t >= 1) {
       stageIndex++;
