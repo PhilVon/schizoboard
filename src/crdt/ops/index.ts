@@ -7,8 +7,9 @@
  * > and write batching possible at all — and it's enforceable with a lint
  * > rule, so enforce it. — docs/ARCHITECTURE.md section 1
  *
- * The lint rule is T-87. Until it lands, this barrel is the honour system:
- * import from `@/crdt/ops`, never from `yjs`.
+ * The lint rule landed with T-87 (`eslint.config.js`), so this is no longer the
+ * honour system: importing `yjs` outside `crdt/` fails the build. The barrel is
+ * still the front door — import from `@/crdt/ops`.
  */
 
 export * from "@/crdt/ops/items";
