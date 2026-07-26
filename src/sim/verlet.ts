@@ -94,6 +94,15 @@ import {
   SIM_STEP_MS,
 } from "@/sim/tuning";
 
+/**
+ * Where the particles were when the current fixed step started, so the step's
+ * displacement can be measured against it.
+ *
+ * Module-level and grown on demand: one buffer serves every rope on the board,
+ * because a rope is stepped to completion before the next one starts.
+ */
+let mark = new Float64Array(0);
+
 /** The fixed timestep in seconds — the only `dt` anything here ever sees. */
 const H = SIM_STEP_MS / 1000;
 
@@ -161,11 +170,22 @@ export class FixedStep {
  * otherwise deliver all sixteen to one link at once and crack the rope like a
  * whip.
  *
- * The return value is an **upper bound** on the distance any one particle
- * covered: the per-micro-step maxima, summed. `sim/ropes.ts` compares it to
- * `ROPE_SLEEP_MOVE`. Bounding the path length rather than measuring net
- * displacement is deliberate — a rope vibrating in place has a net
- * displacement of nothing, and must not be mistaken for one that has stopped.
+ * The return value is how far the busiest particle moved in a **fixed step** —
+ * the largest such distance over the steps this call ran. `sim/ropes.ts`
+ * compares it to `ROPE_SLEEP_MOVE`, and DESIGN section 5.3's sleep rule is
+ * quoted in the same units: "the largest particle movement... for 12
+ * consecutive frames".
+ *
+ * Measured per fixed step rather than per micro-step, and that distinction was
+ * worth a bug. The first version summed the per-micro-step maxima, on the
+ * reasoning that a path length cannot be fooled by a rope vibrating in place.
+ * True, but it compares thirty-two samples against a threshold written for
+ * one: a rope sitting still with a thousandth of a unit of numerical churn per
+ * micro-step reads as three hundredths and hovers just under the line. A rope
+ * woken where it already rested took 34 frames to be believed instead of 12,
+ * and a dragged one took over four seconds. A fixed step is still short enough
+ * — a hundred and twentieth of a second — that nothing which is genuinely
+ * moving can hide inside one.
  */
 export function stepRope(
   pos: Float64Array,
@@ -198,28 +218,31 @@ export function stepRope(
   const fromBx = pos[last]!;
   const fromBy = pos[last + 1]!;
 
-  let travelled = 0;
+  const span = count * 2;
+  if (mark.length < span) mark = new Float64Array(span);
+
+  let worst = 0;
   const micro = steps * ROPE_SUBSTEPS;
-  for (let m = 1; m <= micro; m++) {
-    const t = m / micro;
-    seat(pos, prev, at, fromAx + (ax - fromAx) * t, fromAy + (ay - fromAy) * t);
-    seat(pos, prev, last, fromBx + (bx - fromBx) * t, fromBy + (by - fromBy) * t);
+  for (let s = 0; s < steps; s++) {
+    // Where every particle was when this fixed step began.
+    for (let i = 0; i < span; i++) mark[i] = pos[at + i]!;
 
-    integrate(pos, prev, at, last);
-    project(pos, at, last, link);
+    for (let k = 1; k <= ROPE_SUBSTEPS; k++) {
+      const t = (s * ROPE_SUBSTEPS + k) / micro;
+      seat(pos, prev, at, fromAx + (ax - fromAx) * t, fromAy + (ay - fromAy) * t);
+      seat(pos, prev, last, fromBx + (bx - fromBx) * t, fromBy + (by - fromBy) * t);
+      integrate(pos, prev, at, last);
+      project(pos, at, last, link);
+    }
 
-    // `prev` still holds each particle's position before this micro-step's
-    // integration, so the distance it covered is already sitting there.
-    let worst = 0;
-    for (let i = at + 2; i < last; i += 2) {
-      const dx = pos[i]! - prev[i]!;
-      const dy = pos[i + 1]! - prev[i + 1]!;
+    for (let i = 2; i < span - 2; i += 2) {
+      const dx = pos[at + i]! - mark[i]!;
+      const dy = pos[at + i + 1]! - mark[i + 1]!;
       const moved = dx * dx + dy * dy;
       if (moved > worst) worst = moved;
     }
-    travelled += Math.sqrt(worst);
   }
-  return travelled;
+  return Math.sqrt(worst);
 }
 
 /** Put one end on its pin, with no velocity of its own — endpoints are
