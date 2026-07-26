@@ -24,9 +24,19 @@
  * whatever item happens to stack above the selected one.
  */
 
-import { CARRY_SCALE } from "@/render/items/view";
+import { carryScale } from "@/lib/carry";
 import type { Bounds, Camera, Vec2 } from "@/state/camera";
 import type { DirtySets } from "@/state/dirty";
+import {
+  chromeFrame,
+  emptyFrame,
+  HANDLE_RADIUS,
+  HANDLE_STALK,
+  rotateHandle,
+  SELECT_PAD,
+  SELECT_WIDTH,
+  type HandleFrame,
+} from "@/state/handles";
 import type { Scene } from "@/state/scene";
 import type { Selection } from "@/state/selection";
 
@@ -42,14 +52,14 @@ const MARQUEE_STROKE = "rgba(255, 244, 214, 0.85)";
  * rectangle floating over it.
  */
 const SELECT_STROKE = "rgba(34, 21, 10, 0.8)";
-const SELECT_WIDTH = 1.5;
+
 /**
- * Gap between the paper's edge and the inside of the line, then half the line —
- * so this is the distance out to its centre, which is what a stroke is measured
- * from. Both halves are CSS pixels and stay CSS pixels at every zoom, which is
- * the whole of AC-140.
+ * The rotation knob is filled in the same warm dark as the outline and ringed in
+ * the cork's own highlight, so it reads as a brass tack pushed into the board
+ * rather than as a widget floating above it — and so it stays legible whether the
+ * stalk crosses cork or another photograph.
  */
-const SELECT_PAD = 2.5 + SELECT_WIDTH / 2;
+const HANDLE_RING = "rgba(255, 244, 214, 0.9)";
 
 export class Overlay {
   private readonly canvas: HTMLCanvasElement;
@@ -59,6 +69,8 @@ export class Overlay {
   /** Reused; `boardToScreen` allocates otherwise, and this runs per frame. */
   private readonly a: Vec2 = { x: 0, y: 0 };
   private readonly b: Vec2 = { x: 0, y: 0 };
+  private readonly knob: Vec2 = { x: 0, y: 0 };
+  private readonly frame: HandleFrame = emptyFrame();
 
   /**
    * What the picture currently on the canvas was drawn from. An idle board must
@@ -123,6 +135,11 @@ export class Overlay {
     // to not pay.
     this.cleared = false;
     let drew = this.drawSelection(ctx, camera, scene, selection);
+    // The rotation handle. `chromeFrame` is what decides that one item has one
+    // and a group does not, and the select tool asks the same function where the
+    // knob is — so what is drawn and what is grabbable cannot drift apart.
+    const frame = chromeFrame(camera, scene, selection, this.frame);
+    if (frame && this.drawRotateHandle(ctx, camera, frame)) drew = true;
     if (marquee) {
       this.drawMarquee(ctx, camera, marquee);
       drew = true;
@@ -182,7 +199,7 @@ export class Overlay {
       // The item's own box, which is exactly what `.pol-frame` and
       // `.paper-surface` occupy — both are `inset: 0` — so the line lands on the
       // paper's edge rather than on the item's bounding box.
-      const scale = 1 + scene.lift[slot]! * CARRY_SCALE;
+      const scale = carryScale(scene.lift[slot]!);
       const hw = (scene.w[slot]! * camera.zoom * scale) / 2 + SELECT_PAD;
       const hh = (scene.h[slot]! * camera.zoom * scale) / 2 + SELECT_PAD;
       const centre = camera.boardToScreen(scene.x[slot]!, scene.y[slot]!, this.a);
@@ -216,6 +233,47 @@ export class Overlay {
       ctx.restore();
     }
     return drew;
+  }
+
+  /**
+   * The knob and its stalk, standing off the top edge of the paper in the
+   * paper's own direction — so a note lying at 30° carries its handle at 30°
+   * too, and the handle says which way is up on the thing it turns.
+   *
+   * The stalk starts at the outline rather than at the centre, so it is a short
+   * mark in open cork instead of a line drawn across the photograph.
+   */
+  private drawRotateHandle(
+    ctx: CanvasRenderingContext2D,
+    camera: Camera,
+    frame: HandleFrame,
+  ): boolean {
+    const knob = rotateHandle(frame, this.knob);
+    const edge = HANDLE_RADIUS + SELECT_WIDTH;
+    if (knob.x + edge < 0 || knob.x - edge > camera.width) return false;
+    if (knob.y + edge < 0 || knob.y - edge > camera.height) return false;
+
+    this.clear(ctx);
+    ctx.strokeStyle = SELECT_STROKE;
+    ctx.lineWidth = SELECT_WIDTH;
+    ctx.beginPath();
+    // From the outline out to the near side of the knob, so the line does not
+    // show through the disc.
+    const sin = Math.sin(frame.angle);
+    const cos = Math.cos(frame.angle);
+    const near = frame.hh;
+    const far = frame.hh + HANDLE_STALK - HANDLE_RADIUS;
+    ctx.moveTo(frame.cx + near * sin, frame.cy - near * cos);
+    ctx.lineTo(frame.cx + far * sin, frame.cy - far * cos);
+    ctx.stroke();
+
+    ctx.beginPath();
+    ctx.arc(knob.x, knob.y, HANDLE_RADIUS, 0, Math.PI * 2);
+    ctx.fillStyle = SELECT_STROKE;
+    ctx.fill();
+    ctx.strokeStyle = HANDLE_RING;
+    ctx.stroke();
+    return true;
   }
 
   private drawMarquee(ctx: CanvasRenderingContext2D, camera: Camera, marquee: Bounds): void {

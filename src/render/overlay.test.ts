@@ -21,6 +21,9 @@ interface Calls {
   rotate: number[];
   translate: [number, number][];
   lineWidths: number[];
+  /** The rotation knob: centre and radius of every arc drawn. */
+  arcs: [number, number, number][];
+  lines: [number, number][];
 }
 
 let calls: Calls;
@@ -48,6 +51,12 @@ function stubCanvas(): HTMLCanvasElement {
       calls.strokeRect.push(args);
       calls.lineWidths.push(ctx.lineWidth);
     },
+    beginPath: vi.fn(),
+    moveTo: (...args: [number, number]) => calls.lines.push(args),
+    lineTo: (...args: [number, number]) => calls.lines.push(args),
+    arc: (x: number, y: number, r: number) => calls.arcs.push([x, y, r]),
+    stroke: vi.fn(),
+    fill: vi.fn(),
     fillStyle: "",
     strokeStyle: "",
     lineWidth: 0,
@@ -80,7 +89,16 @@ function frame(marquee: Parameters<Overlay["draw"]>[3] = null): void {
 }
 
 beforeEach(() => {
-  calls = { clearRect: 0, fillRect: [], strokeRect: [], rotate: [], translate: [], lineWidths: [] };
+  calls = {
+    clearRect: 0,
+    fillRect: [],
+    strokeRect: [],
+    rotate: [],
+    translate: [],
+    lineWidths: [],
+    arcs: [],
+    lines: [],
+  };
   camera = new Camera();
   camera.resize(1000, 800);
   scene = new Scene();
@@ -189,6 +207,33 @@ describe("Overlay", () => {
     camera.panByScreen(10, 0);
     frame();
     expect(calls.clearRect).toBe(3);
+  });
+
+  it("hangs a rotation knob off one selected item, on its own side of the paper", () => {
+    add("a", { rot: 0 });
+    selection.add("a");
+    camera.centreOn(0, 0);
+    frame();
+
+    // 50 units of item, 3.25 of chrome offset and 26 of stalk, straight up.
+    expect(calls.arcs).toHaveLength(1);
+    const [x, y, r] = calls.arcs[0]!;
+    expect(x).toBeCloseTo(500, 6);
+    expect(y).toBeCloseTo(400 - 79.25, 6);
+    expect(r).toBeCloseTo(4.5, 6);
+    // The stalk starts at the outline, not at the item's centre — it is a mark
+    // in the cork, not a line drawn across the photograph.
+    expect(calls.lines[0]![1]).toBeCloseTo(400 - 53.25, 6);
+  });
+
+  it("gives a group no knob — DESIGN hands group rotation to R+drag", () => {
+    add("a", { x: -200 });
+    add("b", { x: 200 });
+    selection.replace(["a", "b"]);
+    camera.centreOn(0, 0);
+    frame();
+    expect(calls.strokeRect).toHaveLength(2);
+    expect(calls.arcs).toHaveLength(0);
   });
 
   it("ignores an item that moved but is not selected", () => {

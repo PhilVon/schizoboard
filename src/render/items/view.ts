@@ -17,19 +17,6 @@
 import type { DirtySets } from "@/state/dirty";
 import type { Scene } from "@/state/scene";
 
-/**
- * How much bigger a carried item is drawn — "it scales up by about 2%", DESIGN
- * section 3.2.
- *
- * Here rather than inside the DOM layer because two renderers have to agree on
- * it: the layer applies it to the item's transform, and `render/overlay.ts` has
- * to apply the same factor to the selection chrome it strokes round the item,
- * or a photograph being dragged wears an outline 1% inside its own edge. It is
- * presentation, not state — `Scene.lift` is a 0..1 flag and the scene has never
- * heard of how big anything is drawn.
- */
-export const CARRY_SCALE = 0.02;
-
 export interface ItemLayer {
   /**
    * DOM phase (5). Bring the presentation in line with the scene, touching

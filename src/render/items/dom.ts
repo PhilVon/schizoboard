@@ -34,6 +34,7 @@ import "@/render/items/items.css";
 // preference. Percentage padding resolves against the *containing block's*
 // width — and the world wrapper is a zero-width point carrying the camera
 // transform, so every percentage in an item would silently compute to zero.
+import { carryScale } from "@/lib/carry";
 import { FRAME_BOTTOM, FRAME_SIDE } from "@/lib/polaroid";
 import {
   defaultStock,
@@ -44,7 +45,7 @@ import {
   stockRuling,
 } from "@/render/items/paper";
 import { counterRotate, shadowSprite, type Elevation } from "@/render/items/shadow";
-import { CARRY_SCALE, type ItemLayer } from "@/render/items/view";
+import type { ItemLayer } from "@/render/items/view";
 import type { DirtySets } from "@/state/dirty";
 import type { ItemCold, Scene } from "@/state/scene";
 
@@ -145,7 +146,7 @@ function writeTransform(
   const ty = round(y - h / 2, 100);
   const base = `translate(${tx}px, ${ty}px) rotate(${round(rot, 1e5)}rad)`;
   el.style.transform =
-    lift > 0 ? `${base} scale(${round(1 + lift * CARRY_SCALE, 1e4)})` : base;
+    lift > 0 ? `${base} scale(${round(carryScale(lift), 1e4)})` : base;
 }
 
 function round(value: number, factor: number): number {
@@ -585,15 +586,6 @@ export class DomItemLayer implements ItemLayer {
     return this.order;
   }
 
-  /**
-   * Selection chrome. A class toggle per mounted view, so the caller is
-   * expected to gate it on `Selection.version` rather than call it per frame.
-   *
-   * There is no matching `setLifted`: being carried is a *scene* value, not a
-   * set the renderer is told about, so it arrives through `sync` with the rest
-   * of the geometry. Selection is genuinely not in the scene — it is
-   * per-person and never in the document — which is why it comes in by hand.
-   */
   /**
    * The scale board content is being drawn at, `devicePixelRatio * zoom`.
    *
