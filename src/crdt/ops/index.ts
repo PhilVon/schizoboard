@@ -15,5 +15,6 @@
 export * from "@/crdt/ops/items";
 export * from "@/crdt/ops/load";
 export * from "@/crdt/ops/pins";
+export * from "@/crdt/ops/strings";
 export * from "@/crdt/ops/z";
 export { localToBoard, boardToLocal } from "@/crdt/ops/cascade";
