@@ -1,0 +1,110 @@
+/**
+ * The note tool — `N`, and the second tool this board has ever had.
+ *
+ * > Tools   V select · P pin · S string · N note · M marker · H highlighter · E eraser
+ * > — DESIGN section 3.9
+ *
+ * Press it, click the cork, and a blank sheet is there. That is the whole tool.
+ * Until now the only way to put anything on the board at all was to paste it,
+ * which meant a blank piece of paper — the thing DESIGN section 2.1 calls a
+ * scrap — was the one item the model could hold and nobody could make.
+ *
+ * ## It hands the board back
+ *
+ * One placement and the board returns to `select`, rather than staying armed.
+ *
+ * That is not the usual choice, and it is made for a specific reason: nothing on
+ * screen says which tool is active. There is no toolbar, no cursor change, no
+ * indicator of any kind — and there should not be one, on a board whose whole
+ * argument is that it has no UI furniture on it. A sticky tool with no way to
+ * see that it is active is a trap: you press `N`, get distracted, come back, and
+ * every click on the cork drops another sheet where you meant to deselect. A
+ * one-shot tool cannot do that, and it costs one keystroke per sheet.
+ *
+ * It also puts the new sheet in the selection, for the same reason paste does:
+ * "putting something down and then wanting to move it is one gesture in two
+ * halves, so the second half starts with it already held" (`app/main.ts`).
+ *
+ * ## Where the sheet lands
+ *
+ * At the point the press went down, not where the release came up. Those are
+ * usually the same pixel; when they are not, the press is the one that was
+ * aimed, and a sheet that lands where the hand finished drifting reads as the
+ * board being imprecise.
+ */
+
+import type { Vec2 } from "@/state/camera";
+import type { PointerSample, Tool, ToolContext, ToolInput } from "@/state/tools/tool";
+
+export interface NoteToolOptions {
+  /**
+   * The tool is finished with the board — a sheet was placed, or `Escape`
+   * abandoned it. The caller hands control back to `select`; the tool cannot do
+   * that itself, because a tool has no idea what other tools exist.
+   */
+  onDone?: () => void;
+}
+
+export class NoteTool implements Tool {
+  readonly id = "note";
+
+  private readonly options: NoteToolOptions;
+  /** Where the press landed, board space, or null when nothing is pressed. */
+  private downAt: Vec2 | null = null;
+
+  constructor(options: NoteToolOptions = {}) {
+    this.options = options;
+  }
+
+  handle(input: ToolInput, ctx: ToolContext): void {
+    switch (input.kind) {
+      case "down":
+        this.onDown(input.at, ctx);
+        return;
+      case "up":
+        this.onUp(ctx);
+        return;
+      case "cancel":
+        this.cancel(ctx);
+        return;
+      case "key":
+        // Escape puts the board back in the select tool without leaving
+        // anything behind — the same thing it means in every other tool.
+        if (input.code === "Escape") {
+          this.downAt = null;
+          this.options.onDone?.();
+        }
+        return;
+      default:
+        return;
+    }
+  }
+
+  private onDown(at: PointerSample, ctx: ToolContext): void {
+    const board = ctx.camera.screenToBoard(at.x, at.y);
+    this.downAt = board;
+  }
+
+  private onUp(ctx: ToolContext): void {
+    const at = this.downAt;
+    this.downAt = null;
+    if (!at) return;
+    ctx.write.createNote(at.x, at.y);
+    this.options.onDone?.();
+  }
+
+  /** Nothing eases and nothing is held, so there is nothing to step. */
+  tick(): void {}
+
+  /**
+   * A lost pointer or a lost window. Nothing has been written yet — the sheet
+   * only exists at pointer-up — so abandoning is forgetting where the press was.
+   *
+   * `onDone` deliberately does *not* fire here. A window that lost focus
+   * mid-click has not finished with the tool, and coming back to find the board
+   * silently in a different one is worse than coming back to the tool you chose.
+   */
+  cancel(_ctx: ToolContext): void {
+    this.downAt = null;
+  }
+}

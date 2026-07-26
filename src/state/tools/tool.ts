@@ -84,6 +84,17 @@ export interface BoardWriter {
   /** `keepPins` is Shift+Delete: the evidence goes, the string web keeps its
    *  shape with a hole where it was (DESIGN section 3.8). */
   deleteItems(ids: readonly string[], keepPins: boolean): void;
+  /**
+   * A blank sheet of paper at a board point.
+   *
+   * The size is the caller's, not the tool's: an empty note's dimensions come
+   * from the same function that sizes a pasted one (`app/ingest.ts`), and a tool
+   * may not reach into `app/`. What arrives is a note with no text, which is
+   * what DESIGN section 2.1 means by a scrap — "not a special type in the code
+   * — it's a note that happens to have no text yet, which is exactly what a
+   * blank piece of paper is".
+   */
+  createNote(boardX: number, boardY: number): void;
 }
 
 export interface ToolContext {

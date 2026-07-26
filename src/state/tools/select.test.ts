@@ -121,6 +121,11 @@ beforeEach(() => {
       setPoses: (poses, phase) => writes.push({ kind: "poses", phase, poses: new Map(poses) }),
       setSizes: (sizes, phase) => writes.push({ kind: "sizes", phase, sizes: new Map(sizes) }),
       deleteItems: (ids, keepPins) => writes.push({ kind: "delete", ids: [...ids], keepPins }),
+      // The select tool never creates anything; a sheet arrives from the note
+      // tool or from paste.
+      createNote: () => {
+        throw new Error("select must not create items");
+      },
     },
   };
 });

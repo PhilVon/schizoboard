@@ -11,10 +11,11 @@
 
 import { Binding } from "@/crdt/binding";
 import { boardSeed, encodedSize, initialiseBoard, openBoardDoc } from "@/crdt/doc";
-import { deleteItems, resizeItems, setItemPoses } from "@/crdt/ops";
+import { createItems, deleteItems, resizeItems, setItemPoses } from "@/crdt/ops";
 import { Origin } from "@/crdt/origins";
 import { Persistence } from "@/crdt/persistence";
 import { UndoHistory } from "@/crdt/undo";
+import { noteSizeFor } from "@/app/ingest";
 import { Paste } from "@/app/paste";
 import { initPlatform } from "@/platform";
 import { variantFor } from "@/platform/types";
@@ -32,6 +33,7 @@ import { Navigation } from "@/state/navigation";
 import { Scene } from "@/state/scene";
 import { Selection } from "@/state/selection";
 import { ToolMachine } from "@/state/tools/machine";
+import { NoteTool } from "@/state/tools/note";
 import { SelectTool } from "@/state/tools/select";
 import type { BoardWriter } from "@/state/tools/tool";
 import { Hud, type HudStats } from "@/ui/hud";
@@ -163,6 +165,23 @@ async function boot(): Promise<void> {
       const snapshot = [...ids];
       queued.push(() => deleteItems(board, snapshot, { keepPins }));
     },
+    /**
+     * A blank sheet — what DESIGN section 2.1 calls a scrap, which is "a note
+     * that happens to have no text yet".
+     *
+     * Sized by the same function that sizes a pasted note, asked for the empty
+     * string, so an empty one and a one-word one are the same piece of paper.
+     * The pin and the scatter angle are not passed: `createItems` defaults both,
+     * which is exactly why they are defaults — "a caller that has to remember to
+     * jitter is a caller that will forget".
+     */
+    createNote: (x, y) => {
+      queued.push(() => {
+        const size = noteSizeFor("");
+        const made = createItems(board, [{ type: "note", x, y, w: size.w, h: size.h }]);
+        if (made.length > 0) selection.replace(made.map((item) => item.itemId));
+      });
+    },
   };
 
   /**
@@ -214,6 +233,16 @@ async function boot(): Promise<void> {
   });
 
   const select = new SelectTool();
+  /**
+   * One placement and the board is back in `select` — see `state/tools/note.ts`
+   * for why a tool nothing on screen advertises must not stay armed.
+   *
+   * Queued rather than switched on the spot: `setTool` cancels whatever the old
+   * tool had hold of, which writes to the scene, and this runs from inside the
+   * note tool's own `handle` in phase 1 — swapping the machine's tool out from
+   * under the loop mid-drain is how a gesture ends up half delivered to each.
+   */
+  const note = new NoteTool({ onDone: () => queued.push(() => tools.setTool(select)) });
   const tools = new ToolMachine(select, root, {
     scene,
     dirty,
@@ -223,6 +252,27 @@ async function boot(): Promise<void> {
     hitTest: (bx, by) => items.hitTest(scene, bx, by),
     // Space+drag and middle-drag belong to the camera, not to the board.
     suppressed: () => navigation.panReady,
+  });
+
+  /**
+   * Picking a tool (DESIGN section 3.9).
+   *
+   * Two of the seven exist; `P`, `S`, `M`, `H` and `E` are each their own phase,
+   * and a key that silently does nothing is worse than one that is not bound, so
+   * they are not listed here until they have something to switch to.
+   *
+   * Bare keys only. `Ctrl+V` is paste and must not also change tool, and inside
+   * a note an `n` is an `n`.
+   */
+  window.addEventListener("keydown", (e) => {
+    if (e.ctrlKey || e.metaKey || e.altKey || e.repeat) return;
+    if (isTextTarget(e.target)) return;
+    const next = e.code === "KeyV" ? select : e.code === "KeyN" ? note : null;
+    if (!next) return;
+    e.preventDefault();
+    // Queued for the same reason `onDone` is: switching cancels the outgoing
+    // tool's gesture, which touches the scene.
+    queued.push(() => tools.setTool(next));
   });
 
   const paste = new Paste({
@@ -422,6 +472,7 @@ async function boot(): Promise<void> {
         "and is being left alone rather than written over. See the console. · "
       : "") +
     `platform: ${native.kind} · paste a picture or some text, or drop a file in · ` +
+    `N then click for a blank sheet · V back to select · ` +
     `drag to move · drag the handle or R+drag to rotate · drag a note's edge to resize · ` +
     `drag the cork to marquee · Delete removes · ` +
     `Ctrl+Z undoes · space+drag pans · Ctrl+0 fit · F frame · \` for the HUD`;
