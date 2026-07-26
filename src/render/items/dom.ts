@@ -44,7 +44,7 @@ import {
   stockRuling,
 } from "@/render/items/paper";
 import { counterRotate, shadowSprite, type Elevation } from "@/render/items/shadow";
-import type { ItemLayer } from "@/render/items/view";
+import { CARRY_SCALE, type ItemLayer } from "@/render/items/view";
 import type { DirtySets } from "@/state/dirty";
 import type { ItemCold, Scene } from "@/state/scene";
 
@@ -121,14 +121,6 @@ class ShadowNode {
     this.setElevation("rest");
   }
 }
-
-/**
- * How much bigger a carried item is. "it scales up by about 2%" — DESIGN
- * section 3.2. Applied to the transform rather than to the width, so it costs
- * no layout and does not change the item's real geometry: hit testing, pins and
- * the marquee all continue to agree about where the item is.
- */
-const CARRY_SCALE = 0.02;
 
 /** Shared by both views: position, rotation, size, and the carry. */
 function writeTransform(
@@ -304,7 +296,7 @@ class PolaroidView implements View {
     // next; clearing `pending` is what `swapPhoto` checks before it assigns.
     this.pending = null;
     this.photo.removeAttribute("src");
-    this.el.classList.remove("is-selected", "is-lifted", "is-waiting");
+    this.el.classList.remove("is-lifted", "is-waiting");
     this.shadow.reset();
   }
 }
@@ -373,7 +365,7 @@ class PaperView implements View {
   release(): void {
     this.body.textContent = "";
     this.boundCold = null;
-    this.el.classList.remove("is-selected", "is-lifted");
+    this.el.classList.remove("is-lifted");
     this.shadow.reset();
   }
 }
@@ -403,15 +395,6 @@ export class DomItemLayer implements ItemLayer {
   private order: string[] = [];
   private readonly orderedBy = new Map<string, string>();
   private readonly rank = new Map<string, number>();
-
-  /**
-   * The last selection it was told about, kept so a view that mounts *later*
-   * still gets its chrome. Everything else the layer draws arrives through the
-   * scene and is therefore right on mount by construction; selection does not,
-   * so it has to be remembered. Culling (T-27) is what makes this load-bearing
-   * — a selected item panned off screen and back is a fresh mount.
-   */
-  private selected: ReadonlySet<string> = new Set();
 
   /**
    * `devicePixelRatio * zoom` — the scale the world layer was last rasterised
@@ -497,7 +480,6 @@ export class DomItemLayer implements ItemLayer {
         // anyway, so mounting costs one style write and disturbs nobody else.
         const rank = this.rank.get(id);
         if (rank !== undefined) view.el.style.zIndex = String(rank);
-        if (this.selected.has(id)) view.el.classList.add("is-selected");
       }
 
       if (isNew || dirty.all || dirty.items.has(id)) {
@@ -626,14 +608,6 @@ export class DomItemLayer implements ItemLayer {
    */
   setRasterScale(scale: number): void {
     if (Number.isFinite(scale) && scale > 0) this.rasterScale = scale;
-  }
-
-  setSelected(ids: ReadonlySet<string>): void {
-    // Copied, because the caller's set is live and this outlives the call.
-    this.selected = new Set(ids);
-    for (const [id, view] of this.views) {
-      view.el.classList.toggle("is-selected", ids.has(id));
-    }
   }
 
   private create(archetype: Archetype): View {

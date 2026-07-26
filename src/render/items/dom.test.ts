@@ -268,40 +268,15 @@ describe("DomItemLayer", () => {
     late.destroy();
   });
 
-  it("gives a view that mounts later the chrome it should already have", () => {
-    add("a");
-    add("b");
-    layer.sync(scene, dirty, null);
-    layer.setSelected(new Set(["a"]));
+  // Three tests about selection chrome used to live here — one of them about a
+  // culled-and-remounted item coming back still outlined, which is what the
+  // layer's copy of the selection existed for. The chrome is `render/overlay.ts`
+  // now (T-91) and none of it is the layer's business; `overlay.test.ts` covers
+  // it, including the case where a selected item has been culled away.
 
-    // Culling (T-27) unmounts a selected item panned off screen; it must come
-    // back still looking selected, because nothing re-pushes the selection.
-    dirty.everything();
-    layer.sync(scene, dirty, new Set(["b"]));
-    dirty.everything();
-    layer.sync(scene, dirty, null);
-
-    const selected = [...host.children].filter((el) => el.classList.contains("is-selected"));
-    expect(selected).toHaveLength(1);
-  });
-
-  it("toggles selection chrome on the mounted views", () => {
-    add("a");
-    add("b");
-    layer.sync(scene, dirty, null);
-
-    layer.setSelected(new Set(["a"]));
-    const selected = [...host.children].filter((el) => el.classList.contains("is-selected"));
-    expect(selected).toHaveLength(1);
-
-    layer.setSelected(new Set());
-    expect([...host.children].some((el) => el.classList.contains("is-selected"))).toBe(false);
-  });
-
-  it("does not hand a recycled node the last item's chrome", () => {
+  it("does not hand a recycled node the last item's carry", () => {
     add("a");
     layer.sync(scene, dirty, null);
-    layer.setSelected(new Set(["a"]));
     scene.lift[scene.slotOf("a")!] = 1;
     dirty.item("a");
     layer.sync(scene, dirty, null);
@@ -315,7 +290,6 @@ describe("DomItemLayer", () => {
     layer.sync(scene, dirty, null);
 
     const el = host.children[0] as HTMLElement;
-    expect(el.classList.contains("is-selected")).toBe(false);
     expect(el.classList.contains("is-lifted")).toBe(false);
   });
 

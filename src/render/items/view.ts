@@ -17,6 +17,19 @@
 import type { DirtySets } from "@/state/dirty";
 import type { Scene } from "@/state/scene";
 
+/**
+ * How much bigger a carried item is drawn — "it scales up by about 2%", DESIGN
+ * section 3.2.
+ *
+ * Here rather than inside the DOM layer because two renderers have to agree on
+ * it: the layer applies it to the item's transform, and `render/overlay.ts` has
+ * to apply the same factor to the selection chrome it strokes round the item,
+ * or a photograph being dragged wears an outline 1% inside its own edge. It is
+ * presentation, not state — `Scene.lift` is a 0..1 flag and the scene has never
+ * heard of how big anything is drawn.
+ */
+export const CARRY_SCALE = 0.02;
+
 export interface ItemLayer {
   /**
    * DOM phase (5). Bring the presentation in line with the scene, touching
@@ -35,18 +48,14 @@ export interface ItemLayer {
   hitTest(scene: Scene, boardX: number, boardY: number): string | null;
 
   /**
-   * Selection chrome. A set of ids and nothing else — no rectangle, no
-   * handles, no element. Selection is per-person and lives outside the
-   * document, so unlike every other value the layer renders it cannot arrive
-   * through the scene.
-   */
-  setSelected(ids: ReadonlySet<string>): void;
-
-  /**
    * The scale board content is drawn at, `devicePixelRatio * zoom`, so the layer
-   * can ask for a stored variant that suits the size rather than the source.
-   * Like `setSelected`, it cannot come through the scene: the scene knows board
+   * can ask for a stored variant that suits the size rather than the source. The
+   * one value here that cannot come through the scene: the scene knows board
    * units and has never heard of the camera.
+   *
+   * Selection chrome used to be the other one. It is not a layer concern at all
+   * any more — `render/overlay.ts` strokes it in screen space, which is what
+   * makes it the same width at 5% zoom as at 400% (T-91).
    */
   setRasterScale(scale: number): void;
 

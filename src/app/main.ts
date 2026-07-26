@@ -317,24 +317,19 @@ async function boot(): Promise<void> {
     culler.update(scene, dirty, camera);
   });
 
-  let selectionVersion = -1;
   loop.on("dom", () => {
     world.applyCamera(camera);
     cork.apply(camera);
     items.sync(scene, dirty, culler.visible);
-    // Selection chrome rides on the item nodes, so it is written here with the
-    // rest of the DOM rather than in the OVERLAY phase — and only when the
-    // membership has actually changed.
-    if (selection.version !== selectionVersion) {
-      selectionVersion = selection.version;
-      items.setSelected(selection.members);
-    }
   });
 
   // 6 INK  T-57   7 ROPES  T-43
 
   loop.on("overlay", (frame) => {
-    overlay.draw(camera, select.marquee);
+    // Selection chrome is drawn here, not on the item nodes, so its width is in
+    // screen pixels at every zoom (T-91). `dirty` comes along only so it can tell
+    // "a selected photograph is being dragged" from "nothing has changed".
+    overlay.draw(camera, scene, selection, select.marquee, dirty);
     hud.update(frame.now);
   });
 

@@ -36,26 +36,20 @@
 }
 
 /*
- * Selection chrome.
+ * Selection chrome is deliberately *not* here.
  *
- * Dark rather than light, and that is not a taste call: a pale line is
- * invisible against a polaroid's own off-white frame, which is most of what
- * anyone selects. A dark warm line is the only one legible against both the
- * cork and the paper, and it reads as something drawn round the photograph
- * rather than as a UI rectangle floating over it.
+ * It was: an `outline` on `.pol-frame` and `.paper-surface`, which hugged the
+ * paper and rotated with it for free. What it could not do is hold a width,
+ * because a length in this file is a length in board units — legible at 54%
+ * zoom, a hairline at 20%, gone by 15%, and a slab at 400%. Chrome is not part
+ * of the photograph.
  *
- * On the frame and the surface rather than on `.item`, so it hugs the paper
- * instead of the item's bounding box, and rotates with it for free.
- *
- * The width is in board units, so it thickens as you zoom in. Screen-constant
- * chrome needs the counter-scale the pins get in T-32; when that lands this
- * should use it.
+ * `render/overlay.ts` strokes it in screen space instead, off the same scene
+ * fields this file's transforms come from (T-91). Nothing in the item's DOM
+ * knows it is selected any more, which is also what removed the layer's copy of
+ * the selection — it only existed so a culled-and-remounted item came back
+ * still wearing its outline.
  */
-.item.is-selected .pol-frame,
-.item.is-selected .paper-surface {
-  outline: 1.5px solid rgba(34, 21, 10, 0.8);
-  outline-offset: 2.5px;
-}
 
 /*
  * Carried, not teleported — DESIGN 3.2. The 2% scale is part of the transform
