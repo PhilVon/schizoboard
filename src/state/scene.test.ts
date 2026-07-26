@@ -167,6 +167,83 @@ describe("pin layout", () => {
   });
 });
 
+/**
+ * The index is derived, so every test here is really the same question asked
+ * of a different edit: does it still agree with `pin.parent`, which is the
+ * only source of truth (AC-56)?
+ */
+describe("the reverse pin index", () => {
+  const pin = (id: string, parent: string | null) => ({
+    id,
+    parent,
+    lx: 0,
+    ly: 0,
+    kind: "pushpin",
+    color: "#c8352f",
+    wx: 0,
+    wy: 0,
+  });
+
+  it("follows a pin re-parented from one item to another", () => {
+    const scene = new Scene();
+    scene.putPin(pin("p", "a"));
+    expect([...scene.pinsOf("a")]).toEqual(["p"]);
+
+    scene.putPin(pin("p", "b"));
+    expect(scene.pinCount("a")).toBe(0);
+    expect([...scene.pinsOf("b")]).toEqual(["p"]);
+  });
+
+  it("follows a pin dragged off onto bare cork, and back on", () => {
+    const scene = new Scene();
+    scene.putPin(pin("p", "a"));
+    scene.putPin(pin("p", null));
+    expect(scene.pinCount("a")).toBe(0);
+    scene.putPin(pin("p", "a"));
+    expect(scene.pinCount("a")).toBe(1);
+  });
+
+  it("does not double-count a pin whose parent did not change", () => {
+    const scene = new Scene();
+    scene.putPin(pin("p", "a"));
+    scene.putPin(pin("p", "a"));
+    expect(scene.pinCount("a")).toBe(1);
+  });
+
+  it("forgets a deleted pin", () => {
+    const scene = new Scene();
+    scene.putPin(pin("p1", "a"));
+    scene.putPin(pin("p2", "a"));
+    expect(scene.removePin("p1")).toBe(true);
+    expect(scene.removePin("p1")).toBe(false);
+    expect([...scene.pinsOf("a")]).toEqual(["p2"]);
+  });
+
+  /**
+   * Pins outlive items (DESIGN section 3.8). The pin is still parented to the
+   * id it always was; the item is what has gone, and undo can bring it back.
+   */
+  it("keeps holding pins whose item was deleted", () => {
+    const scene = new Scene();
+    scene.putItem(cold("a"), pose());
+    scene.putPin(pin("p", "a"));
+    scene.removeItem("a");
+    expect(scene.pinCount("a")).toBe(1);
+  });
+
+  it("hands an unpinned item an empty set rather than nothing", () => {
+    const scene = new Scene();
+    expect(scene.pinsOf("nobody").size).toBe(0);
+  });
+
+  it("empties with the scene", () => {
+    const scene = new Scene();
+    scene.putPin(pin("p", "a"));
+    scene.clear();
+    expect(scene.pinCount("a")).toBe(0);
+  });
+});
+
 describe("bounds", () => {
   it("expands for rotation rather than using the raw rectangle", () => {
     const scene = new Scene();

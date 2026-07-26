@@ -37,6 +37,10 @@ const INITIAL_CAPACITY = 256;
 /** Reused by `layoutPins`; see the note there. */
 const scratch: Point = { x: 0, y: 0 };
 
+/** Handed back by `pinsOf` for an item nothing holds, so the caller never has
+ *  to distinguish "no pins" from "no entry". */
+const EMPTY_PINS: ReadonlySet<string> = new Set<string>();
+
 /** Cold fields — read when a view is built or rebuilt, not per frame. */
 export interface ItemCold {
   id: string;
@@ -123,6 +127,30 @@ export class Scene {
   private highWater = 0;
 
   readonly pins = new Map<string, PinNode>();
+
+  /**
+   * The reverse of `PinNode.parent`: which pins hold each item.
+   *
+   * Derived, never authoritative. `pin.parent` is the only source of truth
+   * (AC-56); this is a cache of the answer to "how many pins hold this item",
+   * maintained by `putPin`/`removePin` — which is to say, rebuilt from the
+   * observer, since `crdt/binding.ts` is the only thing that calls them.
+   *
+   * It exists because pin count *is* an item's physics (DESIGN section 2.2),
+   * so the torsion swing asks the question for every item in the viewport on
+   * every frame. Answered by walking `pins` that is O(items x pins) per frame,
+   * which on a board where both are in the hundreds is tens of thousands of
+   * comparisons to discover that almost nothing changed.
+   *
+   * An entry survives its item. Pins outlive items (section 3.8 — `Shift`
+   * +`Delete` "removes an item but leaves its pins free-floating"), and a pin
+   * still naming a deleted parent is dangling rather than wrong: it renders
+   * free-floating, and if undo brings the item back the index is already
+   * right. What is dropped is an entry that has lost its last *pin*, so a
+   * board that has had pins added and removed all afternoon does not
+   * accumulate empty sets.
+   */
+  private readonly byParent = new Map<string, Set<string>>();
 
   constructor() {
     this.x = new Float32Array(INITIAL_CAPACITY);
@@ -247,12 +275,38 @@ export class Scene {
 
   // --- pins ---------------------------------------------------------------
 
+  /**
+   * Insert or replace a pin.
+   *
+   * The only way a pin's `parent` may change. Assigning to `PinNode.parent` on
+   * a node fished out of `pins` would leave the reverse index describing a
+   * board that no longer exists — the binding re-reads the whole entity and
+   * calls this, which is what keeps the two in step.
+   */
   putPin(pin: PinNode): void {
+    const existing = this.pins.get(pin.id);
+    if (existing && existing.parent !== pin.parent) this.unindex(existing.parent, pin.id);
     this.pins.set(pin.id, pin);
+    if (pin.parent === null) return;
+    let held = this.byParent.get(pin.parent);
+    if (!held) this.byParent.set(pin.parent, (held = new Set()));
+    held.add(pin.id);
   }
 
   removePin(id: string): boolean {
-    return this.pins.delete(id);
+    const pin = this.pins.get(id);
+    if (!pin) return false;
+    this.pins.delete(id);
+    this.unindex(pin.parent, id);
+    return true;
+  }
+
+  private unindex(parent: string | null, pinId: string): void {
+    if (parent === null) return;
+    const held = this.byParent.get(parent);
+    if (!held) return;
+    held.delete(pinId);
+    if (held.size === 0) this.byParent.delete(parent);
   }
 
   /**
@@ -290,9 +344,18 @@ export class Scene {
 
   /** How many pins hold this item — its physics, per DESIGN section 2.2. */
   pinCount(itemId: string): number {
-    let n = 0;
-    for (const pin of this.pins.values()) if (pin.parent === itemId) n++;
-    return n;
+    return this.byParent.get(itemId)?.size ?? 0;
+  }
+
+  /**
+   * Which pins hold this item. Empty for an unpinned one — never null, so a
+   * caller can iterate without asking first.
+   *
+   * Live rather than a copy: the set is the index's own, and `putPin` mutates
+   * it. Read it and let it go; do not keep it across a frame.
+   */
+  pinsOf(itemId: string): ReadonlySet<string> {
+    return this.byParent.get(itemId) ?? EMPTY_PINS;
   }
 
   // --- geometry -----------------------------------------------------------
@@ -427,6 +490,7 @@ export class Scene {
   clear(): void {
     this.slots.clear();
     this.pins.clear();
+    this.byParent.clear();
     this.ids.fill(null);
     this.coldBySlot.fill(null);
     this.freeSlots.length = 0;

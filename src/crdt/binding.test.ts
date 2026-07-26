@@ -96,6 +96,11 @@ describe("Binding", () => {
     reparentPin(board, a.pinId!, b.itemId, 500, 0);
     expect(scene.pins.get(a.pinId!)!.parent).toBe(b.itemId);
     expect(dirty.items.has(b.itemId)).toBe(true);
+    // The one it left, too: `a` has just gone from one pin to none, which is a
+    // change to how it behaves (DESIGN section 2.2) even though it has not moved.
+    expect(dirty.items.has(a.itemId)).toBe(true);
+    expect(scene.pinCount(a.itemId)).toBe(0);
+    expect(scene.pinCount(b.itemId)).toBe(2);
   });
 
   it("skips an item whose type nobody recognises rather than throwing", () => {

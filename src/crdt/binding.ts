@@ -117,6 +117,13 @@ export class Binding {
       wy: existing?.wy ?? fields.ly,
     });
     if (fields.parent !== null) this.dirty.item(fields.parent);
+    // The item it *left*, too. Dragging a pin off a photograph does not move
+    // the photograph, so this looks like nothing for now — but pin count is
+    // that photograph's physics (DESIGN section 2.2), and an item that just
+    // went from one pin to none has stopped hanging and has to be told.
+    if (existing && existing.parent !== null && existing.parent !== fields.parent) {
+      this.dirty.item(existing.parent);
+    }
   }
 
   private readonly onItems = (events: DeepEvent[]): void => {
