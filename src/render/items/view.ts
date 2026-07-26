@@ -22,8 +22,12 @@ export interface ItemLayer {
    * DOM phase (5). Bring the presentation in line with the scene, touching
    * only what the dirty sets name.
    *
-   * `visible` is the culled set (T-27). Null means "everything", which is what
-   * a board smaller than the culling threshold uses.
+   * `visible` is the culled set — `render/cull.ts` owns it and hands over the
+   * live object rather than a copy, so the layer must not retain or mutate it.
+   * Null means "everything", which is what a caller with no culler wired in
+   * gets. There is deliberately no size threshold below which culling is skipped:
+   * a board small enough not to need it costs nothing to cull, and a threshold
+   * would mean the culling path went untested on every board anyone develops on.
    */
   sync(scene: Scene, dirty: DirtySets, visible: ReadonlySet<string> | null): void;
 

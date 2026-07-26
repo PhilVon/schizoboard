@@ -57,7 +57,8 @@ src/
 
   render/
     loop.ts           THE single requestAnimationFrame
-    world.ts          camera transform, DOM wrapper, viewport culling
+    world.ts          camera transform, DOM wrapper, will-change discipline
+    cull.ts           viewport culling — uniform spatial grid, hysteresis band
     items/            one view per archetype, node pooling — behind an interface
     ink/              stroke geometry, per-item canvas, wet overlay, re-raster policy
     ropes/            under.ts + over.ts, screen-space painter

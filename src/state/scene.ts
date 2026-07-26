@@ -300,6 +300,19 @@ export class Scene {
   boundsOf(id: string, pad = 0, out: Bounds = { minX: 0, minY: 0, maxX: 0, maxY: 0 }): Bounds | null {
     const slot = this.slots.get(id);
     if (slot === undefined) return null;
+    return this.boundsAt(slot, pad, out);
+  }
+
+  /**
+   * The same thing, addressed by slot.
+   *
+   * The culler walks candidates as slots — that is what the grid stores — and
+   * would otherwise pay a Map lookup per candidate per frame to turn each one
+   * back into an id it is about to throw away. **The slot must be live**; there
+   * is no lookup to fail on, so a stale one silently reads whatever is in the
+   * arrays.
+   */
+  boundsAt(slot: number, pad: number, out: Bounds): Bounds {
     const angle = this.rot[slot]! + this.swing[slot]!;
     const cos = Math.abs(Math.cos(angle));
     const sin = Math.abs(Math.sin(angle));

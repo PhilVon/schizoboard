@@ -21,7 +21,13 @@ export class DirtySets {
 
   /** The camera moved, so every screen-space layer must redraw. */
   camera = false;
-  /** Something entered or left the viewport; culling must re-run. */
+  /**
+   * Re-run culling even though neither the camera nor any item moved.
+   *
+   * A force flag, not a report: `render/cull.ts` re-culls on its own whenever
+   * the camera or an item is dirty, and this is for the cases where something
+   * else changed the answer. `everything()` sets it; nothing else needs to yet.
+   */
   culling = false;
   /**
    * Coarse escape hatch: rebuild everything next frame. Set on document load

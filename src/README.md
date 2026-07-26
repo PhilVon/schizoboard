@@ -29,7 +29,7 @@ when the document write lands.
 | `crdt/` | schema, `Y.Doc`, `ops/`, `binding.ts`, undo, persistence, `sync/` |
 | `state/` | scene mirror, dirty sets, camera, selection, `tools/` |
 | `sim/` | verlet, catenary, ropes, torsion, collide, constants |
-| `render/` | the single rAF loop, world transform, items, ink, ropes, pins, presence, cork |
+| `render/` | the single rAF loop, world transform, culling, items, ink, ropes, pins, presence, cork |
 | `platform/` | every `invoke()`, clipboard, files — mockable for browser dev |
 | `styles/` | global chrome only; board content is styled by `render/` |
 | `ui/` | toolbars, panels, dialogs — **not** the board |

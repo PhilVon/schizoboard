@@ -59,6 +59,22 @@ const SHADOW_RGB = "38, 24, 12";
 /** Stretchable middle of the nine-slice, in sprite pixels. */
 const CENTRE = 24;
 
+/**
+ * How far past its own rectangle an item's shadow reaches, in board units:
+ * the widest sprite's visible blur plus its displacement along the light.
+ *
+ * Culling pads item bounds by this — DESIGN section 9.1 asks for bounds that are
+ * "rotation-expanded and shadow-padded". An item whose own rectangle has just
+ * left the screen can still be casting a shadow onto it, and unmounting it would
+ * pop that shadow out of existence at the viewport edge.
+ *
+ * Derived from the recipes rather than written down, so a softer `lift` bake
+ * cannot silently outgrow the padding that hides it.
+ */
+export const SHADOW_PAD = Math.max(
+  ...Object.values(RECIPES).map((recipe) => Math.ceil(recipe.blur * 3) + recipe.offset),
+);
+
 export interface ShadowSprite {
   url: string;
   /** Border width and slice, in board units. */

@@ -373,9 +373,14 @@ export class DomItemLayer implements ItemLayer {
     let orderChanged = false;
 
     for (const id of wanted) {
-      const cold = scene.cold(id);
-      const pose = scene.poseOf(id);
-      if (!cold || !pose) continue;
+      // One map lookup per item per frame, and then the typed arrays directly.
+      // This walk used to go through `poseOf`, which mints an object per item —
+      // affordable when a clean frame skipped the whole loop, and hundreds of
+      // allocations a frame now that culling makes a *pan* re-enter it.
+      const slot = scene.slotOf(id);
+      if (slot === undefined) continue;
+      const cold = scene.coldAt(slot);
+      if (!cold) continue;
 
       let view = this.views.get(id);
       const isNew = view === undefined;
@@ -398,14 +403,13 @@ export class DomItemLayer implements ItemLayer {
       }
 
       if (isNew || dirty.all || dirty.items.has(id)) {
-        const slot = scene.slotOf(id)!;
         view.bind(cold, this.assetUrl);
         view.transform(
-          pose.x,
-          pose.y,
-          pose.rot + scene.swing[slot]!,
-          pose.w,
-          pose.h,
+          scene.x[slot]!,
+          scene.y[slot]!,
+          scene.rot[slot]! + scene.swing[slot]!,
+          scene.w[slot]!,
+          scene.h[slot]!,
           scene.lift[slot]!,
         );
       }
@@ -426,9 +430,19 @@ export class DomItemLayer implements ItemLayer {
    * sorted position becomes the `z-index` instead. Sorting runs only when a
    * key actually changed — dragging a photograph around does not reorder
    * anything, and neither does typing.
+   *
+   * Culling adds one caller it was not written for: a mount is a membership
+   * change, so a sustained pan re-sorts every frame. That is a few tens of
+   * microseconds at a few hundred mounted items, most of it the comparator's map
+   * lookups. If it ever matters, the fix is to rank against a sorted order over
+   * the *whole* scene, which culling cannot perturb, rather than over the mounted
+   * subset — the ranks are only ever used as relative integers.
    */
   private reorder(scene: Scene): void {
-    this.order = [...this.views.keys()].sort((a, b) => {
+    // In place, reusing the backing store: this now runs per frame during a pan.
+    this.order.length = 0;
+    for (const id of this.views.keys()) this.order.push(id);
+    this.order.sort((a, b) => {
       const ca = scene.cold(a);
       const cb = scene.cold(b);
       if (!ca || !cb) return 0;

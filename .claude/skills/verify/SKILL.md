@@ -69,6 +69,26 @@ $w.AppActivate("Schizoboard"); Start-Sleep -Milliseconds 600
 $w.SendKeys("^v")
 ```
 
+> **`SendKeys` cannot press most of this app's shortcuts.** Chromium derives
+> `KeyboardEvent.code` from the hardware scan code, and `SendKeys` leaves it
+> zero — so `code` arrives empty. Anything bound to `e.key` works (`Ctrl+0`,
+> `Ctrl+1`, in `navigation.ts`) and everything bound to `e.code` silently does
+> nothing: undo's `KeyZ`, `Delete`, `Space` for panning, `F` to frame. Ctrl+V is
+> the confusing exception — WebView2 handles it natively and fires the `paste`
+> event without JavaScript ever seeing a key. So a run can look like "keys work"
+> and then quietly refuse the one you are testing.
+>
+> Send a scan code with the key:
+>
+> ```powershell
+> # keybd_event(vk, MapVirtualKey(vk, 0), flags, 0)
+> [K]::Down(0x11, $false)   # Ctrl
+> [K]::Down(0x5A, $false)   # Z
+> [K]::Up(0x5A, $false); [K]::Up(0x11, $false)
+> ```
+>
+> `Delete` (0x2E) additionally needs `KEYEVENTF_EXTENDEDKEY` (0x0001).
+
 **`AppActivate` fails silently while the human is at the machine.** Windows'
 foreground lock refuses the raise for a background process, `AppActivate`
 returns without complaint, and `SendKeys` then types into whatever the human

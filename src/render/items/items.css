@@ -22,6 +22,13 @@
   /*
    * Layout and style containment only. `paint` would clip the shadow, which
    * deliberately extends past the item's own box.
+   *
+   * Which is also why there is no `content-visibility: auto` here, though
+   * DESIGN 9.1 suggests it alongside culling as something that "buys a good deal
+   * for free". It is not free: `content-visibility` grants paint containment as
+   * part of the deal, so it would clip every item's shadow to its own rectangle
+   * — the exact thing the line above refuses. And with culling removing
+   * off-screen nodes outright there is very little left for it to skip.
    */
   contain: layout style;
   will-change: auto;

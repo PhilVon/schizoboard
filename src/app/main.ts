@@ -18,6 +18,7 @@ import { UndoHistory } from "@/crdt/undo";
 import { Paste } from "@/app/paste";
 import { initPlatform } from "@/platform";
 import { Cork } from "@/render/cork";
+import { Culler } from "@/render/cull";
 import { DomItemLayer } from "@/render/items/dom";
 import { FrameLoop } from "@/render/loop";
 import { Overlay } from "@/render/overlay";
@@ -95,6 +96,12 @@ async function boot(): Promise<void> {
     refreshAsset(sha256);
   });
   const overlay = new Overlay(world.layers.overlay);
+  /**
+   * Which items are worth having in the DOM. The spike (D-12) measured the
+   * gesture-end repaint at 777 ms with 500 live nodes, so this is load-bearing
+   * rather than an optimisation — see `render/cull.ts`.
+   */
+  const culler = new Culler();
   const loop = new FrameLoop();
   const selection = new Selection();
   const navigation = new Navigation(camera, root, {
@@ -239,10 +246,23 @@ async function boot(): Promise<void> {
   // --- the nine phases (docs/ARCHITECTURE.md section 3) ---------------------
 
   let undoSelectionVersion = selection.version;
+  /**
+   * -1 rather than the camera's current version, so the first frame is dirty and
+   * the culler and the screen-space layers all get one guaranteed pass.
+   */
+  let cameraVersion = -1;
   loop.on("input", (frame) => {
     navigation.flush();
     if (navigation.gestured) world.gestureTick(camera.zoom);
     tools.flush(frame.dt);
+    // The camera is moved by navigation, by a resize, and by undo restoring a
+    // stashed view in phase 9 of the frame before. Comparing the version once
+    // per frame, here at the top, catches all three without any of them having
+    // to remember to raise a flag — and it is phase 1, so phases 4 and 5 see it.
+    if (camera.version !== cameraVersion) {
+      cameraVersion = camera.version;
+      dirty.camera = true;
+    }
     // "Call stopCapturing() on pointer-up, tool change and selection change.
     // Explicit boundaries beat time-based grouping" — DATA-MODEL section 11.
     // Queued rather than called, so the gesture's own release write — queued a
@@ -260,15 +280,16 @@ async function boot(): Promise<void> {
     // World pin positions for items that moved. Nothing reads the DOM.
     if (dirty.all) scene.layoutPins();
     else if (dirty.items.size > 0) scene.layoutPins(dirty.items);
+    // And which items are near enough the viewport to be worth mounting. A read
+    // phase, deliberately: the DOM phase below only consumes the answer.
+    culler.update(scene, dirty, camera);
   });
 
   let selectionVersion = -1;
   loop.on("dom", () => {
     world.applyCamera(camera);
     cork.apply(camera);
-    // Culling is T-27; until then every item is a candidate, which the spike
-    // (D-12) says is fine up to a few hundred and expensive past that.
-    items.sync(scene, dirty, null);
+    items.sync(scene, dirty, culler.visible);
     // Selection chrome rides on the item nodes, so it is written here with the
     // rest of the DOM rather than in the OVERLAY phase — and only when the
     // membership has actually changed.
@@ -343,6 +364,7 @@ async function boot(): Promise<void> {
  *
  *   $env:VITE_SPIKE=1;      npm run tauri dev    # will-change discipline
  *   $env:VITE_SPIKE=pinned; npm run tauri dev    # the blurry control
+ *   $env:VITE_SPIKE=culled; npm run tauri dev    # the discipline, with culling
  */
 if (import.meta.env["VITE_SPIKE"]) {
   void import("@/spike/fidelity").then((spike) => spike.run());
