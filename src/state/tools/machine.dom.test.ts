@@ -223,6 +223,35 @@ describe("ToolMachine", () => {
     expect(next.seen).toHaveLength(1);
   });
 
+  it("raises gestureEnded for the frame that delivered the release", () => {
+    pointer("pointerdown", { button: 0, pointerId: 11, clientX: 0, clientY: 0 });
+    machine.flush(16);
+    expect(machine.gestureEnded).toBe(false);
+
+    pointer("pointerup", { pointerId: 11, clientX: 30, clientY: 0 });
+    // Still false: the release is buffered, and the undo boundary it triggers
+    // has to land after the write the tool makes when it finally sees it.
+    expect(machine.gestureEnded).toBe(false);
+
+    machine.flush(16);
+    expect(machine.gestureEnded).toBe(true);
+    machine.flush(16);
+    expect(machine.gestureEnded).toBe(false);
+  });
+
+  it("raises gestureEnded for a cancel and for a tool change", () => {
+    pointer("pointerdown", { button: 0, pointerId: 12, clientX: 0, clientY: 0 });
+    machine.flush(16);
+    pointer("pointercancel", { pointerId: 12, clientX: 0, clientY: 0 });
+    machine.flush(16);
+    expect(machine.gestureEnded).toBe(true);
+
+    machine.flush(16);
+    machine.setTool(new RecordingTool());
+    machine.flush(16);
+    expect(machine.gestureEnded).toBe(true);
+  });
+
   it("stops listening once destroyed", () => {
     machine.destroy();
     pointer("pointerdown", { button: 0, pointerId: 10, clientX: 0, clientY: 0 });

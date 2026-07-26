@@ -66,6 +66,8 @@ export class ToolMachine {
   private readonly heldKeys = new Set<string>();
   private pointer: number | null = null;
   private hover: { x: number; y: number } | null = null;
+  private pendingEnd = false;
+  private ended = false;
 
   constructor(tool: Tool, target: HTMLElement, options: ToolMachineOptions) {
     this.tool = tool;
@@ -101,6 +103,21 @@ export class ToolMachine {
     return this.hover;
   }
 
+  /**
+   * True for the frame in which the active tool was handed a release or a
+   * cancel — a gesture just finished, one way or the other. A level, in the
+   * same spirit as `Navigation.gestured`, rather than a callback nobody would
+   * be able to order against the frame.
+   *
+   * Undo reads it to close an entry (DATA-MODEL section 11 — "call
+   * `stopCapturing()` on pointer-up"), and must do so through the write queue:
+   * the gesture's final pose is queued during this same flush and has to join
+   * the entry before it is sealed.
+   */
+  get gestureEnded(): boolean {
+    return this.ended;
+  }
+
   /** Switching tools abandons whatever the old one had hold of, rather than
    *  leaving a half-finished gesture nobody will ever deliver an up for. */
   setTool(tool: Tool): void {
@@ -108,10 +125,15 @@ export class ToolMachine {
     this.tool.cancel(this.ctx);
     this.queue.length = 0;
     this.tool = tool;
+    // Cancelling is ending. A tool change is one of the three explicit undo
+    // boundaries, and here it is already the same event as a gesture ending.
+    this.pendingEnd = true;
   }
 
   /** INPUT phase. Drains the frame's input, then steps the tool once. */
   flush(dtMs: number): void {
+    this.ended = this.pendingEnd;
+    this.pendingEnd = false;
     for (let i = 0; i < this.queue.length; i++) this.tool.handle(this.queue[i]!, this.ctx);
     this.queue.length = 0;
     this.tool.tick(dtMs, this.ctx);
@@ -123,6 +145,7 @@ export class ToolMachine {
    * and up are edges and are never collapsed.
    */
   private push(input: ToolInput): void {
+    if (input.kind === "up" || input.kind === "cancel") this.pendingEnd = true;
     if (input.kind === "move") {
       const last = this.queue[this.queue.length - 1];
       if (last?.kind === "move") {

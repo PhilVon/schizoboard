@@ -14,6 +14,7 @@ import { boardSeed, encodedSize, initialiseBoard, openBoardDoc } from "@/crdt/do
 import { deleteItems, setItemPoses } from "@/crdt/ops";
 import { Origin } from "@/crdt/origins";
 import { Persistence } from "@/crdt/persistence";
+import { UndoHistory } from "@/crdt/undo";
 import { Paste } from "@/app/paste";
 import { initPlatform } from "@/platform";
 import { Cork } from "@/render/cork";
@@ -23,6 +24,7 @@ import { Overlay } from "@/render/overlay";
 import { World } from "@/render/world";
 import { Camera } from "@/state/camera";
 import { DirtySets } from "@/state/dirty";
+import { isTextTarget } from "@/state/input";
 import { Navigation } from "@/state/navigation";
 import { Scene } from "@/state/scene";
 import { Selection } from "@/state/selection";
@@ -128,6 +130,54 @@ async function boot(): Promise<void> {
     },
   };
 
+  /**
+   * Undo.
+   *
+   * The camera and the selection are not in the document, but "undo takes me
+   * back to where I was" still matters (DESIGN section 7.6), so they are
+   * stashed on the way out and put back on the way in. Both restores land in
+   * phase 9, one phase after the DOM was written, so they show on the next
+   * frame — which is what `Camera.version` and `Selection.version` are for.
+   */
+  const undo = new UndoHistory(board, {
+    captureView: () => ({
+      x: camera.x,
+      y: camera.y,
+      zoom: camera.zoom,
+      selection: selection.toArray(),
+    }),
+    restoreView: (view) => {
+      camera.setView(view.x, view.y, view.zoom);
+      // Undoing a paste un-creates what it selected, so a stashed selection
+      // can name things that no longer exist. A selection holding a ghost
+      // makes the next Delete an op that quietly does nothing, which is the
+      // confusing kind of nothing.
+      selection.replace(view.selection.filter((id) => scene.has(id)));
+    },
+  });
+
+  /**
+   * Ctrl+Z · Ctrl+Shift+Z (DESIGN section 3.7), and Ctrl+Y because this is a
+   * Windows-first application and that is the other muscle memory.
+   *
+   * Ambient, like navigation — undo works in every tool, so it is not the tool
+   * machine's. The intent is *queued* rather than acted on: `undo()` opens a
+   * transaction, and a listener that writes to the document does it in the
+   * middle of a frame whose layout phase has already read the scene.
+   */
+  window.addEventListener("keydown", (e) => {
+    if (!(e.ctrlKey || e.metaKey) || e.altKey) return;
+    // Inside a text field, Ctrl+Z belongs to the text field.
+    if (isTextTarget(e.target)) return;
+    const intent =
+      e.code === "KeyZ" ? (e.shiftKey ? "redo" : "undo") : e.code === "KeyY" ? "redo" : null;
+    if (!intent) return;
+    e.preventDefault();
+    // Held down, the key repeats and each repeat is another step back. That is
+    // the point of holding it.
+    queued.push(intent === "undo" ? () => undo.undo() : () => undo.redo());
+  });
+
   const select = new SelectTool();
   const tools = new ToolMachine(select, root, {
     scene,
@@ -188,10 +238,20 @@ async function boot(): Promise<void> {
 
   // --- the nine phases (docs/ARCHITECTURE.md section 3) ---------------------
 
+  let undoSelectionVersion = selection.version;
   loop.on("input", (frame) => {
     navigation.flush();
     if (navigation.gestured) world.gestureTick(camera.zoom);
     tools.flush(frame.dt);
+    // "Call stopCapturing() on pointer-up, tool change and selection change.
+    // Explicit boundaries beat time-based grouping" — DATA-MODEL section 11.
+    // Queued rather than called, so the gesture's own release write — queued a
+    // line above, inside `tools.flush` — falls inside the entry this closes
+    // instead of becoming the first thing in the next one.
+    if (tools.gestureEnded || selection.version !== undoSelectionVersion) {
+      undoSelectionVersion = selection.version;
+      queued.push(() => undo.boundary());
+    }
   });
 
   // 2 PRESENCE  T-72   3 SIM  T-39
@@ -271,7 +331,7 @@ async function boot(): Promise<void> {
       : "") +
     `platform: ${native.kind} · paste a picture or some text, or drop a file in · ` +
     `drag to move · R+drag to rotate · drag the cork to marquee · Delete removes · ` +
-    `space+drag pans · Ctrl+0 fit · F frame · \` for the HUD`;
+    `Ctrl+Z undoes · space+drag pans · Ctrl+0 fit · F frame · \` for the HUD`;
   world.layers.ui.append(hint);
   hud.toggle();
 }

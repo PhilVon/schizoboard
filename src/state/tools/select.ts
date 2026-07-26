@@ -63,7 +63,7 @@ const DRAG_THRESHOLD_PX = 3;
  * "One drag, one undo entry" (section 3.2) is the requirement; half a second
  * was the illustration. So: comfortably inside 400.
  */
-const LIVE_WRITE_MS = 300;
+export const LIVE_WRITE_MS = 300;
 
 /** Time constants for the carry. Picking up is quicker than putting down,
  *  which is what reads as weight rather than as a lag spike. */

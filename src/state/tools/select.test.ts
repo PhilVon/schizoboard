@@ -10,11 +10,12 @@
 
 import { beforeEach, describe, expect, it } from "vitest";
 
+import { CAPTURE_TIMEOUT_MS } from "@/crdt/undo";
 import { Camera } from "@/state/camera";
 import { DirtySets } from "@/state/dirty";
 import { Scene } from "@/state/scene";
 import { Selection } from "@/state/selection";
-import { SelectTool } from "@/state/tools/select";
+import { LIVE_WRITE_MS, SelectTool } from "@/state/tools/select";
 import type { PointerSample, ToolContext, WritePose } from "@/state/tools/tool";
 
 type Write =
@@ -561,5 +562,16 @@ describe("deleting", () => {
     move(60, 60);
     key("Delete");
     expect(writes).toEqual([]);
+  });
+});
+
+describe("the crash-safety write", () => {
+  it("lands inside the undo manager's capture window", () => {
+    // The two halves of DESIGN section 7.3 — "a throttled write every half
+    // second", "merged into the same undo entry" — are in conflict, because
+    // DATA-MODEL section 11 fixes the window at 400 ms and merging is purely a
+    // matter of the gap between transactions. At 500 ms every live write lands
+    // outside it and a three-second drag becomes seven undo entries.
+    expect(LIVE_WRITE_MS).toBeLessThan(CAPTURE_TIMEOUT_MS);
   });
 });

@@ -135,6 +135,25 @@ export class Camera {
     this.touch();
   }
 
+  /**
+   * Put the camera exactly here.
+   *
+   * The one setter that takes raw camera state, and it exists for one caller:
+   * undo stashes the camera in each entry's metadata and restores it on the
+   * way back (DATA-MODEL section 11). That is not a pan, a zoom or a fit — it
+   * is a saved position being reinstated — and expressing it as a pan would
+   * mean deriving a delta from a state we already have.
+   */
+  setView(x: number, y: number, zoom: number): void {
+    if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(zoom)) return;
+    const next = clampZoom(zoom);
+    if (x === this.x && y === this.y && next === this.zoom) return;
+    this.x = x;
+    this.y = y;
+    this.zoom = next;
+    this.touch();
+  }
+
   /** Ctrl+1 — actual size, about the viewport centre. */
   resetZoom(): void {
     this.zoomTo(1, this.width / 2, this.height / 2);
