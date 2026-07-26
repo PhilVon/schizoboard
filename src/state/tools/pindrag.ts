@@ -38,7 +38,8 @@
 
 import type { Point } from "@/lib/rotate";
 import type { Vec2 } from "@/state/camera";
-import { drawnPose, itemLocal } from "@/state/tools/frame";
+import type { PinNode } from "@/state/scene";
+import { drawnPose, itemLocal, repivotedPose } from "@/state/tools/frame";
 import type { ToolContext, WritePose } from "@/state/tools/tool";
 
 /**
@@ -79,6 +80,34 @@ export class PinDrag {
 
   private candidateId: string | null = null;
 
+  /**
+   * Where the item this pin hangs from was pivoting *before* the gesture, in
+   * that item's local frame — keyed by the item, because `sim/torsion.ts` asks
+   * the question once per held item.
+   *
+   * That module freezes the pivot along with the angle, which is what makes a
+   * pin draggable at all, and it re-derives the pivot by asking the scene which
+   * pin the item hangs from. On every frame but one that is the same answer. On
+   * the first, it is not: `select.ts` crosses the drag threshold, calls `begin`,
+   * and deliberately falls straight through into `move` so the pin does not sit
+   * still for the frame it was picked up in — so by the time phase 3 runs, the
+   * pin has already travelled and the "frozen" pivot is where it travelled to.
+   * The item turns about a point it was never pivoting on and snaps by roughly
+   * `2 sin(θ/2)` times the distance, which for a hand-driven drag reads as a
+   * settle and for a flick reads as a jump.
+   *
+   * So the pivot comes from here instead — captured at the grab, by the tool
+   * that is about to move the pin, rather than re-derived from a pin the tool
+   * is in the middle of moving. It stays put for the whole gesture, which is
+   * also right for a pin dragged off its item and back on again: the item is
+   * still drawn about the point it was drawn about when the hand arrived.
+   *
+   * Empty unless the pin's item hangs from *this* pin. An item on two pins is
+   * rigid and has no pivot; one on two that loses this pin starts hanging from
+   * the other, which has not moved and which the scene can be trusted for.
+   */
+  private readonly pivots = new Map<string, { lx: number; ly: number }>();
+
   private readonly board: Vec2 = { x: 0, y: 0 };
   private readonly probe: Point = { x: 0, y: 0 };
 
@@ -95,6 +124,12 @@ export class PinDrag {
   /** The item it was on when the drag began, or null. */
   get origin(): string | null {
     return this.start.parent;
+  }
+
+  /** Read by `sim/torsion.ts` through `select.ts`, once per held item, on the
+   *  frame it takes hold. See `pivots`. */
+  get heldPivots(): ReadonlyMap<string, { lx: number; ly: number }> {
+    return this.pivots;
   }
 
   /**
@@ -115,6 +150,12 @@ export class PinDrag {
     this.atX = pin.wx;
     this.atY = pin.wy;
     this.candidateId = pin.parent;
+    // Before a single line of the gesture has moved it: this is the whole point
+    // of capturing it here rather than letting phase 3 re-derive it.
+    this.pivots.clear();
+    if (pin.parent !== null && ctx.scene.pinCount(pin.parent) === 1) {
+      this.pivots.set(pin.parent, { lx: pin.lx, ly: pin.ly });
+    }
     return true;
   }
 
@@ -140,14 +181,31 @@ export class PinDrag {
     const pin = ctx.scene.pins.get(id);
     this.id = null;
     this.candidateId = null;
+    this.pivots.clear();
     if (!pin) return;
     // Unchanged after all — a click that trembled, or a drag that came back.
     // Writing anyway would put an undo entry on the stack that undoes nothing.
     if (pin.parent === this.start.parent && pin.lx === this.start.lx && pin.ly === this.start.ly) {
       return;
     }
+    const settle = this.settle(ctx, pin);
+    /**
+     * The settled poses go into the scene *now*, not only into the document.
+     *
+     * The write below is queued and lands in phase 9, but phase 3 of this same
+     * frame is where the item stops being held and `sim/torsion.ts` goes back
+     * to deriving its pivot from the pin — so without this the item spends one
+     * frame drawn against the pose the release has already superseded, which is
+     * the whole snap, once, at 60 Hz. Resolving the mirror to the frame being
+     * committed is what every move of this gesture already does for the pin
+     * itself; this is the same act for the paper it was pushed through.
+     */
+    for (const [itemId, pose] of settle) {
+      ctx.scene.setPose(itemId, pose);
+      ctx.dirty.item(itemId);
+    }
     // What the scene already holds, which is the frame this gesture resolved.
-    ctx.write.placePin(id, pin.parent, pin.lx, pin.ly, this.settle(ctx, pin.parent));
+    ctx.write.placePin(id, pin.parent, pin.lx, pin.ly, settle);
   }
 
   /**
@@ -162,6 +220,15 @@ export class PinDrag {
    *   altogether, which zeroes the same two transients. This is T-107's jump
    *   reached by dragging the pin off rather than deleting it, and
    *   `settleOnUnpin` never covered this route.
+   * - The item it neither left nor landed on, because it is the same item and
+   *   the pin only moved *within* it. That item goes on hanging, from the same
+   *   pin, at a new point — and where it is drawn is a function of that point
+   *   (`repivotedPose`). This is the release end of the same fault `pivots`
+   *   fixes at the pickup: the gesture holds the paper still against a pivot
+   *   the pin has left behind, and something has to make that true of the
+   *   document before phase 3 goes back to deriving the pivot from the pin.
+   *   The measured snap here is the larger of the two, because it is the whole
+   *   travel of the drag rather than its first frame.
    *
    * Two-to-one at either end needs nothing: an item that *starts* hanging
    * swings there from where it already is, which is motion rather than a jump.
@@ -172,9 +239,10 @@ export class PinDrag {
    * discounted at its origin. So the numbers tested here are one further on
    * than the ones every other tool tests.
    */
-  private settle(ctx: ToolContext, onto: string | null): ReadonlyMap<string, WritePose> {
+  private settle(ctx: ToolContext, pin: PinNode): ReadonlyMap<string, WritePose> {
     const settle = new Map<string, WritePose>();
     const from = this.start.parent;
+    const onto = pin.parent;
     if (onto !== from) {
       if (onto !== null && ctx.scene.pinCount(onto) === 2) {
         const pose = drawnPose(ctx.scene, onto);
@@ -184,6 +252,12 @@ export class PinDrag {
         const pose = drawnPose(ctx.scene, from);
         if (pose) settle.set(from, pose);
       }
+    } else if (from !== null && ctx.scene.pinCount(from) === 1) {
+      // Same item, still hanging, and the one pin it hangs from has moved.
+      // Includes a pin dragged off and brought back: the item was drawn about
+      // the pivot the gesture took hold of for the whole of that round trip.
+      const pose = repivotedPose(ctx.scene, from, pin.lx, pin.ly);
+      if (pose) settle.set(from, pose);
     }
     return settle;
   }
@@ -198,6 +272,7 @@ export class PinDrag {
     const id = this.id;
     this.id = null;
     this.candidateId = null;
+    this.pivots.clear();
     if (id === null) return;
     const pin = ctx.scene.pins.get(id);
     if (!pin) return;

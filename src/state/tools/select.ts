@@ -385,6 +385,20 @@ export class SelectTool implements Tool {
     return this.lag;
   }
 
+  /**
+   * Where a held item was pivoting when the gesture took hold, for the items
+   * this tool knows better than the scene does — which today is exactly one:
+   * the item a pin being dragged hangs from, because the pin whose position
+   * phase 3 would otherwise read is the one this gesture is moving.
+   *
+   * Empty for every other gesture. A drag or a rotation moves the item and
+   * leaves its pins where they are in its own frame, so the scene is still the
+   * best answer and `sim/torsion.ts` goes on asking it.
+   */
+  get heldPivots(): ReadonlyMap<string, { lx: number; ly: number }> {
+    return this.pinDrag.heldPivots;
+  }
+
   handle(input: ToolInput, ctx: ToolContext): void {
     switch (input.kind) {
       case "down":

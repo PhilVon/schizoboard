@@ -30,9 +30,14 @@ function pin(id: string, parent: string | null, lx: number, ly: number): void {
 }
 
 /** One frame at 60 fps, with the item marked as having changed. */
-function frame(dirtyIds: string[] = [], held: string[] = [], lag = 0): void {
+function frame(
+  dirtyIds: string[] = [],
+  held: string[] = [],
+  lag = 0,
+  pivots?: ReadonlyMap<string, { lx: number; ly: number }>,
+): void {
   for (const id of dirtyIds) dirty.item(id);
-  sim.step(scene, dirty, 1000 / 60, new Set(held), lag);
+  sim.step(scene, dirty, 1000 / 60, new Set(held), lag, pivots);
   dirty.clear();
 }
 
@@ -383,6 +388,51 @@ describe("handing over to and from a gesture", () => {
     expect(scene.swing[slot]).toBeGreaterThan(0.05);
     settle("a");
     expect(scene.swing[slot]).toBeCloseTo(0, 4);
+  });
+
+  /**
+   * The pivot is frozen on exactly one frame — the one the item is taken hold
+   * of — and for one gesture that frame is already too late. `select.ts`
+   * crosses the drag threshold, calls `begin`, and falls straight through into
+   * the first `move` so the pin does not sit still for the frame it was picked
+   * up in; by the time phase 3 runs, the pin this module would read the pivot
+   * from has travelled. So the tool hands over where it was.
+   */
+  it("freezes a held item at the pivot the gesture hands over, not the one the scene has", () => {
+    const slot = put("a", { rot: 0 });
+    pin("p", "a", -60, -80);
+    settle("a");
+    const was = {
+      swing: scene.swing[slot]!,
+      driftX: scene.driftX[slot]!,
+      driftY: scene.driftY[slot]!,
+    };
+
+    // The gesture has already dragged the pin across the paper.
+    pin("p", "a", 40, -80);
+    frame([], ["a"], 0, new Map([["a", { lx: -60, ly: -80 }]]));
+
+    expect(scene.swing[slot]).toBeCloseTo(was.swing, 6);
+    expect(scene.driftX[slot]).toBeCloseTo(was.driftX, 6);
+    expect(scene.driftY[slot]).toBeCloseTo(was.driftY, 6);
+  });
+
+  /**
+   * The same frame with nothing handed over, which is what every other gesture
+   * gets — and is also this test file's evidence that the one above is testing
+   * something. Without it, the pin having moved is the pivot having moved, and
+   * the item turns about a point it was never turning about.
+   */
+  it("falls back to the pin it hangs from when no gesture offers a pivot", () => {
+    const slot = put("a", { rot: 0 });
+    pin("p", "a", -60, -80);
+    settle("a");
+    const wasX = scene.driftX[slot]!;
+
+    pin("p", "a", 40, -80);
+    frame([], ["a"]);
+
+    expect(Math.abs(scene.driftX[slot]! - wasX)).toBeGreaterThan(1);
   });
 
   it("leaves a two-pinned item's carry rotation to the tool", () => {

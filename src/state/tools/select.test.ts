@@ -1749,14 +1749,75 @@ describe("moving a pin between items that hang", () => {
     expect(placeSettles[0]!.size).toBe(0);
   });
 
-  /** Sliding a pin around the paper it is already in changes no count at all. */
-  it("settles nothing for a pin moved within its own item", () => {
+  /**
+   * The other end of the same fault, and the one that is felt first.
+   *
+   * A press that becomes a drag calls `begin` and then deliberately falls
+   * through into `applyGesture`, so that the pin does not sit still for the
+   * frame it was picked up in. That means the pin has already moved when phase
+   * 3 arrives to freeze the pivot — and freezing it at where the pin has got to
+   * turns the paper about a point it was never turning about. `heldPivots` is
+   * what carries the answer across that seam.
+   *
+   * `dt` of zero again: nothing here is allowed to move at all, so there is no
+   * swing to leave room for.
+   */
+  it("does not move the paper on the first frame of a pin drag", () => {
     hang("a", 0, 0);
+    dirty.clear();
+    const before = drawn("a");
+    const sim = new Torsion();
+
+    down(-80, -60);
+    move(-40, -20);
+    dirty.item("a");
+    sim.step(scene, dirty, 0, tool.heldItems, tool.carryLag, tool.heldPivots);
+
+    const after = drawn("a");
+    expect(after.x).toBeCloseTo(before.x, 3);
+    expect(after.y).toBeCloseTo(before.y, 3);
+    expect(after.rot).toBeCloseTo(before.rot!, 3);
+    // And the pin went exactly where it was put, which is the same statement
+    // read from the other side: the paper carrying the pin is the failure.
+    scene.layoutPins();
+    expect(scene.pins.get("a-hook")!.wx).toBeCloseTo(-40, 3);
+    expect(scene.pins.get("a-hook")!.wy).toBeCloseTo(-20, 3);
+  });
+
+  /**
+   * Sliding a pin around the paper it is already in changes no count — and for
+   * a long time that was read as changing nothing. It changes the point the
+   * paper is drawn about, which is most of where the paper *is*: `drift` is a
+   * pure function of the pivot, so the same `rot` and the same `swing` draw the
+   * item somewhere else the moment the pin lands somewhere else.
+   *
+   * `dt` of zero is the whole assertion. It runs the handover — the item stops
+   * being held, phase 3 goes back to deriving the pivot from the pin — with no
+   * substep, so anything that moves here moved by teleporting rather than by
+   * swinging.
+   */
+  it("settles the item for a pin moved within it, so the paper does not jump", () => {
+    hang("a", 0, 0);
+    const before = drawn("a");
+
     down(-80, -60);
     move(40, 40);
     up(40, 40);
+
     expect(scene.pins.get("a-hook")!.parent).toBe("a");
-    expect(placeSettles[0]!.size).toBe(0);
+    expect(placeSettles[0]!.has("a")).toBe(true);
+
+    // `hang` left `dirty.all` up, which is the load path — everything put at
+    // its equilibrium, which is the one thing that would hide a jump.
+    dirty.clear();
+    dirty.item("a");
+    new Torsion().step(scene, dirty, 0);
+    const after = drawn("a");
+    expect(after.x).toBeCloseTo(before.x, 3);
+    expect(after.y).toBeCloseTo(before.y, 3);
+    // And it has not been stood up at its authored rotation on the way, which
+    // is the flatten the other two settles do and this one must not.
+    expect(after.rot).toBeCloseTo(before.rot!, 3);
   });
 
   /** The `Alt` pull ends by the same rule every other string end does, so it

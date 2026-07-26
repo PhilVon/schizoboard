@@ -66,6 +66,53 @@ export function drawnPose(scene: Scene, itemId: string): WritePose | null {
 }
 
 /**
+ * The pose to write for an item that goes on hanging from the same pin after
+ * that pin has been dragged to a new place *within* it.
+ *
+ * The third member of the family above, and the one that is not a flatten. An
+ * item on one pin is drawn at `rot + swing` about a centre shifted by `drift`,
+ * and `drift` is a pure function of the pivot — "put the pivot back where it
+ * was". Move the pin and the pivot is a different local point, so the same
+ * `rot` and the same `swing` now draw the item somewhere else. Nothing in the
+ * gesture asked for that: the paper did not move, the pin did.
+ *
+ * `sim/torsion.ts` holds the paper still for the duration by freezing the pivot
+ * it took hold of (`state/tools/pindrag.ts` hands it the pre-gesture one), and
+ * the whole of that lie comes due at the release, when it stops freezing and
+ * starts deriving the pivot from the pin again. This is what settles it: the
+ * centre that draws the item exactly where it is now, given the pivot the pin
+ * has ended up at. The item then swings to its new equilibrium from where it
+ * stands, which is motion, rather than from somewhere it was never drawn.
+ *
+ * `rot` is deliberately absent — "leave it alone". The swing is not over and
+ * the angle has not changed; only the point it is measured about has, and this
+ * is the translation that costs.
+ *
+ * Null when the item is not on the board.
+ */
+export function repivotedPose(
+  scene: Scene,
+  itemId: string,
+  lx: number,
+  ly: number,
+): WritePose | null {
+  const slot = scene.slotOf(itemId);
+  if (slot === undefined) return null;
+  const rot = scene.rot[slot]!;
+  const swung = rot + scene.swing[slot]!;
+  const c0 = Math.cos(rot);
+  const s0 = Math.sin(rot);
+  const c1 = Math.cos(swung);
+  const s1 = Math.sin(swung);
+  // The drift the new pivot will produce, by the same arithmetic that produces
+  // it over in `sim/torsion.ts` — subtracted from where the item is drawn now.
+  return {
+    x: scene.renderX(slot) - (lx * (c0 - c1) - ly * (s0 - s1)),
+    y: scene.renderY(slot) - (lx * (s0 - s1) + ly * (c0 - c1)),
+  };
+}
+
+/**
  * The poses to write for items about to be handed a pin — empty when none of
  * them is about to change how it hangs.
  *

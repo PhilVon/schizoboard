@@ -516,7 +516,7 @@ async function boot(): Promise<void> {
    * above is settled before there is anything to get it wrong with.
    */
   loop.on("sim", (frame) => {
-    torsion.step(scene, dirty, frame.dt, select.heldItems, select.carryLag);
+    torsion.step(scene, dirty, frame.dt, select.heldItems, select.carryLag, select.heldPivots);
     ropes.step(scene, dirty, frame.dt);
   });
 

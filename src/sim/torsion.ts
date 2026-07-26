@@ -163,7 +163,9 @@ export class Torsion {
    *
    * `held` is the set of items a gesture has hold of and `lag` the carry
    * rotation it has built up — both from `state/tools/select.ts`, which stops
-   * writing `swing` itself for anything this module owns.
+   * writing `swing` itself for anything this module owns. `pivots` is the same
+   * tool answering the one question about a held item the scene cannot be
+   * trusted for; see `applyHeld`.
    */
   step(
     scene: Scene,
@@ -171,8 +173,9 @@ export class Torsion {
     dtMs: number,
     held: ReadonlySet<string> = EMPTY,
     lag = 0,
+    pivots: ReadonlyMap<string, { lx: number; ly: number }> = NO_PIVOTS,
   ): void {
-    this.applyHeld(scene, dirty, held, lag);
+    this.applyHeld(scene, dirty, held, lag, pivots);
 
     if (dirty.all) {
       // A load or an undo is a state restore, not an event. Everything is put
@@ -201,6 +204,7 @@ export class Torsion {
     dirty: DirtySets,
     held: ReadonlySet<string>,
     lag: number,
+    pivots: ReadonlyMap<string, { lx: number; ly: number }>,
   ): void {
     // Let go of anything the gesture has. Waking it is `consider`'s job on the
     // same frame, from the swing this leaves behind — which is exactly the
@@ -251,7 +255,23 @@ export class Torsion {
       if (base === undefined) {
         const rest = this.restOf(scene, slot, id);
         if (!rest) continue;
-        base = { theta: scene.swing[slot]!, lx: rest.lx, ly: rest.ly };
+        /**
+         * The gesture's answer beats the scene's, and only ever on this line —
+         * the frame the item is taken hold of, which is the only frame the
+         * pivot is read on at all.
+         *
+         * `restOf` derives the pivot from the pin the item hangs from, and for
+         * every gesture but one that is right. The exception is the gesture
+         * that is *moving that pin*: `select.ts` crosses the drag threshold and
+         * falls straight through into the first frame of the gesture, so the
+         * pin has already travelled by the time this runs and the pivot frozen
+         * from it is a point the item was never turning about. Freezing it
+         * there snaps the item by `2 sin(θ/2)` times the distance, on the frame
+         * it was picked up. So the tool hands over where the pin *was*, and
+         * this module stops re-deriving what it is being told.
+         */
+        const pivot = pivots.get(id) ?? rest;
+        base = { theta: scene.swing[slot]!, lx: pivot.lx, ly: pivot.ly };
         this.frozen.set(id, base);
         this.swinging.delete(id);
       }
@@ -442,3 +462,4 @@ export class Torsion {
 }
 
 const EMPTY: ReadonlySet<string> = new Set<string>();
+const NO_PIVOTS: ReadonlyMap<string, { lx: number; ly: number }> = new Map();
