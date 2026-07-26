@@ -561,6 +561,14 @@ async function boot(): Promise<void> {
    * where the camera is still and no rope moved returns without touching either
    * context.
    */
+  /** The board-space cursor, or null when the pointer is off the board. */
+  const cursorBoard = (): { x: number; y: number } | null =>
+    tools.cursor ? camera.screenToBoard(tools.cursor.x, tools.cursor.y) : null;
+  const pendingRun = (): readonly { x: number; y: number }[] | null =>
+    tools.current === stringTool
+      ? stringTool.preview(cursorBoard())
+      : select.pullPreview(cursorBoard());
+
   loop.on("ropes", () => {
     ropesUnder.draw(scene, ropes, camera, dirty);
     ropesOver.draw(scene, ropes, camera, dirty);
@@ -579,9 +587,10 @@ async function boot(): Promise<void> {
       select.pinCandidate,
       // The machine's hover, not a `move` the tool was handed: between clicks
       // nothing is captured, so the tool never hears about the pointer.
-      tools.current === stringTool
-        ? stringTool.preview(tools.cursor ? camera.screenToBoard(tools.cursor.x, tools.cursor.y) : null)
-        : null,
+      // A run being drawn, from whichever tool is drawing one: the string tool
+      // building a run, or `Alt`+drag pulling one out of a pin without
+      // switching tools at all (DESIGN section 3.4).
+      pendingRun(),
     );
     hud.update(frame.now);
   });

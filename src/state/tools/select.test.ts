@@ -16,14 +16,16 @@ import { DirtySets } from "@/state/dirty";
 import { Scene } from "@/state/scene";
 import { Selection } from "@/state/selection";
 import { MIN_RESIZE, LIVE_WRITE_MS, SelectTool } from "@/state/tools/select";
-import type { PointerSample, ToolContext, WritePose, WriteSize } from "@/state/tools/tool";
+import type {
+  StringAnchor, PointerSample, ToolContext, WritePose, WriteSize } from "@/state/tools/tool";
 
 type Write =
   | { kind: "poses"; phase: "live" | "final"; poses: Map<string, WritePose> }
   | { kind: "sizes"; phase: "live" | "final"; sizes: Map<string, WriteSize> }
   | { kind: "delete"; ids: string[]; keepPins: boolean }
   | { kind: "place"; pinId: string; parent: string | null; x: number; y: number }
-  | { kind: "unpin"; ids: string[]; settle: [string, WritePose][] };
+  | { kind: "unpin"; ids: string[]; settle: [string, WritePose][] }
+  | { kind: "string"; anchors: StringAnchor[]; closed: boolean };
 
 let scene: Scene;
 let dirty: DirtySets;
@@ -160,8 +162,10 @@ beforeEach(() => {
       createPin: () => {
         throw new Error("select must not create pins");
       },
-      createString: () => {
-        throw new Error("select must not create strings");
+      // `Alt`+drag from a pin pulls a new string out without switching tools
+      // (DESIGN section 3.4, T-44). It is the one thing select creates.
+      createString: (anchors, closed) => {
+        writes.push({ kind: "string", anchors: anchors.map((a) => ({ ...a })), closed });
       },
     },
   };
@@ -1090,6 +1094,94 @@ describe("turning a hanging item", () => {
   });
 });
 
+/**
+ * > | Quick pull | `Alt`+drag from a pin, in any tool | Pulls a new string out
+ * > without switching tools | — DESIGN section 3.4
+ *
+ * The same modifier as removal, told apart by whether the pointer moved. That
+ * is why the press can no longer act: removing the pin on pointer-down, which
+ * is what this tool used to do, makes the drag unreachable.
+ */
+describe("Alt+drag from a pin", () => {
+  it("pulls a string to the pin it was dragged onto", () => {
+    putPin("from", null, 0, 0);
+    putPin("to", null, 300, 120);
+    down(0, 0, { alt: true });
+    move(160, 60);
+    up(300, 120);
+    expect(writes).toEqual([
+      { kind: "string", anchors: [{ pin: "from" }, { pin: "to" }], closed: false },
+    ]);
+  });
+
+  /** The fast path, reached without the string tool: drop on bare paper and
+   *  the pin that anchors the far end is made for you. */
+  it("pulls a string onto a bare item, pinning it", () => {
+    putPin("from", null, 0, 0);
+    put("note", 400, 0);
+    down(0, 0, { alt: true });
+    move(200, 0);
+    up(400, 0);
+    expect(writes).toEqual([
+      { kind: "string", anchors: [{ pin: "from" }, { parent: "note", lx: 0, ly: 0 }], closed: false },
+    ]);
+  });
+
+  it("pulls a string into bare cork, pushing a free pin in", () => {
+    putPin("from", null, 0, 0);
+    down(0, 0, { alt: true });
+    move(120, 90);
+    up(260, 180);
+    expect(writes).toEqual([
+      { kind: "string", anchors: [{ pin: "from" }, { parent: null, lx: 260, ly: 180 }], closed: false },
+    ]);
+  });
+
+  /** A pull is not a removal, so the pin it started on stays where it is. */
+  it("leaves the pin it came from alone", () => {
+    putPin("from", null, 0, 0);
+    down(0, 0, { alt: true });
+    move(200, 200);
+    up(200, 200);
+    expect(writes.some((w) => w.kind === "unpin")).toBe(false);
+    expect(scene.pins.has("from")).toBe(true);
+  });
+
+  /** Dragged out and brought back is a string of one node, which is not a
+   *  string — and it was a drag, so it was not a click either. */
+  it("writes nothing when the pull ends where it started", () => {
+    putPin("from", null, 0, 0);
+    down(0, 0, { alt: true });
+    move(200, 200);
+    up(0, 0);
+    expect(writes).toEqual([]);
+    expect(scene.pins.has("from")).toBe(true);
+  });
+
+  it("writes nothing at all if the gesture is taken away", () => {
+    putPin("from", null, 0, 0);
+    down(0, 0, { alt: true });
+    move(200, 200);
+    tool.cancel(ctx);
+    up(300, 300);
+    expect(writes).toEqual([]);
+    expect(scene.pins.has("from")).toBe(true);
+  });
+
+  it("draws the pull from the pin to the cursor while it is in flight", () => {
+    putPin("from", null, 40, 20);
+    expect(tool.pullPreview({ x: 1, y: 1 })).toBeNull();
+    down(40, 20, { alt: true });
+    move(200, 200);
+    expect(tool.pullPreview({ x: 260, y: 180 })).toEqual([
+      { x: 40, y: 20 },
+      { x: 260, y: 180 },
+    ]);
+    up(260, 180);
+    expect(tool.pullPreview({ x: 260, y: 180 })).toBeNull();
+  });
+});
+
 describe("Alt+click on a pin", () => {
   it("removes it", () => {
     putPin("p", null, 0, 0);
@@ -1102,8 +1194,7 @@ describe("Alt+click on a pin", () => {
     put("a", 0, 0);
     putPin("p", "a", 0, 0);
     down(0, 0, { alt: true });
-    move(200, 200);
-    up(200, 200);
+    up(0, 0);
     expect(selection.toArray()).toEqual([]);
     expect(scene.poseOf("a")).toMatchObject({ x: 0, y: 0 });
     // The settle rides along, because `a` has just lost the pin it hangs from —

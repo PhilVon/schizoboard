@@ -53,7 +53,7 @@
  */
 
 import type { Vec2 } from "@/state/camera";
-import { itemLocal } from "@/state/tools/frame";
+import { anchorAt } from "@/state/tools/frame";
 import type {
   PointerSample,
   StringAnchor,
@@ -173,36 +173,10 @@ export class StringTool implements Tool {
     ctx.dirty.camera = true;
   }
 
-  /**
-   * What a click at this point adds to the run: the pin under it, a new pin in
-   * the item under it, or a new pin in the cork.
-   *
-   * The pin is asked for first and in *screen* space, because a pin's grab
-   * radius has a floor in screen pixels — that is why `hitPin` takes screen
-   * coordinates while everything else here is in board space.
-   */
+  /** What a click at this point adds to the run — see `anchorAt`, which is the
+   *  same rule `Alt`+drag in the select tool reaches by another route. */
   private stopAt(at: PointerSample, ctx: ToolContext): Stop | null {
-    const pinId = ctx.hitPin(at.x, at.y);
-    if (pinId !== null) {
-      const pin = ctx.scene.pins.get(pinId);
-      if (pin) return { anchor: { pin: pinId }, x: pin.wx, y: pin.wy };
-    }
-
-    const board = ctx.camera.screenToBoard(at.x, at.y);
-    const itemId = ctx.hitTest(board.x, board.y);
-    if (itemId !== null) {
-      // The fast path. `itemLocal` converts through the item's *rendered* pose,
-      // which is the only conversion that puts the pin where the paper looked —
-      // an item hanging on one pin is drawn at an angle and about a centre that
-      // are both transient and neither of which is in the document.
-      const local = itemLocal(ctx.scene, itemId, board.x, board.y);
-      if (local) {
-        return { anchor: { parent: itemId, lx: local.x, ly: local.y }, x: board.x, y: board.y };
-      }
-    }
-
-    // Bare cork: a free pin, in board coordinates.
-    return { anchor: { parent: null, lx: board.x, ly: board.y }, x: board.x, y: board.y };
+    return anchorAt(ctx.scene, ctx.camera, ctx.hitTest, ctx.hitPin, at.x, at.y);
   }
 
   /**
