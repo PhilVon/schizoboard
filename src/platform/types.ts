@@ -136,7 +136,29 @@ export interface Platform {
   assetIngestPath(path: string): Promise<AssetMeta>;
   assetIngestUrl(url: string): Promise<AssetMeta>;
   assetHas(hashes: string[]): Promise<boolean[]>;
-  assetExport(sha256: string, dest: string): Promise<void>;
+
+  /**
+   * Save an asset's untouched original somewhere the user picks.
+   *
+   * Takes no destination, deliberately — ARCHITECTURE section 4.4 writes this as
+   * `asset_export(sha256, dest)` and the `dest` is the part that had to go. A
+   * path chosen in the renderer is a path an injected script can choose, and the
+   * copy overwrites whatever is already at it. Rust opens a native save dialog
+   * instead, so the user names the file and there is no path to hand over. The
+   * full argument is above `asset_export` in `src-tauri/src/lib.rs`.
+   *
+   * `origName` is the asset's `AssetFields.origName` and is only ever a
+   * *suggested filename* — Rust reduces it to one before the dialog sees it,
+   * because the document is where a URL segment from someone else's page ends
+   * up. Pass it: without it the dialog offers the asset's hash, which nobody
+   * recognises their own photograph by. The extension is not taken from it
+   * either way; the bytes on disk decide that.
+   *
+   * Resolves `false` when the user closed the dialog without saving. That is an
+   * ordinary outcome, not a failure: only a rejection means the copy went wrong.
+   */
+  assetExport(sha256: string, origName?: string): Promise<boolean>;
+
   assetGc(keep: string[]): Promise<{ freedBytes: number }>;
 
   /**

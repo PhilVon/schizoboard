@@ -29,6 +29,7 @@ use std::path::PathBuf;
 use serde::Serialize;
 use tauri::ipc::InvokeBody;
 use tauri::{AppHandle, Emitter, Manager};
+use tauri_plugin_dialog::DialogExt;
 
 use assets::{AssetMeta, AssetStore};
 use docstore::DocStore;
@@ -180,22 +181,86 @@ async fn asset_has(app: AppHandle, hashes: Vec<String>) -> Result<Vec<bool>, Str
     .await
 }
 
-// `asset_export` is deliberately **not** in the invoke handler yet, and
-// `AssetStore::export` sits there unexposed with its own tests.
-//
-// The command takes a destination path and `fs::copy` overwrites whatever is
-// already at it. Paired with `asset_ingest_bytes` — which lets a caller choose
-// the *content* — that is a write-anything-anywhere primitive: pick some bytes,
-// then export them over a file in the Startup folder. The webview only ever
-// loads our own frontend today, so nothing can reach it; the moment paste
-// starts ingesting HTML from other people's pages (T-23), that stops being a
-// comfortable thing to rely on.
-//
-// Exporting is inherently "save this somewhere the *user* chose", so the fix is
-// a native save dialog owning the path rather than a validator guessing at one.
-// Until the `dialog` plugin lands (ARCHITECTURE section 4.6), the frontend's
-// `assetExport` rejects with "command not found", which is exactly what
-// `platform/tauri.ts` documents an unimplemented command doing.
+/// Copy an original out to somewhere the user picked.
+///
+/// **The destination does not cross the IPC boundary, and that is the whole
+/// design of this command.** ARCHITECTURE section 4.4 writes it as
+/// `asset_export(sha256, dest)`; taking the `dest` is what made it dangerous.
+/// `fs::copy` overwrites whatever is already at a path, and paired with
+/// `asset_ingest_bytes` — which lets a caller choose the *content* — a
+/// caller-supplied path is a write-anything-anywhere primitive: pick some
+/// bytes, then export them over a file in the Startup folder. Nothing could
+/// reach it while the webview only ever loaded our own frontend, but paste now
+/// ingests HTML from other people's pages (T-23), so that stopped being a
+/// comfortable thing to rely on.
+///
+/// A validator was the other option and it is not one. There is no rule
+/// separating the paths a *user* may reasonably save an image to from the paths
+/// an injected script would like to write: both are "somewhere on this disk".
+/// So the path comes from a native save dialog instead — the user names the
+/// file, and consent and destination arrive as the same act. The webview gets
+/// to say *which asset*, and `valid_hash` already treats that as hostile.
+///
+/// The plugin makes this the only reachable dialog in the application: nothing
+/// in `capabilities/` grants the webview one of its commands, so a script
+/// cannot open a picker of its own — only ask for this one.
+///
+/// What the webview *does* get to suggest is a filename, because the document
+/// holds the asset's `orig_name` and Rust holds no schema to read it from. A
+/// name is a suggestion this side can meaningfully reduce, where a path is not —
+/// [`assets::AssetStore::export_name`] is where that happens, and why the two
+/// are not the same kind of argument.
+///
+/// `Ok(false)` is a cancelled dialog. That is an ordinary outcome, not an
+/// error: rejecting on it would make every caller write a `catch` that has to
+/// tell "the user changed their mind" apart from "the disk is full".
+#[tauri::command]
+async fn asset_export(
+    app: AppHandle,
+    sha256: String,
+    orig_name: Option<String>,
+) -> Result<bool, String> {
+    let handle = app.clone();
+    let hash = sha256.clone();
+    let offer = blocking(move || {
+        store_of(&handle)
+            .map_err(assets::Error::Unavailable)?
+            .export_name(&hash, orig_name.as_deref())
+    })
+    .await?;
+
+    // `blocking_save_file` must not be called from the main thread — it asks the
+    // main thread to open the dialog and then waits for it, so calling it there
+    // deadlocks. Off-thread is both the documented usage and this file's rule.
+    let handle = app.clone();
+    let picked = tauri::async_runtime::spawn_blocking(move || {
+        handle
+            .dialog()
+            .file()
+            .set_title("Export image")
+            .set_file_name(&offer.file_name)
+            .add_filter(offer.extension.to_uppercase(), &[offer.extension])
+            .blocking_save_file()
+    })
+    .await
+    .map_err(|e| e.to_string())?;
+
+    let Some(dest) = picked else {
+        return Ok(false);
+    };
+    // Always the `Path` variant on desktop — the `Url` one is Android's
+    // `content://`. Handled rather than unwrapped because "desktop" is a
+    // property of the platform, not of this function.
+    let dest = dest.into_path().map_err(|e| e.to_string())?;
+
+    blocking(move || {
+        store_of(&app)
+            .map_err(assets::Error::Unavailable)?
+            .export(&sha256, &dest)
+    })
+    .await
+    .map(|()| true)
+}
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -262,6 +327,10 @@ async fn doc_compact(app: AppHandle, request: tauri::ipc::Request<'_>) -> Result
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
+        // T-94, and Rust-side only. `capabilities/default.json` grants the
+        // webview none of this plugin's commands, so the save dialog inside
+        // `asset_export` is the only one the application can open.
+        .plugin(tauri_plugin_dialog::init())
         // T-22. Registered on the builder, but the store it reads is managed in
         // `setup` below — which is fine, because nothing can request an asset
         // until there is a window to request it from.
@@ -295,6 +364,7 @@ pub fn run() {
             asset_ingest_path,
             asset_ingest_url,
             asset_has,
+            asset_export,
             asset_gc,
             doc_append_update,
             doc_load,

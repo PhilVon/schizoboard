@@ -103,6 +103,17 @@ pub struct AssetMeta {
     pub size: u64,
 }
 
+/// What to put in front of the user when they export an asset.
+///
+/// A *name*, never a path — which is the whole distinction T-94 turns on. See
+/// [`safe_stem`].
+pub struct ExportName {
+    /// Pre-fills the dialog's name field. The user is free to replace it.
+    pub file_name: String,
+    /// What the dialog filters on, without the dot.
+    pub extension: &'static str,
+}
+
 /// The answer to "what file is behind this URL".
 pub struct Resolved {
     pub path: PathBuf,
@@ -364,6 +375,88 @@ pub fn sniff_mime(bytes: &[u8]) -> Option<&'static str> {
         return Some("image/webp");
     }
     None
+}
+
+/// The file extension a mime type should be written out under, without the dot.
+///
+/// Only exists for export. Inside the store nothing needs it — an original is
+/// stored under its hash and nothing else, because a content-addressed name has
+/// no room for one — which is exactly why leaving the store means inventing one.
+fn extension_for(mime: &str) -> &'static str {
+    match mime {
+        "image/jpeg" => "jpg",
+        "image/png" => "png",
+        "image/gif" => "gif",
+        "image/webp" => "webp",
+        // Unreachable through ingestion, which decodes before it commits. Kept
+        // because a store directory is a directory on someone's disk, and
+        // offering a name with no extension at all is worse than offering a
+        // dull one.
+        _ => "bin",
+    }
+}
+
+/// Windows treats these as devices whatever directory they appear in, and with
+/// any extension: `CON.jpg` is not a file.
+const DEVICE_NAMES: [&str; 22] = [
+    "CON", "PRN", "AUX", "NUL", "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8",
+    "COM9", "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9",
+];
+
+/// How much of a suggested name to keep. Long enough to recognise a photograph
+/// by, short enough that the whole thing fits in a dialog's name field.
+const MAX_STEM_CHARS: usize = 64;
+
+/// Reduce a suggested filename to something that can only *be* a filename.
+///
+/// The suggestion is the asset's `origName`, and it comes from the document —
+/// so it came from whoever ingested the asset. That is a URL segment off a page
+/// nobody here wrote, or a peer's string arriving over sync. It is the one
+/// caller-supplied string anywhere near this command, and this is where it stops
+/// being one.
+///
+/// Reducing a *name* is tractable in the way validating a *destination path* is
+/// not, and the difference is the whole reason `asset_export` takes a name and
+/// not a path. A path has no wrong answers to recognise — every directory on the
+/// disk is somewhere a user might legitimately save a photograph. A name has
+/// plenty: no separator may appear in one at all, a colon is an alternate data
+/// stream rather than punctuation, a trailing dot or space is silently something
+/// else on Windows, and the extension is not the suggester's to pick because the
+/// bytes on disk already decided it.
+///
+/// So `..\..\Startup\holiday.exe` comes out as `holiday`, gets `.jpg` from what
+/// is actually in the file, and lands in whichever directory the user was
+/// already looking at. `None` means nothing survived and the caller should fall
+/// back to a name of its own.
+fn safe_stem(hint: &str) -> Option<String> {
+    // A separator is never part of a name, so only the last component could be
+    // one. Both spellings, because a name can arrive from either platform.
+    let last = hint.rsplit(['/', '\\']).next().unwrap_or_default();
+    // Dropped, not kept and re-suffixed: `holiday.exe.jpg` is a safe file with
+    // `.exe` sitting in the middle of a name someone is about to skim past.
+    let stem = last.rsplit_once('.').map_or(last, |(before, _)| before);
+
+    let cleaned: String = stem
+        .chars()
+        // A deny list rather than an allow list of ASCII, so a name in Japanese
+        // survives being suggested instead of arriving as a row of dashes.
+        .map(|c| {
+            if c.is_control() || "/\\:*?\"<>|".contains(c) {
+                '-'
+            } else {
+                c
+            }
+        })
+        .take(MAX_STEM_CHARS)
+        .collect();
+
+    // Leading dots hide a file; trailing dots and spaces are dropped by Windows,
+    // which makes `holiday .` a different file from the one the dialog showed.
+    let trimmed = cleaned.trim_matches(|c: char| c == '.' || c == '-' || c.is_whitespace());
+    if trimmed.is_empty() || DEVICE_NAMES.contains(&trimmed.to_ascii_uppercase().as_str()) {
+        return None;
+    }
+    Some(trimmed.to_string())
 }
 
 /// The EXIF orientation tag, 1–8. Absent, unreadable or out of range is 1.
@@ -730,14 +823,55 @@ impl AssetStore {
         })
     }
 
-    /// Copy an original out to a path of the caller's choosing.
+    /// What to offer this asset as in a save dialog.
     ///
-    /// Not wired to a command yet, and that is deliberate — see the note in
-    /// `lib.rs` where `asset_export` would be registered. It stays here, and
-    /// stays tested, because bundle export (T-84) needs exactly this and will
-    /// call it with a path the *application* chose rather than one that came
-    /// across the IPC boundary.
-    #[allow(dead_code)]
+    /// Answered before the dialog opens rather than after, so a hash that is
+    /// malformed or unknown fails immediately instead of after the user has
+    /// picked somewhere to put nothing.
+    ///
+    /// `hint` is the asset's `origName` — the last URL or path segment paste kept
+    /// on the way in, and the only provenance a content-addressed store has room
+    /// for. It is a suggestion in both directions: [`safe_stem`] decides how much
+    /// of it survives, and the user can replace whatever does. The extension is
+    /// not part of the suggestion; it comes from the bytes.
+    ///
+    /// With nothing usable to suggest the name is the hash's first eight
+    /// characters, which is unlovely but unique — `image.jpg` would collide with
+    /// itself the second time anyone exported.
+    pub fn export_name(&self, sha256: &str, hint: Option<&str>) -> Result<ExportName> {
+        if !valid_hash(sha256) {
+            return Err(Error::BadHash);
+        }
+        let original = self.original_path(sha256);
+        if !original.is_file() {
+            return Err(Error::NotFound);
+        }
+        // Sniffed, like everywhere else the store needs to know what something
+        // is: the mime was never written down (`resolve` re-derives it too).
+        let extension = extension_for(
+            read_head(&original, 12)
+                .ok()
+                .and_then(|head| sniff_mime(&head))
+                .unwrap_or_default(),
+        );
+        // Slicing bytes off the hash is safe: `valid_hash` has established 64 of
+        // them, all ASCII.
+        let stem = hint
+            .and_then(safe_stem)
+            .unwrap_or_else(|| format!("schizoboard-{}", &sha256[..8]));
+        Ok(ExportName {
+            file_name: format!("{stem}.{extension}"),
+            extension,
+        })
+    }
+
+    /// Copy an original out to a path *someone else* chose.
+    ///
+    /// Deliberately takes a path and validates nothing about it, because there
+    /// is nothing useful to validate — see the note in `lib.rs` above
+    /// `asset_export`. Both callers get their path from outside this module and
+    /// neither gets it from the webview: the command gets one from a native save
+    /// dialog, and bundle export (T-84) will pass one the application picked.
     pub fn export(&self, sha256: &str, dest: &Path) -> Result<()> {
         if !valid_hash(sha256) {
             return Err(Error::BadHash);
@@ -946,6 +1080,14 @@ mod tests {
         let mut out = Vec::new();
         DynamicImage::ImageRgb8(RgbImage::from_pixel(w, h, image::Rgb([120, 90, 60])))
             .write_to(&mut io::Cursor::new(&mut out), ImageFormat::Png)
+            .unwrap();
+        out
+    }
+
+    fn jpeg(w: u32, h: u32) -> Vec<u8> {
+        let mut out = Vec::new();
+        DynamicImage::ImageRgb8(RgbImage::from_pixel(w, h, image::Rgb([200, 40, 40])))
+            .write_to(&mut io::Cursor::new(&mut out), ImageFormat::Jpeg)
             .unwrap();
         out
     }
@@ -1308,6 +1450,120 @@ mod tests {
         let dest = dir.path().join("out").join("photo.png");
         store.export(&meta.sha256, &dest).unwrap();
         assert_eq!(fs::read(dest).unwrap(), bytes);
+    }
+
+    #[test]
+    fn offers_an_export_name_carrying_the_type_it_actually_stored() {
+        let (_dir, store) = store();
+        let shot = store.ingest_bytes(&png(6, 6), None).unwrap();
+        let offered = store
+            .export_name(&shot.sha256, Some("holiday.png"))
+            .unwrap();
+
+        assert_eq!(offered.extension, "png");
+        assert_eq!(offered.file_name, "holiday.png");
+
+        // Sniffed from the bytes, not taken from the hint, and not remembered:
+        // the store never wrote the mime down, and the original on disk is named
+        // after its hash alone. A JPEG called `.png` exports as a JPEG.
+        let photo = store.ingest_bytes(&jpeg(6, 6), None).unwrap();
+        let offered = store
+            .export_name(&photo.sha256, Some("holiday.png"))
+            .unwrap();
+        assert_eq!(offered.file_name, "holiday.jpg");
+        assert_eq!(offered.extension, "jpg");
+    }
+
+    #[test]
+    fn falls_back_to_the_hash_when_there_is_nothing_worth_suggesting() {
+        let (_dir, store) = store();
+        let shot = store.ingest_bytes(&png(6, 6), None).unwrap();
+        let expected = format!("schizoboard-{}.png", &shot.sha256[..8]);
+
+        // No hint at all — a paste of raw clipboard bytes has no provenance.
+        assert_eq!(
+            store.export_name(&shot.sha256, None).unwrap().file_name,
+            expected
+        );
+        // A hint nothing survives of. Unlovely but unique, which `image.png` is
+        // not the second time anyone exports.
+        assert_eq!(
+            store
+                .export_name(&shot.sha256, Some("../.."))
+                .unwrap()
+                .file_name,
+            expected
+        );
+    }
+
+    #[test]
+    fn will_not_name_an_asset_it_does_not_have() {
+        let (_dir, store) = store();
+        // Neither of these reaches a save dialog: one could never be a hash, the
+        // other is a well-formed hash for nothing.
+        assert!(matches!(
+            store.export_name("../../../etc/passwd", None),
+            Err(Error::BadHash)
+        ));
+        assert!(matches!(
+            store.export_name(&"a".repeat(64), None),
+            Err(Error::NotFound)
+        ));
+    }
+
+    #[test]
+    fn reduces_a_suggested_name_to_something_that_can_only_be_a_name() {
+        // The suggestion is `origName`, which came from a URL on a page nobody
+        // here wrote or from a peer over sync. A path in it is not a path.
+        assert_eq!(
+            safe_stem("../../Startup/holiday.exe").as_deref(),
+            Some("holiday")
+        );
+        assert_eq!(
+            safe_stem(r"..\..\Startup\holiday.exe").as_deref(),
+            Some("holiday")
+        );
+        // A colon opens an alternate data stream rather than punctuating.
+        assert_eq!(
+            safe_stem("holiday:evil.jpg").as_deref(),
+            Some("holiday-evil")
+        );
+        assert_eq!(safe_stem("hol\u{7}iday").as_deref(), Some("hol-iday"));
+        // Windows drops a trailing dot or space, so a name ending in one is not
+        // the name the dialog showed.
+        assert_eq!(safe_stem("holiday .").as_deref(), Some("holiday"));
+        assert_eq!(safe_stem(".hidden.jpg").as_deref(), Some("hidden"));
+
+        // Nothing left to suggest.
+        assert_eq!(safe_stem(""), None);
+        assert_eq!(safe_stem("../.."), None);
+        assert_eq!(safe_stem("/"), None);
+        // A device whatever directory it turns up in, and whatever it is called
+        // after the dot.
+        assert_eq!(safe_stem("NUL.jpg"), None);
+        assert_eq!(safe_stem("com1"), None);
+
+        // Kept, because the point is to suggest something a human recognises.
+        assert_eq!(
+            safe_stem("holiday (2) - beach_1.jpg").as_deref(),
+            Some("holiday (2) - beach_1")
+        );
+        assert_eq!(safe_stem("休暇.jpg").as_deref(), Some("休暇"));
+        assert_eq!(
+            safe_stem("a".repeat(200).as_str()).unwrap().chars().count(),
+            64
+        );
+    }
+
+    #[test]
+    fn every_format_a_board_can_hold_exports_under_an_extension() {
+        assert_eq!(extension_for("image/jpeg"), "jpg");
+        assert_eq!(extension_for("image/png"), "png");
+        assert_eq!(extension_for("image/gif"), "gif");
+        assert_eq!(extension_for("image/webp"), "webp");
+        // Unreachable through ingestion, but a save dialog still needs something
+        // to filter on.
+        assert_eq!(extension_for("application/octet-stream"), "bin");
     }
 
     #[test]

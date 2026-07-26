@@ -128,7 +128,14 @@ export class MockPlatform implements Platform {
     return hashes.map((hash) => this.assets.has(hash));
   }
 
-  assetExport(): Promise<void> {
+  /**
+   * Not faked with an `<a download>`, tempting as that is. A browser download
+   * cannot report whether the user kept the file, so the mock would have to
+   * resolve `true` and be wrong every time someone cancelled — and `true` versus
+   * `false` is the entire return value of this call. Missing and saying so beats
+   * lying about the one thing it says.
+   */
+  assetExport(): Promise<boolean> {
     return unavailable("Exporting an asset to disk");
   }
 

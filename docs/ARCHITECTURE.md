@@ -154,7 +154,7 @@ asset_ingest_bytes(bytes)  → { sha256, w, h, mime, size }
 asset_ingest_path(path)    → same
 asset_ingest_url(url)      → same
 asset_has(hashes[])        → bool[]
-asset_export(sha256, dest)
+asset_export(sha256, name?) → saved  // no dest: a native save dialog supplies it
 asset_gc(keepSet[])        → { freedBytes }
 
 doc_append_update(bytes)               // fire-and-forget, coalesced in JS
@@ -176,6 +176,12 @@ deeplink:open · sync:peer-joined · sync:peer-left
 
 Binary payloads use raw request/response bodies, never JSON arrays. `doc_append_update` is coalesced in JS (roughly every 200 ms or 32 KB) before crossing the boundary.
 
+**`asset_export` deliberately takes a name and not a destination.** A copy overwrites whatever is already at its path, so a path the renderer picks is a path an injected script picks — and paste ingests HTML from other people's pages. A validator is not the answer, because no rule separates the places a user may reasonably save an image from the places an attacker would like to write; both are "somewhere on this disk". A native save dialog is: the user names the file, so consent and destination arrive as the same act.
+
+The frontend still has to pass the asset's `origName`, because the document holds it and Rust holds no schema to read it from — a dialog offering a hash is a dialog nobody recognises their own photograph in. That is the one caller-supplied string in this command, and it crosses as a *name*, which is the difference that makes it safe: a name has recognisably wrong answers where a path has none. Rust reduces it to a bare filename before the dialog sees it and takes the extension from the bytes rather than from the suggestion, so `..\..\Startup\holiday.exe` reaches the user as `holiday.jpg` in whichever directory they were already looking at.
+
+Prefer this shape wherever the boundary is asked for a location: take the *intent* from the webview and let the native side obtain the location.
+
 **Ingestion returns as soon as the hash and dimensions are known**, so the item appears instantly at the correct size while variants generate in the background and an `asset:ready` event follows.
 
 ### 4.5 Clipboard policy
@@ -187,6 +193,8 @@ Native is strictly more capable and covers the cases that otherwise silently fai
 ### 4.6 Plugins
 
 `fs` (scoped), `dialog`, `clipboard-manager`, `opener`, `store`, `window-state`, `single-instance`, `deep-link` (for `schizo://` invites), `updater`, `log`, `os`, `process`.
+
+A plugin being initialised is not the same as the webview being able to call it. `dialog` is registered for Rust's own use and appears in no capability, so `asset_export` is the only thing in the application that can open a file dialog — a script in the webview cannot open one of its own. Prefer that shape for anything that touches the disk.
 
 Deliberately **not** a SQL plugin — the document is the database.
 

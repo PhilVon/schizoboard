@@ -3,11 +3,12 @@
  * file** (docs/ARCHITECTURE.md section 2.2) — that is the whole reason the
  * frontend can also run in a plain browser against `platform/mock.ts`.
  *
- * Most of the Rust side does not exist yet; the commands land with their own
- * tasks (assets T-21, `asset://` T-22, docstore T-20, clipboard T-23, sync
- * T-69). Until then these calls reject with "command not found", which is the
- * correct failure: the interface is the contract, and writing it down first is
- * what stops `invoke` calls sprouting across the renderer later.
+ * Commands land with their own tasks — assets T-21, `asset://` T-22, docstore
+ * T-20, clipboard T-23, export T-94, sync T-69 — and until one has, its call
+ * here rejects with "command not found". That is the correct failure and the
+ * reason the whole surface is written down before any of it works: the interface
+ * is the contract, and it is what stops `invoke` calls sprouting across the
+ * renderer later. Sync is the half still outstanding.
  */
 
 import { convertFileSrc, invoke } from "@tauri-apps/api/core";
@@ -95,8 +96,12 @@ export class TauriPlatform implements Platform {
     return invoke<boolean[]>("asset_has", { hashes });
   }
 
-  assetExport(sha256: string, dest: string): Promise<void> {
-    return invoke<void>("asset_export", { sha256, dest });
+  // A hash and a suggested name — no destination. The path comes from a native
+  // save dialog on the Rust side, because this is the one command where the
+  // renderer choosing the path would be the renderer choosing what to overwrite
+  // (T-94). The name is a suggestion Rust reduces before the dialog sees it.
+  assetExport(sha256: string, origName?: string): Promise<boolean> {
+    return invoke<boolean>("asset_export", { sha256, origName });
   }
 
   assetGc(keep: string[]): Promise<{ freedBytes: number }> {
