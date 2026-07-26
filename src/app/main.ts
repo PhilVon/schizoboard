@@ -246,10 +246,13 @@ async function boot(): Promise<void> {
      * lives in the scene, which `crdt/` may not read — see
      * `state/tools/select.ts` and `lib/slack.ts`.
      */
-    insertPin: (stringId, index, anchor, slackBefore, slackAfter) => {
+    insertPin: (stringId, index, anchor, slackBefore, slackAfter, settle) => {
       const at = { ...anchor };
+      // Copied, like every other queued write: this runs in phase 9 and the
+      // tool has moved on by then.
+      const poses = settle && settle.size > 0 ? new Map(settle) : undefined;
       queued.push(() =>
-        insertPinIntoString(board, stringId, index, at, slackBefore, slackAfter),
+        insertPinIntoString(board, stringId, index, at, slackBefore, slackAfter, poses),
       );
     },
     deletePins: (ids, settle) => {

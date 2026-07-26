@@ -16,6 +16,7 @@ import * as Y from "yjs";
 import { beforeEach, describe, expect, it } from "vitest";
 
 import { openBoardDoc, type BoardDoc } from "@/crdt/doc";
+import { createItems } from "@/crdt/ops/items";
 import { createPin, movePin } from "@/crdt/ops/pins";
 import { UndoHistory } from "@/crdt/undo";
 import { splitSlack } from "@/lib/slack";
@@ -392,6 +393,42 @@ describe("pushing a pin into the middle of a run", () => {
       board, id, 1, { parent: "note-1", lx: 10, ly: -20 }, 0.2, 0.2,
     )!;
     expect(board.pins.get(made)!.get("parent")).toBe("note-1");
+  });
+
+  /**
+   * The mirror of what `deletePins` does with its `settle`. The pin that makes
+   * two is the pin that stops an item hanging, and the pose it was drawn at
+   * while it hung is not in the document — so it arrives alongside the insert
+   * and lands in the same entry, or `Ctrl+Z` puts the paper back and leaves the
+   * pose behind.
+   */
+  it("settles the item it just pinned, in the same entry", () => {
+    const [item] = createItems(board, [
+      { type: "note", x: 0, y: 0, w: 200, h: 200, rot: 0, withPin: false },
+    ]);
+    const itemId = item!.itemId;
+    const [a, b] = twoPins();
+    const id = createString(board, { pins: [a, b] })!;
+    const history = new UndoHistory(board);
+
+    let updates = 0;
+    board.doc.on("update", () => updates++);
+    const made = insertPinIntoString(
+      board, id, 1, { parent: itemId, lx: 10, ly: -20 }, 0.2, 0.2,
+      new Map([[itemId, { x: 30, y: 40, rot: 0.5 }]]),
+    )!;
+    expect(updates).toBe(1);
+
+    const settled = board.items.get(itemId)!;
+    expect(settled.get("x")).toBe(30);
+    expect(settled.get("y")).toBe(40);
+    expect(settled.get("rot")).toBe(0.5);
+
+    history.undo();
+    expect(board.pins.has(made)).toBe(false);
+    expect(board.items.get(itemId)!.get("x")).toBe(0);
+    expect(board.items.get(itemId)!.get("rot")).toBe(0);
+    history.destroy();
   });
 
   it("can run the string through a pin that already exists", () => {

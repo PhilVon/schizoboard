@@ -61,6 +61,7 @@ import * as Y from "yjs";
 
 import { freshId, mutate, type BoardDoc } from "@/crdt/doc";
 import { newId } from "@/crdt/ids";
+import { writePoses, type Pose } from "@/crdt/ops/items";
 import { buildPin } from "@/crdt/ops/pins";
 import { Origin } from "@/crdt/origins";
 import {
@@ -305,6 +306,14 @@ export function insertStringNode(
  * the chords are geometry, and geometry lives in the scene, which `crdt/` may
  * not read. Getting them wrong is the one visible failure this gesture has
  * (DESIGN section 3.4, AC-18).
+ *
+ * `settle` is the same argument `deletePins` takes, and it is here for the
+ * mirror-image reason. An item that had one pin and now has two has stopped
+ * hanging, so the swing and the drift it was drawn with cease to exist — and
+ * the pin this writes was placed against exactly those. Its rendered pose,
+ * written inside this transaction, is what keeps the paper and the pin still at
+ * the moment the transients stop applying, and keeps it one undo entry. It
+ * comes from the caller for the same reason the slack does.
  */
 export function insertPinIntoString(
   board: BoardDoc,
@@ -313,10 +322,12 @@ export function insertPinIntoString(
   anchor: StringAnchor,
   slackBefore: number,
   slackAfter: number,
+  settle?: ReadonlyMap<string, Pose>,
 ): string | null {
   return mutate(board, Origin.LOCAL_USER, () => {
     const nodes = nodesOf(board, stringId);
     if (!nodes) return null;
+    if (settle) writePoses(board, settle);
 
     let pin: string;
     if ("pin" in anchor) {

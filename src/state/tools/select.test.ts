@@ -11,6 +11,7 @@
 import { beforeEach, describe, expect, it } from "vitest";
 
 import { CAPTURE_TIMEOUT_MS } from "@/crdt/undo";
+import { Torsion } from "@/sim/torsion";
 import { Camera } from "@/state/camera";
 import { DirtySets } from "@/state/dirty";
 import { Scene } from "@/state/scene";
@@ -33,6 +34,7 @@ type Write =
       anchor: StringAnchor;
       before: number;
       after: number;
+      settle: Map<string, WritePose>;
     };
 
 let scene: Scene;
@@ -211,8 +213,16 @@ beforeEach(() => {
       },
       // The other one: a loop pulled out of the middle of a string, which makes
       // a pin and the node that carries it in one transaction (DESIGN 3.4).
-      insertPin: (stringId, index, anchor, before, after) => {
-        writes.push({ kind: "insert", stringId, index, anchor: { ...anchor }, before, after });
+      insertPin: (stringId, index, anchor, before, after, settle) => {
+        writes.push({
+          kind: "insert",
+          stringId,
+          index,
+          anchor: { ...anchor },
+          before,
+          after,
+          settle: new Map(settle),
+        });
       },
     },
   };
@@ -1403,6 +1413,53 @@ describe("pulling a pin out of a string", () => {
     move(100, 120);
     up(100, 120);
     expect(lastInsert().anchor).toEqual({ parent: "a", lx: 0, ly: 0 });
+  });
+
+  /**
+   * The mirror of T-107, and the one real failure mode this drop has.
+   *
+   * The drop is measured against the pose the paper is *drawn* at — it has to
+   * be, or the pin lands where the paper is not (`state/tools/frame.ts`). But
+   * the pin it places makes two, two pins are rigid, and rigid means the swing
+   * and the drift stop existing. So unless the pose it was drawn at is written
+   * down in the same breath, the paper spins back to an authored rotation that
+   * has been invisible ever since it started hanging, and takes the pin you
+   * just placed with it.
+   */
+  it("leaves the new pin where it was dropped on a hanging item", () => {
+    // A 200-square on one pin at its top left: it hangs a long way from its
+    // authored rotation, so what follows is a snap rather than a degree.
+    put("a", 0, 0, 200, 200);
+    putPin("hook", "a", -80, -60);
+    putPin("far", null, 400, -60);
+    putString("s", ["hook", "far"]);
+
+    // `dirty.all` is the load path: everything at its equilibrium, no motion.
+    dirty.all = true;
+    new Torsion().step(scene, dirty, 16);
+    scene.layoutPins();
+    const slot = scene.slotOf("a")!;
+    expect(Math.abs(scene.swing[slot]!)).toBeGreaterThan(0.5);
+
+    // Grab the string clear of the paper, drop it on the paper's middle —
+    // where the paper looks, which is the only place a cursor can aim.
+    const dropX = scene.renderX(slot);
+    const dropY = scene.renderY(slot);
+    down(200, -60);
+    move(dropX, dropY);
+    up(dropX, dropY);
+
+    const anchor = lastInsert().anchor;
+    if (!("parent" in anchor)) throw new Error("expected the drop to parent");
+    expect(anchor.parent).toBe("a");
+
+    // Where that pin ends up once the second pin has made the item rigid: its
+    // local offset through the *stored* pose, which is all a rigid item has.
+    const pose = lastInsert().settle?.get("a") ?? scene.poseOf("a")!;
+    const cos = Math.cos(pose.rot ?? 0);
+    const sin = Math.sin(pose.rot ?? 0);
+    expect(pose.x + anchor.lx * cos - anchor.ly * sin).toBeCloseTo(dropX, 3);
+    expect(pose.y + anchor.lx * sin + anchor.ly * cos).toBeCloseTo(dropY, 3);
   });
 
   it("puts the wrap segment's node at the end of a closed run", () => {

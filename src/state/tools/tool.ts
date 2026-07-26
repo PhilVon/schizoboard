@@ -142,6 +142,12 @@ export interface BoardWriter {
    * come from where the neighbouring pins actually are, and `crdt/` may not read
    * the scene. `lib/slack.ts` does the arithmetic; getting it wrong is the one
    * visible failure this gesture has.
+   *
+   * `settle` is `deletePins`' argument arriving from the other direction, and
+   * for the same reason: an item that had one pin and now has two has stopped
+   * hanging, so the swing and the drift it was drawn with stop existing. Its
+   * rendered pose written in the same transaction is what keeps the paper — and
+   * the pin just placed in it — where the cursor left them.
    */
   insertPin(
     stringId: string,
@@ -149,6 +155,7 @@ export interface BoardWriter {
     anchor: StringAnchor,
     slackBefore: number,
     slackAfter: number,
+    settle?: ReadonlyMap<string, WritePose>,
   ): void;
 }
 

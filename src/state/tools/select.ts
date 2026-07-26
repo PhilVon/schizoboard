@@ -63,6 +63,7 @@ import { anchorAt, stringAt } from "@/state/tools/frame";
 import { PinDrag } from "@/state/tools/pindrag";
 import type {
   PointerSample,
+  StringAnchor,
   StringHit,
   Tool,
   ToolContext,
@@ -162,9 +163,46 @@ function settleOnUnpin(ctx: ToolContext, pinId: string): ReadonlyMap<string, Wri
   const settle = new Map<string, WritePose>();
   const parent = ctx.scene.pins.get(pinId)?.parent ?? null;
   if (parent === null || ctx.scene.pinCount(parent) !== 1) return settle;
-  const slot = ctx.scene.slotOf(parent);
+  return settledPose(ctx, parent, settle);
+}
+
+/**
+ * The same thing arriving from the other direction: the pose to write for an
+ * item about to gain its *second* pin, or an empty map when nothing is.
+ *
+ * One pin hangs and two are rigid (DESIGN section 5.5), so the pin that makes
+ * two ends the swing — and `sim/torsion.ts`'s `rigid()` ends it by zeroing both
+ * transients outright, which puts the paper back at an authored rotation that
+ * has been invisible ever since it started hanging. That alone would be a
+ * paper that jumps. Worse, the pin being placed was measured against the pose
+ * the paper was *drawn* at, because that is the only pose a cursor can aim at
+ * (`state/tools/frame.ts`) — so the jump takes the new pin, and whatever string
+ * runs through it, along with it.
+ *
+ * Writing the drawn pose in the same transaction is what makes the rendered and
+ * the stored pose the same pose at the instant the transients stop mattering.
+ * Nothing moves, and the pin stays under the cursor.
+ *
+ * Only the *second* pin. Nought to one starts it hanging, which is a swing from
+ * where it already is rather than a jump; two to three is rigid either way and
+ * has nothing to settle.
+ */
+function settleOnPin(ctx: ToolContext, anchor: StringAnchor): ReadonlyMap<string, WritePose> {
+  const settle = new Map<string, WritePose>();
+  if ("pin" in anchor || anchor.parent === null) return settle;
+  if (ctx.scene.pinCount(anchor.parent) !== 1) return settle;
+  return settledPose(ctx, anchor.parent, settle);
+}
+
+/** The pose an item is drawn at, which is what both settles write down. */
+function settledPose(
+  ctx: ToolContext,
+  itemId: string,
+  settle: Map<string, WritePose>,
+): ReadonlyMap<string, WritePose> {
+  const slot = ctx.scene.slotOf(itemId);
   if (slot === undefined) return settle;
-  settle.set(parent, {
+  settle.set(itemId, {
     x: ctx.scene.renderX(slot),
     y: ctx.scene.renderY(slot),
     rot: ctx.scene.rot[slot]! + ctx.scene.swing[slot]!,
@@ -867,6 +905,10 @@ export class SelectTool implements Tool {
    * > so the two new segments together sag exactly as the original did. Get this
    * > wrong and the string visibly jumps at the moment of insertion.
    * > — DESIGN section 3.4
+   *
+   * A drop onto a hanging item carries one more thing: that item's pose, by
+   * `settleOnPin` and in the same transaction, because the pin being written is
+   * the one that stops it hanging.
    */
   private commitLoop(at: PointerSample, ctx: ToolContext): void {
     const stringId = this.loopString;
@@ -888,7 +930,14 @@ export class SelectTool implements Tool {
     const first = Math.hypot(drop.x - a.wx, drop.y - a.wy);
     const second = Math.hypot(b.wx - drop.x, b.wy - drop.y);
     const [before, after] = splitSlack(chord, this.loopSlack, first, second, this.loopT);
-    ctx.write.insertPin(stringId, this.loopIndex, drop.anchor, before, after);
+    ctx.write.insertPin(
+      stringId,
+      this.loopIndex,
+      drop.anchor,
+      before,
+      after,
+      settleOnPin(ctx, drop.anchor),
+    );
   }
 
   /** Let go of the segment. Nothing to put back: nothing was written. */
