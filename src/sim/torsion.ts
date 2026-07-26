@@ -147,6 +147,9 @@ export class Torsion {
    * let go, which is what a photograph on one pin does.
    */
   private readonly frozen = new Map<string, { theta: number; lx: number; ly: number }>();
+  /** What `held` contained last step, so that letting go can be noticed at all
+   *  — see the release loop in `applyHeld`. */
+  private readonly wasHeld = new Set<string>();
   private accumulator = 0;
 
   /** How many items are mid-swing. The dev HUD's cheapest assertion that this
@@ -189,6 +192,7 @@ export class Torsion {
   reset(): void {
     this.swinging.clear();
     this.frozen.clear();
+    this.wasHeld.clear();
     this.accumulator = 0;
   }
 
@@ -205,6 +209,34 @@ export class Torsion {
     for (const id of this.frozen.keys()) {
       if (!held.has(id)) this.frozen.delete(id);
     }
+
+    /**
+     * Being let go of is an event, and this is the line that makes it one.
+     *
+     * `consider` runs over `dirty.items` and skips whatever is held, which
+     * leaves a gap wide enough to lose an item in: something that changed
+     * *while* it was held spent its dirty flag on a frame this module was
+     * contractually ignoring, and a dirty set does not survive the frame it was
+     * raised in. Nothing raises it again, so nothing ever tells the item its
+     * physics changed, and it goes on being drawn with a swing it is no longer
+     * entitled to until an unrelated disturbance finds it.
+     *
+     * `state/tools/pindrag.ts` is where that happens for real, and it cannot be
+     * fixed from there: it names the item to dirty by reading the pin's parent,
+     * and once the pin has been dragged off there is no parent left to name.
+     * Nor is it that tool's alone — any gesture that changes an item's pin count
+     * while holding it lands in the same gap. So the catch-up belongs here, in
+     * the module that chose to stop listening, rather than in each tool that
+     * has to remember it did.
+     *
+     * Cheap and idempotent: at most one call per item per release, and an item
+     * whose physics did not change is left exactly where the hand put it.
+     */
+    for (const id of this.wasHeld) {
+      if (!held.has(id)) this.consider(scene, dirty, id, held);
+    }
+    this.wasHeld.clear();
+    for (const id of held) this.wasHeld.add(id);
 
     for (const id of held) {
       const slot = scene.slotOf(id);

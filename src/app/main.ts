@@ -749,7 +749,6 @@ async function boot(): Promise<void> {
        *  and checking it comes back still (Phase 3's AC-15). */
       snapshot: () => snapshot(board),
     };
-
   }
 
   loop.start();

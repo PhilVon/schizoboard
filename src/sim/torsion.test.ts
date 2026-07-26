@@ -395,3 +395,73 @@ describe("handing over to and from a gesture", () => {
     expect(scene.swing[slot]).toBeCloseTo(0.07, 6);
   });
 });
+
+/**
+ * Letting go is an event in its own right.
+ *
+ * `consider` is the only thing that notices an item's pin count has changed,
+ * and it runs over `dirty.items` and skips whatever a gesture is holding. Those
+ * two rules meet badly in one place: an item whose physics changed *while* it
+ * was held spends its only dirty flag on a frame this module is contractually
+ * ignoring, and the flag does not survive the frame (`dirty.clear()` is phase
+ * 9). Nothing dirties it again, so nothing ever tells it.
+ *
+ * `state/tools/pindrag.ts` is where that actually happens, and it cannot be
+ * fixed from there: it dirties the item a pin is leaving by reading the pin's
+ * parent, and once the pin has left there is no parent left to name.
+ */
+describe("letting go", () => {
+  it("examines an item released from a hold, even when nothing dirtied it", () => {
+    const slot = put("a", { rot: 0.35 });
+    pin("p", "a", 0, -80);
+    settle("a");
+    // Hanging: both transients are carrying a real difference from `rot`.
+    expect(scene.swing[slot]).toBeCloseTo(-0.35, 6);
+    expect(scene.driftX[slot]).not.toBeCloseTo(0, 3);
+
+    // The gesture takes hold, and drags the pin off. The item is dirtied on
+    // the frame the pin leaves — and that frame is one this module ignores.
+    frame([], ["a"]);
+    scene.removePin("p");
+    frame(["a"], ["a"]);
+    expect(scene.swing[slot]).toBeCloseTo(-0.35, 6);
+
+    // Let go, with nothing to dirty it. No pins means no swing and no drift.
+    frame();
+    expect(scene.swing[slot]).toBe(0);
+    expect(scene.driftX[slot]).toBe(0);
+    expect(scene.driftY[slot]).toBe(0);
+  });
+
+  /** The other end of a re-parent: the item that *gained* the pin that made
+   *  two, which stops hanging just as surely and by the same route. */
+  it("makes an item rigid when the pin that made two arrived while it was held", () => {
+    const slot = put("a", { rot: 0.35 });
+    pin("p1", "a", 0, -80);
+    settle("a");
+    expect(scene.swing[slot]).toBeCloseTo(-0.35, 6);
+
+    frame([], ["a"]);
+    pin("p2", "a", 60, -80);
+    frame(["a"], ["a"]);
+    expect(scene.swing[slot]).toBeCloseTo(-0.35, 6);
+
+    frame();
+    expect(scene.swing[slot]).toBe(0);
+    expect(scene.driftX[slot]).toBe(0);
+  });
+
+  /** Releasing an item whose physics did not change is not an event. A hanging
+   *  item let go of is exactly where it was, and must not be nudged. */
+  it("leaves a released item alone when nothing about it changed", () => {
+    const slot = put("a", { rot: 0.35 });
+    pin("p", "a", 0, -80);
+    settle("a");
+    const hanging = scene.swing[slot]!;
+
+    frame([], ["a"]);
+    frame();
+    expect(scene.swing[slot]).toBeCloseTo(hanging, 6);
+    expect(sim.awake).toBe(0);
+  });
+});
