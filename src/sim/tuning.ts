@@ -6,8 +6,7 @@
  * > fast. — DESIGN section 5.8
  *
  * The panel is not built yet; the module is, so that when it is there is one
- * object to bind it to rather than a hunt through `sim/`. Ropes (T-38 to T-40)
- * land their constants here too.
+ * object to bind it to rather than a hunt through `sim/`.
  *
  * Units are board units, seconds and radians throughout — never screen pixels
  * and never milliseconds, because the simulation must not change with the zoom
@@ -73,3 +72,90 @@ export const SWING_MAX_RATE = 14;
 export const SWING_SLEEP_ANGLE = 3e-4;
 export const SWING_SLEEP_RATE = 4e-3;
 export const SWING_SLEEP_STEPS = 12;
+
+/**
+ * How far apart rope particles sit, board units.
+ *
+ * > Working numbers, to be tuned: particles spaced 10-14 board units, so
+ * > 12-20 per segment. — DESIGN section 5.2
+ *
+ * It is a target rather than a rule: a segment gets a whole number of links,
+ * so the real spacing lands wherever dividing the rest length by the nearest
+ * count puts it. Raising this is the first thing to reach for if ropes ever
+ * cost too much, and the last thing to reach for if a fold looks blocky —
+ * a rope cannot turn tighter than one link.
+ */
+export const ROPE_SPACING = 12;
+
+/**
+ * How much of a rope particle's velocity survives each 1/120 s step.
+ *
+ * > damping around 0.98 — DESIGN section 5.2
+ *
+ * A half-life of about three hundredths of a second: a plucked string rings a
+ * few times and stops. This is the whole of the rope's energy loss — no air
+ * drag term and no per-constraint damping, because at 120 Hz this one number
+ * already does the job both of them would.
+ *
+ * Quoted per fixed step and not per micro-step, so that it stays a statement
+ * about *time* if `ROPE_SUBSTEPS` is ever retuned. `sim/verlet.ts` takes the
+ * appropriate root.
+ */
+export const ROPE_DAMPING = 0.98;
+
+/**
+ * How the rope solver spends its budget: micro-steps inside each fixed 1/120 s
+ * step, and constraint passes inside each of those.
+ *
+ * DESIGN section 5.2 offers "6 constraint iterations" as a working number, and
+ * measured against `catenary.ts` it is nowhere near enough — a rope settles
+ * **23% longer than its own rest length** and hangs 19 board units below where
+ * the analytic pose says it should. That is not a transient: position-based
+ * dynamics holds a load by holding a violation, so the stretch is permanent
+ * and 6 passes are simply too soft to carry a chain's weight to its anchors.
+ *
+ * Iterating harder is the obvious fix and the wrong one. Measured on a level
+ * span at equal cost — the product of the two numbers below:
+ *
+ * | micro-steps | passes | residual stretch |
+ * |---|---|---|
+ * | 1 | 24 | 5.9% |
+ * | 4 | 6 | 1.8% |
+ * | 12 | 2 | 0.63% |
+ * | 24 | 1 | 0.17% |
+ *
+ * Thirty-five times better for the same arithmetic, which is the standard
+ * result: substepping beats iterating for stiff systems, because halving the
+ * step quarters the violation the passes have to clear.
+ *
+ * 16 and 2 is where that lands, and it is a budget decision rather than a
+ * quality one. The residual is 0.35% on a short rope and 0.6% on the longest
+ * ones — under a tenth of a board unit per link, with the rope as a whole
+ * hanging within one board unit of the analytic pose, which is invisible.
+ * Doubling to 32 would quarter that, but a hundred awake ropes already cost
+ * **5.8 ms a frame** here, and T-67 has to fit collision into the same budget.
+ * Two passes rather than one because they alternate direction and a rope has
+ * an anchor at each end (see `sim/verlet.ts`).
+ *
+ * So this is the dial, in both directions: cost is linear in the product,
+ * error falls with the square of the first number. The normal case — DESIGN
+ * section 5.3's "between zero and four awake at any moment" — costs a quarter
+ * of a millisecond, so the headroom that matters is all at the far end.
+ */
+export const ROPE_SUBSTEPS = 16;
+export const ROPE_ITERATIONS = 2;
+
+/**
+ * When a rope is finished moving.
+ *
+ * > Sleep when the largest particle movement stays under about 0.05 px for 12
+ * > consecutive frames. Cache the pose and stop stepping.
+ * > — DESIGN section 5.3
+ *
+ * Board units, not screen pixels — the same value at every zoom, because a
+ * simulation that slept differently depending on the camera would settle
+ * ropes at different shapes depending on how far you happened to be zoomed
+ * in. The two are the same thing at 100%, which is what DESIGN is quoting.
+ */
+export const ROPE_SLEEP_MOVE = 0.05;
+export const ROPE_SLEEP_STEPS = 12;

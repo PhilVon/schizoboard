@@ -1,0 +1,295 @@
+/**
+ * The rope solver: one segment of string, between two pins, for one frame.
+ *
+ * > Verlet integration with position-based constraint projection. Each segment
+ * > between adjacent pins is an independent chain of particles. Per frame, at
+ * > a fixed timestep:
+ * >
+ * > 1. Integrate: `next = pos + (pos - prev) x damping + gravity x dt^2`
+ * > 2. Project distance constraints between neighbours, several iterations,
+ * >    each pass moving both particles halfway to satisfaction.
+ * > 3. Re-pin the endpoints to their pins' current world positions.
+ * > 4. Resolve item collisions if the string is on the `over` layer.
+ * > — DESIGN section 5.2
+ *
+ * Step 4 is draping and belongs to phase 6 (T-64, T-65); there is a seam left
+ * for it and nothing else. Everything else is here.
+ *
+ * This module owns no state but the clock. It is handed a slice of somebody
+ * else's particle buffer and the two anchor positions, and it moves the
+ * particles — so `sim/ropes.ts` can keep every rope on the board in two flat
+ * arrays and step them through this without a single object per rope. The
+ * scene is not imported, the document certainly is not, and nothing here
+ * knows what a string id is.
+ *
+ * ## Fixed timestep, and AC-63
+ *
+ * > Fixed timestep of 1/120 s with an accumulator and a cap of four substeps
+ * > per frame, so behaviour doesn't change with frame rate and a stalled tab
+ * > doesn't explode on resume. — DESIGN section 5.2
+ *
+ * `FixedStep` is that sentence, and it is the whole of the framerate
+ * contract: it converts however long a frame happened to take into a whole
+ * number of identical 1/120 s steps, and the solver below never sees a `dt`
+ * that came from a clock. The cap is the important half and it is a cap on
+ * *time*, not on iterations — a tab backgrounded for a minute comes back with
+ * a minute in the accumulator, and paying that back honestly would take a
+ * minute of frames. Discarding the excess resumes a third of a second stale,
+ * which nobody can tell, instead of freezing.
+ *
+ * ## Why the endpoints are pinned before the projection, not after
+ *
+ * DESIGN lists re-pinning third, after the constraint passes. Done literally
+ * that undoes the last pass at both ends — the endpoint jumps back to its pin
+ * and the link next to it is left stretched by however far the pin moved,
+ * every frame, which reads as a rope that never quite attaches.
+ *
+ * The equivalent that does not do that is the standard one: the endpoints are
+ * *infinite mass*. They are placed on their pins before the passes and never
+ * integrated, and each pass gives the whole of a link's correction to whichever
+ * end of it can move. The endpoints are then on their pins at the end of the
+ * step as well, which is what step 3 was asking for.
+ *
+ * ## Why the passes alternate direction
+ *
+ * A hanging chain carries its weight to the anchors. Gravity displaces every
+ * particle equally, which violates nothing in the middle — a uniform shift
+ * leaves interior link lengths untouched — and violates exactly the two links
+ * next to the fixed ends. The correction has to travel from there inward.
+ *
+ * Gauss-Seidel in place is good at that in *one* direction: a forward sweep
+ * corrects link 0, which moves particle 1, which is what link 1 then sees, so
+ * a single pass carries one anchor's pull the length of the rope. Backwards it
+ * carries nothing. A rope has an anchor at each end, so the passes alternate,
+ * and `ROPE_ITERATIONS` is 2 because two is one round trip.
+ *
+ * ## Why there are micro-steps inside the fixed step
+ *
+ * This is the part that took measuring, and the number it produced is the
+ * difference between rope and elastic. Position-based dynamics holds a load by
+ * holding a *violation* — the stretch is what generates the restoring
+ * correction — so a chain under gravity settles permanently longer than its
+ * rest length, by however much the solver is too soft to prevent. At DESIGN's
+ * suggested six passes that came out at 23%, with the rope hanging 19 board
+ * units below the analytic pose in `catenary.ts`. Elastic.
+ *
+ * Iterating harder barely helps: the error falls only as fast as the pass
+ * count rises, and 200 passes to reach half a percent is not a budget that
+ * survives a hundred awake ropes. Halving the timestep instead *quarters* the
+ * violation, because gravity's contribution goes as `h^2`. Sixteen micro-steps
+ * of two passes costs a third of what twenty-four passes of one step costs and
+ * is seventeen times more accurate. `tuning.ts` has the table.
+ *
+ * The fixed step stays 1/120 s regardless, because that is the number AC-63 is
+ * about and the one `FixedStep` and the sleep manager count in. How finely the
+ * solver chooses to integrate inside one is its own business.
+ */
+
+import {
+  GRAVITY,
+  ROPE_DAMPING,
+  ROPE_ITERATIONS,
+  ROPE_SUBSTEPS,
+  SIM_MAX_SUBSTEPS,
+  SIM_STEP_MS,
+} from "@/sim/tuning";
+
+/** The fixed timestep in seconds — the only `dt` anything here ever sees. */
+const H = SIM_STEP_MS / 1000;
+
+/** The micro-step the solver actually integrates at, and the two constants
+ *  that follow from it. Damping is quoted per fixed step, hence the root. */
+const MICRO_H = H / ROPE_SUBSTEPS;
+const MICRO_GRAVITY = GRAVITY * MICRO_H * MICRO_H;
+const MICRO_DAMPING = Math.pow(ROPE_DAMPING, 1 / ROPE_SUBSTEPS);
+
+/**
+ * The accumulator that makes the simulation framerate-independent (AC-63).
+ *
+ * One of these for the whole board, not one per rope: every rope has to step
+ * the same number of times on the same frame, or two strings tied to the same
+ * pin would disagree about what time it is.
+ */
+export class FixedStep {
+  private accumulator = 0;
+
+  /**
+   * Fold a frame's elapsed time in and return how many fixed steps to run.
+   *
+   * The clamp is applied to the accumulator rather than to `dtMs`, so time
+   * that arrives in one enormous lump and time that arrives as a slow drift
+   * are both capped at the same place — the four steps DESIGN allows.
+   * Whatever is left over stays in the accumulator for next frame, which is
+   * what stops a 60 Hz display and a 144 Hz one from drifting apart.
+   */
+  advance(dtMs: number): number {
+    if (dtMs > 0) this.accumulator += dtMs;
+    const cap = SIM_STEP_MS * SIM_MAX_SUBSTEPS;
+    if (this.accumulator > cap) this.accumulator = cap;
+    const steps = Math.floor(this.accumulator / SIM_STEP_MS);
+    this.accumulator -= steps * SIM_STEP_MS;
+    return steps;
+  }
+
+  /** Milliseconds carried over, for the dev HUD and for tests. */
+  get pending(): number {
+    return this.accumulator;
+  }
+
+  /** Forget the carried time. For teardown, and for a document swap — there
+   *  is nothing on the new board that the old board's leftover applies to. */
+  reset(): void {
+    this.accumulator = 0;
+  }
+}
+
+/**
+ * Step one rope segment through `steps` fixed steps, and report how far the
+ * busiest particle travelled.
+ *
+ * `pos` and `prev` are interleaved `x, y`, sharing a layout, so a rope's
+ * particles occupy `at .. at + count * 2`. `link` is the rest length of every
+ * link, which `sampleChain` seeded them at — see D-16; deriving it per link
+ * from the seeded pose instead would freeze whatever shape the rope was
+ * created in.
+ *
+ * `ax, ay` and `bx, by` are where the two end pins are *now*. Moving them
+ * between frames is how a dragged photograph drags its string: the endpoints
+ * walk from wherever they were to wherever the pins went, one micro-step at a
+ * time, and the projection carries that inward. Walking rather than jumping
+ * matters at speed — a pin covering sixteen board units in a frame would
+ * otherwise deliver all sixteen to one link at once and crack the rope like a
+ * whip.
+ *
+ * The return value is an **upper bound** on the distance any one particle
+ * covered: the per-micro-step maxima, summed. `sim/ropes.ts` compares it to
+ * `ROPE_SLEEP_MOVE`. Bounding the path length rather than measuring net
+ * displacement is deliberate — a rope vibrating in place has a net
+ * displacement of nothing, and must not be mistaken for one that has stopped.
+ */
+export function stepRope(
+  pos: Float64Array,
+  prev: Float64Array,
+  at: number,
+  count: number,
+  link: number,
+  ax: number,
+  ay: number,
+  bx: number,
+  by: number,
+  steps: number,
+): number {
+  const last = at + (count - 1) * 2;
+
+  // Two particles is a segment with no interior at all: both ends are pins,
+  // there is nothing to integrate and nothing to project. It still gets its
+  // endpoints put where they belong.
+  if (count < 3 || steps <= 0) {
+    seat(pos, prev, at, ax, ay);
+    seat(pos, prev, last, bx, by);
+    return 0;
+  }
+
+  // Where the ends are coming *from*, so they can be walked rather than
+  // teleported. On a freshly seeded rope these already are the anchors, so
+  // the walk is a no-op and the first frame stays as still as the seed.
+  const fromAx = pos[at]!;
+  const fromAy = pos[at + 1]!;
+  const fromBx = pos[last]!;
+  const fromBy = pos[last + 1]!;
+
+  let travelled = 0;
+  const micro = steps * ROPE_SUBSTEPS;
+  for (let m = 1; m <= micro; m++) {
+    const t = m / micro;
+    seat(pos, prev, at, fromAx + (ax - fromAx) * t, fromAy + (ay - fromAy) * t);
+    seat(pos, prev, last, fromBx + (bx - fromBx) * t, fromBy + (by - fromBy) * t);
+
+    integrate(pos, prev, at, last);
+    project(pos, at, last, link);
+
+    // `prev` still holds each particle's position before this micro-step's
+    // integration, so the distance it covered is already sitting there.
+    let worst = 0;
+    for (let i = at + 2; i < last; i += 2) {
+      const dx = pos[i]! - prev[i]!;
+      const dy = pos[i + 1]! - prev[i + 1]!;
+      const moved = dx * dx + dy * dy;
+      if (moved > worst) worst = moved;
+    }
+    travelled += Math.sqrt(worst);
+  }
+  return travelled;
+}
+
+/** Put one end on its pin, with no velocity of its own — endpoints are
+ *  driven, never integrated. */
+function seat(
+  pos: Float64Array,
+  prev: Float64Array,
+  i: number,
+  x: number,
+  y: number,
+): void {
+  pos[i] = x;
+  pos[i + 1] = y;
+  prev[i] = x;
+  prev[i + 1] = y;
+}
+
+/** `next = pos + (pos - prev) * damping + gravity * h^2`, interior only. */
+function integrate(pos: Float64Array, prev: Float64Array, at: number, last: number): void {
+  for (let i = at + 2; i < last; i += 2) {
+    const x = pos[i]!;
+    const y = pos[i + 1]!;
+    pos[i] = x + (x - prev[i]!) * MICRO_DAMPING;
+    pos[i + 1] = y + (y - prev[i + 1]!) * MICRO_DAMPING + MICRO_GRAVITY;
+    prev[i] = x;
+    prev[i + 1] = y;
+  }
+}
+
+/**
+ * Project every link back to its rest length, alternating sweep direction so
+ * both anchors get their pull carried the length of the rope.
+ *
+ * A link with a fixed end gives that end's half of the correction to the other
+ * one, which is what "infinite mass" means in a solver that only has
+ * positions. Both ends fixed — a two-particle rope — never reaches here.
+ */
+function project(pos: Float64Array, at: number, last: number, link: number): void {
+  for (let iter = 0; iter < ROPE_ITERATIONS; iter++) {
+    if (iter % 2 === 0) {
+      for (let i = at; i < last; i += 2) relax(pos, i, at, last, link);
+    } else {
+      for (let i = last - 2; i >= at; i -= 2) relax(pos, i, at, last, link);
+    }
+  }
+}
+
+function relax(pos: Float64Array, i: number, at: number, last: number, link: number): void {
+  const j = i + 2;
+  const dx = pos[j]! - pos[i]!;
+  const dy = pos[j + 1]! - pos[i + 1]!;
+  const d = Math.hypot(dx, dy);
+  // Two particles exactly on top of each other have no direction to be pushed
+  // apart along. It takes a pathological drag to arrange and the next
+  // micro-step of gravity separates them, so leaving the link alone for one
+  // pass is cheaper and steadier than inventing an axis.
+  if (d === 0) return;
+
+  const scale = (d - link) / d;
+  const headFixed = i === at;
+  const tailFixed = j === last;
+  const wHead = headFixed ? 0 : tailFixed ? 1 : 0.5;
+  const wTail = tailFixed ? 0 : headFixed ? 1 : 0.5;
+
+  if (wHead !== 0) {
+    pos[i] = pos[i]! + dx * scale * wHead;
+    pos[i + 1] = pos[i + 1]! + dy * scale * wHead;
+  }
+  if (wTail !== 0) {
+    pos[j] = pos[j]! - dx * scale * wTail;
+    pos[j + 1] = pos[j + 1]! - dy * scale * wTail;
+  }
+}
