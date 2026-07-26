@@ -39,7 +39,17 @@ in the log, then give the webview a few seconds more.
 needs. Never `CopyFromScreen`: Windows' foreground lock silently refuses the
 raise and you capture whatever the human is actually looking at.
 
-Find the window by `MainWindowTitle -like "*Schizoboard*"`. The **dev HUD is
+**Find the window by process name, never by title.** `MainWindowTitle -like
+"*Schizoboard*"` will happily hand you Firefox — the kanban board's own tab is
+titled `SchizoBoard · KanAgentBan`, and any editor with a project file open
+matches too. Handing that hwnd to `PrintWindow` screenshots the human's
+browser; handing it to `SendKeys` types into it.
+
+```powershell
+$p = Get-Process -Name schizoboard -ErrorAction SilentlyContinue | Select-Object -First 1
+```
+
+The **dev HUD is
 the cheapest assertion in the project** — it prints zoom, camera, item count,
 DOM nodes and document size, so one screenshot answers most questions about
 state. Press `` ` `` to toggle it; `boot()` leaves it on.
@@ -58,6 +68,24 @@ $w = New-Object -ComObject wscript.shell
 $w.AppActivate("Schizoboard"); Start-Sleep -Milliseconds 600
 $w.SendKeys("^v")
 ```
+
+**`AppActivate` fails silently while the human is at the machine.** Windows'
+foreground lock refuses the raise for a background process, `AppActivate`
+returns without complaint, and `SendKeys` then types into whatever the human
+*is* looking at. Borrowing the foreground thread's input queue gets past it
+without sending a keystroke to find out:
+
+```powershell
+$fgThread = [FG]::GetWindowThreadProcessId([FG]::GetForegroundWindow(), [ref]$null)
+[void][FG]::AttachThreadInput([FG]::GetCurrentThreadId(), $fgThread, $true)
+[void][FG]::SetForegroundWindow($h)
+[void][FG]::AttachThreadInput([FG]::GetCurrentThreadId(), $fgThread, $false)
+```
+
+Then **read `GetForegroundWindow` back and compare its pid to the target before
+typing a single key**, and abort if it does not match. The raise still fails
+sometimes; the difference is whether you find out before or after pasting into
+somebody's browser.
 
 Paste is the primary verb, so it is also the cheapest way to get state onto a
 board: text becomes a note, image bytes become a polaroid. Everything else —
