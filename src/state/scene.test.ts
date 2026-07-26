@@ -207,6 +207,75 @@ describe("bounds", () => {
   });
 });
 
+describe("Scene.intersectsRect", () => {
+  it("answers the marquee question for an unrotated item", () => {
+    const scene = new Scene();
+    scene.putItem(cold("a"), pose({ x: 0, y: 0, w: 100, h: 100 }));
+
+    expect(scene.intersectsRect("a", { minX: -10, minY: -10, maxX: 10, maxY: 10 })).toBe(true);
+    // Clipping one corner is still touching it.
+    expect(scene.intersectsRect("a", { minX: 40, minY: 40, maxX: 200, maxY: 200 })).toBe(true);
+    expect(scene.intersectsRect("a", { minX: 60, minY: 60, maxX: 200, maxY: 200 })).toBe(false);
+    // A rectangle that swallows the item whole.
+    expect(scene.intersectsRect("a", { minX: -500, minY: -500, maxX: 500, maxY: 500 })).toBe(true);
+  });
+
+  it("uses the item's real corners, not its expanded box", () => {
+    const scene = new Scene();
+    // A bar running corner to corner. Its expanded box is a square of about
+    // 311 units; the bar itself is 40 units thick.
+    scene.putItem(cold("bar"), pose({ x: 0, y: 0, w: 400, h: 40, rot: Math.PI / 4 }));
+
+    // Inside the box, well off the bar.
+    expect(scene.intersectsRect("bar", { minX: -190, minY: 100, maxX: -120, maxY: 170 })).toBe(
+      false,
+    );
+    // On the bar.
+    expect(scene.intersectsRect("bar", { minX: -40, minY: -40, maxX: 40, maxY: 40 })).toBe(true);
+    // Past the end of it, along its own axis.
+    expect(scene.intersectsRect("bar", { minX: 200, minY: 200, maxX: 260, maxY: 260 })).toBe(false);
+  });
+
+  it("follows the rendered rotation, so a swinging item is where it looks", () => {
+    const scene = new Scene();
+    const slot = scene.putItem(cold("a"), pose({ x: 0, y: 0, w: 400, h: 20 }));
+    const rect = { minX: -10, minY: 100, maxX: 10, maxY: 140 };
+    expect(scene.intersectsRect("a", rect)).toBe(false);
+
+    scene.swing[slot] = Math.PI / 2;
+    expect(scene.intersectsRect("a", rect)).toBe(true);
+  });
+
+  it("takes a rectangle dragged backwards", () => {
+    const scene = new Scene();
+    scene.putItem(cold("a"), pose({ x: 0, y: 0, w: 100, h: 100 }));
+    expect(scene.intersectsRect("a", { minX: 10, minY: 10, maxX: -10, maxY: -10 })).toBe(true);
+  });
+
+  it("says no for an item that is not there", () => {
+    expect(
+      new Scene().intersectsRect("ghost", { minX: -1e6, minY: -1e6, maxX: 1e6, maxY: 1e6 }),
+    ).toBe(false);
+  });
+});
+
+describe("Scene.boundsOfMany", () => {
+  it("combines the bounds of a selection and ignores what has gone", () => {
+    const scene = new Scene();
+    scene.putItem(cold("a"), pose({ x: -100, y: 0, w: 100, h: 100 }));
+    scene.putItem(cold("b"), pose({ x: 300, y: 200, w: 100, h: 100 }));
+
+    const b = scene.boundsOfMany(["a", "b", "gone"])!;
+    expect(b.minX).toBeCloseTo(-150, 5);
+    expect(b.maxX).toBeCloseTo(350, 5);
+    expect(b.minY).toBeCloseTo(-50, 5);
+    expect(b.maxY).toBeCloseTo(250, 5);
+
+    expect(scene.boundsOfMany([])).toBeNull();
+    expect(scene.boundsOfMany(["gone"])).toBeNull();
+  });
+});
+
 describe("DirtySets", () => {
   it("starts clean and reports what it holds", () => {
     const dirty = new DirtySets();

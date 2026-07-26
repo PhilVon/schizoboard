@@ -51,8 +51,8 @@ interface View {
   readonly el: HTMLDivElement;
   readonly archetype: Archetype;
   bind(cold: ItemCold, assetUrl: AssetResolver): void;
-  transform(x: number, y: number, rot: number, w: number, h: number): void;
-  setElevation(elevation: Elevation): void;
+  /** `lift` is the scene's carry transient, 0 at rest and 1 while carried. */
+  transform(x: number, y: number, rot: number, w: number, h: number, lift: number): void;
   release(): void;
 }
 
@@ -105,7 +105,15 @@ class ShadowNode {
   }
 }
 
-/** Shared by both views: position, rotation, size. */
+/**
+ * How much bigger a carried item is. "it scales up by about 2%" — DESIGN
+ * section 3.2. Applied to the transform rather than to the width, so it costs
+ * no layout and does not change the item's real geometry: hit testing, pins and
+ * the marquee all continue to agree about where the item is.
+ */
+const CARRY_SCALE = 0.02;
+
+/** Shared by both views: position, rotation, size, and the carry. */
 function writeTransform(
   el: HTMLDivElement,
   x: number,
@@ -113,6 +121,7 @@ function writeTransform(
   rot: number,
   w: number,
   h: number,
+  lift: number,
 ): void {
   // Positioned entirely by transform. Writing left/top would invalidate layout
   // for every item that moved; a transform is composited.
@@ -125,7 +134,9 @@ function writeTransform(
   // a radian moves the corner of a 300-unit item by three thousandths of one.
   const tx = round(x - w / 2, 100);
   const ty = round(y - h / 2, 100);
-  el.style.transform = `translate(${tx}px, ${ty}px) rotate(${round(rot, 1e5)}rad)`;
+  const base = `translate(${tx}px, ${ty}px) rotate(${round(rot, 1e5)}rad)`;
+  el.style.transform =
+    lift > 0 ? `${base} scale(${round(1 + lift * CARRY_SCALE, 1e4)})` : base;
 }
 
 function round(value: number, factor: number): number {
@@ -150,6 +161,7 @@ class PolaroidView implements View {
   private readonly photo: HTMLImageElement;
   private readonly caption: HTMLDivElement;
   private boundAsset: string | null = null;
+  private boundCold: ItemCold | null = null;
   private framedFor = -1;
 
   private readonly shadow = new ShadowNode();
@@ -185,7 +197,16 @@ class PolaroidView implements View {
   }
 
   bind(cold: ItemCold, assetUrl: AssetResolver): void {
+    // Two inputs, so two guards. The binding mints a fresh cold record every
+    // time the *document* changes and `setPose` leaves it alone, so identity
+    // covers everything the document can say — that is what lets a drag skip
+    // sixty rebinds a second. The resolved URL is the other input, and it
+    // changes with no document write at all when an item's bytes finally
+    // arrive (DESIGN section 7.5); guarding on the record alone would leave
+    // that photograph undeveloped for good.
     const url = cold.assetId ? assetUrl(cold.assetId) : "";
+    if (this.boundCold === cold && url === this.boundAsset) return;
+    this.boundCold = cold;
     if (url !== this.boundAsset) {
       this.boundAsset = url;
       // An empty src would trigger a network request for the page itself.
@@ -201,7 +222,7 @@ class PolaroidView implements View {
     this.el.style.filter = sheetTint(cold.seed);
   }
 
-  transform(x: number, y: number, rot: number, w: number, h: number): void {
+  transform(x: number, y: number, rot: number, w: number, h: number, lift: number): void {
     if (w !== this.framedFor) {
       this.framedFor = w;
       const side = w * FRAME_SIDE;
@@ -209,19 +230,32 @@ class PolaroidView implements View {
       this.frame.style.padding = `${side.toFixed(1)}px ${side.toFixed(1)}px ${bottom.toFixed(1)}px`;
       this.caption.style.fontSize = `${Math.max(9, w * 0.055).toFixed(1)}px`;
     }
-    writeTransform(this.el, x, y, rot, w, h);
+    writeTransform(this.el, x, y, rot, w, h, lift);
+    // Elevation before the offset: swapping sprites invalidates the written
+    // rotation, so doing it the other way round leaves the new sprite wearing
+    // the old sprite's offset for a frame and the shadow jumps sideways.
+    setCarried(this.el, this.shadow, lift);
     this.shadow.update(rot);
-  }
-
-  setElevation(elevation: Elevation): void {
-    this.shadow.setElevation(elevation);
   }
 
   release(): void {
     this.caption.textContent = "";
-    this.el.classList.remove("is-selected");
+    this.boundCold = null;
+    this.el.classList.remove("is-selected", "is-lifted");
     this.shadow.reset();
   }
+}
+
+/**
+ * The shadow has exactly two bakes — resting and lifted — because they are
+ * shared by every item on the board (`shadow.ts`). So the swap is a threshold
+ * rather than a blend, taken halfway up, by which point the item is already
+ * visibly growing and the change reads as part of the same movement.
+ */
+function setCarried(el: HTMLDivElement, shadow: ShadowNode, lift: number): void {
+  const carried = lift > 0.5;
+  shadow.setElevation(carried ? "lift" : "rest");
+  el.classList.toggle("is-lifted", carried);
 }
 
 class PaperView implements View {
@@ -231,6 +265,7 @@ class PaperView implements View {
   private readonly surface: HTMLDivElement;
   private readonly grain: HTMLDivElement;
   private readonly body: HTMLDivElement;
+  private boundCold: ItemCold | null = null;
 
   constructor() {
     this.el = document.createElement("div");
@@ -251,6 +286,8 @@ class PaperView implements View {
   }
 
   bind(cold: ItemCold, _assetUrl: AssetResolver): void {
+    if (this.boundCold === cold) return;
+    this.boundCold = cold;
     const stock = defaultStock(cold.type, cold.seed);
     this.el.dataset["stock"] = stock;
     this.surface.style.background = stockBase(stock);
@@ -261,18 +298,19 @@ class PaperView implements View {
     this.body.textContent = cold.text;
   }
 
-  transform(x: number, y: number, rot: number, w: number, h: number): void {
-    writeTransform(this.el, x, y, rot, w, h);
+  transform(x: number, y: number, rot: number, w: number, h: number, lift: number): void {
+    writeTransform(this.el, x, y, rot, w, h, lift);
+    // Elevation before the offset: swapping sprites invalidates the written
+    // rotation, so doing it the other way round leaves the new sprite wearing
+    // the old sprite's offset for a frame and the shadow jumps sideways.
+    setCarried(this.el, this.shadow, lift);
     this.shadow.update(rot);
-  }
-
-  setElevation(elevation: Elevation): void {
-    this.shadow.setElevation(elevation);
   }
 
   release(): void {
     this.body.textContent = "";
-    this.el.classList.remove("is-selected");
+    this.boundCold = null;
+    this.el.classList.remove("is-selected", "is-lifted");
     this.shadow.reset();
   }
 }
@@ -286,6 +324,15 @@ export class DomItemLayer implements ItemLayer {
   /** Item ids in paint order, and the z keys the order was computed from. */
   private order: string[] = [];
   private readonly orderedBy = new Map<string, string>();
+
+  /**
+   * The last selection it was told about, kept so a view that mounts *later*
+   * still gets its chrome. Everything else the layer draws arrives through the
+   * scene and is therefore right on mount by construction; selection does not,
+   * so it has to be remembered. Culling (T-27) is what makes this load-bearing
+   * — a selected item panned off screen and back is a fresh mount.
+   */
+  private selected: ReadonlySet<string> = new Set();
 
   constructor(host: HTMLElement, assetUrl: AssetResolver) {
     this.host = host;
@@ -335,11 +382,20 @@ export class DomItemLayer implements ItemLayer {
         view = this.pool[archetype].pop() ?? this.create(archetype);
         this.views.set(id, view);
         this.host.append(view.el);
+        if (this.selected.has(id)) view.el.classList.add("is-selected");
       }
 
       if (isNew || dirty.all || dirty.items.has(id)) {
+        const slot = scene.slotOf(id)!;
         view.bind(cold, this.assetUrl);
-        view.transform(pose.x, pose.y, pose.rot + scene.swing[scene.slotOf(id)!]!, pose.w, pose.h);
+        view.transform(
+          pose.x,
+          pose.y,
+          pose.rot + scene.swing[slot]!,
+          pose.w,
+          pose.h,
+          scene.lift[slot]!,
+        );
       }
 
       if (this.orderedBy.get(id) !== cold.z) {
@@ -404,22 +460,20 @@ export class DomItemLayer implements ItemLayer {
     return this.order;
   }
 
+  /**
+   * Selection chrome. A class toggle per mounted view, so the caller is
+   * expected to gate it on `Selection.version` rather than call it per frame.
+   *
+   * There is no matching `setLifted`: being carried is a *scene* value, not a
+   * set the renderer is told about, so it arrives through `sync` with the rest
+   * of the geometry. Selection is genuinely not in the scene — it is
+   * per-person and never in the document — which is why it comes in by hand.
+   */
   setSelected(ids: ReadonlySet<string>): void {
+    // Copied, because the caller's set is live and this outlives the call.
+    this.selected = new Set(ids);
     for (const [id, view] of this.views) {
       view.el.classList.toggle("is-selected", ids.has(id));
-    }
-  }
-
-  /**
-   * Lift items being carried. "its shadow lifts and softens, it scales up by
-   * about 2%" (DESIGN section 3.2) — the item is being carried, not
-   * teleported. Driven by the drag controller (T-25).
-   */
-  setLifted(ids: ReadonlySet<string>): void {
-    for (const [id, view] of this.views) {
-      const lifted = ids.has(id);
-      view.setElevation(lifted ? "lift" : "rest");
-      view.el.classList.toggle("is-lifted", lifted);
     }
   }
 

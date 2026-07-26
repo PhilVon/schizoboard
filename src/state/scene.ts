@@ -84,11 +84,29 @@ export class Scene {
   h: Float32Array;
 
   /**
-   * Local, transient, never stored and never synced: the torsion swing of a
-   * single-pinned item (DESIGN section 5.5). Rendered rotation is
-   * `rot[slot] + swing[slot]`.
+   * Local, transient, never stored and never synced: the rotation an item has
+   * on screen but not in the document. Rendered rotation is
+   * `rot[slot] + swing[slot]`, and everything that reasons about where an item
+   * actually is — `layoutPins`, `boundsOf`, `intersectsRect`, hit testing —
+   * uses that sum rather than `rot` alone.
+   *
+   * Two things write it, and they hand over rather than compete: the
+   * lag-and-catch-up of a carried item (DESIGN section 3.2) while a drag is in
+   * progress, and the torsion swing of a single-pinned item (section 5.5) once
+   * it is let go.
    */
   swing: Float32Array;
+
+  /**
+   * Also transient: how far an item is off the cork, 0 at rest and 1 while it
+   * is being carried. Drives the ~2% carry scale and the lifted shadow —
+   * "the item is being *carried*, not teleported" (DESIGN section 3.2).
+   *
+   * Deliberately a continuous value rather than a flag, because the frame loop
+   * owns all motion (ARCHITECTURE section 3) and a CSS transition is therefore
+   * not available to soften the transition for us.
+   */
+  lift: Float32Array;
 
   private capacity = INITIAL_CAPACITY;
   private readonly slots = new Map<string, number>();
@@ -108,6 +126,7 @@ export class Scene {
     this.w = new Float32Array(INITIAL_CAPACITY);
     this.h = new Float32Array(INITIAL_CAPACITY);
     this.swing = new Float32Array(INITIAL_CAPACITY);
+    this.lift = new Float32Array(INITIAL_CAPACITY);
   }
 
   get size(): number {
@@ -153,6 +172,7 @@ export class Scene {
     this.w = copy(this.w);
     this.h = copy(this.h);
     this.swing = copy(this.swing);
+    this.lift = copy(this.lift);
     this.ids.length = next;
     this.coldBySlot.length = next;
     this.ids.fill(null, this.capacity);
@@ -174,6 +194,7 @@ export class Scene {
       this.slots.set(cold.id, slot);
       this.ids[slot] = cold.id;
       this.swing[slot] = 0;
+      this.lift[slot] = 0;
     }
     this.coldBySlot[slot] = cold;
     this.x[slot] = pose.x;
@@ -202,6 +223,7 @@ export class Scene {
     this.ids[slot] = null;
     this.coldBySlot[slot] = null;
     this.swing[slot] = 0;
+    this.lift[slot] = 0;
     this.freeSlots.push(slot);
     return true;
   }
@@ -290,24 +312,59 @@ export class Scene {
     return out;
   }
 
+  /**
+   * Does a rotated item overlap an axis-aligned board rectangle? The marquee
+   * question (DESIGN section 3.8).
+   *
+   * Exact, via the separating-axis theorem, rather than the cheaper test
+   * against `boundsOf`. The expanded box of a tilted polaroid sticks out past
+   * its corners by several units, and a marquee that grabs a photograph it
+   * visibly did not touch reads as the selection being sloppy — which on a
+   * board whose whole premise is "mess is a feature" is the one place the
+   * software cannot afford to look imprecise.
+   *
+   * Two boxes, so only four candidate axes: the rectangle's two, and the
+   * item's own two.
+   */
+  intersectsRect(id: string, rect: Bounds): boolean {
+    const slot = this.slots.get(id);
+    if (slot === undefined) return false;
+
+    const angle = this.rot[slot]! + this.swing[slot]!;
+    const cos = Math.cos(angle);
+    const sin = Math.sin(angle);
+    const hw = this.w[slot]! / 2;
+    const hh = this.h[slot]! / 2;
+
+    // Rectangle centre and half-extents, written so a rect dragged upwards or
+    // leftwards — which is how half of all marquees are drawn — works without
+    // the caller having to normalise it first.
+    const rcx = (rect.minX + rect.maxX) / 2;
+    const rcy = (rect.minY + rect.maxY) / 2;
+    const rhw = Math.abs(rect.maxX - rect.minX) / 2;
+    const rhh = Math.abs(rect.maxY - rect.minY) / 2;
+
+    const dx = this.x[slot]! - rcx;
+    const dy = this.y[slot]! - rcy;
+
+    // Axes 1 and 2: the rectangle's. The item's radius along each is its
+    // rotation-expanded half-extent, which is what boundsOf computes.
+    if (Math.abs(dx) > rhw + hw * Math.abs(cos) + hh * Math.abs(sin)) return false;
+    if (Math.abs(dy) > rhh + hw * Math.abs(sin) + hh * Math.abs(cos)) return false;
+
+    // Axes 3 and 4: the item's own, along which it is exactly hw and hh wide.
+    if (Math.abs(dx * cos + dy * sin) > hw + rhw * Math.abs(cos) + rhh * Math.abs(sin)) return false;
+    if (Math.abs(-dx * sin + dy * cos) > hh + rhw * Math.abs(sin) + rhh * Math.abs(cos)) return false;
+
+    return true;
+  }
+
   /** Bounds of everything on the board, for Ctrl+0. Null on an empty board. */
   contentBounds(): Bounds | null {
-    if (this.slots.size === 0) return null;
-    const out: Bounds = {
-      minX: Number.POSITIVE_INFINITY,
-      minY: Number.POSITIVE_INFINITY,
-      maxX: Number.NEGATIVE_INFINITY,
-      maxY: Number.NEGATIVE_INFINITY,
-    };
-    const scratch: Bounds = { minX: 0, minY: 0, maxX: 0, maxY: 0 };
-    for (const id of this.slots.keys()) {
-      const b = this.boundsOf(id, 0, scratch);
-      if (!b) continue;
-      if (b.minX < out.minX) out.minX = b.minX;
-      if (b.minY < out.minY) out.minY = b.minY;
-      if (b.maxX > out.maxX) out.maxX = b.maxX;
-      if (b.maxY > out.maxY) out.maxY = b.maxY;
-    }
+    // Shares the item walk with `F`, so the two can never end up disagreeing
+    // about how far an item extends.
+    const out = this.boundsOfMany(this.slots.keys());
+    if (!out) return null;
     for (const pin of this.pins.values()) {
       if (pin.wx < out.minX) out.minX = pin.wx;
       if (pin.wy < out.minY) out.minY = pin.wy;
@@ -315,6 +372,31 @@ export class Scene {
       if (pin.wy > out.maxY) out.maxY = pin.wy;
     }
     return out;
+  }
+
+  /**
+   * Combined bounds of some items — the selection, for `F`; every item, for
+   * `contentBounds`. Null if none of them are on the board.
+   */
+  boundsOfMany(ids: Iterable<string>): Bounds | null {
+    const out: Bounds = {
+      minX: Number.POSITIVE_INFINITY,
+      minY: Number.POSITIVE_INFINITY,
+      maxX: Number.NEGATIVE_INFINITY,
+      maxY: Number.NEGATIVE_INFINITY,
+    };
+    const scratch: Bounds = { minX: 0, minY: 0, maxX: 0, maxY: 0 };
+    let found = false;
+    for (const id of ids) {
+      const b = this.boundsOf(id, 0, scratch);
+      if (!b) continue;
+      found = true;
+      if (b.minX < out.minX) out.minX = b.minX;
+      if (b.minY < out.minY) out.minY = b.minY;
+      if (b.maxX > out.maxX) out.maxX = b.maxX;
+      if (b.maxY > out.maxY) out.maxY = b.maxY;
+    }
+    return found ? out : null;
   }
 
   /** Every item id, in no particular order. Callers that need order sort by z. */

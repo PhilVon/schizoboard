@@ -11,16 +11,22 @@
 
 import { Binding } from "@/crdt/binding";
 import { boardSeed, encodedSize, initialiseBoard, openBoardDoc } from "@/crdt/doc";
-import { createItems } from "@/crdt/ops";
+import { createItems, deleteItems, setItemPoses } from "@/crdt/ops";
+import { Origin } from "@/crdt/origins";
 import { initPlatform } from "@/platform";
 import { Cork } from "@/render/cork";
 import { DomItemLayer } from "@/render/items/dom";
 import { FrameLoop } from "@/render/loop";
+import { Overlay } from "@/render/overlay";
 import { World } from "@/render/world";
 import { Camera } from "@/state/camera";
 import { DirtySets } from "@/state/dirty";
 import { Navigation } from "@/state/navigation";
 import { Scene } from "@/state/scene";
+import { Selection } from "@/state/selection";
+import { ToolMachine } from "@/state/tools/machine";
+import { SelectTool } from "@/state/tools/select";
+import type { BoardWriter } from "@/state/tools/tool";
 import { Hud, type HudStats } from "@/ui/hud";
 
 async function boot(): Promise<void> {
@@ -43,9 +49,52 @@ async function boot(): Promise<void> {
   const world = new World(root);
   const cork = new Cork(world.layers.cork, boardSeed(board));
   const items = new DomItemLayer(world.layers.world, (sha) => native.assetUrl(sha));
+  const overlay = new Overlay(world.layers.overlay);
   const loop = new FrameLoop();
+  const selection = new Selection();
   const navigation = new Navigation(camera, root, {
     contentBounds: () => scene.contentBounds(),
+    selectionBounds: () => scene.boundsOfMany(selection.members),
+  });
+
+  // --- interaction ---------------------------------------------------------
+
+  /**
+   * Document writes a tool asks for are *queued*, not made. They land in phase
+   * 9, below, so no observer can move the scene out from under a frame that
+   * phases 4 and 5 have already read (ARCHITECTURE section 3).
+   */
+  const queued: (() => void)[] = [];
+  const writer: BoardWriter = {
+    setPoses: (poses, phase) => {
+      const snapshot = new Map(poses);
+      queued.push(() =>
+        setItemPoses(
+          board,
+          snapshot,
+          // A live pose is the throttled crash-safety write; the undo manager
+          // (T-29) merges it into the release's entry rather than stacking one
+          // entry per half second of dragging.
+          phase === "live" ? Origin.DRAG_THROTTLE : Origin.LOCAL_USER,
+        ),
+      );
+    },
+    deleteItems: (ids, keepPins) => {
+      const snapshot = [...ids];
+      queued.push(() => deleteItems(board, snapshot, { keepPins }));
+    },
+  };
+
+  const select = new SelectTool();
+  const tools = new ToolMachine(select, root, {
+    scene,
+    dirty,
+    camera,
+    selection,
+    write: writer,
+    hitTest: (bx, by) => items.hitTest(scene, bx, by),
+    // Space+drag and middle-drag belong to the camera, not to the board.
+    suppressed: () => navigation.panReady,
   });
 
   const hud = new Hud(world.layers.ui, loop, () => stats());
@@ -80,9 +129,10 @@ async function boot(): Promise<void> {
 
   // --- the nine phases (docs/ARCHITECTURE.md section 3) ---------------------
 
-  loop.on("input", () => {
+  loop.on("input", (frame) => {
     navigation.flush();
     if (navigation.gestured) world.gestureTick(camera.zoom);
+    tools.flush(frame.dt);
   });
 
   // 2 PRESENCE  T-72   3 SIM  T-39
@@ -93,21 +143,37 @@ async function boot(): Promise<void> {
     else if (dirty.items.size > 0) scene.layoutPins(dirty.items);
   });
 
+  let selectionVersion = -1;
   loop.on("dom", () => {
     world.applyCamera(camera);
     cork.apply(camera);
     // Culling is T-27; until then every item is a candidate, which the spike
     // (D-12) says is fine up to a few hundred and expensive past that.
     items.sync(scene, dirty, null);
+    // Selection chrome rides on the item nodes, so it is written here with the
+    // rest of the DOM rather than in the OVERLAY phase — and only when the
+    // membership has actually changed.
+    if (selection.version !== selectionVersion) {
+      selectionVersion = selection.version;
+      items.setSelected(selection.members);
+    }
   });
 
   // 6 INK  T-57   7 ROPES  T-43
 
-  loop.on("overlay", (frame) => hud.update(frame.now));
+  loop.on("overlay", (frame) => {
+    overlay.draw(camera, select.marquee);
+    hud.update(frame.now);
+  });
 
   loop.on("flush", () => {
     // Everything downstream has consumed this frame's changes.
     dirty.clear();
+    // Then, and only then, the document writes this frame's input asked for.
+    // After the clear, so the dirty flags the binding sets in response belong
+    // to the next frame instead of being wiped by this one.
+    for (const write of queued) write();
+    queued.length = 0;
   });
 
   seedDemoBoard(board);
@@ -118,8 +184,8 @@ async function boot(): Promise<void> {
   const hint = document.createElement("div");
   hint.className = "hint";
   hint.textContent =
-    `platform: ${native.kind} · space+drag or middle-drag to pan · wheel to zoom · ` +
-    `Ctrl+0 fit · \` for the HUD`;
+    `platform: ${native.kind} · drag to move · R+drag to rotate · drag the cork to marquee · ` +
+    `Delete removes · space+drag pans · Ctrl+0 fit · F frame · \` for the HUD`;
   world.layers.ui.append(hint);
   hud.toggle();
 }

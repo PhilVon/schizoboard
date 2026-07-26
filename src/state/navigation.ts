@@ -17,12 +17,16 @@
  */
 
 import type { Bounds, Camera } from "@/state/camera";
+import { isChromeTarget, isTextTarget } from "@/state/input";
 
 /** Wheel delta -> zoom factor. One 100px mouse notch is about 0.86x. */
 const WHEEL_ZOOM_RATE = 0.0015;
 /** Wheel deltas at or above this are a mouse notch, not trackpad inertia. */
 const WHEEL_NOTCH_PX = 50;
 const KEY_ZOOM_STEP = 1.2;
+/** Breathing room around a framed selection, screen pixels. Generous, because
+ *  the point of framing something is to look at it in its surroundings. */
+const FRAME_MARGIN_PX = 140;
 
 export type WheelIntent = "zoom" | "pan";
 
@@ -54,6 +58,8 @@ export function classifyWheel(e: WheelEvent): WheelIntent {
 export interface NavigationOptions {
   /** Board bounds for Ctrl+0. Returns null while the board is empty. */
   contentBounds?: () => Bounds | null;
+  /** Board bounds of the selection, for `F`. Null when nothing is selected. */
+  selectionBounds?: () => Bounds | null;
 }
 
 export class Navigation {
@@ -144,6 +150,7 @@ export class Navigation {
       const middle = e.button === 1;
       const spacePan = e.button === 0 && this.spaceHeld;
       if (!middle && !spacePan) return;
+      if (isChromeTarget(e.target)) return;
       e.preventDefault();
       this.dragPointer = e.pointerId;
       this.dragX = e.clientX;
@@ -184,12 +191,31 @@ export class Navigation {
     add(this.target, "pointercancel", endDrag);
 
     add(window, "keydown", (e: KeyboardEvent) => {
+      // Space is a space and F is an F when someone is writing on a note. The
+      // Ctrl shortcuts further down are not: nobody types Ctrl+0 into a note,
+      // and refusing to move the camera mid-sentence would be its own bug.
+      const typing = isTextTarget(e.target);
+
       if (e.code === "Space" && !e.repeat) {
+        if (typing) return;
         this.spaceHeld = true;
         this.updateCursor();
         e.preventDefault();
         return;
       }
+      // `F` frames the selection (DESIGN section 3.7). Unmodified, so it has to
+      // be checked before the Ctrl gate — and skipped when Alt or Ctrl is down,
+      // or it would fire inside a shortcut that merely contains an F.
+      if (e.code === "KeyF" && !e.ctrlKey && !e.metaKey && !e.altKey) {
+        if (typing) return;
+        const bounds = this.options.selectionBounds?.() ?? null;
+        if (bounds) {
+          this.camera.fit(bounds, FRAME_MARGIN_PX);
+          e.preventDefault();
+        }
+        return;
+      }
+
       if (!(e.ctrlKey || e.metaKey)) return;
       const cx = this.camera.width / 2;
       const cy = this.camera.height / 2;

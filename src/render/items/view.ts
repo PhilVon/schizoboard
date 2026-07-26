@@ -30,6 +30,14 @@ export interface ItemLayer {
   /** Topmost item at a board point, or null. Hit-testing never reads the DOM. */
   hitTest(scene: Scene, boardX: number, boardY: number): string | null;
 
+  /**
+   * Selection chrome. A set of ids and nothing else — no rectangle, no
+   * handles, no element. Selection is per-person and lives outside the
+   * document, so unlike every other value the layer renders it cannot arrive
+   * through the scene.
+   */
+  setSelected(ids: ReadonlySet<string>): void;
+
   /** How many item presentations currently exist — for the dev HUD. */
   readonly mounted: number;
 

@@ -28,16 +28,39 @@
   backface-visibility: hidden;
 }
 
+/*
+ * Selection chrome.
+ *
+ * Dark rather than light, and that is not a taste call: a pale line is
+ * invisible against a polaroid's own off-white frame, which is most of what
+ * anyone selects. A dark warm line is the only one legible against both the
+ * cork and the paper, and it reads as something drawn round the photograph
+ * rather than as a UI rectangle floating over it.
+ *
+ * On the frame and the surface rather than on `.item`, so it hugs the paper
+ * instead of the item's bounding box, and rotates with it for free.
+ *
+ * The width is in board units, so it thickens as you zoom in. Screen-constant
+ * chrome needs the counter-scale the pins get in T-32; when that lands this
+ * should use it.
+ */
 .item.is-selected .pol-frame,
 .item.is-selected .paper-surface {
-  outline: 1.5px solid rgba(255, 244, 214, 0.92);
-  outline-offset: 2px;
+  outline: 1.5px solid rgba(34, 21, 10, 0.8);
+  outline-offset: 2.5px;
 }
 
-/* Carried, not teleported — DESIGN 3.2. The 2% is applied by the drag
- * controller as part of the transform, not as a CSS transition. */
+/*
+ * Carried, not teleported — DESIGN 3.2. The 2% scale is part of the transform
+ * written by the renderer, not a CSS transition.
+ *
+ * `!important` because paint order is written as an *inline* z-index by
+ * `reorder()`, and an inline declaration beats a class rule. Without it a
+ * photograph picked up off the cork slides underneath the ones it is dragged
+ * across, which is the exact opposite of being held.
+ */
 .item.is-lifted {
-  z-index: 9999;
+  z-index: 9999 !important;
 }
 
 /* --- the shadow ----------------------------------------------------------- */
