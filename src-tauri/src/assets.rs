@@ -46,7 +46,7 @@ use std::borrow::Cow;
 use std::collections::HashSet;
 use std::fs::{self, File};
 use std::io::{self, BufReader, Read, Write};
-use std::net::{IpAddr, ToSocketAddrs};
+use std::net::{IpAddr, SocketAddr, ToSocketAddrs};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, SystemTime};
@@ -55,6 +55,15 @@ use image::imageops::FilterType;
 use image::{DynamicImage, ImageReader};
 use serde::Serialize;
 use sha2::{Digest, Sha256};
+// `unversioned` is ureq's own word for "this API does not follow semver yet".
+// Worth the exposure: it is the only way to be the thing that resolves a
+// hostname, and being that thing is what closes the gap below. The surface used
+// here is three items wide and the crate commits to breaking it only in minor
+// versions.
+use ureq::config::Config;
+use ureq::http::Uri;
+use ureq::unversioned::resolver::{DefaultResolver, ResolvedSocketAddrs, Resolver};
+use ureq::unversioned::transport::{DefaultConnector, NextTimeout};
 
 /// Longest edge of the display variant, in pixels.
 ///
@@ -211,21 +220,120 @@ fn is_routable(ip: IpAddr) -> bool {
     }
 }
 
+/// The rule, in one place so the two things that apply it cannot drift apart:
+/// refuse unless **every** address is out on the internet. Returns the first one
+/// that is not, for the error message.
+///
+/// Every address, not any: a name that answers with one public and one private
+/// address is still a way in.
+fn first_unroutable(addresses: &[SocketAddr]) -> Option<IpAddr> {
+    addresses
+        .iter()
+        .map(|address| address.ip())
+        .find(|ip| !is_routable(*ip))
+}
+
+/// The only thing in this process that turns a hostname into an address for a
+/// fetch — and therefore the only place the rule above can be enforced without a
+/// race.
+///
+/// This is the fix for the gap [`AssetStore::ingest_url`] used to document. A
+/// pre-flight lookup can only ever check a *different* lookup's answer: the HTTP
+/// client resolves again when it connects, and a name that answers differently
+/// the second time — DNS rebinding, a zero-TTL record flipped between the two —
+/// reaches an address the check never saw. ureq connects to exactly what its
+/// resolver returns, so being the resolver closes it. One lookup, checked, and
+/// connected to.
+///
+/// It also applies to every redirect hop for free, which the pre-flight only
+/// managed because `ingest_url` follows redirects by hand to make it.
+#[derive(Debug, Default)]
+struct PublicOnlyResolver(DefaultResolver);
+
+impl Resolver for PublicOnlyResolver {
+    fn resolve(
+        &self,
+        uri: &Uri,
+        config: &Config,
+        timeout: NextTimeout,
+    ) -> std::result::Result<ResolvedSocketAddrs, ureq::Error> {
+        // `DefaultResolver` already guarantees at least one address or
+        // `HostNotFound`, and truncates to the 16 ureq is willing to try. Sixteen
+        // is also therefore the complete set it can connect to, so checking what
+        // it returned checks everything reachable — which the old pre-flight,
+        // checking an unbounded list nobody was going to use, did not.
+        let addresses = self.0.resolve(uri, config, timeout)?;
+        if let Some(ip) = first_unroutable(&addresses) {
+            // Io with PermissionDenied is what ureq asks a bespoke chain to use
+            // when it wants to say *why* rather than just "connection failed".
+            return Err(ureq::Error::Io(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                format!("{ip} is not a public address"),
+            )));
+        }
+        Ok(addresses)
+    }
+}
+
+/// The agent every URL ingestion goes through.
+///
+/// Separate from [`AssetStore::ingest_url`] so a test can prove that the
+/// resolver's refusal survives ureq's connect path and comes back out as
+/// something legible — which is not provable through `ingest_url`, because
+/// `check_fetchable` gets there first for every URL a test could name.
+fn fetch_agent() -> ureq::Agent {
+    let config = ureq::Agent::config_builder()
+        .timeout_global(Some(Duration::from_secs(30)))
+        // Followed by hand by the caller, so each hop can be checked.
+        .max_redirects(0)
+        .build();
+    // `with_parts` rather than `Config::into()`: it is the only constructor that
+    // takes a resolver, and the resolver is the whole point.
+    ureq::Agent::with_parts(
+        config,
+        DefaultConnector::default(),
+        PublicOnlyResolver::default(),
+    )
+}
+
+/// A ureq error, made presentable.
+///
+/// The refusal above arrives as an io error, and "io: 10.0.0.1 is not a public
+/// address" reads like a plumbing failure rather than the deliberate decision it
+/// is. This is user-facing: it ends up in the frontend when a paste fails.
+fn fetch_error(e: ureq::Error) -> Error {
+    match &e {
+        ureq::Error::Io(source) if source.kind() == io::ErrorKind::PermissionDenied => {
+            Error::Fetch(source.to_string())
+        }
+        _ => Error::Fetch(e.to_string()),
+    }
+}
+
 /// Refuse a URL that is not http(s), or whose host is anywhere but the public
 /// internet. Resolved rather than pattern-matched, because `localtest.me` and
 /// friends are ordinary names that answer with 127.0.0.1.
+///
+/// **This is a courtesy, not the boundary.** [`PublicOnlyResolver`] is the
+/// boundary; it cannot be bypassed by a name that changes its answer, and this
+/// can. What this buys is a clear refusal before any socket work happens, and a
+/// scheme check that has to happen at the URL level because a resolver never
+/// sees `file:///etc/passwd`. Deleting it would weaken the error messages and
+/// nothing else — and deleting the resolver would remove the guarantee entirely,
+/// so if one of the two has to go, it is this one.
 fn check_fetchable(url: &str) -> Result<()> {
-    let uri: ureq::http::Uri = url
+    let uri: Uri = url
         .parse()
         .map_err(|_| Error::Fetch("not a URL".to_string()))?;
-    match uri.scheme_str() {
-        Some("http") | Some("https") => {}
+    let https = match uri.scheme_str() {
+        Some("http") => false,
+        Some("https") => true,
         _ => return Err(Error::Fetch("only http and https".to_string())),
-    }
+    };
     let host = uri
         .host()
         .ok_or_else(|| Error::Fetch("no host".to_string()))?;
-    let port = uri.port_u16().unwrap_or(80);
+    let port = uri.port_u16().unwrap_or(if https { 443 } else { 80 });
 
     let addresses: Vec<_> = (host, port)
         .to_socket_addrs()
@@ -234,10 +342,8 @@ fn check_fetchable(url: &str) -> Result<()> {
     if addresses.is_empty() {
         return Err(Error::Fetch(format!("{host} resolves to nothing")));
     }
-    // Every address, not any: a name that answers with one public and one
-    // private address is still a way in.
-    if !addresses.iter().all(|a| is_routable(a.ip())) {
-        return Err(Error::Fetch(format!("{host} is not a public address")));
+    if let Some(ip) = first_unroutable(&addresses) {
+        return Err(Error::Fetch(format!("{host} is {ip}, not a public address")));
     }
     Ok(())
 }
@@ -445,39 +551,28 @@ impl AssetStore {
     /// so a pasted `<img src="http://192.168.1.1/admin/config">` would hand its
     /// answer straight back to the page over `asset://`. Hence:
     ///
-    ///   - every hop's host is looked up and refused unless every address it
-    ///     answers with is routable,
-    ///   - redirects are followed by hand so that check applies to each one
-    ///     rather than only to the URL the user thinks they are fetching,
+    ///   - **the client resolves through [`PublicOnlyResolver`]**, so the address
+    ///     it connects to is the address that was vetted, rather than the answer
+    ///     to a second lookup nobody checked,
+    ///   - `check_fetchable` refuses obvious cases up front so the failure is a
+    ///     clear message rather than a connection error,
+    ///   - redirects are followed by hand, so a hop cannot skip either check,
     ///   - the body is bounded *after* decompression, since the wire limit a
     ///     client library enforces is no limit at all against gzip,
     ///   - and there is a wall-clock timeout, because the default is none and a
     ///     server that accepts a connection and then says nothing would hold a
     ///     blocking thread for the life of the process.
     ///
-    /// **What this does not stop, stated plainly:** the check resolves the host
-    /// and the HTTP client then resolves it again, so a name that answers
-    /// differently the second time — DNS rebinding, a zero-TTL record flipped
-    /// between the two lookups — reaches an address the check never saw. Closing
-    /// that means resolving once and connecting to the vetted address, which
-    /// needs a resolver this HTTP client does not expose on its stable surface.
-    /// The gap is narrow and it is real; it has its own task rather than a
-    /// comment claiming otherwise.
+    /// The DNS-rebinding gap this comment used to describe — check one address,
+    /// connect to another — is closed by the resolver, not by the pre-flight.
+    /// See [`PublicOnlyResolver`] for why that distinction is the whole fix.
     pub fn ingest_url(&self, url: &str) -> Result<AssetMeta> {
-        let agent: ureq::Agent = ureq::Agent::config_builder()
-            .timeout_global(Some(Duration::from_secs(30)))
-            // Followed by hand below, so each hop can be checked.
-            .max_redirects(0)
-            .build()
-            .into();
+        let agent = fetch_agent();
 
         let mut current = url.to_string();
         for _ in 0..=MAX_REDIRECTS {
             check_fetchable(&current)?;
-            let mut response = agent
-                .get(&current)
-                .call()
-                .map_err(|e| Error::Fetch(e.to_string()))?;
+            let mut response = agent.get(&current).call().map_err(fetch_error)?;
 
             if response.status().is_redirection() {
                 let location = response
@@ -1095,6 +1190,90 @@ mod tests {
         }
         // ...and an ordinary public address still is.
         assert!(check_fetchable("https://93.184.216.34/photo.jpg").is_ok());
+    }
+
+    /// A timeout the resolver will accept. Non-infinite on purpose: that is the
+    /// path `DefaultResolver` takes for a real lookup, so it is the one worth
+    /// exercising.
+    fn resolve_timeout() -> NextTimeout {
+        NextTimeout {
+            after: ureq::unversioned::transport::time::Duration::from_secs(5),
+            reason: ureq::Timeout::Resolve,
+        }
+    }
+
+    fn resolve(url: &str) -> std::result::Result<ResolvedSocketAddrs, ureq::Error> {
+        let uri: Uri = url.parse().unwrap();
+        PublicOnlyResolver::default().resolve(&uri, &Config::default(), resolve_timeout())
+    }
+
+    #[test]
+    fn the_resolver_is_the_boundary_not_the_preflight() {
+        // `check_fetchable` covers the same ground, but it cannot *guarantee*
+        // anything: it checks one lookup and the client then does another. These
+        // assertions are against the thing ureq actually connects through, so a
+        // name that changed its answer between the two has nowhere to land.
+        for hostile in [
+            "http://127.0.0.1:9200/_search",
+            "http://localhost/admin",
+            "http://169.254.169.254/latest/meta-data/",
+            "http://[::1]:8080/",
+            "http://0.0.0.0/",
+        ] {
+            let refused = resolve(hostile);
+            assert!(refused.is_err(), "{hostile} was resolved");
+            // And it says why, in words that can be shown to somebody.
+            let message = fetch_error(refused.unwrap_err()).to_string();
+            assert!(
+                message.contains("not a public address"),
+                "{hostile}: unhelpful message {message:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_resolver_leaves_an_ordinary_public_address_alone() {
+        let addresses = resolve("https://93.184.216.34/photo.jpg").unwrap();
+        assert_eq!(addresses.len(), 1);
+        assert_eq!(addresses[0].ip(), "93.184.216.34".parse::<IpAddr>().unwrap());
+        // The port comes from the scheme, and getting that wrong would mean
+        // connecting somewhere other than the address that was vetted.
+        assert_eq!(addresses[0].port(), 443);
+    }
+
+    #[test]
+    fn the_refusal_survives_the_client_and_stays_legible() {
+        // The tests above call the resolver directly, which proves the rule and
+        // not the wiring. This goes through the agent `ingest_url` uses, so it
+        // fails only if the resolver is actually installed on it — and it needs no
+        // network, because the refusal happens before a socket is opened.
+        let refused = fetch_agent().get("http://127.0.0.1:9/photo.jpg").call();
+        let message = match refused {
+            Ok(_) => panic!("connected to loopback"),
+            Err(e) => fetch_error(e).to_string(),
+        };
+        assert!(message.contains("not a public address"), "{message:?}");
+    }
+
+    #[test]
+    fn one_private_answer_among_public_ones_is_still_a_way_in() {
+        // The case that makes the rule "every address" rather than "any": a
+        // hostile name answers with a real public address *and* a private one,
+        // and ureq is free to try either.
+        let mixed: Vec<SocketAddr> = ["93.184.216.34:443", "10.0.0.1:443"]
+            .iter()
+            .map(|a| a.parse().unwrap())
+            .collect();
+        assert_eq!(
+            first_unroutable(&mixed),
+            Some("10.0.0.1".parse::<IpAddr>().unwrap())
+        );
+
+        let public: Vec<SocketAddr> = ["93.184.216.34:443", "1.1.1.1:443"]
+            .iter()
+            .map(|a| a.parse().unwrap())
+            .collect();
+        assert_eq!(first_unroutable(&public), None);
     }
 
     #[test]
