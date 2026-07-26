@@ -34,6 +34,7 @@ import { FrameLoop } from "@/render/loop";
 import { Overlay } from "@/render/overlay";
 import { PinLayer } from "@/render/pins/dom";
 import { World } from "@/render/world";
+import { RopeSet } from "@/sim/ropes";
 import { Torsion } from "@/sim/torsion";
 import { Camera } from "@/state/camera";
 import { DirtySets } from "@/state/dirty";
@@ -140,9 +141,11 @@ async function boot(): Promise<void> {
    * rather than an optimisation — see `render/cull.ts`.
    */
   const culler = new Culler();
-  /** Phase 3, and the only thing on this board that moves by itself yet:
-   *  "pin count is the item's physics" (DESIGN section 2.2). */
+  /** Phase 3: "pin count is the item's physics" (DESIGN section 2.2). */
   const torsion = new Torsion();
+  /** Phase 3, the other half. Empty until something makes a string (T-41), and
+   *  free while it is — a rope set with no ropes steps nothing. */
+  const ropes = new RopeSet();
   const loop = new FrameLoop();
   const selection = new Selection();
   const navigation = new Navigation(camera, root, {
@@ -351,10 +354,10 @@ async function boot(): Promise<void> {
       zoom: camera.zoom,
       cameraX: camera.x + camera.width / (2 * camera.zoom),
       cameraY: camera.y + camera.height / (2 * camera.zoom),
-      // Rope particles are T-40; until then this counts the items mid-swing,
-      // which is the same question — is phase 3 asleep? — asked of the only
-      // thing in it.
-      awakeParticles: torsion.awake,
+      // Everything phase 3 is stepping: items mid-swing plus ropes not yet
+      // settled. One number, because it answers one question — is the
+      // simulation asleep? — and a board at rest must read zero.
+      awakeParticles: torsion.awake + ropes.awake,
       docBytes,
       items: scene.size,
       mounted: items.mounted,
@@ -423,16 +426,28 @@ async function boot(): Promise<void> {
   // 2 PRESENCE  T-72
 
   /**
-   * Phase 3. Ropes join it at T-39; for now the only thing that moves on its
-   * own is the swing of a single-pinned item, and it is asleep unless something
-   * has just disturbed one.
+   * Phase 3. Two things move on their own — the swing of a single-pinned item
+   * and the sag of a rope — and both are asleep unless something has just
+   * disturbed them.
    *
    * After the tool machine, which is phase 1: the swing is composed on top of
    * whatever carry rotation a gesture in progress has built up, so it has to
    * read this frame's, not last frame's.
+   *
+   * Swings before ropes, and not the other way round: a rope hangs off pins,
+   * a pin rides on an item, and an item's rendered pose is its stored one plus
+   * the swing. Stepping ropes first would tie every string to where its
+   * photograph was a frame ago. `RopeSet` pulls the pin positions it needs
+   * current itself (`scene.layoutPin`), because the sweep that does that for
+   * the whole board is phase 4 and runs after this.
+   *
+   * Nothing creates a string yet — that is T-41 and the binding — so today
+   * this is an empty set stepping nothing. It is wired now so the ordering
+   * above is settled before there is anything to get it wrong with.
    */
   loop.on("sim", (frame) => {
     torsion.step(scene, dirty, frame.dt, select.heldItems, select.carryLag);
+    ropes.step(scene, dirty, frame.dt);
   });
 
   /**

@@ -1,0 +1,536 @@
+/**
+ * Every rope on the board: what exists, what is awake, and where it all is.
+ *
+ * `catenary.ts` knows the shape of one segment at rest and `verlet.ts` knows
+ * how to move one for a frame. Neither has ever heard of a string. This is the
+ * module that does: it turns a string's run of pins into segments, finds them
+ * somewhere to keep their particles, decides which ones are worth stepping,
+ * and keeps a bounding box on each so the renderer and the draping pass can
+ * ask what is near without walking the board.
+ *
+ * ## Segments, not strings
+ *
+ * > Each segment simulates as an independent rope pinned at both ends. That
+ * > gives multi-pin runs for free, keeps the solver simple, and means moving
+ * > one pin only wakes the two segments adjacent to it. — DESIGN section 2.3
+ *
+ * So a run of five pins is four ropes that happen to share endpoints, and a
+ * closed loop is five. Nothing here special-cases hub pins or multi-pin runs
+ * because there is nothing to special-case: a pin is a coordinate that two
+ * segments happen to both read.
+ *
+ * ## Sleep is the whole scalability story
+ *
+ * > A board with 500 strings has, in normal use, between zero and four awake
+ * > at any moment. — DESIGN section 5.3
+ *
+ * Which only pays off if a sleeping rope costs *nothing*, and "nothing" has to
+ * include not being asked whether it should wake up. So waking is driven from
+ * the dirty sets rather than by polling: a pin moves, and the reverse index
+ * below turns that into the one or two segments that care. A frame in which
+ * nothing moved does not touch a single rope, however many there are.
+ *
+ * That is AC-65's half of the bargain. The other half is that a sleeping
+ * rope's string is never marked dirty, so `render/ropes/` keeps the `Path2D`
+ * it already baked.
+ *
+ * ## Physics is never written down
+ *
+ * > Physics never writes to the document. Not particle positions, not swing
+ * > angles, not settled rotations, not sleep flags. — DESIGN section 5.1
+ *
+ * Everything in here is transient and derived. Topology arrives from
+ * `crdt/binding.ts` through `setString`; particle positions, bounds, sleep
+ * state and the particle pool are local, rebuilt from scratch on load, and go
+ * out with the tab. D-4 is why that is what makes multiplayer string scale.
+ */
+
+import { sampleChain, solveCatenary } from "@/sim/catenary";
+import {
+  ROPE_SLEEP_MOVE,
+  ROPE_SLEEP_STEPS,
+  ROPE_SPACING,
+  SIM_STEP_MS,
+} from "@/sim/tuning";
+import { FixedStep, stepRope } from "@/sim/verlet";
+import type { DirtySets } from "@/state/dirty";
+import type { Bounds, Scene } from "@/state/scene";
+
+/**
+ * How far a pin must move before it is worth waking the ropes on it.
+ *
+ * The dirty sets narrow the question to pins that plausibly moved; this
+ * settles it. Without it, a collaborator's pose update arriving every frame
+ * for an item that is not actually moving would hold every string on that
+ * item awake forever. Same reasoning, and the same order of magnitude, as the
+ * guard in `torsion.ts`.
+ */
+const ANCHOR_EPSILON = 1e-3;
+
+/** Particle pool growth. Starts at a few hundred ropes' worth of nothing and
+ *  doubles; a board that never makes a string never allocates. */
+const INITIAL_POOL = 0;
+
+/**
+ * One pin-to-pin rope.
+ *
+ * Cold in the sense `state/scene.ts` means it: created when the topology
+ * changes, never per frame. The hot data — the particles — is in the shared
+ * pool, addressed by `at` and `count`.
+ */
+interface Segment {
+  /** The string this belongs to; what gets marked dirty when it moves. */
+  readonly string: string;
+  readonly a: string;
+  readonly b: string;
+  /** Slack ratio for this gap, from the node the segment starts at. */
+  slack: number;
+  /** Offset into the particle pool, in coordinates rather than particles. */
+  at: number;
+  count: number;
+  asleep: boolean;
+  /** Consecutive frames spent under `ROPE_SLEEP_MOVE`. */
+  still: number;
+  /** Where the two pins were when this last stepped, so a pin that has not
+   *  really moved does not wake it. */
+  ax: number;
+  ay: number;
+  bx: number;
+  by: number;
+  minX: number;
+  minY: number;
+  maxX: number;
+  maxY: number;
+}
+
+export class RopeSet {
+  private readonly clock = new FixedStep();
+
+  /** Segments in creation order. Holes are compacted away on removal. */
+  private readonly segments: Segment[] = [];
+  /** Which segments a string owns, so `setString` can replace them. */
+  private readonly byString = new Map<string, Segment[]>();
+  /**
+   * Which segments hang off each pin — the reverse index that makes waking
+   * proportional to what moved rather than to what exists.
+   *
+   * > moving one pin only wakes the two segments adjacent to it
+   * > — DESIGN section 2.3
+   *
+   * "Two" is the usual case rather than the rule: a hub pin with six strings
+   * through it has twelve, and they all wake, which is correct and is why
+   * this is a set rather than a pair.
+   */
+  private readonly byPin = new Map<string, Set<Segment>>();
+
+  private pos = new Float64Array(INITIAL_POOL);
+  private prev = new Float64Array(INITIAL_POOL);
+  private top = 0;
+  /** Freed ranges, keyed by particle count — ropes are re-made at the same
+   *  sizes over and over, so exact-fit reuse keeps the pool from creeping. */
+  private readonly free = new Map<number, number[]>();
+
+  /** How many ropes are being stepped. The dev HUD's cheapest assertion that
+   *  an idle board is idle. */
+  get awake(): number {
+    let n = 0;
+    for (const s of this.segments) if (!s.asleep) n++;
+    return n;
+  }
+
+  get size(): number {
+    return this.segments.length;
+  }
+
+  /**
+   * Install or replace a string's topology.
+   *
+   * `pins` is the ordered run and `slack` the per-node ratios; for an open
+   * string the last entry is unused, and for a closed one it is the
+   * wrap-around segment (DATA-MODEL section 5.2). Called from the binding
+   * whenever a string's nodes change, which includes a slack edit — the
+   * segments are rebuilt and re-seeded at rest, because a slack change is a
+   * change of shape rather than a disturbance.
+   *
+   * Fewer than two nodes is not an error, it is a string that has nothing to
+   * draw yet; the document layer deletes it (DATA-MODEL section 5.3) and this
+   * simply holds no segments for it in the meantime.
+   */
+  setString(
+    scene: Scene,
+    dirty: DirtySets,
+    id: string,
+    pins: readonly string[],
+    slack: readonly number[],
+    closed = false,
+  ): void {
+    this.removeString(dirty, id);
+    const spans = closed ? pins.length : pins.length - 1;
+    if (pins.length < 2 || spans < 1) return;
+
+    const owned: Segment[] = [];
+    for (let i = 0; i < spans; i++) {
+      const a = pins[i]!;
+      const b = pins[(i + 1) % pins.length]!;
+      const segment: Segment = {
+        string: id,
+        a,
+        b,
+        slack: Math.max(slack[i] ?? 0, 0),
+        at: 0,
+        count: 0,
+        asleep: true,
+        still: ROPE_SLEEP_STEPS,
+        ax: Number.NaN,
+        ay: Number.NaN,
+        bx: Number.NaN,
+        by: Number.NaN,
+        minX: 0,
+        minY: 0,
+        maxX: 0,
+        maxY: 0,
+      };
+      this.segments.push(segment);
+      owned.push(segment);
+      this.index(a, segment);
+      this.index(b, segment);
+      this.seed(scene, segment);
+    }
+    this.byString.set(id, owned);
+    dirty.rope(id);
+  }
+
+  removeString(dirty: DirtySets, id: string): void {
+    const owned = this.byString.get(id);
+    if (owned === undefined) return;
+    for (const segment of owned) {
+      this.unindex(segment.a, segment);
+      this.unindex(segment.b, segment);
+      this.release(segment);
+      const i = this.segments.indexOf(segment);
+      if (i >= 0) this.segments.splice(i, 1);
+    }
+    this.byString.delete(id);
+    dirty.rope(id);
+  }
+
+  /** Everything goes. For teardown and for a document swapped out underneath
+   *  the scene — none of this is derived from the new one. */
+  clear(): void {
+    this.segments.length = 0;
+    this.byString.clear();
+    this.byPin.clear();
+    this.free.clear();
+    this.top = 0;
+    this.clock.reset();
+  }
+
+  /**
+   * SIM phase (3).
+   *
+   * Wakes what the frame disturbed, steps what is awake, and sleeps what has
+   * stopped. A frame on which nothing moved does none of the three.
+   */
+  step(scene: Scene, dirty: DirtySets, dtMs: number): void {
+    if (dirty.all) {
+      // A load or an undo is a state restore rather than an event. Every rope
+      // goes back to its analytic rest pose, asleep — which is AC-62, and the
+      // same argument `torsion.ts` makes for settling swings on the same flag.
+      for (const segment of this.segments) this.seed(scene, segment);
+      for (const id of this.byString.keys()) dirty.rope(id);
+    } else {
+      this.wakeDisturbed(scene, dirty);
+    }
+
+    const steps = this.clock.advance(dtMs);
+    if (steps === 0) return;
+
+    for (const segment of this.segments) {
+      if (segment.asleep) continue;
+      const a = scene.pins.get(segment.a);
+      const b = scene.pins.get(segment.b);
+      if (a === undefined || b === undefined) {
+        // A node pointing at a pin that is not there is skipped (DATA-MODEL
+        // section 8.1). Transient by construction — the pin cascade removes
+        // the node — so it sleeps rather than being torn down here.
+        segment.asleep = true;
+        continue;
+      }
+      scene.layoutPin(a);
+      scene.layoutPin(b);
+
+      const chord = Math.hypot(b.wx - a.wx, b.wy - a.wy);
+      const rest = chord * (1 + segment.slack);
+      const travelled = stepRope(
+        this.pos,
+        this.prev,
+        segment.at,
+        segment.count,
+        rest / (segment.count - 1),
+        a.wx,
+        a.wy,
+        b.wx,
+        b.wy,
+        steps,
+      );
+
+      segment.ax = a.wx;
+      segment.ay = a.wy;
+      segment.bx = b.wx;
+      segment.by = b.wy;
+      this.bound(segment);
+      dirty.rope(segment.string);
+
+      // > Sleep when the largest particle movement stays under about 0.05 px
+      // > for 12 consecutive frames. — DESIGN section 5.3
+      segment.still = travelled < ROPE_SLEEP_MOVE ? segment.still + 1 : 0;
+      if (segment.still >= ROPE_SLEEP_STEPS) segment.asleep = true;
+    }
+  }
+
+  /** Wake every segment of a string — a pluck, an impulse, a slack nudge that
+   *  did not go through the document. */
+  wake(id: string): void {
+    for (const segment of this.byString.get(id) ?? []) this.rouse(segment);
+  }
+
+  /**
+   * Read a segment's particles. `at` and `count` address `positions`, which
+   * is the shared pool and is handed out live rather than copied — the
+   * renderer walks it to build a `Path2D` and must not pay for a slice per
+   * rope per frame.
+   */
+  get positions(): Float64Array {
+    return this.pos;
+  }
+
+  /**
+   * Every segment of a string, in run order. The renderer draws a string as
+   * its segments end to end; `visit` exists so it can do that without this
+   * module minting an array per string per frame.
+   */
+  visit(
+    id: string,
+    fn: (at: number, count: number, asleep: boolean) => void,
+  ): void {
+    for (const segment of this.byString.get(id) ?? []) {
+      if (segment.count > 0) fn(segment.at, segment.count, segment.asleep);
+    }
+  }
+
+  /**
+   * The board-space box a string occupies, sag included, or `null` if it has
+   * no drawable segments.
+   *
+   * This is the bounds index: culling asks it whether a string is worth
+   * drawing, and the draping pass (T-64) will ask it which items a rope could
+   * possibly be lying on. Kept per segment and unioned on request rather than
+   * cached per string, because a string's segments move independently and the
+   * union is a handful of comparisons.
+   */
+  boundsOf(id: string, out: Bounds): Bounds | null {
+    const owned = this.byString.get(id);
+    if (owned === undefined || owned.length === 0) return null;
+    let found = false;
+    for (const segment of owned) {
+      if (segment.count === 0) continue;
+      if (!found) {
+        out.minX = segment.minX;
+        out.minY = segment.minY;
+        out.maxX = segment.maxX;
+        out.maxY = segment.maxY;
+        found = true;
+        continue;
+      }
+      if (segment.minX < out.minX) out.minX = segment.minX;
+      if (segment.minY < out.minY) out.minY = segment.minY;
+      if (segment.maxX > out.maxX) out.maxX = segment.maxX;
+      if (segment.maxY > out.maxY) out.maxY = segment.maxY;
+    }
+    return found ? out : null;
+  }
+
+  /** Strings whose bounds meet `rect`, appended to `into`. */
+  stringsIn(rect: Bounds, into: string[]): string[] {
+    for (const [id, owned] of this.byString) {
+      for (const segment of owned) {
+        if (segment.count === 0) continue;
+        if (
+          segment.maxX >= rect.minX &&
+          segment.minX <= rect.maxX &&
+          segment.maxY >= rect.minY &&
+          segment.minY <= rect.maxY
+        ) {
+          into.push(id);
+          break;
+        }
+      }
+    }
+    return into;
+  }
+
+  /**
+   * Which segments the frame disturbed.
+   *
+   * A parented pin moves when its item does, and a free pin moves on its own,
+   * so both dirty sets feed this. The cost is proportional to what changed —
+   * a board of five hundred sleeping strings with one photograph being dragged
+   * looks at the two or three segments tied to that photograph and nothing
+   * else.
+   */
+  private wakeDisturbed(scene: Scene, dirty: DirtySets): void {
+    if (this.segments.length === 0) return;
+    for (const pinId of dirty.pins) this.rousePin(scene, dirty, pinId);
+    for (const itemId of dirty.items) {
+      for (const pinId of scene.pinsOf(itemId)) this.rousePin(scene, dirty, pinId);
+    }
+  }
+
+  private rousePin(scene: Scene, dirty: DirtySets, pinId: string): void {
+    const hanging = this.byPin.get(pinId);
+    if (hanging === undefined) return;
+    const pin = scene.pins.get(pinId);
+    if (pin === undefined) return;
+    scene.layoutPin(pin);
+    for (const segment of hanging) {
+      // A segment that holds no particles was built while one of its pins did
+      // not exist — a node that arrived before the pin it names, which is
+      // ordinary under concurrent edits. The pin turning up is the event that
+      // gives it a shape, and it gets the same analytic rest pose and the same
+      // sleep as one created in order.
+      if (segment.count === 0) {
+        this.seed(scene, segment);
+        if (segment.count > 0) dirty.rope(segment.string);
+        continue;
+      }
+      if (!segment.asleep) continue;
+      const moved =
+        segment.a === pinId
+          ? Math.abs(pin.wx - segment.ax) + Math.abs(pin.wy - segment.ay)
+          : Math.abs(pin.wx - segment.bx) + Math.abs(pin.wy - segment.by);
+      if (moved > ANCHOR_EPSILON) this.rouse(segment);
+    }
+  }
+
+  private rouse(segment: Segment): void {
+    segment.asleep = false;
+    segment.still = 0;
+  }
+
+  /**
+   * Put a segment at its analytic rest pose, asleep.
+   *
+   * The particle count comes from the rest length *as it is now*, and is then
+   * held for the life of the segment: slack is a ratio, so dragging the pins
+   * apart lengthens the rope, and re-counting every frame would mean
+   * reallocating and re-seeding mid-drag — which is a visible pop in exchange
+   * for particles that are already the right density either side of it. Drag
+   * two pins three times further apart and the particles get three times
+   * sparser until the next topology or slack edit re-seeds them.
+   */
+  private seed(scene: Scene, segment: Segment): void {
+    const a = scene.pins.get(segment.a);
+    const b = scene.pins.get(segment.b);
+    if (a === undefined || b === undefined) {
+      this.release(segment);
+      segment.asleep = true;
+      return;
+    }
+    scene.layoutPin(a);
+    scene.layoutPin(b);
+
+    const chord = Math.hypot(b.wx - a.wx, b.wy - a.wy);
+    const cat = solveCatenary(a.wx, a.wy, b.wx, b.wy, chord * (1 + segment.slack));
+    const count = Math.max(2, Math.round(cat.length / ROPE_SPACING) + 1);
+    if (count !== segment.count) {
+      this.release(segment);
+      segment.at = this.alloc(count);
+      segment.count = count;
+    }
+
+    sampleChain(cat, this.pos, count, segment.at);
+    // Seeded, therefore at rest: no velocity, and asleep on the frame it is
+    // created. This is AC-62 — "a board opens perfectly still".
+    this.prev.set(this.pos.subarray(segment.at, segment.at + count * 2), segment.at);
+    segment.ax = a.wx;
+    segment.ay = a.wy;
+    segment.bx = b.wx;
+    segment.by = b.wy;
+    segment.asleep = true;
+    segment.still = ROPE_SLEEP_STEPS;
+    this.bound(segment);
+  }
+
+  private bound(segment: Segment): void {
+    let minX = Infinity;
+    let minY = Infinity;
+    let maxX = -Infinity;
+    let maxY = -Infinity;
+    const end = segment.at + segment.count * 2;
+    for (let i = segment.at; i < end; i += 2) {
+      const x = this.pos[i]!;
+      const y = this.pos[i + 1]!;
+      if (x < minX) minX = x;
+      if (x > maxX) maxX = x;
+      if (y < minY) minY = y;
+      if (y > maxY) maxY = y;
+    }
+    segment.minX = minX;
+    segment.minY = minY;
+    segment.maxX = maxX;
+    segment.maxY = maxY;
+  }
+
+  private index(pinId: string, segment: Segment): void {
+    let hanging = this.byPin.get(pinId);
+    if (hanging === undefined) {
+      hanging = new Set<Segment>();
+      this.byPin.set(pinId, hanging);
+    }
+    hanging.add(segment);
+  }
+
+  private unindex(pinId: string, segment: Segment): void {
+    const hanging = this.byPin.get(pinId);
+    if (hanging === undefined) return;
+    hanging.delete(segment);
+    if (hanging.size === 0) this.byPin.delete(pinId);
+  }
+
+  private alloc(count: number): number {
+    const reusable = this.free.get(count);
+    const recycled = reusable?.pop();
+    if (recycled !== undefined) return recycled;
+
+    const need = count * 2;
+    if (this.top + need > this.pos.length) {
+      // Round up to a power of two so a board that grows a rope at a time
+      // does not reallocate on every one of them.
+      const size = Math.pow(2, Math.ceil(Math.log2(Math.max(this.top + need, 256))));
+      const pos = new Float64Array(size);
+      const prev = new Float64Array(size);
+      pos.set(this.pos);
+      prev.set(this.prev);
+      this.pos = pos;
+      this.prev = prev;
+    }
+    const at = this.top;
+    this.top += need;
+    return at;
+  }
+
+  private release(segment: Segment): void {
+    if (segment.count === 0) return;
+    let reusable = this.free.get(segment.count);
+    if (reusable === undefined) {
+      reusable = [];
+      this.free.set(segment.count, reusable);
+    }
+    reusable.push(segment.at);
+    segment.count = 0;
+  }
+}
+
+/** How long a rope takes to fall asleep once it stops moving, in
+ *  milliseconds — for tests and for the dev HUD to label a countdown. */
+export const ROPE_SLEEP_MS = ROPE_SLEEP_STEPS * SIM_STEP_MS;

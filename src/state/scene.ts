@@ -366,39 +366,57 @@ export class Scene {
   layoutPins(changedItems?: ReadonlySet<string>): void {
     for (const pin of this.pins.values()) {
       if (changedItems && pin.parent !== null && !changedItems.has(pin.parent)) continue;
-      if (pin.parent === null) {
-        pin.wx = pin.lx;
-        pin.wy = pin.ly;
-        continue;
-      }
-      const slot = this.slots.get(pin.parent);
-      if (slot === undefined) {
-        pin.wx = pin.lx;
-        pin.wy = pin.ly;
-        continue;
-      }
-      // Rendered rotation about the rendered centre: a pin stays on the
-      // photograph while the photograph swings — and, because `drift` is
-      // defined as the translation that holds the pivot still, a *single*
-      // pin's world position comes back unchanged by the swing entirely, which
-      // is what makes it look pushed into the cork rather than sliding across
-      // it.
-      const angle = this.rot[slot]! + this.swing[slot]!;
-      // Into the shared scratch and straight back out again — this runs over
-      // every pin on the board on every frame anything moved, so it must not
-      // mint an object per pin.
-      rotateOut(
-        pin.lx,
-        pin.ly,
-        this.x[slot]! + this.driftX[slot]!,
-        this.y[slot]! + this.driftY[slot]!,
-        Math.cos(angle),
-        Math.sin(angle),
-        scratch,
-      );
-      pin.wx = scratch.x;
-      pin.wy = scratch.y;
+      this.layoutPin(pin);
     }
+  }
+
+  /**
+   * One pin's world position, from the item's pose as it stands right now.
+   *
+   * `layoutPins` is the LAYOUT phase's sweep over the board; this is the same
+   * answer for a single pin, callable from anywhere. `sim/ropes.ts` needs it
+   * because rope anchors are pins and the rope solver runs in phase 3 — a
+   * frame *before* the sweep — so reading `wx`/`wy` there would anchor a
+   * string to where its pin was last frame, and a photograph dragged at any
+   * speed would tow its string along visibly detached from the pin.
+   *
+   * Cheap enough to be the answer to that: a rope asks for two, and only for
+   * the handful of ropes actually awake. The sweep repeats the work a phase
+   * later and neither minds, because it is a pure function of the pose.
+   */
+  layoutPin(pin: PinNode): void {
+    if (pin.parent === null) {
+      pin.wx = pin.lx;
+      pin.wy = pin.ly;
+      return;
+    }
+    const slot = this.slots.get(pin.parent);
+    if (slot === undefined) {
+      pin.wx = pin.lx;
+      pin.wy = pin.ly;
+      return;
+    }
+    // Rendered rotation about the rendered centre: a pin stays on the
+    // photograph while the photograph swings — and, because `drift` is
+    // defined as the translation that holds the pivot still, a *single*
+    // pin's world position comes back unchanged by the swing entirely, which
+    // is what makes it look pushed into the cork rather than sliding across
+    // it.
+    const angle = this.rot[slot]! + this.swing[slot]!;
+    // Into the shared scratch and straight back out again — this runs over
+    // every pin on the board on every frame anything moved, so it must not
+    // mint an object per pin.
+    rotateOut(
+      pin.lx,
+      pin.ly,
+      this.x[slot]! + this.driftX[slot]!,
+      this.y[slot]! + this.driftY[slot]!,
+      Math.cos(angle),
+      Math.sin(angle),
+      scratch,
+    );
+    pin.wx = scratch.x;
+    pin.wy = scratch.y;
   }
 
   /** How many pins hold this item — its physics, per DESIGN section 2.2. */
