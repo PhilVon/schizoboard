@@ -136,6 +136,34 @@ function approach(current: number, target: number, dt: number, tau: number): num
   return current + (target - current) * (1 - Math.exp(-dt / tau));
 }
 
+/**
+ * The pose to write for an item about to lose the pin it hangs from, or an
+ * empty map when nothing is about to.
+ *
+ * An item on one pin is drawn at `rot + swing` about a centre shifted by
+ * `drift`, and neither transient is in the document. Take the pin out and both
+ * stop existing, so the paper snaps back to an authored rotation that has been
+ * invisible ever since it started hanging — which is what T-107 was. Writing
+ * the pose it was drawn at, in the same transaction that removes the pin,
+ * leaves the paper exactly where it looks.
+ *
+ * Only the *last* pin. Going from two to one starts it hanging, which is a
+ * swing rather than a jump; three to two changes nothing at all.
+ */
+function settleOnUnpin(ctx: ToolContext, pinId: string): ReadonlyMap<string, WritePose> {
+  const settle = new Map<string, WritePose>();
+  const parent = ctx.scene.pins.get(pinId)?.parent ?? null;
+  if (parent === null || ctx.scene.pinCount(parent) !== 1) return settle;
+  const slot = ctx.scene.slotOf(parent);
+  if (slot === undefined) return settle;
+  settle.set(parent, {
+    x: ctx.scene.renderX(slot),
+    y: ctx.scene.renderY(slot),
+    rot: ctx.scene.rot[slot]! + ctx.scene.swing[slot]!,
+  });
+  return settle;
+}
+
 export class SelectTool implements Tool {
   readonly id = "select";
 
@@ -323,7 +351,7 @@ export class SelectTool implements Tool {
      */
     const pin = ctx.hitPin(at.x, at.y);
     if (pin !== null && at.alt) {
-      ctx.write.deletePins([pin]);
+      ctx.write.deletePins([pin], settleOnUnpin(ctx, pin));
       this.phase = "idle";
       return;
     }

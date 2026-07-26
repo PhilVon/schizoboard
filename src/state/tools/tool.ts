@@ -111,8 +111,17 @@ export interface BoardWriter {
    * the cork — which is how a pin is un-parented (DESIGN section 3.3).
    */
   placePin(pinId: string, parent: string | null, lx: number, ly: number): void;
-  /** `Alt`+click. The strings through them heal in the same entry. */
-  deletePins(ids: readonly string[]): void;
+  /**
+   * `Alt`+click. The strings through them heal in the same entry.
+   *
+   * `settle` is the pose to write for any item that has just lost the pin it
+   * was hanging from. An item on one pin is drawn at `rot + swing` about a
+   * shifted centre, and none of that is in the document — so when the pin goes,
+   * the transient carrying the difference goes with it and the paper would jump
+   * to an angle nobody chose. The tool supplies the poses because the rendered
+   * pose lives in the scene mirror and `crdt/` may not read it.
+   */
+  deletePins(ids: readonly string[], settle?: ReadonlyMap<string, WritePose>): void;
 }
 
 export interface ToolContext {

@@ -18,6 +18,7 @@ import * as Y from "yjs";
 import { freshId, mutate, type BoardDoc } from "@/crdt/doc";
 import { Origin } from "@/crdt/origins";
 import { boardToLocal, localToBoard, removePinsFromStrings } from "@/crdt/ops/cascade";
+import { writePoses, type Pose } from "@/crdt/ops/items";
 import { readItem, readPin, type PinKind, type YMap } from "@/crdt/schema";
 
 /** Board units in from the top edge, where a default pin goes. */
@@ -173,15 +174,40 @@ export function pinWorldPosition(board: BoardDoc, pinId: string): { x: number; y
 }
 
 /**
- * Delete pins, healing every string that ran through them. One transaction,
- * so undo restores the pins and the string nodes together.
+ * Delete pins, healing every string that ran through them, and settle any item
+ * that has just lost the pin it was hanging from. One transaction, so undo
+ * restores the pins, the string nodes and the poses together.
+ *
+ * ## Why a pose write belongs in a pin delete
+ *
+ * An item on one pin hangs plumb, and its **authored** rotation is not what is
+ * on screen — `sim/torsion.ts` carries the difference in a transient the
+ * document never sees. Take the pin out and that transient stops existing, so
+ * without this the paper jumps to an angle nobody chose and nobody could see,
+ * which is the whole of T-107.
+ *
+ * DESIGN section 5.1 says physics never writes to the document and lists
+ * "settled rotations" among the things it must not write. This is not the
+ * simulation writing: it is one write caused by a user taking a pin out, whose
+ * value the simulation happened to compute — so it cannot make two peers fight,
+ * which is what that rule exists to prevent. Q-11 chose it over the
+ * alternative, which was to stop the rotation handle writing `rot` at all on a
+ * hanging item.
+ *
+ * The caller supplies the poses because only it can: the rendered pose lives in
+ * the scene mirror, and `crdt/` may not read that.
  */
-export function deletePins(board: BoardDoc, pinIds: readonly string[]): void {
+export function deletePins(
+  board: BoardDoc,
+  pinIds: readonly string[],
+  settle?: ReadonlyMap<string, Pose>,
+): void {
   if (pinIds.length === 0) return;
   mutate(board, Origin.LOCAL_USER, () => {
     const doomed = new Set(pinIds.filter((id) => board.pins.has(id)));
     if (doomed.size === 0) return;
     removePinsFromStrings(board, doomed);
     for (const id of doomed) board.pins.delete(id);
+    if (settle) writePoses(board, settle);
   });
 }

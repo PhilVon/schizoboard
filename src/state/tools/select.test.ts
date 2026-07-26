@@ -23,7 +23,7 @@ type Write =
   | { kind: "sizes"; phase: "live" | "final"; sizes: Map<string, WriteSize> }
   | { kind: "delete"; ids: string[]; keepPins: boolean }
   | { kind: "place"; pinId: string; parent: string | null; x: number; y: number }
-  | { kind: "unpin"; ids: string[] };
+  | { kind: "unpin"; ids: string[]; settle: [string, WritePose][] };
 
 let scene: Scene;
 let dirty: DirtySets;
@@ -150,7 +150,8 @@ beforeEach(() => {
       setSizes: (sizes, phase) => writes.push({ kind: "sizes", phase, sizes: new Map(sizes) }),
       deleteItems: (ids, keepPins) => writes.push({ kind: "delete", ids: [...ids], keepPins }),
       placePin: (pinId, parent, x, y) => writes.push({ kind: "place", pinId, parent, x, y }),
-      deletePins: (ids) => writes.push({ kind: "unpin", ids: [...ids] }),
+      deletePins: (ids, settle) =>
+        writes.push({ kind: "unpin", ids: [...ids], settle: [...(settle ?? [])] }),
       // The select tool never creates anything; a sheet arrives from the note
       // tool or from paste, and a pin from the pin tool.
       createNote: () => {
@@ -1091,7 +1092,7 @@ describe("Alt+click on a pin", () => {
     putPin("p", null, 0, 0);
     down(0, 0, { alt: true });
     up(0, 0);
-    expect(writes).toEqual([{ kind: "unpin", ids: ["p"] }]);
+    expect(writes).toEqual([{ kind: "unpin", ids: ["p"], settle: [] }]);
   });
 
   it("does not also select or drag the item under it", () => {
@@ -1102,7 +1103,56 @@ describe("Alt+click on a pin", () => {
     up(200, 200);
     expect(selection.toArray()).toEqual([]);
     expect(scene.poseOf("a")).toMatchObject({ x: 0, y: 0 });
-    expect(writes).toEqual([{ kind: "unpin", ids: ["p"] }]);
+    // The settle rides along, because `a` has just lost the pin it hangs from —
+    // here it is already where it is drawn, so it writes what was there.
+    expect(writes).toEqual([
+      { kind: "unpin", ids: ["p"], settle: [["a", { x: 0, y: 0, rot: 0 }]] },
+    ]);
+  });
+
+  /**
+   * T-107. An item on one pin is drawn at `rot + swing` about a shifted centre,
+   * and neither is in the document — so taking the pin out would snap the paper
+   * to an authored angle that has been invisible since it started hanging. The
+   * settle pose goes with the delete, in one transaction.
+   */
+  it("settles the item it was holding, so the paper does not jump", () => {
+    put("a", 40, -20, 200, 200, 0.9);
+    putPin("p", "a", 40, -20);
+    const slot = scene.slotOf("a")!;
+    scene.swing[slot] = -0.9;
+    scene.driftX[slot] = 12;
+    scene.driftY[slot] = -7;
+
+    down(40, -20, { alt: true });
+    up(40, -20);
+
+    const write = writes[0]!;
+    expect(write.kind).toBe("unpin");
+    if (write.kind !== "unpin") throw new Error("expected an unpin");
+    expect(write.settle).toEqual([["a", { x: 52, y: -27, rot: 0 }]]);
+  });
+
+  it("settles nothing when the item still has another pin holding it", () => {
+    put("a", 0, 0, 200, 200);
+    putPin("p1", "a", 0, 0);
+    putPin("p2", "a", 60, 60);
+
+    down(0, 0, { alt: true });
+    up(0, 0);
+
+    const write = writes[0]!;
+    if (write.kind !== "unpin") throw new Error("expected an unpin");
+    expect(write.settle).toEqual([]);
+  });
+
+  it("settles nothing for a free pin, which was holding nothing", () => {
+    putPin("p", null, 0, 0);
+    down(0, 0, { alt: true });
+    up(0, 0);
+    const write = writes[0]!;
+    if (write.kind !== "unpin") throw new Error("expected an unpin");
+    expect(write.settle).toEqual([]);
   });
 
   it("is an ordinary press when there is no pin under it", () => {

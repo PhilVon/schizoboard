@@ -164,16 +164,24 @@ export function setItemPoses(
   origin: typeof Origin.LOCAL_USER | typeof Origin.DRAG_THROTTLE = Origin.LOCAL_USER,
 ): void {
   if (poses.size === 0) return;
-  mutate(board, origin, () => {
-    for (const [id, pose] of poses) {
-      if (!Number.isFinite(pose.x) || !Number.isFinite(pose.y)) continue;
-      const item = board.items.get(id);
-      if (!item) continue;
-      item.set("x", pose.x);
-      item.set("y", pose.y);
-      if (pose.rot !== undefined && Number.isFinite(pose.rot)) item.set("rot", pose.rot);
-    }
-  });
+  mutate(board, origin, () => writePoses(board, poses));
+}
+
+/**
+ * The pose write itself, without a transaction of its own — the step other ops
+ * compose, in the same spirit as `crdt/ops/cascade.ts`. `deletePins` needs it
+ * so that taking the last pin out of a hanging item and settling that item
+ * where it was drawn are one entry on the undo stack.
+ */
+export function writePoses(board: BoardDoc, poses: ReadonlyMap<string, Pose>): void {
+  for (const [id, pose] of poses) {
+    if (!Number.isFinite(pose.x) || !Number.isFinite(pose.y)) continue;
+    const item = board.items.get(id);
+    if (!item) continue;
+    item.set("x", pose.x);
+    item.set("y", pose.y);
+    if (pose.rot !== undefined && Number.isFinite(pose.rot)) item.set("rot", pose.rot);
+  }
 }
 
 /** Where an item ends up after a resize: the new size, and the centre it implies. */

@@ -214,9 +214,12 @@ async function boot(): Promise<void> {
     placePin: (pinId, parent, lx, ly) => {
       queued.push(() => placePin(board, pinId, parent, lx, ly));
     },
-    deletePins: (ids) => {
+    deletePins: (ids, settle) => {
       const snapshot = [...ids];
-      queued.push(() => deletePins(board, snapshot));
+      // Copied, like every other queued write: this runs in phase 9 and the
+      // tool has moved on by then.
+      const poses = settle ? new Map(settle) : undefined;
+      queued.push(() => deletePins(board, snapshot, poses));
     },
   };
 

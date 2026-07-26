@@ -425,6 +425,39 @@ describe("cascades", () => {
     expect(b.strings.has(stringId)).toBe(true);
   });
 
+  /**
+   * T-107. The pose the caller supplies is the one the item was *drawn* at,
+   * which for something hanging on one pin is not its authored rotation — so
+   * without this the paper jumps to an angle nobody chose the instant the pin
+   * goes. One transaction, so undo puts the pin and the angle back together.
+   */
+  it("settles an item that has lost the pin it hung from, in the same entry", () => {
+    const b = board();
+    const { itemId, pinId } = polaroid(b);
+    const undo = new Y.UndoManager([b.items, b.pins], {
+      trackedOrigins: new Set(TRACKED_ORIGINS),
+    });
+
+    deletePins(b, [pinId!], new Map([[itemId, { x: 900, y: -50, rot: 1.25 }]]));
+    const settled = readItem(itemId, b.items.get(itemId)!)!;
+    expect([settled.x, settled.y, settled.rot]).toEqual([900, -50, 1.25]);
+    expect(b.pins.has(pinId!)).toBe(false);
+
+    undo.undo();
+    const back = readItem(itemId, b.items.get(itemId)!)!;
+    expect(back.rot).not.toBe(1.25);
+    expect(b.pins.has(pinId!)).toBe(true);
+  });
+
+  it("deletes without a settle when nothing was hanging", () => {
+    const b = board();
+    const { itemId, pinId } = polaroid(b);
+    const before = readItem(itemId, b.items.get(itemId)!)!;
+    deletePins(b, [pinId!]);
+    const after = readItem(itemId, b.items.get(itemId)!)!;
+    expect([after.x, after.y, after.rot]).toEqual([before.x, before.y, before.rot]);
+  });
+
   it("deleting a pin heals its strings", () => {
     const b = board();
     const a = polaroid(b, 0, 0);
