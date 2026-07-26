@@ -315,6 +315,87 @@ describe("sleeping", () => {
   });
 });
 
+describe("finding the string under the cursor", () => {
+  /**
+   * > Hover a string. The nearest point on the rope highlights, tracking your
+   * > cursor along the curve. — DESIGN section 3.4
+   *
+   * Against the particles, not the chord — which is the whole point. A string
+   * with any drape in it is nowhere near the straight line between its pins,
+   * and a hit test against that line would find nothing where the string
+   * visibly is and something where it visibly is not.
+   */
+  it("finds the rope where it hangs, not where its chord runs", () => {
+    string("s1", 0.4);
+    const bounds = ropes.boundsOf("s1", { ...box })!;
+    // The middle of the chord is at y = 0; the string is far below it.
+    expect(bounds.maxY).toBeGreaterThan(40);
+    expect(ropes.nearest(100, 0, 10)).toBeNull();
+    const hit = ropes.nearest(100, bounds.maxY, 10)!;
+    expect(hit.string).toBe("s1");
+    expect(hit.distance).toBeLessThan(10);
+  });
+
+  it("gives back nothing when the cursor is nowhere near a string", () => {
+    string("s1");
+    expect(ropes.nearest(5000, 5000, 20)).toBeNull();
+  });
+
+  /** `t` is the arc-length fraction, which is what the slack split needs. The
+   *  particles are evenly spaced by rest length, so walking them walks the
+   *  string at constant speed and `t` comes out for free. */
+  it("reports where along the string the point fell", () => {
+    string("s1", 0.3);
+    const pts = points("s1");
+    const near = (i: number) => ropes.nearest(pts[i][0], pts[i][1], 5)!.t;
+    expect(near(0)).toBeCloseTo(0, 6);
+    expect(near(pts.length - 1)).toBeCloseTo(1, 6);
+    // Monotonic along the run, and the midpoint particle is at the midpoint.
+    expect(near(Math.floor((pts.length - 1) / 2))).toBeCloseTo(0.5, 1);
+    let previous = -1;
+    for (let i = 0; i < pts.length; i++) {
+      const t = near(i);
+      expect(t).toBeGreaterThan(previous);
+      previous = t;
+    }
+  });
+
+  /** A run of several segments has to say *which* gap was hit, because that
+   *  is the index the new node goes after. */
+  it("names the segment, so the insert knows where it goes", () => {
+    pin("p3", 400, 0);
+    pin("p4", 600, 0);
+    ropes.setString(scene, dirty, "s1", ["p1", "p2", "p3", "p4"], [0.3, 0.3, 0.3]);
+    const at = (x: number) => {
+      const box2 = { minX: 0, minY: 0, maxX: 0, maxY: 0 };
+      ropes.boundsOf("s1", box2);
+      // Sweep down from the chord to find the string below x.
+      for (let y = 0; y < 200; y += 0.5) {
+        const hit = ropes.nearest(x, y, 2);
+        if (hit) return hit;
+      }
+      return null;
+    };
+    expect(at(100)!.node).toBe(0);
+    expect(at(300)!.node).toBe(1);
+    expect(at(500)!.node).toBe(2);
+  });
+
+  it("picks the nearer of two strings that overlap", () => {
+    pin("p3", 0, 40);
+    pin("p4", 200, 40);
+    ropes.setString(scene, dirty, "s1", ["p1", "p2"], [0.15]);
+    ropes.setString(scene, dirty, "s2", ["p3", "p4"], [0.15]);
+    const lower = ropes.boundsOf("s2", { ...box })!.maxY;
+    expect(ropes.nearest(100, lower, 8)!.string).toBe("s2");
+  });
+
+  it("ignores a string that has no particles yet", () => {
+    ropes.setString(scene, dirty, "s1", ["p1", "ghost"], [0.2]);
+    expect(ropes.nearest(100, 0, 500)).toBeNull();
+  });
+});
+
 describe("bounds", () => {
   it("covers the sag rather than just the pins", () => {
     string("s1", 0.5);

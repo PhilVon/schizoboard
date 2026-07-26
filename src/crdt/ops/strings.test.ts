@@ -17,12 +17,15 @@ import { beforeEach, describe, expect, it } from "vitest";
 
 import { openBoardDoc, type BoardDoc } from "@/crdt/doc";
 import { createPin, movePin } from "@/crdt/ops/pins";
+import { UndoHistory } from "@/crdt/undo";
+import { splitSlack } from "@/lib/slack";
 import {
   appendStringNode,
   clampSlack,
   createString,
   DEFAULT_SLACK,
   deleteStrings,
+  insertPinIntoString,
   insertStringNode,
   removeStringNodes,
   setNodeSlack,
@@ -47,6 +50,14 @@ function pins(id: string): string[] {
 
 function slacks(id: string): number[] {
   return nodes(id).map((n) => n.slackAfter);
+}
+
+/** Two free pins, 200 board units apart. */
+function twoPins(): [string, string] {
+  return [
+    createPin(board, { parent: null, lx: 0, ly: 0 }),
+    createPin(board, { parent: null, lx: 200, ly: 0 }),
+  ];
 }
 
 beforeEach(() => {
@@ -341,6 +352,85 @@ describe("growing and shrinking a run", () => {
     expect(() => removeStringNodes(board, id, new Set(["nope"]))).not.toThrow();
     expect(appendStringNode(board, id, "p3")).toBeNull();
     expect(insertStringNode(board, id, 0, "p3")).toBeNull();
+  });
+});
+
+describe("pushing a pin into the middle of a run", () => {
+  /** > A new pin is born at that point on the string, free-floating, and
+   *  > follows your cursor. The string now runs *through* it.
+   *  > — DESIGN section 3.4 */
+  it("makes the pin and the node in one update", () => {
+    const [a, b] = twoPins();
+    const id = createString(board, { pins: [a, b], slack: 0.3 })!;
+    let updates = 0;
+    board.doc.on("update", () => updates++);
+
+    const made = insertPinIntoString(
+      board, id, 1, { parent: null, lx: 100, ly: 60 }, 0.18, 0.22,
+    )!;
+    expect(updates).toBe(1);
+    expect(board.pins.has(made)).toBe(true);
+    expect(pins(id)).toEqual([a, made, b]);
+    expect(slacks(id).slice(0, 2)).toEqual([0.18, 0.22]);
+  });
+
+  /** The two halves are what stop the sag jumping (AC-18), and they are the
+   *  caller's because only the caller knows where the pins actually are. */
+  it("writes the split the caller worked out", () => {
+    const [a, b] = twoPins();
+    const id = createString(board, { pins: [a, b], slack: 0.3 })!;
+    const [before, after] = splitSlack(200, 0.3, 120, 140, 0.45);
+    insertPinIntoString(board, id, 1, { parent: null, lx: 90, ly: 70 }, before, after);
+    expect(slacks(id)[0]).toBeCloseTo(before, 12);
+    expect(slacks(id)[1]).toBeCloseTo(after, 12);
+  });
+
+  it("can push the new node onto an item, so it rides with the paper", () => {
+    const [a, b] = twoPins();
+    const id = createString(board, { pins: [a, b] })!;
+    const made = insertPinIntoString(
+      board, id, 1, { parent: "note-1", lx: 10, ly: -20 }, 0.2, 0.2,
+    )!;
+    expect(board.pins.get(made)!.get("parent")).toBe("note-1");
+  });
+
+  it("can run the string through a pin that already exists", () => {
+    const [a, b] = twoPins();
+    const hub = createPin(board, { parent: null, lx: 100, ly: 100 });
+    const id = createString(board, { pins: [a, b] })!;
+    expect(insertPinIntoString(board, id, 1, { pin: hub }, 0.2, 0.2)).toBe(hub);
+    expect(pins(id)).toEqual([a, hub, b]);
+    expect(board.pins.size).toBe(3);
+  });
+
+  it("makes no pin at all when the string has gone", () => {
+    const [a, b] = twoPins();
+    const id = createString(board, { pins: [a, b] })!;
+    deleteStrings(board, [id]);
+    const before = board.pins.size;
+    expect(
+      insertPinIntoString(board, id, 1, { parent: null, lx: 0, ly: 0 }, 0.2, 0.2),
+    ).toBeNull();
+    expect(board.pins.size).toBe(before);
+  });
+
+  /** AC-71: Esc mid-drag reverts topology completely. Nothing is written until
+   *  the release, so the revert is that the write never happened — and if one
+   *  did, undo takes the pin with it because they are one entry. */
+  it("undoes as one thing, taking its pin with it", () => {
+    const [a, b] = twoPins();
+    const id = createString(board, { pins: [a, b], slack: 0.3 })!;
+    const history = new UndoHistory(board);
+    const made = insertPinIntoString(
+      board, id, 1, { parent: null, lx: 100, ly: 60 }, 0.18, 0.22,
+    )!;
+    expect(board.pins.has(made)).toBe(true);
+
+    history.undo();
+    expect(board.pins.has(made)).toBe(false);
+    expect(pins(id)).toEqual([a, b]);
+    expect(slacks(id)[0]).toBeCloseTo(0.3, 12);
+    history.destroy();
   });
 });
 

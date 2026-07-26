@@ -289,6 +289,55 @@ export function insertStringNode(
 }
 
 /**
+ * Push a pin into the middle of a run — the headline gesture, written down.
+ *
+ * > A new pin is born at that point on the string, free-floating, and follows
+ * > your cursor. The string now runs *through* it — you're physically pulling
+ * > a loop of string out to a new position. — DESIGN section 3.4
+ *
+ * One transaction for the pin and the node, like `createStringThrough` and for
+ * the same two reasons: a tool never learns the id of a pin it just made, and
+ * pulling a loop of string out is one thing the user did, so undoing it must
+ * not leave a pin behind in the cork.
+ *
+ * `slackBefore` and `slackAfter` come from `lib/slack.ts`'s `splitSlack`. They
+ * are the caller's because only the caller knows where the pins actually are —
+ * the chords are geometry, and geometry lives in the scene, which `crdt/` may
+ * not read. Getting them wrong is the one visible failure this gesture has
+ * (DESIGN section 3.4, AC-18).
+ */
+export function insertPinIntoString(
+  board: BoardDoc,
+  stringId: string,
+  index: number,
+  anchor: StringAnchor,
+  slackBefore: number,
+  slackAfter: number,
+): string | null {
+  return mutate(board, Origin.LOCAL_USER, () => {
+    const nodes = nodesOf(board, stringId);
+    if (!nodes) return null;
+
+    let pin: string;
+    if ("pin" in anchor) {
+      if (!board.pins.has(anchor.pin)) return null;
+      pin = anchor.pin;
+    } else {
+      const built = buildPin(board, anchor);
+      board.pins.set(built.id, built.map);
+      pin = built.id;
+    }
+
+    const at = Math.max(0, Math.min(index, nodes.length));
+    const node = buildNode(pin, slackAfter);
+    nodes.insert(at, [node]);
+    const previous = at > 0 ? nodes.get(at - 1) : undefined;
+    if (previous) previous.set("slackAfter", clampSlack(slackBefore));
+    return pin;
+  });
+}
+
+/**
  * Drop nodes from a run, and delete the string if too little of it is left.
  *
  * > A string left with fewer than two valid nodes deletes itself.

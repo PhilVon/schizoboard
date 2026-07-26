@@ -71,6 +71,19 @@ const ANCHOR_EPSILON = 1e-3;
  *  doubles; a board that never makes a string never allocates. */
 const INITIAL_POOL = 0;
 
+/** Where a board point lands on a rope — see `RopeSet.nearest`. */
+export interface RopeHit {
+  readonly string: string;
+  /** Index of the node the segment starts at; an insert goes at `node + 1`. */
+  readonly node: number;
+  /** Arc-length fraction along that segment, 0 at `node` and 1 at `node + 1`. */
+  readonly t: number;
+  /** The point itself, board space. */
+  readonly x: number;
+  readonly y: number;
+  readonly distance: number;
+}
+
 /**
  * One pin-to-pin rope.
  *
@@ -427,6 +440,67 @@ export class RopeSet {
       if (segment.maxY > out.maxY) out.maxY = segment.maxY;
     }
     return found ? out : null;
+  }
+
+/**
+   * The nearest point on any rope to a board point, within `reach`.
+   *
+   * > Hover a string. The nearest point on the rope highlights, tracking your
+   * > cursor along the curve. — DESIGN section 3.4
+   *
+   * Against the **particles**, not against the chord between the pins — the
+   * whole gesture is grabbing the string where it actually hangs, and a
+   * catenary with any drape in it is nowhere near its own chord in the middle.
+   *
+   * `t` is the arc-length fraction along the segment, which is what
+   * `lib/slack.ts` needs to split the slack without the sag jumping. Arc
+   * length rather than distance along the chord, and it comes out for free:
+   * the particles are equally spaced by rest length (D-16), so walking them is
+   * already walking the string at constant speed.
+   *
+   * `node` is the index of the string node the segment *starts* at, so
+   * inserting goes at `node + 1`.
+   */
+  nearest(bx: number, by: number, reach: number): RopeHit | null {
+    let best: RopeHit | null = null;
+    let bestDistance = reach;
+
+    for (const [id, owned] of this.byString) {
+      for (let k = 0; k < owned.length; k++) {
+        const segment = owned[k]!;
+        if (segment.count < 2) continue;
+        // The bounding box is the cheap rejection, and on a board of five
+        // hundred strings it is almost all of them.
+        if (
+          bx < segment.minX - reach ||
+          bx > segment.maxX + reach ||
+          by < segment.minY - reach ||
+          by > segment.maxY + reach
+        ) {
+          continue;
+        }
+
+        const links = segment.count - 1;
+        for (let i = 0; i < links; i++) {
+          const at = segment.at + i * 2;
+          const ax = this.pos[at]!;
+          const ay = this.pos[at + 1]!;
+          const dx = this.pos[at + 2]! - ax;
+          const dy = this.pos[at + 3]! - ay;
+          const span = dx * dx + dy * dy;
+          // Where along this link the point falls, clamped to its ends so a
+          // point beyond the link belongs to its neighbour instead.
+          const u = span > 0 ? Math.min(1, Math.max(0, ((bx - ax) * dx + (by - ay) * dy) / span)) : 0;
+          const px = ax + dx * u;
+          const py = ay + dy * u;
+          const distance = Math.hypot(bx - px, by - py);
+          if (distance >= bestDistance) continue;
+          bestDistance = distance;
+          best = { string: id, node: k, t: (i + u) / links, x: px, y: py, distance };
+        }
+      }
+    }
+    return best;
   }
 
   /** Strings whose bounds meet `rect`, appended to `into`. */
