@@ -20,6 +20,7 @@
 
 mod assets;
 mod clipboard;
+mod docstore;
 mod protocol;
 
 use std::collections::HashSet;
@@ -30,6 +31,7 @@ use tauri::ipc::InvokeBody;
 use tauri::{AppHandle, Emitter, Manager};
 
 use assets::{AssetMeta, AssetStore};
+use docstore::DocStore;
 
 /// What shell the frontend is actually running inside. Consumed by the boot
 /// panel now and by the dev HUD (T-14) later.
@@ -86,10 +88,15 @@ fn schedule_variants(app: &AppHandle, sha256: String) {
 
 /// Run `job` off the main thread and flatten both failure modes into the string
 /// the frontend's promise rejects with.
-async fn blocking<T, F>(job: F) -> Result<T, String>
+///
+/// Generic in the error as well as the value: the asset store and the document
+/// log have separate error types on purpose — neither should be able to return
+/// the other's failures — and this only ever needs them to be printable.
+async fn blocking<T, E, F>(job: F) -> Result<T, String>
 where
-    F: FnOnce() -> assets::Result<T> + Send + 'static,
+    F: FnOnce() -> Result<T, E> + Send + 'static,
     T: Send + 'static,
+    E: std::fmt::Display + Send + 'static,
 {
     tauri::async_runtime::spawn_blocking(job)
         .await
@@ -163,7 +170,10 @@ async fn asset_ingest_url(app: AppHandle, url: String) -> Result<AssetMeta, Stri
 
 #[tauri::command]
 async fn asset_has(app: AppHandle, hashes: Vec<String>) -> Result<Vec<bool>, String> {
-    blocking(move || {
+    // The return type is spelled out because `?` alone does not pin it: it
+    // converts through `From`, so the error could be anything the store's error
+    // converts into, and inference gives up.
+    blocking(move || -> assets::Result<Vec<bool>> {
         let store = store_of(&app).map_err(assets::Error::Unavailable)?;
         Ok(hashes.iter().map(|hash| store.has(hash)).collect())
     })
@@ -195,7 +205,7 @@ struct GcReport {
 
 #[tauri::command]
 async fn asset_gc(app: AppHandle, keep: Vec<String>) -> Result<GcReport, String> {
-    blocking(move || {
+    blocking(move || -> assets::Result<GcReport> {
         let keep: HashSet<String> = keep.into_iter().collect();
         let freed = store_of(&app)
             .map_err(assets::Error::Unavailable)?
@@ -203,6 +213,49 @@ async fn asset_gc(app: AppHandle, keep: Vec<String>) -> Result<GcReport, String>
         Ok(GcReport { freed_bytes: freed })
     })
     .await
+}
+
+// --- the document log -------------------------------------------------------
+
+fn docstore_of(app: &AppHandle) -> docstore::Result<tauri::State<'_, DocStore>> {
+    app.try_state::<DocStore>()
+        .ok_or_else(|| docstore::Error::Unavailable("the document log failed to open".into()))
+}
+
+/// Fire-and-forget from the frontend's side, and already a batch by the time it
+/// arrives: `crdt/persistence.ts` merges roughly 200 ms or 32 kB of updates
+/// into one frame before crossing (ARCHITECTURE section 4.4, AC-45).
+///
+/// Raw body, like every other binary payload here.
+#[tauri::command]
+async fn doc_append_update(app: AppHandle, request: tauri::ipc::Request<'_>) -> Result<(), String> {
+    let InvokeBody::Raw(bytes) = request.body() else {
+        return Err("doc_append_update expects a raw body".into());
+    };
+    let bytes = bytes.clone();
+    blocking(move || docstore_of(&app)?.append(&bytes)).await
+}
+
+/// The snapshot and every frame since, as one raw response body rather than as
+/// JSON arrays of numbers — see [`docstore::DocState::into_blob`].
+#[tauri::command]
+async fn doc_load(app: AppHandle) -> Result<tauri::ipc::Response, String> {
+    let blob = blocking(move || {
+        docstore_of(&app)?
+            .load()
+            .map(docstore::DocState::into_blob)
+    })
+    .await?;
+    Ok(tauri::ipc::Response::new(blob))
+}
+
+#[tauri::command]
+async fn doc_compact(app: AppHandle, request: tauri::ipc::Request<'_>) -> Result<(), String> {
+    let InvokeBody::Raw(bytes) = request.body() else {
+        return Err("doc_compact expects a raw body".into());
+    };
+    let bytes = bytes.clone();
+    blocking(move || docstore_of(&app)?.compact(&bytes)).await
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -228,8 +281,9 @@ pub fn run() {
             });
         })
         .setup(|app| {
-            let root = app.path().app_data_dir()?.join("assets");
-            app.manage(AssetStore::new(root)?);
+            let data = app.path().app_data_dir()?;
+            app.manage(AssetStore::new(data.join("assets"))?);
+            app.manage(DocStore::new(data.join("doc"))?);
             if let Some(window) = app.get_webview_window("main") {
                 clipboard::forward_drops(&window, app.handle());
             }
@@ -242,6 +296,9 @@ pub fn run() {
             asset_ingest_url,
             asset_has,
             asset_gc,
+            doc_append_update,
+            doc_load,
+            doc_compact,
             clipboard::clipboard_read_manifest,
             clipboard::clipboard_read_item,
         ])

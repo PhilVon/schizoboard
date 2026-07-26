@@ -27,6 +27,13 @@ export const Origin = {
   /** One stroke, one entry. */
   INK_COMMIT: "schizo/ink-commit",
 
+  /**
+   * Replaying what is on disk, at boot. Untracked for the obvious reason — the
+   * first Ctrl+Z of a session must not undo the board's own existence — and
+   * distinguishable so that `crdt/persistence.ts` can tell its own replay apart
+   * from a real edit and not write every frame it just read straight back.
+   */
+  LOAD: "schizo/load",
   /** Schema migration, run by the first client to open an older document. */
   MIGRATION: "schizo/migration",
   /**
@@ -41,9 +48,10 @@ export const Origin = {
 export type OriginTag = (typeof Origin)[keyof typeof Origin];
 
 /**
- * Passed to `Y.UndoManager`. Maintenance origins are deliberately absent, and
- * so is anything remote — a remote change has an origin this client never set,
- * so it fails the `has` check for free.
+ * Passed to `Y.UndoManager`. Maintenance origins — `LOAD`, `MIGRATION`,
+ * `JANITOR`, `ASSET_GC` — are deliberately absent, and so is anything remote: a
+ * remote change has an origin this client never set, so it fails the `has`
+ * check for free.
  *
  * Physics is absent because physics does not exist here. DESIGN section 5.1:
  * "Physics never writes to the document." Not particle positions, not swing

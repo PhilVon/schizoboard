@@ -13,6 +13,7 @@ import { Binding } from "@/crdt/binding";
 import { boardSeed, encodedSize, initialiseBoard, openBoardDoc } from "@/crdt/doc";
 import { deleteItems, setItemPoses } from "@/crdt/ops";
 import { Origin } from "@/crdt/origins";
+import { Persistence } from "@/crdt/persistence";
 import { Paste } from "@/app/paste";
 import { initPlatform } from "@/platform";
 import { Cork } from "@/render/cork";
@@ -38,6 +39,11 @@ async function boot(): Promise<void> {
 
   // --- document ------------------------------------------------------------
   const board = openBoardDoc();
+  const persistence = new Persistence(board, native);
+  // Before `initialiseBoard`, so a board that already exists keeps its own cork
+  // seed and creation date rather than having fresh ones merged over the top,
+  // and before the binding starts, so the scene is mirrored once.
+  await persistence.open();
   initialiseBoard(board);
 
   const scene = new Scene();
@@ -175,6 +181,11 @@ async function boot(): Promise<void> {
   window.addEventListener("resize", resize);
   resize();
 
+  // Best effort, and only worth the line because the window closing is the one
+  // moment a whole batch can be in flight: a gesture that ended 199ms ago is
+  // otherwise the one thing a clean exit loses.
+  window.addEventListener("pagehide", () => void persistence.flush());
+
   // --- the nine phases (docs/ARCHITECTURE.md section 3) ---------------------
 
   loop.on("input", (frame) => {
@@ -254,6 +265,10 @@ async function boot(): Promise<void> {
   const hint = document.createElement("div");
   hint.className = "hint";
   hint.textContent =
+    (persistence.readOnly
+      ? "THIS BOARD IS NOT BEING SAVED — the document on disk could not be read, " +
+        "and is being left alone rather than written over. See the console. · "
+      : "") +
     `platform: ${native.kind} · paste a picture or some text, or drop a file in · ` +
     `drag to move · R+drag to rotate · drag the cork to marquee · Delete removes · ` +
     `space+drag pans · Ctrl+0 fit · F frame · \` for the HUD`;

@@ -27,11 +27,42 @@ import type {
   Unlisten,
 } from "@/platform/types";
 
-/** Rust returns frames as plain byte arrays over the response body. */
-function toBytes(value: ArrayBuffer | Uint8Array | number[]): Uint8Array {
-  if (value instanceof Uint8Array) return value;
-  if (Array.isArray(value)) return Uint8Array.from(value);
-  return new Uint8Array(value);
+/**
+ * Split a raw response body into its length-prefixed frames.
+ *
+ * ```text
+ * blob  := frame(snapshot) frame(update)*
+ * frame := [u32 le length][length bytes]
+ * ```
+ *
+ * The other side is `DocState::into_blob` in `src-tauri/src/docstore.rs`. The
+ * shape exists because the obvious alternative — `{snapshot: number[],
+ * updates: number[][]}` over JSON — turns a ten-megabyte snapshot into forty
+ * megabytes of decimal digits, which is the same mistake as base64-ing a
+ * photograph across IPC (ARCHITECTURE section 4.3).
+ *
+ * Each frame is a view onto the response buffer, not a copy: `applyUpdate`
+ * reads them once and never keeps them.
+ *
+ * Takes either shape a raw response body can arrive in — Tauri hands back an
+ * `ArrayBuffer` today, and a view of one would decode to nonsense through a
+ * `DataView` built on the wrong offset rather than failing outright.
+ */
+function readFrames(body: ArrayBuffer | Uint8Array): Uint8Array[] {
+  const bytes = body instanceof Uint8Array ? body : new Uint8Array(body);
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  const frames: Uint8Array[] = [];
+  let at = 0;
+  while (at + 4 <= bytes.byteLength) {
+    const length = view.getUint32(at, true);
+    at += 4;
+    if (at + length > bytes.byteLength) {
+      throw new Error("doc_load returned a truncated frame");
+    }
+    frames.push(bytes.subarray(at, at + length));
+    at += length;
+  }
+  return frames;
 }
 
 export class TauriPlatform implements Platform {
@@ -87,19 +118,22 @@ export class TauriPlatform implements Platform {
   }
 
   docAppendUpdate(bytes: Uint8Array): Promise<void> {
-    // Coalescing into ~200ms / 32kB batches is crdt/persistence.ts's job
-    // (T-20); by the time a call reaches here it is already a batch.
+    // Coalescing into ~200ms / 32kB batches is crdt/persistence.ts's job; by
+    // the time a call reaches here it is already a batch.
     return invoke<void>("doc_append_update", bytes);
   }
 
+  /**
+   * The snapshot leads, and is a zero-length frame on a document that has never
+   * been compacted. Rust refuses to write an empty snapshot, so "absent" and
+   * "empty" cannot be confused for one another.
+   */
   async docLoad(): Promise<DocState> {
-    const raw = await invoke<{
-      snapshot: number[] | null;
-      updates: number[][];
-    }>("doc_load");
+    const frames = readFrames(await invoke<ArrayBuffer | Uint8Array>("doc_load"));
+    const [snapshot, ...updates] = frames;
     return {
-      snapshot: raw.snapshot ? toBytes(raw.snapshot) : null,
-      updates: raw.updates.map(toBytes),
+      snapshot: snapshot && snapshot.byteLength > 0 ? snapshot : null,
+      updates,
     };
   }
 

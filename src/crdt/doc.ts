@@ -106,6 +106,17 @@ export function encodedSize(board: BoardDoc): number {
 }
 
 /**
+ * The whole document as one update — what compaction writes to disk.
+ *
+ * A read, not a mutation, which is why it is here rather than in `crdt/ops/`.
+ * It costs the same as `encodedSize` and for the same reason: measure it at
+ * human speed, never per frame.
+ */
+export function snapshot(board: BoardDoc): Uint8Array {
+  return Y.encodeStateAsUpdate(board.doc);
+}
+
+/**
  * A new id that is not already present in `map`.
  *
  * Generic in the map's value type on purpose: `Y.Map<T>` is invariant in `T`,
