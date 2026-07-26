@@ -12,7 +12,7 @@ import {
   bringToFront,
   createItems,
   createPin,
-  createPinAt,
+  placePin,
   deleteItems,
   deletePins,
   pinWorldPosition,
@@ -286,39 +286,35 @@ describe("pins", () => {
     expect(world.y).toBeCloseTo(110, 9);
   });
 
-  /** What the pin tool does with a click: the caller says which item it landed
-   *  on, and the op works out which frame that implies. */
-  it("pushes a pin in at a board point, in whichever frame it lands in", () => {
+  /**
+   * What a pin drag commits: the two fields together, in the frame the tool
+   * already resolved. It converts rather than this op, because an item hanging
+   * on one pin is drawn at a rotation and about a centre that are both
+   * transient and neither of which is in the document.
+   */
+  it("places a pin as a two-field write in the frame it was handed", () => {
     const b = board();
     const { itemId } = createItems(b, [
       { type: "note", x: 50, y: -30, w: 200, h: 200, rot: 0.7, withPin: false },
     ])[0]!;
+    const pinId = createPin(b, { parent: null, lx: 0, ly: 0 });
 
-    const onItem = createPinAt(b, itemId, 80, 10)!;
-    expect(readPin(onItem, b.pins.get(onItem)!)!.parent).toBe(itemId);
-    // Un-rotated item-local, so it comes back out at the point it went in.
-    const world = pinWorldPosition(b, onItem)!;
-    expect(world.x).toBeCloseTo(80, 9);
-    expect(world.y).toBeCloseTo(10, 9);
+    placePin(b, pinId, itemId, 30, -40);
+    const parented = readPin(pinId, b.pins.get(pinId)!)!;
+    expect(parented.parent).toBe(itemId);
+    expect([parented.lx, parented.ly]).toEqual([30, -40]);
 
-    const onCork = createPinAt(b, null, -200, 400)!;
-    const free = readPin(onCork, b.pins.get(onCork)!)!;
+    placePin(b, pinId, null, 900, -100);
+    const free = readPin(pinId, b.pins.get(pinId)!)!;
     expect(free.parent).toBeNull();
-    expect([free.lx, free.ly]).toEqual([-200, 400]);
-  });
-
-  it("leaves a pin free rather than stranding it in a frame that has gone", () => {
-    const b = board();
-    const id = createPinAt(b, "an-item-that-never-existed", 40, 60)!;
-    const pin = readPin(id, b.pins.get(id)!)!;
-    expect(pin.parent).toBeNull();
-    expect([pin.lx, pin.ly]).toEqual([40, 60]);
+    expect([free.lx, free.ly]).toEqual([900, -100]);
   });
 
   it("refuses a non-finite placement rather than poisoning the document", () => {
     const b = board();
-    expect(createPinAt(b, null, Number.NaN, 0)).toBeNull();
-    expect(b.pins.size).toBe(0);
+    const pinId = createPin(b, { parent: null, lx: 5, ly: 5 });
+    placePin(b, pinId, null, Number.NaN, 0);
+    expect(readPin(pinId, b.pins.get(pinId)!)!.lx).toBe(5);
   });
 
   it("re-parents as a two-field write that preserves the board position", () => {

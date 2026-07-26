@@ -86,24 +86,31 @@ function inParentFrame(
 }
 
 /**
- * Push a pin in at a board point — what the pin tool does with a click.
+ * Put an existing pin down: `parent` and the coordinates, in one transaction,
+ * so no peer ever observes a pin whose two halves disagree.
  *
- * The caller says which item it landed on, because paint order is the
- * renderer's and "the topmost item under the cursor" is a question only it can
- * answer. Everything after that is this module's: which frame that implies, and
- * getting both fields down in one transaction.
+ * The coordinates arrive **already in the frame `parent` implies** — item-local
+ * un-rotated when parented, board when free — because the caller is a tool and
+ * the tool is the only thing that knows the item's *rendered* pose. An item
+ * hanging on one pin is drawn at `rot + swing` about a shifted centre
+ * (`sim/torsion.ts`), and neither of those is in the document; converting here
+ * from board coordinates would put the pin where the paper would have been if
+ * it were not hanging.
  */
-export function createPinAt(
+export function placePin(
   board: BoardDoc,
+  pinId: string,
   parent: string | null,
-  boardX: number,
-  boardY: number,
-): string | null {
-  if (!Number.isFinite(boardX) || !Number.isFinite(boardY)) return null;
-  return mutate(board, Origin.LOCAL_USER, () => {
-    const { id, map } = buildPin(board, inParentFrame(board, parent, boardX, boardY));
-    board.pins.set(id, map);
-    return id;
+  lx: number,
+  ly: number,
+): void {
+  if (!Number.isFinite(lx) || !Number.isFinite(ly)) return;
+  mutate(board, Origin.LOCAL_USER, () => {
+    const pin = board.pins.get(pinId);
+    if (!pin) return;
+    pin.set("parent", parent);
+    pin.set("lx", lx);
+    pin.set("ly", ly);
   });
 }
 

@@ -13,10 +13,10 @@ import { Binding } from "@/crdt/binding";
 import { boardSeed, encodedSize, initialiseBoard, openBoardDoc } from "@/crdt/doc";
 import {
   createItems,
-  createPinAt,
+  createPin,
   deleteItems,
   deletePins,
-  reparentPin,
+  placePin,
   resizeItems,
   setItemPoses,
 } from "@/crdt/ops";
@@ -34,6 +34,7 @@ import { FrameLoop } from "@/render/loop";
 import { Overlay } from "@/render/overlay";
 import { PinLayer } from "@/render/pins/dom";
 import { World } from "@/render/world";
+import { Torsion } from "@/sim/torsion";
 import { Camera } from "@/state/camera";
 import { DirtySets } from "@/state/dirty";
 import { chromeFrame, emptyFrame, handleAt, handleCursor } from "@/state/handles";
@@ -139,6 +140,9 @@ async function boot(): Promise<void> {
    * rather than an optimisation — see `render/cull.ts`.
    */
   const culler = new Culler();
+  /** Phase 3, and the only thing on this board that moves by itself yet:
+   *  "pin count is the item's physics" (DESIGN section 2.2). */
+  const torsion = new Torsion();
   const loop = new FrameLoop();
   const selection = new Selection();
   const navigation = new Navigation(camera, root, {
@@ -200,16 +204,15 @@ async function boot(): Promise<void> {
       });
     },
     /**
-     * The three pin writes. All of them take *board* coordinates and let
-     * `crdt/ops/pins.ts` work out which frame the parent implies, because that
-     * conversion needs the item's authored rotation and the scene mirror only
-     * ever offers the rendered one.
+     * The three pin writes. The coordinates arrive already in the frame the
+     * parent implies — the tool converts, because only the tool knows the pose
+     * a hanging item is actually drawn at (`state/tools/frame.ts`).
      */
-    createPin: (parent, x, y) => {
-      queued.push(() => createPinAt(board, parent, x, y));
+    createPin: (parent, lx, ly) => {
+      queued.push(() => createPin(board, { parent, lx, ly }));
     },
-    placePin: (pinId, parent, x, y) => {
-      queued.push(() => reparentPin(board, pinId, parent, x, y));
+    placePin: (pinId, parent, lx, ly) => {
+      queued.push(() => placePin(board, pinId, parent, lx, ly));
     },
     deletePins: (ids) => {
       const snapshot = [...ids];
@@ -345,7 +348,10 @@ async function boot(): Promise<void> {
       zoom: camera.zoom,
       cameraX: camera.x + camera.width / (2 * camera.zoom),
       cameraY: camera.y + camera.height / (2 * camera.zoom),
-      awakeParticles: 0, // sim/ropes.ts, T-40
+      // Rope particles are T-40; until then this counts the items mid-swing,
+      // which is the same question — is phase 3 asleep? — asked of the only
+      // thing in it.
+      awakeParticles: torsion.awake,
       docBytes,
       items: scene.size,
       mounted: items.mounted,
@@ -411,7 +417,20 @@ async function boot(): Promise<void> {
     }
   });
 
-  // 2 PRESENCE  T-72   3 SIM  T-39
+  // 2 PRESENCE  T-72
+
+  /**
+   * Phase 3. Ropes join it at T-39; for now the only thing that moves on its
+   * own is the swing of a single-pinned item, and it is asleep unless something
+   * has just disturbed one.
+   *
+   * After the tool machine, which is phase 1: the swing is composed on top of
+   * whatever carry rotation a gesture in progress has built up, so it has to
+   * read this frame's, not last frame's.
+   */
+  loop.on("sim", (frame) => {
+    torsion.step(scene, dirty, frame.dt, select.heldItems, select.carryLag);
+  });
 
   /**
    * The pin the cursor is over, or null — the eyelet (DESIGN section 3.4).

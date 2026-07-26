@@ -493,8 +493,11 @@ export class DomItemLayer implements ItemLayer {
         const screenPx = Math.max(scene.w[slot]!, scene.h[slot]!) * this.rasterScale;
         view.bind(cold, this.assetUrl, screenPx);
         view.transform(
-          scene.x[slot]!,
-          scene.y[slot]!,
+          // The rendered centre, not the stored one: a hanging item turns about
+          // its pin, and `drift` is the half of that which is a translation
+          // (`state/scene.ts`).
+          scene.renderX(slot),
+          scene.renderY(slot),
           scene.rot[slot]! + scene.swing[slot]!,
           scene.w[slot]!,
           scene.h[slot]!,
@@ -576,8 +579,8 @@ export class DomItemLayer implements ItemLayer {
       const local = rotateIn(
         boardX,
         boardY,
-        scene.x[slot]!,
-        scene.y[slot]!,
+        scene.renderX(slot),
+        scene.renderY(slot),
         Math.cos(angle),
         Math.sin(angle),
         this.probe,

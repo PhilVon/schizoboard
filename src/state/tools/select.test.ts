@@ -826,7 +826,9 @@ describe("dragging a pin", () => {
     up(300, 300);
 
     expect(scene.pins.get("p")!.parent).toBe("a");
-    expect(writes).toEqual([{ kind: "place", pinId: "p", parent: "a", x: 300, y: 300 }]);
+    // Item-local, not board: the write is in the frame the parent implies, and
+    // the point it was dropped on is `a`'s own centre.
+    expect(writes).toEqual([{ kind: "place", pinId: "p", parent: "a", x: 0, y: 0 }]);
   });
 
   it("frees a parented pin dragged off onto bare cork", () => {

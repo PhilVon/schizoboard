@@ -96,22 +96,21 @@ export interface BoardWriter {
    */
   createNote(boardX: number, boardY: number): void;
   /**
-   * Push a pin in at a board point, parented to `parent` or free in the cork.
+   * Push a pin in, parented to `parent` or free in the cork.
    *
-   * Board coordinates, not item-local, even though the document stores local
-   * ones. Working out which frame a parent implies needs the item's authored
-   * rotation, and the *authored* rotation is the one thing the scene mirror
-   * deliberately does not hand back on its own — `rot` there is always about to
-   * have the local swing added to it. So the conversion stays in `crdt/ops/`,
-   * next to the document that defines the frame.
+   * `lx`/`ly` are already in the frame `parent` implies — item-local un-rotated
+   * when parented, board coordinates when free. The tool converts rather than
+   * the op, because only the tool can: an item hanging on one pin is drawn at a
+   * rotation and about a centre that are both transient and neither of which is
+   * in the document (`state/tools/frame.ts`).
    */
-  createPin(parent: string | null, boardX: number, boardY: number): void;
+  createPin(parent: string | null, lx: number, ly: number): void;
   /**
    * Put an existing pin down: its parent and its position, in one transaction,
    * so no peer ever sees a pin whose two halves disagree. `parent` of `null` is
    * the cork — which is how a pin is un-parented (DESIGN section 3.3).
    */
-  placePin(pinId: string, parent: string | null, boardX: number, boardY: number): void;
+  placePin(pinId: string, parent: string | null, lx: number, ly: number): void;
   /** `Alt`+click. The strings through them heal in the same entry. */
   deletePins(ids: readonly string[]): void;
 }

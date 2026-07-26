@@ -33,6 +33,7 @@
  */
 
 import type { Vec2 } from "@/state/camera";
+import { itemLocal } from "@/state/tools/frame";
 import type { PointerSample, Tool, ToolContext, ToolInput } from "@/state/tools/tool";
 
 export interface PinToolOptions {
@@ -88,7 +89,13 @@ export class PinTool implements Tool {
     const at = this.downAt;
     this.downAt = null;
     if (!at) return;
-    ctx.write.createPin(ctx.hitTest(at.x, at.y), at.x, at.y);
+    const onto = ctx.hitTest(at.x, at.y);
+    // Into the item's own frame here rather than in the op, because the item
+    // may be hanging and the pose it is drawn at is not in the document —
+    // `state/tools/frame.ts`.
+    const local = onto === null ? null : itemLocal(ctx.scene, onto, at.x, at.y);
+    if (onto !== null && !local) return;
+    ctx.write.createPin(onto, local?.x ?? at.x, local?.y ?? at.y);
     this.options.onDone?.();
   }
 

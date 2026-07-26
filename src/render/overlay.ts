@@ -1,13 +1,13 @@
-/**
- * The overlay canvas — phase 8.
+﻿/**
+ * The overlay canvas â€” phase 8.
  *
  * > 8. OVERLAY   remote cursors, ghosts, wet ink, selection chrome
- * > — docs/ARCHITECTURE.md section 3
+ * > â€” docs/ARCHITECTURE.md section 3
  *
  * Everything drawn here is transient: it belongs to a gesture or to a
  * collaborator, never to the document. The canvas is cleared and redrawn whole
  * on the frames it has anything to change, which is affordable precisely because
- * most frames have nothing — and free on those, because a frame that would
+ * most frames have nothing â€” and free on those, because a frame that would
  * redraw the same picture does not touch the canvas at all.
  *
  * Screen space, like the rope canvases: points are converted through the camera
@@ -17,7 +17,7 @@
  * ## Selection chrome is here, and that is the point
  *
  * It used to be a CSS `outline` on each item's own frame, which put its width in
- * *board* units: legible at 54% zoom, a hairline at 20%, and gone by 15% — while
+ * *board* units: legible at 54% zoom, a hairline at 20%, and gone by 15% â€” while
  * thickening into a slab at 400%. Chrome is not part of the photograph. Drawing
  * it here costs the rotation the CSS outline got for free, and buys exact screen
  * widths, no per-item DOM bookkeeping, and chrome that is not painted over by
@@ -57,13 +57,13 @@ const SELECT_STROKE = "rgba(34, 21, 10, 0.8)";
 /**
  * The rotation knob is filled in the same warm dark as the outline and ringed in
  * the cork's own highlight, so it reads as a brass tack pushed into the board
- * rather than as a widget floating above it — and so it stays legible whether the
+ * rather than as a widget floating above it â€” and so it stays legible whether the
  * stalk crosses cork or another photograph.
  */
 const HANDLE_RING = "rgba(255, 244, 214, 0.9)";
 
 /**
- * The ring round the item a pin would land on — "candidate items highlight with
+ * The ring round the item a pin would land on â€” "candidate items highlight with
  * a ring" (DESIGN section 3.3).
  *
  * Two strokes, a dark one under a pale one, for the reason the selection
@@ -91,7 +91,7 @@ export class Overlay {
   /**
    * What the picture currently on the canvas was drawn from. An idle board must
    * cost nothing (`state/selection.ts`), and a selection is the first thing this
-   * canvas holds that *persists* — the marquee only existed mid-drag, so until
+   * canvas holds that *persists* â€” the marquee only existed mid-drag, so until
    * now "nothing to draw" and "nothing changed" were the same frame. They are
    * not any more: a board sitting still with three photographs selected would
    * otherwise clear and restroke a full-viewport canvas sixty times a second to
@@ -103,7 +103,7 @@ export class Overlay {
   /** The candidate ring changes with nothing else: dragging a pin across a
    *  still board moves no item, no camera and no selection. */
   private highlighted: string | null = null;
-  /** Reset at the top of every `draw` — see [`Overlay.clear`]. */
+  /** Reset at the top of every `draw` â€” see [`Overlay.clear`]. */
   private cleared = false;
 
   constructor(canvas: HTMLCanvasElement) {
@@ -117,8 +117,8 @@ export class Overlay {
    * `marquee` is in board coordinates so it stays pinned to the cork if the
    * camera moves while it is being dragged out.
    *
-   * `dirty` is read only to answer one question — did anything *selected* move
-   * this frame — because a selected photograph being dragged changes this picture
+   * `dirty` is read only to answer one question â€” did anything *selected* move
+   * this frame â€” because a selected photograph being dragged changes this picture
    * without changing the camera or the membership.
    */
   draw(
@@ -137,11 +137,11 @@ export class Overlay {
     const stale =
       wantsMarquee ||
       highlight !== this.highlighted ||
-      // A candidate that is itself moving — a pin held over a photograph being
-      // dragged by a collaborator — restrokes with it.
+      // A candidate that is itself moving â€” a pin held over a photograph being
+      // dragged by a collaborator â€” restrokes with it.
       (highlight !== null && (dirty.all || dirty.items.has(highlight))) ||
       // It was there last frame and is not now, so the canvas is wrong even if
-      // nothing else changed — dragging a marquee across empty cork and letting
+      // nothing else changed â€” dragging a marquee across empty cork and letting
       // go never touches the selection.
       this.hadMarquee ||
       camera.version !== this.cameraVersion ||
@@ -163,7 +163,7 @@ export class Overlay {
     let drew = this.drawSelection(ctx, camera, scene, selection);
     // The rotation handle. `chromeFrame` is what decides that one item has one
     // and a group does not, and the select tool asks the same function where the
-    // knob is — so what is drawn and what is grabbable cannot drift apart.
+    // knob is â€” so what is drawn and what is grabbable cannot drift apart.
     const frame = chromeFrame(camera, scene, selection, this.frame);
     if (frame && this.drawRotateHandle(ctx, camera, frame)) drew = true;
     if (highlight !== null && this.drawCandidate(ctx, camera, scene, highlight)) drew = true;
@@ -171,7 +171,7 @@ export class Overlay {
       this.drawMarquee(ctx, camera, marquee);
       drew = true;
     }
-    // Nothing to draw, but last frame there was — so the clear is the work.
+    // Nothing to draw, but last frame there was â€” so the clear is the work.
     if (!drew && this.inked) this.clear(ctx);
     this.inked = drew;
   }
@@ -180,7 +180,7 @@ export class Overlay {
    * At most once per frame, and only from something about to draw.
    *
    * The context is pre-scaled by devicePixelRatio (`world.resizeCanvases`), so
-   * every other coordinate in this file is in CSS pixels — the clear is taken
+   * every other coordinate in this file is in CSS pixels â€” the clear is taken
    * back to the identity so it covers the backing store exactly rather than
    * relying on this module knowing what the scale was.
    */
@@ -197,7 +197,7 @@ export class Overlay {
    * Did anything in the selection move, resize or turn this frame?
    *
    * Walks the dirty set rather than the selection because the dirty set is the
-   * short one — one item under a drag, against a marquee that may hold every
+   * short one â€” one item under a drag, against a marquee that may hold every
    * photograph on the board.
    */
   private selectedMoved(selection: Selection, dirty: DirtySets): boolean {
@@ -224,17 +224,17 @@ export class Overlay {
       if (slot === undefined) continue;
 
       // The item's own box, which is exactly what `.pol-frame` and
-      // `.paper-surface` occupy — both are `inset: 0` — so the line lands on the
+      // `.paper-surface` occupy â€” both are `inset: 0` â€” so the line lands on the
       // paper's edge rather than on the item's bounding box.
       const scale = carryScale(scene.lift[slot]!);
       const hw = (scene.w[slot]! * camera.zoom * scale) / 2 + SELECT_PAD;
       const hh = (scene.h[slot]! * camera.zoom * scale) / 2 + SELECT_PAD;
-      const centre = camera.boardToScreen(scene.x[slot]!, scene.y[slot]!, this.a);
+      const centre = camera.boardToScreen(scene.renderX(slot), scene.renderY(slot), this.a);
       const cx = centre.x;
       const cy = centre.y;
 
       // Circle-against-viewport reject. Culling (T-27) has already unmounted the
-      // item's node, but the selection is not culled and does not need to be —
+      // item's node, but the selection is not culled and does not need to be â€”
       // the far side of a marquee that took in the whole board is a few
       // multiplications, not a DOM node.
       const reach = Math.hypot(hw, hh);
@@ -264,7 +264,7 @@ export class Overlay {
 
   /**
    * The knob and its stalk, standing off the top edge of the paper in the
-   * paper's own direction — so a note lying at 30° carries its handle at 30°
+   * paper's own direction â€” so a note lying at 30Â° carries its handle at 30Â°
    * too, and the handle says which way is up on the thing it turns.
    *
    * The stalk starts at the outline rather than at the centre, so it is a short
@@ -330,7 +330,7 @@ export class Overlay {
     const scale = carryScale(scene.lift[slot]!);
     const hw = (scene.w[slot]! * camera.zoom * scale) / 2 + CANDIDATE_PAD;
     const hh = (scene.h[slot]! * camera.zoom * scale) / 2 + CANDIDATE_PAD;
-    const centre = camera.boardToScreen(scene.x[slot]!, scene.y[slot]!, this.a);
+    const centre = camera.boardToScreen(scene.renderX(slot), scene.renderY(slot), this.a);
     const reach = Math.hypot(hw, hh);
     if (centre.x + reach < 0 || centre.x - reach > camera.width) return false;
     if (centre.y + reach < 0 || centre.y - reach > camera.height) return false;

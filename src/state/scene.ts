@@ -107,6 +107,30 @@ export class Scene {
   swing: Float32Array;
 
   /**
+   * The other half of the swing: the translation that keeps a hanging item's
+   * **pin** still while the item turns about it.
+   *
+   * A pin is stuck in the cork and does not move. An item hanging from one
+   * rotates about the pin, not about its own centre — and since a parented
+   * pin's world position is *derived* from the item's pose, turning the item
+   * about its centre would drag the pin across the board with it. It is
+   * immediately visible, and during a pin drag it is a feedback loop: move the
+   * pin, the equilibrium changes, the item swings, the item carries the pin out
+   * from under the cursor.
+   *
+   * So the swing is a rotation about the pin, decomposed into the rotation
+   * about the centre that `rot + swing` already is, plus this. Transient and
+   * local like the swing itself, for exactly the same reason — the item's
+   * stored position never changes, so no peer has to agree about it.
+   *
+   * Everything that asks where an item *is on screen* adds this; everything
+   * that authors a position — a drag, a resize — does not, because what those
+   * write is the stored centre.
+   */
+  driftX: Float32Array;
+  driftY: Float32Array;
+
+  /**
    * Also transient: how far an item is off the cork, 0 at rest and 1 while it
    * is being carried. Drives the ~2% carry scale and the lifted shadow —
    * "the item is being *carried*, not teleported" (DESIGN section 3.2).
@@ -159,7 +183,24 @@ export class Scene {
     this.w = new Float32Array(INITIAL_CAPACITY);
     this.h = new Float32Array(INITIAL_CAPACITY);
     this.swing = new Float32Array(INITIAL_CAPACITY);
+    this.driftX = new Float32Array(INITIAL_CAPACITY);
+    this.driftY = new Float32Array(INITIAL_CAPACITY);
     this.lift = new Float32Array(INITIAL_CAPACITY);
+  }
+
+  /**
+   * Where an item is drawn: its stored centre plus the swing's translation.
+   *
+   * Every geometry question about the *screen* goes through these — bounds,
+   * hit testing, pin layout, the selection chrome. A question about what to
+   * write down does not.
+   */
+  renderX(slot: number): number {
+    return this.x[slot]! + this.driftX[slot]!;
+  }
+
+  renderY(slot: number): number {
+    return this.y[slot]! + this.driftY[slot]!;
   }
 
   get size(): number {
@@ -205,6 +246,8 @@ export class Scene {
     this.w = copy(this.w);
     this.h = copy(this.h);
     this.swing = copy(this.swing);
+    this.driftX = copy(this.driftX);
+    this.driftY = copy(this.driftY);
     this.lift = copy(this.lift);
     this.ids.length = next;
     this.coldBySlot.length = next;
@@ -227,6 +270,8 @@ export class Scene {
       this.slots.set(cold.id, slot);
       this.ids[slot] = cold.id;
       this.swing[slot] = 0;
+      this.driftX[slot] = 0;
+      this.driftY[slot] = 0;
       this.lift[slot] = 0;
     }
     this.coldBySlot[slot] = cold;
@@ -256,6 +301,8 @@ export class Scene {
     this.ids[slot] = null;
     this.coldBySlot[slot] = null;
     this.swing[slot] = 0;
+    this.driftX[slot] = 0;
+    this.driftY[slot] = 0;
     this.lift[slot] = 0;
     this.freeSlots.push(slot);
     return true;
@@ -330,13 +377,25 @@ export class Scene {
         pin.wy = pin.ly;
         continue;
       }
-      // Rendered rotation, not authored: a pin stays on the photograph while
-      // the photograph swings.
+      // Rendered rotation about the rendered centre: a pin stays on the
+      // photograph while the photograph swings — and, because `drift` is
+      // defined as the translation that holds the pivot still, a *single*
+      // pin's world position comes back unchanged by the swing entirely, which
+      // is what makes it look pushed into the cork rather than sliding across
+      // it.
       const angle = this.rot[slot]! + this.swing[slot]!;
       // Into the shared scratch and straight back out again — this runs over
       // every pin on the board on every frame anything moved, so it must not
       // mint an object per pin.
-      rotateOut(pin.lx, pin.ly, this.x[slot]!, this.y[slot]!, Math.cos(angle), Math.sin(angle), scratch);
+      rotateOut(
+        pin.lx,
+        pin.ly,
+        this.x[slot]! + this.driftX[slot]!,
+        this.y[slot]! + this.driftY[slot]!,
+        Math.cos(angle),
+        Math.sin(angle),
+        scratch,
+      );
       pin.wx = scratch.x;
       pin.wy = scratch.y;
     }
@@ -388,10 +447,12 @@ export class Scene {
     const sin = Math.abs(Math.sin(angle));
     const hw = (this.w[slot]! * cos + this.h[slot]! * sin) / 2 + pad;
     const hh = (this.w[slot]! * sin + this.h[slot]! * cos) / 2 + pad;
-    out.minX = this.x[slot]! - hw;
-    out.minY = this.y[slot]! - hh;
-    out.maxX = this.x[slot]! + hw;
-    out.maxY = this.y[slot]! + hh;
+    const cx = this.x[slot]! + this.driftX[slot]!;
+    const cy = this.y[slot]! + this.driftY[slot]!;
+    out.minX = cx - hw;
+    out.minY = cy - hh;
+    out.maxX = cx + hw;
+    out.maxY = cy + hh;
     return out;
   }
 
@@ -427,8 +488,8 @@ export class Scene {
     const rhw = Math.abs(rect.maxX - rect.minX) / 2;
     const rhh = Math.abs(rect.maxY - rect.minY) / 2;
 
-    const dx = this.x[slot]! - rcx;
-    const dy = this.y[slot]! - rcy;
+    const dx = this.x[slot]! + this.driftX[slot]! - rcx;
+    const dy = this.y[slot]! + this.driftY[slot]! - rcy;
 
     // Axes 1 and 2: the rectangle's. The item's radius along each is its
     // rotation-expanded half-extent, which is what boundsOf computes.
@@ -493,6 +554,10 @@ export class Scene {
     this.byParent.clear();
     this.ids.fill(null);
     this.coldBySlot.fill(null);
+    this.swing.fill(0);
+    this.driftX.fill(0);
+    this.driftY.fill(0);
+    this.lift.fill(0);
     this.freeSlots.length = 0;
     this.highWater = 0;
   }

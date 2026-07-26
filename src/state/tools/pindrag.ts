@@ -36,8 +36,9 @@
  * entry with no origin gymnastics — "re-parenting is one entry" (section 3.3).
  */
 
-import { rotateIn, type Point } from "@/lib/rotate";
+import type { Point } from "@/lib/rotate";
 import type { Vec2 } from "@/state/camera";
+import { itemLocal } from "@/state/tools/frame";
 import type { ToolContext } from "@/state/tools/tool";
 
 /**
@@ -91,6 +92,11 @@ export class PinDrag {
     return this.candidateId;
   }
 
+  /** The item it was on when the drag began, or null. */
+  get origin(): string | null {
+    return this.start.parent;
+  }
+
   /**
    * `screenX`/`screenY` are where the **press** landed, not where the drag
    * threshold was crossed — that is what makes the grab offset the distance
@@ -140,7 +146,8 @@ export class PinDrag {
     if (pin.parent === this.start.parent && pin.lx === this.start.lx && pin.ly === this.start.ly) {
       return;
     }
-    ctx.write.placePin(id, pin.parent, this.atX, this.atY);
+    // What the scene already holds, which is the frame this gesture resolved.
+    ctx.write.placePin(id, pin.parent, pin.lx, pin.ly);
   }
 
   /**
@@ -166,10 +173,10 @@ export class PinDrag {
   /**
    * Put the pin down in `parent`'s frame at its current board position.
    *
-   * The angle is the item's **authored** rotation, deliberately excluding the
-   * swing — matching `crdt/ops/pins.ts`, which has no choice because the swing
-   * is never in the document. Preview and commit therefore agree, and the pin
-   * rides an item that is still settling rather than sliding across it.
+   * Through the item's **rendered** pose — see `state/tools/frame.ts`. The
+   * item is frozen for the duration of the gesture (`select.ts` counts both
+   * ends of the move as held), so that pose does not move under the cursor
+   * while the pin is being placed.
    */
   private apply(ctx: ToolContext, parent: string | null): void {
     const id = this.id;
@@ -180,20 +187,10 @@ export class PinDrag {
     let lx = this.atX;
     let ly = this.atY;
     let onto = parent;
-    const slot = onto === null ? undefined : ctx.scene.slotOf(onto);
-    if (onto !== null && slot === undefined) {
+    const local = onto === null ? null : itemLocal(ctx.scene, onto, this.atX, this.atY, this.probe);
+    if (onto !== null && !local) {
       onto = null;
-    } else if (slot !== undefined) {
-      const rot = ctx.scene.rot[slot]!;
-      const local = rotateIn(
-        this.atX,
-        this.atY,
-        ctx.scene.x[slot]!,
-        ctx.scene.y[slot]!,
-        Math.cos(rot),
-        Math.sin(rot),
-        this.probe,
-      );
+    } else if (local) {
       lx = local.x;
       ly = local.y;
     }

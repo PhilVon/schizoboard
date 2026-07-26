@@ -155,6 +155,19 @@ export class SelectTool implements Tool {
 
   /** Pose of every item the gesture picked up, at the moment it picked it up. */
   private readonly starts = new Map<string, ItemPose>();
+  /** The same ids, as a set, because phase 3 asks "is this one held?" of every
+   *  item it is about to swing and a Map's keys are not a set. */
+  private readonly holding = new Set<string>();
+
+  /**
+   * The carry lag, eased — one number for the whole gesture rather than one per
+   * item, because it is a property of how fast the *hand* is moving.
+   *
+   * Kept here as well as written into the scene so that `sim/torsion.ts` can
+   * add it on top of where a single-pinned item hangs, rather than the two
+   * fighting over one Float32Array.
+   */
+  private lag = 0;
 
   /** Items whose `lift`/`swing` are not zero and not finished moving. */
   private readonly animating = new Set<string>();
@@ -249,6 +262,22 @@ export class SelectTool implements Tool {
    */
   get pinCandidate(): string | null {
     return this.pinDrag.candidate;
+  }
+
+  /**
+   * The items this gesture has hold of, and the carry rotation it has built up.
+   *
+   * Read by `sim/torsion.ts` in phase 3. A single-pinned item's `swing` belongs
+   * to the swing simulation, not to this tool — it does not settle to zero, it
+   * settles to wherever the item hangs — so the two divide it: this owns the
+   * lag, that owns the hang, and the sum is written once, over there.
+   */
+  get heldItems(): ReadonlySet<string> {
+    return this.holding;
+  }
+
+  get carryLag(): number {
+    return this.lag;
   }
 
   handle(input: ToolInput, ctx: ToolContext): void {
@@ -398,6 +427,8 @@ export class SelectTool implements Tool {
       this.lastY = at.y;
       this.pinDrag.move(at.x, at.y, ctx);
       this.pinDrag.end(ctx);
+      // Let go: the item is free to re-hang from wherever the pin ended up.
+      this.holding.clear();
     } else if (
       this.phase === "dragging" ||
       this.phase === "rotating" ||
@@ -449,6 +480,7 @@ export class SelectTool implements Tool {
         return false;
       }
       this.phase = "pin";
+      this.markPinHold();
       return true;
     }
 
@@ -456,11 +488,13 @@ export class SelectTool implements Tool {
     // one item is off.
     this.pendingSelect = null;
     this.starts.clear();
+    this.holding.clear();
     this.resizeId = null;
     for (const id of ctx.selection.members) {
       const pose = ctx.scene.poseOf(id);
       if (!pose) continue;
       this.starts.set(id, pose);
+      this.holding.add(id);
       this.animating.add(id);
     }
     if (this.starts.size === 0) {
@@ -498,9 +532,30 @@ export class SelectTool implements Tool {
     return true;
   }
 
+  /**
+   * While a pin is being dragged, the items at either end of the move count as
+   * held — which stops `sim/torsion.ts` swinging them.
+   *
+   * Without this the gesture chases itself: moving the pin changes where the
+   * item hangs, the item swings, and a parented pin's world position is derived
+   * from the item's pose — so the item carries the pin out from under the
+   * cursor and the pin becomes almost impossible to place. Freezing the swing
+   * for the duration means the pin goes exactly where it is put and the item
+   * re-hangs when it is let go, which is also what happens when you move a pin
+   * on a wall: the photograph does not move until you take your hand off it.
+   */
+  private markPinHold(): void {
+    this.holding.clear();
+    const from = this.pinDrag.origin;
+    const onto = this.pinDrag.candidate;
+    if (from !== null) this.holding.add(from);
+    if (onto !== null) this.holding.add(onto);
+  }
+
   private applyGesture(ctx: ToolContext): void {
     if (this.phase === "pin") {
       this.pinDrag.move(this.lastX, this.lastY, ctx);
+      this.markPinHold();
       return;
     }
     if (this.phase === "resizing") {
@@ -704,6 +759,9 @@ export class SelectTool implements Tool {
       -LAG_MAX_RAD,
       Math.min(LAG_MAX_RAD, velocity * LAG_PER_VELOCITY),
     );
+    // Rotation is deliberate, so it gets the lift but not the lag; a turning
+    // item that also leaned would read as two things happening at once.
+    this.lag = approach(this.lag, this.phase === "dragging" ? lagTarget : 0, dt, LAG_TAU_MS);
 
     for (const id of this.animating) {
       const slot = ctx.scene.slotOf(id);
@@ -716,9 +774,6 @@ export class SelectTool implements Tool {
       // membership is exactly "this gesture is holding it".
       const held = this.starts.has(id);
       const liftTarget = held ? 1 : 0;
-      // Rotation is deliberate, so it gets the lift but not the lag; a turning
-      // item that also leaned would read as two things happening at once.
-      const swingTarget = held && this.phase === "dragging" ? lagTarget : 0;
 
       const lift = approach(
         ctx.scene.lift[slot]!,
@@ -726,18 +781,33 @@ export class SelectTool implements Tool {
         dt,
         liftTarget > ctx.scene.lift[slot]! ? LIFT_RISE_MS : LIFT_FALL_MS,
       );
-      const swing = approach(ctx.scene.swing[slot]!, swingTarget, dt, LAG_TAU_MS);
+
+      /**
+       * Whose rotation is this?
+       *
+       * A single-pinned item hangs, and `sim/torsion.ts` owns its `swing`
+       * outright — it does not settle to zero, it settles to wherever the item
+       * hangs, and the carry lag is added on top of that over there. Everything
+       * else — rigid on two pins, flat on none — still eases its lag back to
+       * nothing here, exactly as it did before any of this existed.
+       */
+      const hangs = ctx.scene.pinCount(id) === 1;
+      // Eased from the target rather than from `this.lag`, even though the two
+      // are the same calculation: chaining them would put a second first-order
+      // filter in the path and the carry would visibly lose its snap.
+      const swingTarget = held && this.phase === "dragging" ? lagTarget : 0;
+      const swing = hangs
+        ? ctx.scene.swing[slot]!
+        : approach(ctx.scene.swing[slot]!, swingTarget, dt, LAG_TAU_MS);
 
       const done =
         !held &&
         Math.abs(lift) < SETTLED_EPSILON &&
-        Math.abs(swing) < SETTLED_EPSILON;
+        (hangs || Math.abs(swing) < SETTLED_EPSILON);
 
       ctx.scene.lift[slot] = done ? 0 : lift;
-      ctx.scene.swing[slot] = done ? 0 : swing;
+      if (!hangs) ctx.scene.swing[slot] = done ? 0 : swing;
       ctx.dirty.item(id);
-      // Settled. T-35 takes over here for a single-pinned item, which does not
-      // settle to zero — it swings.
       if (done) this.animating.delete(id);
     }
   }
@@ -753,7 +823,10 @@ export class SelectTool implements Tool {
    */
   cancel(ctx: ToolContext): void {
     // Nothing was written, so putting the pin back is the whole of the revert.
-    if (this.phase === "pin") this.pinDrag.cancel(ctx);
+    if (this.phase === "pin") {
+      this.pinDrag.cancel(ctx);
+      this.holding.clear();
+    }
 
     if (this.phase === "dragging" || this.phase === "rotating" || this.phase === "resizing") {
       // "Esc mid-drag → the whole thing reverts" (DESIGN section 3.4).
@@ -791,11 +864,15 @@ export class SelectTool implements Tool {
       const slot = ctx.scene.slotOf(id);
       if (slot !== undefined) {
         ctx.scene.lift[slot] = 0;
-        ctx.scene.swing[slot] = 0;
+        // A hanging item's rotation is not this tool's to zero — zeroing it
+        // would stand a photograph up at its authored angle for the frame
+        // before phase 3 notices and hangs it again.
+        if (ctx.scene.pinCount(id) !== 1) ctx.scene.swing[slot] = 0;
       }
       ctx.dirty.item(id);
     }
     this.animating.clear();
+    this.lag = 0;
 
     this.pendingSelect = null;
     this.pendingPin = null;
@@ -808,6 +885,7 @@ export class SelectTool implements Tool {
    *  have eased back to nothing. */
   private release(): void {
     this.starts.clear();
+    this.holding.clear();
     this.lastAngle = null;
     this.rotateApplied = 0;
     this.sinceWrite = 0;
