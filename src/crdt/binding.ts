@@ -24,7 +24,7 @@
 import * as Y from "yjs";
 
 import type { BoardDoc } from "@/crdt/doc";
-import { readItem, readPin, type YMap } from "@/crdt/schema";
+import { readItem, readPin, readString, type YMap } from "@/crdt/schema";
 import type { DirtySets } from "@/state/dirty";
 import type { Scene } from "@/state/scene";
 
@@ -49,6 +49,7 @@ export class Binding {
     this.resync();
     this.board.items.observeDeep(this.onItems);
     this.board.pins.observeDeep(this.onPins);
+    this.board.strings.observeDeep(this.onStrings);
   }
 
   stop(): void {
@@ -56,6 +57,7 @@ export class Binding {
     this.started = false;
     this.board.items.unobserveDeep(this.onItems);
     this.board.pins.unobserveDeep(this.onPins);
+    this.board.strings.unobserveDeep(this.onStrings);
   }
 
   /**
@@ -67,6 +69,7 @@ export class Binding {
     this.scene.clear();
     for (const [id, map] of this.board.items) this.syncItem(id, map);
     for (const [id, map] of this.board.pins) this.syncPin(id, map);
+    for (const [id, map] of this.board.strings) this.syncString(id, map);
     this.scene.layoutPins();
     this.dirty.everything();
   }
@@ -127,6 +130,40 @@ export class Binding {
     }
   }
 
+  /**
+   * A string's run and style, mirrored for `sim/ropes.ts` to build segments
+   * from.
+   *
+   * The nodes are copied out into plain objects rather than referenced,
+   * because a `Y.Array` reaching the scene would put a CRDT type on the far
+   * side of the wall the scene exists to be — and because the rope set
+   * compares runs to decide whether to re-seed, which needs a snapshot rather
+   * than a live view of the thing it is comparing against.
+   *
+   * Invariant 3 is applied here rather than downstream: a run of fewer than
+   * two *valid* nodes is not a string anyone can draw, and `readStringNodes`
+   * has already dropped the nodes whose `pin` field is malformed. The document
+   * deletes such a string itself (DATA-MODEL section 5.3); until that lands,
+   * this simply does not mirror it.
+   */
+  private syncString(id: string, map: YMap): void {
+    const fields = readString(id, map);
+    if (!fields || fields.nodes.length < 2) {
+      if (this.scene.strings.delete(id)) this.dirty.string(id);
+      return;
+    }
+    this.scene.strings.set(id, {
+      id,
+      nodes: fields.nodes.map((node) => ({ pin: node.pin, slackAfter: node.slackAfter })),
+      color: fields.color,
+      thickness: fields.thickness,
+      material: fields.material,
+      layer: fields.layer,
+      closed: fields.closed,
+    });
+    this.dirty.string(id);
+  }
+
   private readonly onItems = (events: DeepEvent[]): void => {
     for (const event of events) {
       if (event.target === (this.board.items as unknown as Y.AbstractType<unknown>)) {
@@ -148,6 +185,40 @@ export class Binding {
       if (typeof id !== "string") continue;
       const map = this.board.items.get(id);
       if (map) this.syncItem(id, map);
+    }
+  };
+
+  /**
+   * Any change anywhere inside `strings` re-reads the string it happened in.
+   *
+   * `event.path[0]` is the string id for everything nested — the nodes array,
+   * one node's slack, the style fields — because `strings` is a map keyed by
+   * string id and nothing below it is addressed any other way. So a slack
+   * nudge and a whole run being rewritten take the same path, which is the
+   * "re-read the whole entity" argument in the module comment applied to the
+   * one type here that has a nested collection.
+   */
+  private readonly onStrings = (events: DeepEvent[]): void => {
+    for (const event of events) {
+      if (event.target === (this.board.strings as unknown as Y.AbstractType<unknown>)) {
+        for (const [id, change] of event.changes.keys) {
+          if (change.action === "delete") {
+            // The pins stay exactly where they are — a string owns nothing but
+            // references (DESIGN section 3.4).
+            this.scene.strings.delete(id);
+            this.dirty.string(id);
+          } else {
+            const map = this.board.strings.get(id);
+            if (map) this.syncString(id, map);
+          }
+        }
+        continue;
+      }
+
+      const id = event.path[0];
+      if (typeof id !== "string") continue;
+      const map = this.board.strings.get(id);
+      if (map) this.syncString(id, map);
     }
   };
 

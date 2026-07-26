@@ -26,6 +26,20 @@ export class DirtySets {
   readonly pins = new Set<string>();
   /** Items whose ink canvas needs re-rastering. */
   readonly ink = new Set<string>();
+  /**
+   * Strings whose *topology or style* changed — a run edited, a slack
+   * adjusted, a colour picked, a string cut.
+   *
+   * Deliberately not `ropes`, which is the same distinction as `pins` against
+   * `items`: this set is written by the binding and read by `sim/ropes.ts`,
+   * which rebuilds the segments; `ropes` below is written by `sim/ropes.ts`
+   * and read by the renderer. One is "the document says this string is
+   * different now", the other is "this rope has moved". A string being
+   * dragged around the board produces the second every frame and the first
+   * never, and a rope set that rebuilt itself on every frame of a drag would
+   * re-seed the pose it was in the middle of simulating.
+   */
+  readonly strings = new Set<string>();
   /** Ropes whose geometry changed. */
   readonly ropes = new Set<string>();
 
@@ -53,6 +67,7 @@ export class DirtySets {
       this.items.size === 0 &&
       this.pins.size === 0 &&
       this.ink.size === 0 &&
+      this.strings.size === 0 &&
       this.ropes.size === 0
     );
   }
@@ -67,6 +82,10 @@ export class DirtySets {
 
   inkFor(id: string): void {
     this.ink.add(id);
+  }
+
+  string(id: string): void {
+    this.strings.add(id);
   }
 
   rope(id: string): void {
@@ -84,6 +103,7 @@ export class DirtySets {
     this.items.clear();
     this.pins.clear();
     this.ink.clear();
+    this.strings.clear();
     this.ropes.clear();
     this.camera = false;
     this.culling = false;

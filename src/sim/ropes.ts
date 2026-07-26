@@ -122,6 +122,12 @@ export class RopeSet {
    * this is a set rather than a pair.
    */
   private readonly byPin = new Map<string, Set<Segment>>();
+  /**
+   * The run each string's segments were built from, so `sync` can tell a
+   * topology change from a slack change without diffing the segments
+   * themselves.
+   */
+  private readonly runs = new Map<string, string>();
 
   private pos = new Float64Array(INITIAL_POOL);
   private prev = new Float64Array(INITIAL_POOL);
@@ -147,10 +153,10 @@ export class RopeSet {
    *
    * `pins` is the ordered run and `slack` the per-node ratios; for an open
    * string the last entry is unused, and for a closed one it is the
-   * wrap-around segment (DATA-MODEL section 5.2). Called from the binding
-   * whenever a string's nodes change, which includes a slack edit — the
-   * segments are rebuilt and re-seeded at rest, because a slack change is a
-   * change of shape rather than a disturbance.
+   * wrap-around segment (DATA-MODEL section 5.2). The segments are built and
+   * seeded at rest, so this is a *topology* change: `sync` calls it when the
+   * run of pins is genuinely different and handles a slack-only edit without
+   * coming here, because re-seeding is the wrong answer to that.
    *
    * Fewer than two nodes is not an error, it is a string that has nothing to
    * draw yet; the document layer deletes it (DATA-MODEL section 5.3) and this
@@ -197,6 +203,7 @@ export class RopeSet {
       this.seed(scene, segment);
     }
     this.byString.set(id, owned);
+    this.runs.set(id, runSignature(pins, closed));
     dirty.rope(id);
   }
 
@@ -211,6 +218,7 @@ export class RopeSet {
       if (i >= 0) this.segments.splice(i, 1);
     }
     this.byString.delete(id);
+    this.runs.delete(id);
     dirty.rope(id);
   }
 
@@ -220,6 +228,7 @@ export class RopeSet {
     this.segments.length = 0;
     this.byString.clear();
     this.byPin.clear();
+    this.runs.clear();
     this.free.clear();
     this.top = 0;
     this.clock.reset();
@@ -232,6 +241,17 @@ export class RopeSet {
    * stopped. A frame on which nothing moved does none of the three.
    */
   step(scene: Scene, dirty: DirtySets, dtMs: number): void {
+    if (dirty.all) {
+      // The mirror was rebuilt from scratch, so the rope set is too: strings
+      // that are gone go, and the rest are re-read before anything is seeded.
+      for (const id of [...this.byString.keys()]) {
+        if (!scene.strings.has(id)) this.sync(scene, dirty, id);
+      }
+      for (const id of scene.strings.keys()) this.sync(scene, dirty, id);
+    } else {
+      for (const id of dirty.strings) this.sync(scene, dirty, id);
+    }
+
     if (dirty.all) {
       // A load or an undo is a state restore rather than an event. Every rope
       // goes back to its analytic rest pose, asleep — which is AC-62, and the
@@ -286,6 +306,65 @@ export class RopeSet {
       segment.still = travelled < ROPE_SLEEP_MOVE ? segment.still + 1 : 0;
       if (segment.still >= ROPE_SLEEP_STEPS) segment.asleep = true;
     }
+  }
+
+  /**
+   * Bring one string's ropes into line with what the scene mirror says.
+   *
+   * Called for everything in `dirty.strings`, which the binding writes — this
+   * is the whole of the document's route into the simulation, and it goes
+   * through the mirror rather than through `crdt/` because `sim/` may not
+   * import the document (ARCHITECTURE rule 2, and the lint rule says so).
+   *
+   * The distinction it draws is worth the code. Rebuilding a string's segments
+   * throws away their particles and re-seeds them at rest, which is right when
+   * the *run* changed — a pin inserted mid-string is a different set of ropes —
+   * and quite wrong when only the slack did:
+   *
+   * > **Wake** on: an endpoint moving more than a hair this frame; a topology
+   * > change; a slack change; a pluck; or an explicit impulse.
+   * > — DESIGN section 5.3
+   *
+   * A slack change *wakes* a rope, it does not teleport one. Rolling the wheel
+   * over a segment should let the sag out in front of you; re-seeding on every
+   * wheel tick would snap it through a series of rest poses instead. So an
+   * unchanged run keeps its particles and just gets the new numbers and a
+   * shove.
+   */
+  private sync(scene: Scene, dirty: DirtySets, id: string): void {
+    const mirror = scene.strings.get(id);
+    if (mirror === undefined) {
+      this.removeString(dirty, id);
+      return;
+    }
+
+    const signature = runSignature(mirror.nodes, mirror.closed);
+    if (this.runs.get(id) === signature) {
+      const owned = this.byString.get(id);
+      if (owned === undefined) return;
+      let moved = false;
+      for (let i = 0; i < owned.length; i++) {
+        const slack = Math.max(mirror.nodes[i]?.slackAfter ?? 0, 0);
+        if (owned[i]!.slack !== slack) {
+          owned[i]!.slack = slack;
+          moved = true;
+        }
+      }
+      // Style-only edits — a colour, a thickness, a tuck-behind — change no
+      // geometry, so they wake nothing. The renderer is told by `dirty.strings`
+      // directly and reads the style off the mirror.
+      if (moved) for (const segment of owned) this.rouse(segment);
+      return;
+    }
+
+    this.setString(
+      scene,
+      dirty,
+      id,
+      mirror.nodes.map((node) => node.pin),
+      mirror.nodes.map((node) => node.slackAfter),
+      mirror.closed,
+    );
   }
 
   /** Wake every segment of a string — a pluck, an impulse, a slack nudge that
@@ -529,6 +608,23 @@ export class RopeSet {
     reusable.push(segment.at);
     segment.count = 0;
   }
+}
+
+/**
+ * A run of pins, as one comparable value. The separator is a character no id
+ * contains, so two different runs cannot collide into the same signature by
+ * concatenation — `["ab", "c"]` and `["a", "bc"]` are famously the same string
+ * once you join them with nothing.
+ */
+function runSignature(
+  nodes: readonly string[] | readonly { pin: string }[],
+  closed: boolean,
+): string {
+  const pins =
+    typeof nodes[0] === "string"
+      ? (nodes as readonly string[])
+      : (nodes as readonly { pin: string }[]).map((node) => node.pin);
+  return `${pins.join(" ")}|${closed ? "c" : "o"}`;
 }
 
 /** How long a rope takes to fall asleep once it stops moving, in

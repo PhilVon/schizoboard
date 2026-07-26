@@ -77,6 +77,40 @@ export interface PinNode {
   wy: number;
 }
 
+/**
+ * One node of a string's run: a reference to a pin, and the slack in the gap
+ * that follows it.
+ *
+ * `slackAfter` is a **ratio** against the chord, never a length — and on the
+ * terminal node of an open string it is unused and means nothing (DATA-MODEL
+ * section 5.2). `sim/ropes.ts` reads it only from the node each segment starts
+ * at, so on an open run the last value is never asked for.
+ */
+export interface StringNode {
+  pin: string;
+  slackAfter: number;
+}
+
+/**
+ * A string, as everything downstream of the document sees it.
+ *
+ * Plain strings for `material` and `layer` rather than the union types in
+ * `crdt/schema.ts`, for the same reason `PinNode.kind` is: the scene is the
+ * wall between the document and everything else, and a type imported across it
+ * is a dependency imported across it.
+ */
+export interface StringNodes {
+  id: string;
+  nodes: StringNode[];
+  color: string;
+  thickness: number;
+  material: string;
+  /** `'over'` draws above items and collides with them; `'under'` passes
+   *  behind and does not — DESIGN section 6.2. */
+  layer: string;
+  closed: boolean;
+}
+
 export interface Bounds {
   minX: number;
   minY: number;
@@ -151,6 +185,16 @@ export class Scene {
   private highWater = 0;
 
   readonly pins = new Map<string, PinNode>();
+
+  /**
+   * Strings, mirrored from the document — topology and style only.
+   *
+   * No particle ever lands here. Where a string actually *is* belongs to
+   * `sim/ropes.ts`, which is transient, local and rebuilt from scratch on
+   * load; this map is the durable half, and the split is DESIGN section 5.1's
+   * "physics never writes to the document" seen from the other side.
+   */
+  readonly strings = new Map<string, StringNodes>();
 
   /**
    * The reverse of `PinNode.parent`: which pins hold each item.
@@ -584,6 +628,7 @@ export class Scene {
   clear(): void {
     this.slots.clear();
     this.pins.clear();
+    this.strings.clear();
     this.byParent.clear();
     this.ids.fill(null);
     this.coldBySlot.fill(null);
