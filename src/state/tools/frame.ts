@@ -21,7 +21,7 @@
 import { rotateIn, type Point } from "@/lib/rotate";
 import type { Camera } from "@/state/camera";
 import type { Scene } from "@/state/scene";
-import type { StringAnchor } from "@/state/tools/tool";
+import type { StringAnchor, StringHit } from "@/state/tools/tool";
 
 /** Null when the item is not on the board. */
 export function itemLocal(
@@ -87,4 +87,52 @@ export function anchorAt(
   }
 
   return { anchor: { parent: null, lx: board.x, ly: board.y }, x: board.x, y: board.y };
+}
+
+/**
+ * How far either side of a string, in screen pixels, the cursor still counts as
+ * being on it.
+ *
+ * Screen rather than board, like a pin's grab radius and for the same reason: a
+ * default string is three pixels wide at every zoom (`render/ropes/paint.ts`),
+ * so a tolerance in board units would be unusably tight zoomed out and a slab
+ * zoomed in. Generous, because the point of the gesture is that you grab the
+ * string without aiming at it.
+ */
+export const STRING_GRAB_PX = 8;
+
+/**
+ * The string under a screen point, or null.
+ *
+ * > Hover a string. The nearest point on the rope highlights, tracking your
+ * > cursor along the curve. — DESIGN section 3.4
+ *
+ * Shared by the hover — asked once a frame by `app/main.ts`, because a tool is
+ * only handed pointer moves while a gesture has capture and this is what is
+ * drawn *between* gestures — and by the press in `state/tools/select.ts`. One
+ * function, because a highlight that appears where a press does nothing is
+ * worse than no highlight at all.
+ *
+ * Two things beat the string, and both because they are physically on top of
+ * it: a pin, which is what a press on one means; and, for a string tucked
+ * *behind* items (DESIGN section 6.2), the item it is passing under — what you
+ * cannot see you cannot grab.
+ */
+export function stringAt(
+  scene: Scene,
+  camera: Camera,
+  hitTest: (boardX: number, boardY: number) => string | null,
+  hitPin: (screenX: number, screenY: number) => string | null,
+  hitString: (boardX: number, boardY: number, reach: number) => StringHit | null,
+  screenX: number,
+  screenY: number,
+): StringHit | null {
+  if (hitPin(screenX, screenY) !== null) return null;
+  const board = camera.screenToBoard(screenX, screenY);
+  const hit = hitString(board.x, board.y, STRING_GRAB_PX / camera.zoom);
+  if (hit === null) return null;
+  if (scene.strings.get(hit.string)?.layer === "under" && hitTest(board.x, board.y) !== null) {
+    return null;
+  }
+  return hit;
 }

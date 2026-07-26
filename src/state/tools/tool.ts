@@ -132,6 +132,24 @@ export interface BoardWriter {
    * user did, so it is one undo entry.
    */
   createString(anchors: readonly StringAnchor[], closed: boolean): void;
+  /**
+   * Push a pin into the middle of a run — the headline gesture (DESIGN section
+   * 3.4), as one transaction so that undoing it takes the pin with it.
+   *
+   * `index` is where in the run the new node goes; `slackBefore` and
+   * `slackAfter` are what the gap either side of it becomes. Those two are the
+   * tool's to compute and not the op's, because they are geometry — the chords
+   * come from where the neighbouring pins actually are, and `crdt/` may not read
+   * the scene. `lib/slack.ts` does the arithmetic; getting it wrong is the one
+   * visible failure this gesture has.
+   */
+  insertPin(
+    stringId: string,
+    index: number,
+    anchor: StringAnchor,
+    slackBefore: number,
+    slackAfter: number,
+  ): void;
 }
 
 /**
@@ -145,6 +163,29 @@ export interface BoardWriter {
 export type StringAnchor =
   | { readonly pin: string }
   | { readonly parent: string | null; readonly lx: number; readonly ly: number };
+
+/**
+ * Where a board point lands on a string — what `RopeSet.nearest` answers,
+ * named here for the same reason `StringAnchor` is: the tool seam describes
+ * everything a gesture reads and writes without `state/tools/` depending on
+ * either the document or the simulation.
+ *
+ * Against the rope's *particles*, not the chord between its pins. A string with
+ * any drape in it is nowhere near its own chord in the middle, and the whole
+ * gesture is grabbing it where it actually hangs.
+ */
+export interface StringHit {
+  readonly string: string;
+  /** Index of the node the segment starts at; an insert goes at `node + 1`. */
+  readonly node: number;
+  /** Arc-length fraction along that segment, 0 at `node` and 1 at `node + 1` —
+   *  which is what `lib/slack.ts` needs to split the sag without it jumping. */
+  readonly t: number;
+  /** The point itself, board space. */
+  readonly x: number;
+  readonly y: number;
+  readonly distance: number;
+}
 
 export interface ToolContext {
   readonly scene: Scene;
@@ -164,6 +205,16 @@ export interface ToolContext {
    * space first would throw away the thing being asked about.
    */
   hitPin(screenX: number, screenY: number): string | null;
+  /**
+   * The nearest point on any string to a **board** point, within `reach` board
+   * units, or null.
+   *
+   * Board rather than screen, unlike `hitPin`, because the answer is a point on
+   * a curve rather than a target with a grab radius — the caller converts its
+   * screen-space tolerance on the way in (`state/tools/frame.ts`). Supplied by
+   * the simulation, which is the only thing that knows where a rope hangs.
+   */
+  hitString(boardX: number, boardY: number, reach: number): StringHit | null;
   /**
    * Key codes held right now. A level rather than an edge, because `R`+drag
    * and `Ctrl`+drag are asked "is it down?" partway through a gesture, not

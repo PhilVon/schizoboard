@@ -69,6 +69,7 @@ beforeEach(() => {
     selection: new Selection(),
     hitTest,
     hitPin: () => null,
+    hitString: () => null,
     held: new Set<string>(),
     write: {
       setPoses: () => {},
@@ -77,6 +78,7 @@ beforeEach(() => {
       createNote: () => {},
       placePin: () => {},
     createString: () => {},
+    insertPin: () => {},
       deletePins: () => {},
       createPin: (parent, x, y) => placed.push({ parent, x, y }),
     },

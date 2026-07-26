@@ -298,3 +298,137 @@ describe("Overlay", () => {
     expect(calls.strokeRect).toHaveLength(1);
   });
 });
+
+/**
+ * String chrome: the point on the rope under the cursor, and the halo along a
+ * selected one (DESIGN section 3.4).
+ *
+ * Both are walked from the rope particles rather than from the pins, so the
+ * geometry here is a stand-in pool with the sag left in it — a straight line
+ * would not tell the two apart.
+ */
+describe("Overlay, strings", () => {
+  /** Three particles hanging between (0, 0) and (200, 0), sagging to y = 40. */
+  const pool = new Float64Array([0, 0, 100, 40, 200, 0]);
+  const ropes = {
+    positions: pool,
+    visit: (id: string, fn: (at: number, count: number) => void): void => {
+      if (id === "s") fn(0, 3);
+    },
+  };
+
+  function putString(thickness = 3): void {
+    scene.strings.set("s", {
+      id: "s",
+      nodes: [
+        { pin: "p0", slackAfter: 0.2 },
+        { pin: "p1", slackAfter: 0.2 },
+      ],
+      color: "#a8322c",
+      thickness,
+      material: "string",
+      layer: "over",
+      closed: false,
+    });
+  }
+
+  function draw(hover: { x: number; y: number } | null = null): void {
+    overlay.draw(camera, scene, selection, null, dirty, null, null, ropes, hover);
+  }
+
+  it("marks the point on the string under the cursor", () => {
+    camera.centreOn(0, 0);
+    draw({ x: 0, y: 0 });
+    // A disc, at the point itself — not at the cursor, and not on the chord.
+    expect(calls.arcs).toHaveLength(1);
+    expect(calls.arcs[0]![0]).toBeCloseTo(500, 6);
+    expect(calls.arcs[0]![1]).toBeCloseTo(400, 6);
+  });
+
+  it("clears the frame after the highlight goes, and then costs nothing", () => {
+    camera.centreOn(0, 0);
+    draw({ x: 0, y: 0 });
+    const cleared = calls.clearRect;
+
+    // It was there and is not now, so the canvas is wrong until it is wiped...
+    draw(null);
+    expect(calls.clearRect).toBe(cleared + 1);
+    // ...and once wiped, an idle board with nothing on the canvas is free.
+    draw(null);
+    expect(calls.clearRect).toBe(cleared + 1);
+  });
+
+  it("traces a selected string along its particles, not its chord", () => {
+    putString();
+    selection.replaceStrings(["s"]);
+    camera.centreOn(0, 0);
+    draw();
+
+    expect(calls.lines).toEqual([
+      [500, 400],
+      [600, 440],
+      [700, 400],
+    ]);
+  });
+
+  /**
+   * The halo is an outline, not a wash: a wide pale stroke, then the band over
+   * the string itself taken back out. Stroke the first without the second and
+   * the selected string reads as faded — which is what it did on a real board
+   * the first time, and what no unit test would have noticed.
+   */
+  it("rings the string rather than painting over it", () => {
+    putString(9);
+    selection.replaceStrings(["s"]);
+    // `strokeRect` is what records widths, so read the context back instead.
+    const seen: { width: number; op: string }[] = [];
+    const ctx = overlay as unknown as {
+      ctx: { lineWidth: number; globalCompositeOperation: string; stroke: () => void };
+    };
+    const stroke = ctx.ctx.stroke;
+    ctx.ctx.globalCompositeOperation = "source-over";
+    ctx.ctx.stroke = (): void => {
+      seen.push({ width: ctx.ctx.lineWidth, op: ctx.ctx.globalCompositeOperation });
+      stroke();
+    };
+    draw();
+
+    expect(seen).toHaveLength(2);
+    expect(seen[0]!.op).toBe("source-over");
+    expect(seen[0]!.width).toBeGreaterThan(9);
+    // The cut-out is narrower than the halo and no narrower than the string, so
+    // what survives is a fringe either side and nothing over the top.
+    expect(seen[1]!.op).toBe("destination-out");
+    expect(seen[1]!.width).toBeLessThan(seen[0]!.width);
+    expect(seen[1]!.width).toBeGreaterThanOrEqual(9);
+  });
+
+  it("restrokes a selected string that is still moving, and nothing else", () => {
+    putString();
+    selection.replaceStrings(["s"]);
+    draw();
+    const cleared = calls.clearRect;
+
+    // A rope settling is the one thing that changes this picture without
+    // touching the camera, the selection or any item.
+    dirty.rope("s");
+    draw();
+    expect(calls.clearRect).toBe(cleared + 1);
+
+    dirty.clear();
+    draw();
+    expect(calls.clearRect).toBe(cleared + 1);
+  });
+
+  it("survives a selection holding a string a collaborator deleted", () => {
+    putString();
+    selection.replaceStrings(["s"]);
+    draw();
+    const lines = calls.lines.length;
+
+    scene.strings.delete("s");
+    dirty.string("s");
+    expect(() => draw()).not.toThrow();
+    expect(calls.lines).toHaveLength(lines);
+  });
+});

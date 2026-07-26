@@ -20,6 +20,16 @@
  * what you have hold of (DATA-MODEL section 9), and it is stashed alongside
  * undo entries so "undo takes me back to where I was" works (DESIGN section
  * 7.6) — but it is never written to the document.
+ *
+ * ## Two sets, not one
+ *
+ * Items and strings are both selectable and they are kept apart. One set with
+ * both kinds of id in it would be shorter to write and wrong at every point it
+ * was read: `Delete` would hand a string to the item delete, `prune` would drop
+ * it for not being an item, and the overlay would look up a slot it does not
+ * have. They are reached by different gestures and every verb that follows —
+ * delete, rotate, resize, slack, tuck — applies to one kind and not the other.
+ * So each method below says which of the two it means.
  */
 
 export class Selection {
@@ -27,7 +37,9 @@ export class Selection {
   version = 1;
 
   private readonly ids = new Set<string>();
+  private readonly stringIds = new Set<string>();
 
+  /** Items. A selected string is not one — see `strings`. */
   get size(): number {
     return this.ids.size;
   }
@@ -43,6 +55,15 @@ export class Selection {
   /** Live view. Callers must not hold it across a mutation. */
   get members(): ReadonlySet<string> {
     return this.ids;
+  }
+
+  /** The selected strings, which are never also in `members`. */
+  get strings(): ReadonlySet<string> {
+    return this.stringIds;
+  }
+
+  hasString(id: string): boolean {
+    return this.stringIds.has(id);
   }
 
   toArray(): string[] {
@@ -64,11 +85,18 @@ export class Selection {
     else this.add(id);
   }
 
-  /** Replace the whole set. Silent if the membership is unchanged — which is
-   *  the common case while a marquee is being dragged across empty cork. */
+  /**
+   * Replace the whole selection with these **items**, strings included in what
+   * goes: this is what a click, a marquee and `Ctrl+A` all mean, and leaving a
+   * string selected behind a click on a photograph would mean the next slack
+   * nudge landed on something the user stopped pointing at.
+   *
+   * Silent if nothing changed — which is the common case while a marquee is
+   * being dragged across empty cork.
+   */
   replace(next: Iterable<string>): void {
     const set = next instanceof Set ? (next as ReadonlySet<string>) : new Set(next);
-    if (set.size === this.ids.size) {
+    if (this.stringIds.size === 0 && set.size === this.ids.size) {
       let same = true;
       for (const id of set) {
         if (!this.ids.has(id)) {
@@ -79,14 +107,40 @@ export class Selection {
       // Also the identity case: replacing the set with itself.
       if (same) return;
     }
+    this.stringIds.clear();
     this.ids.clear();
     for (const id of set) this.ids.add(id);
     this.version++;
   }
 
-  clear(): void {
-    if (this.ids.size === 0) return;
+  /**
+   * The mirror image: the whole selection becomes these strings.
+   *
+   * > A plain click without dragging selects the string instead.
+   * > — DESIGN section 3.4
+   */
+  replaceStrings(next: Iterable<string>): void {
+    const set = next instanceof Set ? (next as ReadonlySet<string>) : new Set(next);
+    if (this.ids.size === 0 && set.size === this.stringIds.size) {
+      let same = true;
+      for (const id of set) {
+        if (!this.stringIds.has(id)) {
+          same = false;
+          break;
+        }
+      }
+      if (same) return;
+    }
     this.ids.clear();
+    this.stringIds.clear();
+    for (const id of set) this.stringIds.add(id);
+    this.version++;
+  }
+
+  clear(): void {
+    if (this.ids.size === 0 && this.stringIds.size === 0) return;
+    this.ids.clear();
+    this.stringIds.clear();
     this.version++;
   }
 
@@ -97,8 +151,16 @@ export class Selection {
    * selection holding a ghost would then delete "it" again on the next
    * `Delete` — an op that quietly does nothing, which is the confusing kind of
    * nothing.
+   *
+   * A string goes the same way, and by its own predicate: a string id is not an
+   * item id and asking the item question about it would prune every selected
+   * string on the first press.
    */
-  prune(exists: (id: string) => boolean): void {
+  prune(exists: (id: string) => boolean, stringExists?: (id: string) => boolean): void {
     for (const id of this.ids) if (!exists(id)) this.remove(id);
+    if (!stringExists) return;
+    for (const id of this.stringIds) {
+      if (!stringExists(id) && this.stringIds.delete(id)) this.version++;
+    }
   }
 }

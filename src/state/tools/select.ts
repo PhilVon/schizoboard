@@ -48,6 +48,7 @@
  */
 
 import { rotateIn, rotateOut, type Point } from "@/lib/rotate";
+import { splitSlack } from "@/lib/slack";
 import type { Bounds, Vec2 } from "@/state/camera";
 import {
   chromeFrame,
@@ -58,10 +59,11 @@ import {
   type HandleId,
 } from "@/state/handles";
 import type { ItemPose } from "@/state/scene";
-import { anchorAt } from "@/state/tools/frame";
+import { anchorAt, stringAt } from "@/state/tools/frame";
 import { PinDrag } from "@/state/tools/pindrag";
 import type {
   PointerSample,
+  StringHit,
   Tool,
   ToolContext,
   ToolInput,
@@ -129,6 +131,9 @@ type GesturePhase =
   | "pending"
   /** `Alt`+drag from a pin: a new string being pulled out (DESIGN 3.4). */
   | "pulling"
+  /** Drag from the middle of a string: a loop of it being pulled out to a new
+   *  pin — the headline gesture (DESIGN 3.4). */
+  | "looping"
   | "dragging"
   | "rotating"
   | "resizing"
@@ -193,6 +198,58 @@ export class SelectTool implements Tool {
     if (this.phase !== "pulling" || !cursor) return null;
     return [{ x: this.pullX, y: this.pullY }, cursor];
   }
+
+  /**
+   * The string a press landed on, before the press became a drag. A click that
+   * never moves selects it instead (DESIGN section 3.4).
+   */
+  private pendingString: StringHit | null = null;
+
+  /**
+   * The insertion being pulled out of a string, held from the press until the
+   * release — and *only* here, because nothing about it is written until then.
+   * That is the whole of AC-71: `Esc` mid-drag reverts by dropping these.
+   *
+   * The two neighbouring pins are held by id rather than by position, so the
+   * chords are measured against wherever they are at the moment of the release
+   * rather than wherever they were when the string was grabbed.
+   */
+  private loopString: string | null = null;
+  private loopIndex = 0;
+  /** Arc-length fraction along the grabbed segment — where the user took hold
+   *  of the string, which is what `splitSlack` divides the sag at. */
+  private loopT = 0;
+  /** The gap's slack before the split; the sum of the two halves has to come
+   *  back to it, or the string flinches at the instant it succeeds. */
+  private loopSlack = 0;
+  private loopFrom: string | null = null;
+  private loopTo: string | null = null;
+  /** The three-point run drawn while the loop is out. Reused rather than minted
+   *  per frame; the overlay reads it and does not keep it. */
+  private readonly loopPoints: Vec2[] = [
+    { x: 0, y: 0 },
+    { x: 0, y: 0 },
+    { x: 0, y: 0 },
+  ];
+
+  /**
+   * The loop being pulled out, for `render/overlay.ts` — the pin behind, the
+   * cursor, and the pin ahead.
+   *
+   * > A new pin is born at that point on the string, free-floating, and follows
+   * > your cursor. The string now runs *through* it. — DESIGN section 3.4
+   *
+   * Straight legs, like the string tool's run and for the same reason: there is
+   * no rope for a node that has not been written down, and inventing a second
+   * catenary here would show as a jump the moment the real one took over.
+   */
+  loopPreview(cursor: { x: number; y: number } | null): readonly Vec2[] | null {
+    if (this.phase !== "looping" || !cursor) return null;
+    this.loopPoints[1]!.x = cursor.x;
+    this.loopPoints[1]!.y = cursor.y;
+    return this.loopPoints;
+  }
+
 
   /** Where the press landed, in both spaces. */
   private downX = 0;
@@ -358,12 +415,16 @@ export class SelectTool implements Tool {
   private onDown(at: PointerSample, ctx: ToolContext): void {
     // A collaborator may have deleted something we still think we have hold
     // of. Dragging a ghost silently does nothing, which is the worst kind.
-    ctx.selection.prune((id) => ctx.scene.has(id));
+    ctx.selection.prune(
+      (id) => ctx.scene.has(id),
+      (id) => ctx.scene.strings.has(id),
+    );
 
     this.downX = this.lastX = this.prevTickX = at.x;
     this.downY = this.lastY = at.y;
     this.pendingSelect = null;
     this.pendingPin = null;
+    this.pendingString = null;
     this.grabbed = null;
     const board = ctx.camera.screenToBoard(at.x, at.y, this.board);
     this.downBoardX = board.x;
@@ -420,6 +481,32 @@ export class SelectTool implements Tool {
       return;
     }
 
+    /**
+     * A string, then — the headline gesture (DESIGN section 3.4), and it beats
+     * the item under it for the same reason the pin does: where a run is drawn
+     * over items it is physically on top of them. `stringAt` is what decides
+     * that, and it is the same function the hover highlight asks, so a press
+     * cannot mean something the highlight did not offer.
+     *
+     * Which of the two things a press on a string means — pull a loop out, or
+     * select it — is not decided here. The pointer decides, exactly as it does
+     * for `Alt` on a pin: travel makes it a pull, stillness makes it a click.
+     */
+    const onString = stringAt(
+      ctx.scene,
+      ctx.camera,
+      ctx.hitTest,
+      ctx.hitPin,
+      ctx.hitString,
+      at.x,
+      at.y,
+    );
+    if (onString !== null) {
+      this.pendingString = onString;
+      this.phase = "pending";
+      return;
+    }
+
     const hit = ctx.hitTest(board.x, board.y);
 
     if (hit === null) {
@@ -472,6 +559,7 @@ export class SelectTool implements Tool {
       case "rotating":
       case "resizing":
       case "pin":
+      case "looping":
         this.applyGesture(ctx);
         return;
       case "marquee":
@@ -505,6 +593,29 @@ export class SelectTool implements Tool {
       }
       this.phase = "idle";
       ctx.dirty.camera = true;
+      return;
+    }
+
+    /**
+     * The two ends of the string gesture, and the same shape as the `Alt` one
+     * above. A loop that got as far as moving writes the new pin and the node
+     * that carries it; one that never moved was a click, and
+     *
+     * > A plain click without dragging selects the string instead.
+     * > — DESIGN section 3.4
+     */
+    if (this.phase === "looping") {
+      this.commitLoop(at, ctx);
+      this.resetLoop();
+      this.phase = "idle";
+      ctx.dirty.camera = true;
+      return;
+    }
+    if (this.pendingString !== null) {
+      const stringId = this.pendingString.string;
+      this.pendingString = null;
+      ctx.selection.replaceStrings([stringId]);
+      this.phase = "idle";
       return;
     }
 
@@ -568,6 +679,20 @@ export class SelectTool implements Tool {
       this.pullX = pin.wx;
       this.pullY = pin.wy;
       this.phase = "pulling";
+      return true;
+    }
+
+    // The press landed on a string and the pointer has moved, so a loop is
+    // being pulled out of it. Like the pull above, nothing is written until the
+    // release says where the new pin goes.
+    if (this.pendingString !== null) {
+      const hit = this.pendingString;
+      this.pendingString = null;
+      if (!this.beginLoop(hit, ctx)) {
+        this.phase = "idle";
+        return false;
+      }
+      this.phase = "looping";
       return true;
     }
 
@@ -683,6 +808,96 @@ export class SelectTool implements Tool {
     if (onto !== null) this.holding.add(onto);
   }
 
+  /**
+   * Take hold of the segment the press landed on: which string, where in its
+   * run the new node goes, and which two pins the split is between.
+   *
+   * `node` is the index of the node the segment *starts* at, so the insert goes
+   * at `node + 1` — and on the wrap segment of a closed run that is the end of
+   * the run, which is where a node between the last pin and the first one
+   * belongs (DATA-MODEL section 5.2).
+   *
+   * Returns false if the run or either of its pins has gone — a collaborator
+   * can delete the string between the press and the pointer moving, and pulling
+   * a loop out of nothing should be no gesture at all rather than a write.
+   */
+  private beginLoop(hit: StringHit, ctx: ToolContext): boolean {
+    const run = ctx.scene.strings.get(hit.string);
+    if (!run) return false;
+    const from = run.nodes[hit.node];
+    const to = run.nodes[(hit.node + 1) % run.nodes.length];
+    if (!from || !to) return false;
+    if (!ctx.scene.pins.has(from.pin) || !ctx.scene.pins.has(to.pin)) return false;
+
+    this.loopString = hit.string;
+    this.loopIndex = hit.node + 1;
+    this.loopT = hit.t;
+    this.loopSlack = from.slackAfter;
+    this.loopFrom = from.pin;
+    this.loopTo = to.pin;
+    this.refreshLoop(ctx);
+    return true;
+  }
+
+  /** Where the two neighbouring pins are *now*, for the preview. Re-read every
+   *  move rather than captured at the press, so a loop held while a
+   *  collaborator drags the photograph at one end stays attached to it. */
+  private refreshLoop(ctx: ToolContext): void {
+    const a = this.loopFrom === null ? undefined : ctx.scene.pins.get(this.loopFrom);
+    const b = this.loopTo === null ? undefined : ctx.scene.pins.get(this.loopTo);
+    if (a) {
+      this.loopPoints[0]!.x = a.wx;
+      this.loopPoints[0]!.y = a.wy;
+    }
+    if (b) {
+      this.loopPoints[2]!.x = b.wx;
+      this.loopPoints[2]!.y = b.wy;
+    }
+  }
+
+  /**
+   * The release: one write, or none.
+   *
+   * The drop lands by the same rule every other string end does — a pin, an
+   * item that gets its own pin, or the bare cork (`anchorAt`) — and the two
+   * slack ratios come from `lib/slack.ts` against the chords as they are at this
+   * instant. That is the critical detail of the whole gesture:
+   *
+   * > when the string splits at that point, the slack must split proportionally
+   * > so the two new segments together sag exactly as the original did. Get this
+   * > wrong and the string visibly jumps at the moment of insertion.
+   * > — DESIGN section 3.4
+   */
+  private commitLoop(at: PointerSample, ctx: ToolContext): void {
+    const stringId = this.loopString;
+    const from = this.loopFrom;
+    const to = this.loopTo;
+    if (stringId === null || from === null || to === null) return;
+    const a = ctx.scene.pins.get(from);
+    const b = ctx.scene.pins.get(to);
+    if (!a || !b) return;
+
+    const drop = anchorAt(ctx.scene, ctx.camera, ctx.hitTest, ctx.hitPin, at.x, at.y);
+    // Dropped back onto one of the two pins this segment already runs between.
+    // That is a node with nothing on one side of it — a duplicate stop, not a
+    // pin in the middle of anything — so nothing is written, which is the same
+    // revert `Esc` gives and the same rule the `Alt` pull follows.
+    if ("pin" in drop.anchor && (drop.anchor.pin === from || drop.anchor.pin === to)) return;
+
+    const chord = Math.hypot(b.wx - a.wx, b.wy - a.wy);
+    const first = Math.hypot(drop.x - a.wx, drop.y - a.wy);
+    const second = Math.hypot(b.wx - drop.x, b.wy - drop.y);
+    const [before, after] = splitSlack(chord, this.loopSlack, first, second, this.loopT);
+    ctx.write.insertPin(stringId, this.loopIndex, drop.anchor, before, after);
+  }
+
+  /** Let go of the segment. Nothing to put back: nothing was written. */
+  private resetLoop(): void {
+    this.loopString = null;
+    this.loopFrom = null;
+    this.loopTo = null;
+  }
+
   private applyGesture(ctx: ToolContext): void {
     if (this.phase === "pin") {
       this.pinDrag.move(this.lastX, this.lastY, ctx);
@@ -691,6 +906,13 @@ export class SelectTool implements Tool {
     }
     if (this.phase === "resizing") {
       this.applyResize(ctx);
+      return;
+    }
+    if (this.phase === "looping") {
+      // Nothing on the board moves while a loop is out — the string is still
+      // exactly where the document says it is, and the pulled shape lives in
+      // the overlay until the release writes it down.
+      this.refreshLoop(ctx);
       return;
     }
 
@@ -956,6 +1178,19 @@ export class SelectTool implements Tool {
     // A pull that was taken away wrote nothing and removed nothing, which is
     // the right revert for both halves of the `Alt` gesture at once.
     this.pullFrom = null;
+    /**
+     * And the same for a loop pulled out of a string:
+     *
+     * > `Esc` mid-drag → the whole thing reverts, string unchanged.
+     * > — DESIGN section 3.4, AC-71
+     *
+     * "Completely" is what makes this two lines rather than an inverse
+     * operation: the pin and the node are made in one transaction at the
+     * release and nowhere else, so before the release there is nothing in the
+     * document to undo and the string is still the string it always was.
+     */
+    this.pendingString = null;
+    this.resetLoop();
     // Nothing was written, so putting the pin back is the whole of the revert.
     if (this.phase === "pin") {
       this.pinDrag.cancel(ctx);
@@ -1010,6 +1245,7 @@ export class SelectTool implements Tool {
 
     this.pendingSelect = null;
     this.pendingPin = null;
+    this.pendingString = null;
     this.grabbed = null;
     this.rect = null;
     this.phase = "idle";

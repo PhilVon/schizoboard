@@ -18,6 +18,7 @@ import {
   createStringThrough,
   deleteItems,
   deletePins,
+  insertPinIntoString,
   placePin,
   resizeItems,
   setItemPoses,
@@ -33,11 +34,11 @@ import { Cork } from "@/render/cork";
 import { Culler } from "@/render/cull";
 import { DomItemLayer } from "@/render/items/dom";
 import { FrameLoop } from "@/render/loop";
-import { Overlay } from "@/render/overlay";
+import { Overlay, type PendingRun } from "@/render/overlay";
 import { PinLayer } from "@/render/pins/dom";
 import { RopeLayer } from "@/render/ropes/paint";
 import { World } from "@/render/world";
-import { RopeSet } from "@/sim/ropes";
+import { RopeSet, type RopeHit } from "@/sim/ropes";
 import { Torsion } from "@/sim/torsion";
 import { Camera } from "@/state/camera";
 import { DirtySets } from "@/state/dirty";
@@ -49,6 +50,7 @@ import { Selection } from "@/state/selection";
 import { ToolMachine } from "@/state/tools/machine";
 import { NoteTool } from "@/state/tools/note";
 import { PinTool } from "@/state/tools/pin";
+import { stringAt } from "@/state/tools/frame";
 import { SelectTool } from "@/state/tools/select";
 import { StringTool } from "@/state/tools/string";
 import type { BoardWriter } from "@/state/tools/tool";
@@ -235,6 +237,21 @@ async function boot(): Promise<void> {
       const run = anchors.map((a) => ({ ...a }));
       queued.push(() => createStringThrough(board, run, { closed }));
     },
+    /**
+     * The headline gesture: a loop of string pulled out to a new pin (DESIGN
+     * section 3.4). The pin and the node it hangs on are one transaction, so
+     * `Ctrl+Z` takes the pin with the node rather than leaving it in the cork.
+     *
+     * The two slack ratios arrive computed. They are geometry and geometry
+     * lives in the scene, which `crdt/` may not read — see
+     * `state/tools/select.ts` and `lib/slack.ts`.
+     */
+    insertPin: (stringId, index, anchor, slackBefore, slackAfter) => {
+      const at = { ...anchor };
+      queued.push(() =>
+        insertPinIntoString(board, stringId, index, at, slackBefore, slackAfter),
+      );
+    },
     deletePins: (ids, settle) => {
       const snapshot = [...ids];
       // Copied, like every other queued write: this runs in phase 9 and the
@@ -306,16 +323,29 @@ async function boot(): Promise<void> {
   const pinTool = new PinTool({ onDone: () => queued.push(() => tools.setTool(select)) });
   /** `S`. The primary verb — DESIGN section 1.3, "the string is the product". */
   const stringTool = new StringTool({ onDone: () => queued.push(() => tools.setTool(select)) });
+  /**
+   * The three hit tests, named once. The tool machine is handed them, and so is
+   * the hover in phase 4 — which asks the same questions between gestures that
+   * a press asks during one, and has to get the same answers.
+   */
+  const hitItem = (bx: number, by: number): string | null => items.hitTest(scene, bx, by);
+  // Screen space, because a pin's grab radius is in screen pixels and has a
+  // floor — see `render/pins/dom.ts`.
+  const hitPin = (sx: number, sy: number): string | null => pins.hitTest(scene, camera, sx, sy);
+  // Board space, and against the particles: where a string *hangs*, which is
+  // the only thing that knows about the sag.
+  const hitString = (bx: number, by: number, reach: number): RopeHit | null =>
+    ropes.nearest(bx, by, reach);
+
   const tools = new ToolMachine(select, root, {
     scene,
     dirty,
     camera,
     selection,
     write: writer,
-    hitTest: (bx, by) => items.hitTest(scene, bx, by),
-    // Screen space, because a pin's grab radius is in screen pixels and has a
-    // floor — see `render/pins/dom.ts`.
-    hitPin: (sx, sy) => pins.hitTest(scene, camera, sx, sy),
+    hitTest: hitItem,
+    hitPin,
+    hitString,
     // Space+drag and middle-drag belong to the camera, not to the board.
     suppressed: () => navigation.panReady,
   });
@@ -485,6 +515,21 @@ async function boot(): Promise<void> {
    * frame's positions rather than last frame's.
    */
   let hoveredPin: string | null = null;
+  /**
+   * And the point on the string under it, which is the affordance the headline
+   * gesture has:
+   *
+   * > Hover a string. The nearest point on the rope highlights, tracking your
+   * > cursor along the curve. — DESIGN section 3.4
+   *
+   * Asked here rather than delivered to the tool, for the reason the pin hover
+   * is: between gestures nothing has pointer capture, so the tool is never
+   * handed a `move`. The *rule* is not duplicated though — `stringAt` is the
+   * same function `state/tools/select.ts` puts a press through, given the same
+   * three hit tests — so the highlight cannot offer something a press would
+   * not do.
+   */
+  let hoveredString: { x: number; y: number } | null = null;
   let hoverAskedX = Number.NaN;
   let hoverAskedY = Number.NaN;
   loop.on("layout", () => {
@@ -505,11 +550,21 @@ async function boot(): Promise<void> {
     const cursor = navigation.panReady ? null : tools.cursor;
     if (!cursor) {
       hoveredPin = null;
+      hoveredString = null;
       hoverAskedX = Number.NaN;
     } else if (cursor.x !== hoverAskedX || cursor.y !== hoverAskedY || !dirty.isClean) {
       hoverAskedX = cursor.x;
       hoverAskedY = cursor.y;
       hoveredPin = pins.hitTest(scene, camera, cursor.x, cursor.y);
+      // The select tool only, and not while it has hold of something. The
+      // string tool's own affordance is the run it is building, and mid-gesture
+      // the loop being pulled out is the feedback — a highlight tracking the
+      // curve as well would be a second cursor.
+      const offer =
+        tools.current === select && !select.gesturing
+          ? stringAt(scene, camera, hitItem, hitPin, hitString, cursor.x, cursor.y)
+          : null;
+      hoveredString = offer && { x: offer.x, y: offer.y };
     }
   });
 
@@ -564,10 +619,27 @@ async function boot(): Promise<void> {
   /** The board-space cursor, or null when the pointer is off the board. */
   const cursorBoard = (): { x: number; y: number } | null =>
     tools.cursor ? camera.screenToBoard(tools.cursor.x, tools.cursor.y) : null;
-  const pendingRun = (): readonly { x: number; y: number }[] | null =>
-    tools.current === stringTool
-      ? stringTool.preview(cursorBoard())
-      : select.pullPreview(cursorBoard());
+  /**
+   * A run drawn on the overlay, from whichever gesture is drawing one: the
+   * string tool building a run, `Alt`+drag pulling one out of a pin, or a loop
+   * pulled out of the middle of an existing string.
+   *
+   * The loop is dashed end to end and the other two only in the leg chasing the
+   * cursor, because that is the difference between them: the first two have
+   * stops that were already decided, and the loop has nothing decided until it
+   * is let go.
+   */
+  const pendingRun = (): PendingRun | null => {
+    const cursor = cursorBoard();
+    if (tools.current === stringTool) {
+      const points = stringTool.preview(cursor);
+      return points ? { points, dashed: "tail" } : null;
+    }
+    const loop = select.loopPreview(cursor);
+    if (loop) return { points: loop, dashed: "all" };
+    const pull = select.pullPreview(cursor);
+    return pull ? { points: pull, dashed: "tail" } : null;
+  };
 
   loop.on("ropes", () => {
     ropesUnder.draw(scene, ropes, camera, dirty);
@@ -587,10 +659,13 @@ async function boot(): Promise<void> {
       select.pinCandidate,
       // The machine's hover, not a `move` the tool was handed: between clicks
       // nothing is captured, so the tool never hears about the pointer.
-      // A run being drawn, from whichever tool is drawing one: the string tool
-      // building a run, or `Alt`+drag pulling one out of a pin without
-      // switching tools at all (DESIGN section 3.4).
+      // A run being drawn, by whichever gesture is drawing one — see
+      // [`pendingRun`].
       pendingRun(),
+      // Where the ropes hang, for haloing the selected ones, and the point on
+      // one the cursor is over (DESIGN section 3.4).
+      ropes,
+      hoveredString,
     );
     hud.update(frame.now);
   });
@@ -694,7 +769,8 @@ async function boot(): Promise<void> {
     `platform: ${native.kind} · paste a picture or some text, or drop a file in · ` +
     `N then click for a blank sheet · P then click for a pin · V back to select · ` +
     `drag a pin to move it, onto an item to parent it, Ctrl to keep it put · ` +
-    `Alt+click a pin removes it · ` +
+    `Alt+click a pin removes it · Alt+drag pulls a new string out of one · ` +
+    `drag the middle of a string to pull a new pin out of it, click it to select · ` +
     `drag to move · drag the handle or R+drag to rotate · drag a note's edge to resize · ` +
     `drag the cork to marquee · Delete removes · ` +
     `Ctrl+Z undoes · space+drag pans · Ctrl+0 fit · F frame · \` for the HUD`;

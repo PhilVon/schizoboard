@@ -35,6 +35,7 @@ import type { Selection } from "@/state/selection";
 import type {
   BoardWriter,
   PointerSample,
+  StringHit,
   Tool,
   ToolContext,
   ToolInput,
@@ -49,6 +50,8 @@ export interface ToolMachineOptions {
   hitTest: (boardX: number, boardY: number) => string | null;
   /** Screen space, not board — see `ToolContext.hitPin`. */
   hitPin: (screenX: number, screenY: number) => string | null;
+  /** Board space, and against the rope particles — see `ToolContext.hitString`. */
+  hitString: (boardX: number, boardY: number, reach: number) => StringHit | null;
   /** True when navigation owns the pointer — space held, or mid-pan. */
   suppressed?: () => boolean;
 }
@@ -83,6 +86,7 @@ export class ToolMachine {
       write: options.write,
       hitTest: options.hitTest,
       hitPin: options.hitPin,
+      hitString: options.hitString,
       held: this.heldKeys,
     };
     this.attach();

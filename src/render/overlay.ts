@@ -87,6 +87,64 @@ const PENDING_STROKE = "rgba(168, 50, 44, 0.9)";
 const PENDING_WIDTH = 2;
 const PENDING_DASH: readonly number[] = [7, 5];
 
+/**
+ * A run drawn on this canvas, and how much of it is provisional.
+ *
+ * `"tail"` is a run being built with the string tool: the stops already clicked
+ * are decisions and only the leg chasing the cursor is not. `"all"` is the loop
+ * being pulled out of an existing string — nothing about it is written until
+ * the release, including which two pins it hangs between, so drawing any of it
+ * solid would claim more than has happened.
+ */
+export interface PendingRun {
+  /** Board space, the live cursor last. */
+  readonly points: readonly Vec2[];
+  readonly dashed: "tail" | "all";
+}
+
+/**
+ * The half of `sim/ropes.ts` this canvas reads: where a string's particles
+ * are. Structural rather than the class, so the overlay depends on the shape it
+ * walks and not on the simulation — the same seam `state/tools/tool.ts` draws
+ * for the same reason.
+ */
+export interface RopeGeometry {
+  readonly positions: Float64Array;
+  visit(id: string, fn: (at: number, count: number) => void): void;
+}
+
+/**
+ * The point on a string under the cursor — "the nearest point on the rope
+ * highlights, tracking your cursor along the curve" (DESIGN section 3.4).
+ *
+ * A small disc rather than a glow along the string, because what it is
+ * promising is precise: press here and a pin is born *there*. In the cotton red
+ * of the string it came off, ringed pale so it stays legible against the string
+ * itself, against cork and against a photograph.
+ */
+const STRING_HOVER_RADIUS = 4;
+const STRING_HOVER_FILL = "rgba(168, 50, 44, 0.95)";
+const STRING_HOVER_RING = "rgba(255, 246, 222, 0.95)";
+
+/**
+ * A selected string.
+ *
+ * This canvas sits above both rope canvases, so a halo stroked along the string
+ * lands *on top* of it, and a wide pale stroke — which is the obvious way to
+ * write this — makes the selected string read as **faded** rather than as
+ * marked. Seen immediately on a real board and invisible in every unit test.
+ *
+ * So the band over the string itself is taken back out with `destination-out`
+ * after it is laid down, leaving only the fringe either side. The string keeps
+ * its own colour, its shadow and its highlight, and gains an outline — which is
+ * the same thing the selection outline does for a photograph, and reads the
+ * same way.
+ */
+const STRING_HALO = "rgba(255, 244, 214, 0.85)";
+const STRING_HALO_WIDEN = 7;
+/** A shade wider than the string, so the fringe does not eat its own edges. */
+const STRING_HALO_CLEAR = 2;
+
 export class Overlay {
   private readonly canvas: HTMLCanvasElement;
   private readonly ctx: CanvasRenderingContext2D | null;
@@ -114,6 +172,10 @@ export class Overlay {
   /** The candidate ring changes with nothing else: dragging a pin across a
    *  still board moves no item, no camera and no selection. */
   private highlighted: string | null = null;
+  /** Was there a string highlight on the canvas last frame? It tracks along a
+   *  curve that nothing else on this canvas knows about, so it is its own
+   *  flag — the frame it disappears is a frame that has to clear. */
+  private hadStringHover = false;
   /** Reset at the top of every `draw` â€” see [`Overlay.clear`]. */
   private cleared = false;
 
@@ -149,16 +211,29 @@ export class Overlay {
      * never in the document, and it vanishes the moment the run ends
      * (ARCHITECTURE section 3, phase 8).
      */
-    pending: readonly Vec2[] | null = null,
+    pending: PendingRun | null = null,
+    /**
+     * Where the ropes are, for the selected ones. Null when there is no
+     * simulation to ask — which is every test that does not care.
+     */
+    ropes: RopeGeometry | null = null,
+    /** The point on a string under the cursor, board space (DESIGN 3.4). */
+    stringHover: Vec2 | null = null,
   ): void {
     const ctx = this.ctx;
     if (!ctx) return;
 
     const wantsMarquee = marquee !== null;
-    const wantsPending = pending !== null && pending.length >= 2;
+    const wantsPending = pending !== null && pending.points.length >= 2;
+    const wantsStrings = ropes !== null && selection.strings.size > 0;
     const stale =
       wantsMarquee ||
       wantsPending ||
+      stringHover !== null ||
+      this.hadStringHover ||
+      // A selected string sags, settles and follows the photograph it is tied
+      // to, none of which touches the camera or the selection.
+      (wantsStrings && (dirty.all || dirty.ropes.size > 0 || dirty.strings.size > 0)) ||
       this.hadPending ||
       highlight !== this.highlighted ||
       // A candidate that is itself moving â€” a pin held over a photograph being
@@ -173,6 +248,7 @@ export class Overlay {
       this.selectedMoved(selection, dirty);
     this.hadMarquee = wantsMarquee;
     this.hadPending = wantsPending;
+    this.hadStringHover = stringHover !== null;
     this.highlighted = highlight;
     this.cameraVersion = camera.version;
     this.selectionVersion = selection.version;
@@ -185,7 +261,10 @@ export class Overlay {
     // blank canvas to arrive at a blank canvas is the cost this module exists
     // to not pay.
     this.cleared = false;
-    let drew = this.drawSelection(ctx, camera, scene, selection);
+    // The halo first, so every other piece of chrome lands on top of it rather
+    // than being washed out by it.
+    let drew = wantsStrings && this.drawStrings(ctx, camera, scene, selection, ropes);
+    if (this.drawSelection(ctx, camera, scene, selection)) drew = true;
     // The rotation handle. `chromeFrame` is what decides that one item has one
     // and a group does not, and the select tool asks the same function where the
     // knob is â€” so what is drawn and what is grabbable cannot drift apart.
@@ -197,6 +276,9 @@ export class Overlay {
       drew = true;
     }
     if (wantsPending && this.drawPending(ctx, camera, pending)) drew = true;
+    // Last, and over everything: it is the thing under the cursor, and a pin is
+    // about to be born exactly where it sits.
+    if (stringHover && this.drawStringHover(ctx, camera, stringHover)) drew = true;
     // Nothing to draw, but last frame there was â€” so the clear is the work.
     if (!drew && this.inked) this.clear(ctx);
     this.inked = drew;
@@ -215,14 +297,18 @@ export class Overlay {
   private drawPending(
     ctx: CanvasRenderingContext2D,
     camera: Camera,
-    points: readonly Vec2[],
+    run: PendingRun,
   ): boolean {
+    const points = run.points;
     if (!this.cleared) this.clear(ctx);
     ctx.save();
     ctx.lineWidth = PENDING_WIDTH;
     ctx.lineCap = "round";
     ctx.lineJoin = "round";
     ctx.strokeStyle = PENDING_STROKE;
+    // A loop pulled out of a string is provisional end to end, so it is dashed
+    // end to end — see [`PendingRun`].
+    if (run.dashed === "all") ctx.setLineDash([...PENDING_DASH]);
 
     // The committed part of the run is solid.
     ctx.beginPath();
@@ -251,6 +337,90 @@ export class Overlay {
     ctx.lineTo(cursor.x, cursor.y);
     ctx.stroke();
     ctx.restore();
+    return true;
+  }
+
+  /**
+   * The halo along a selected string, walked from the rope particles.
+   *
+   * From the particles rather than from the pins, for the reason the hit test
+   * is: a string with any drape in it is nowhere near the chord between its
+   * pins, and chrome drawn along the chord would sit in mid-air above the
+   * string it claims to be marking.
+   *
+   * One `beginPath` per string rather than one for all of them, because the
+   * width is the string's own thickness and a batch would have to share one.
+   */
+  private drawStrings(
+    ctx: CanvasRenderingContext2D,
+    camera: Camera,
+    scene: Scene,
+    selection: Selection,
+    ropes: RopeGeometry,
+  ): boolean {
+    const pool = ropes.positions;
+    const zoom = camera.zoom;
+    const camX = camera.x;
+    const camY = camera.y;
+    let drew = false;
+
+    for (const id of selection.strings) {
+      const style = scene.strings.get(id);
+      // A collaborator can delete a string this selection still names;
+      // `Selection.prune` clears that up, but not before this frame draws.
+      if (style === undefined) continue;
+
+      let any = false;
+      ctx.beginPath();
+      ropes.visit(id, (at, count) => {
+        ctx.moveTo((pool[at]! - camX) * zoom, (pool[at + 1]! - camY) * zoom);
+        for (let i = 1; i < count; i++) {
+          const j = at + i * 2;
+          ctx.lineTo((pool[j]! - camX) * zoom, (pool[j + 1]! - camY) * zoom);
+        }
+        any = true;
+      });
+      if (!any) continue;
+
+      this.clear(ctx);
+      ctx.save();
+      ctx.lineCap = "round";
+      ctx.lineJoin = "round";
+      // Screen pixels, like the string itself (`render/ropes/paint.ts`), so the
+      // fringe either side of it is the same width at every zoom.
+      ctx.lineWidth = style.thickness + STRING_HALO_WIDEN;
+      ctx.strokeStyle = STRING_HALO;
+      ctx.stroke();
+      // And back out of the middle, so what is left is an outline rather than a
+      // wash — see [`STRING_HALO`].
+      ctx.globalCompositeOperation = "destination-out";
+      ctx.lineWidth = style.thickness + STRING_HALO_CLEAR;
+      ctx.stroke();
+      ctx.restore();
+      drew = true;
+    }
+    return drew;
+  }
+
+  /** The point on the string under the cursor — see [`STRING_HOVER_RADIUS`]. */
+  private drawStringHover(
+    ctx: CanvasRenderingContext2D,
+    camera: Camera,
+    point: Vec2,
+  ): boolean {
+    const p = camera.boardToScreen(point.x, point.y, this.a);
+    const edge = STRING_HOVER_RADIUS + 2;
+    if (p.x + edge < 0 || p.x - edge > camera.width) return false;
+    if (p.y + edge < 0 || p.y - edge > camera.height) return false;
+
+    this.clear(ctx);
+    ctx.beginPath();
+    ctx.arc(p.x, p.y, STRING_HOVER_RADIUS, 0, Math.PI * 2);
+    ctx.fillStyle = STRING_HOVER_FILL;
+    ctx.fill();
+    ctx.lineWidth = 1.5;
+    ctx.strokeStyle = STRING_HOVER_RING;
+    ctx.stroke();
     return true;
   }
 

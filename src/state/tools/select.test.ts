@@ -17,7 +17,7 @@ import { Scene } from "@/state/scene";
 import { Selection } from "@/state/selection";
 import { MIN_RESIZE, LIVE_WRITE_MS, SelectTool } from "@/state/tools/select";
 import type {
-  StringAnchor, PointerSample, ToolContext, WritePose, WriteSize } from "@/state/tools/tool";
+  StringAnchor, PointerSample, StringHit, ToolContext, WritePose, WriteSize } from "@/state/tools/tool";
 
 type Write =
   | { kind: "poses"; phase: "live" | "final"; poses: Map<string, WritePose> }
@@ -25,7 +25,15 @@ type Write =
   | { kind: "delete"; ids: string[]; keepPins: boolean }
   | { kind: "place"; pinId: string; parent: string | null; x: number; y: number }
   | { kind: "unpin"; ids: string[]; settle: [string, WritePose][] }
-  | { kind: "string"; anchors: StringAnchor[]; closed: boolean };
+  | { kind: "string"; anchors: StringAnchor[]; closed: boolean }
+  | {
+      kind: "insert";
+      stringId: string;
+      index: number;
+      anchor: StringAnchor;
+      before: number;
+      after: number;
+    };
 
 let scene: Scene;
 let dirty: DirtySets;
@@ -91,6 +99,39 @@ function hitPin(sx: number, sy: number): string | null {
   return best;
 }
 
+/**
+ * The nearest point on a string, standing in for `RopeSet.nearest`.
+ *
+ * Against the straight chord between each pair of pins rather than against
+ * simulated particles, which is the same answer for a taut string and is all
+ * these tests need: what is being exercised here is which node the insert lands
+ * at and what the tool does with `t`, not the sag. The real one hit-tests the
+ * particles, and `sim/ropes.test.ts` is where that is proved.
+ */
+function hitString(bx: number, by: number, reach: number): StringHit | null {
+  let best: StringHit | null = null;
+  let bestDistance = reach;
+  for (const [id, run] of scene.strings) {
+    const spans = run.closed ? run.nodes.length : run.nodes.length - 1;
+    for (let i = 0; i < spans; i++) {
+      const a = scene.pins.get(run.nodes[i]!.pin);
+      const b = scene.pins.get(run.nodes[(i + 1) % run.nodes.length]!.pin);
+      if (!a || !b) continue;
+      const dx = b.wx - a.wx;
+      const dy = b.wy - a.wy;
+      const span = dx * dx + dy * dy;
+      const u = span > 0 ? Math.min(1, Math.max(0, ((bx - a.wx) * dx + (by - a.wy) * dy) / span)) : 0;
+      const x = a.wx + dx * u;
+      const y = a.wy + dy * u;
+      const distance = Math.hypot(bx - x, by - y);
+      if (distance >= bestDistance) continue;
+      bestDistance = distance;
+      best = { string: id, node: i, t: u, x, y, distance };
+    }
+  }
+  return best;
+}
+
 function at(x: number, y: number, mods: Partial<PointerSample> = {}): PointerSample {
   return { x, y, shift: false, ctrl: false, alt: false, ...mods };
 }
@@ -146,6 +187,7 @@ beforeEach(() => {
     selection,
     hitTest,
     hitPin,
+    hitString,
     held,
     write: {
       setPoses: (poses, phase) => writes.push({ kind: "poses", phase, poses: new Map(poses) }),
@@ -166,6 +208,11 @@ beforeEach(() => {
       // (DESIGN section 3.4, T-44). It is the one thing select creates.
       createString: (anchors, closed) => {
         writes.push({ kind: "string", anchors: anchors.map((a) => ({ ...a })), closed });
+      },
+      // The other one: a loop pulled out of the middle of a string, which makes
+      // a pin and the node that carries it in one transaction (DESIGN 3.4).
+      insertPin: (stringId, index, anchor, before, after) => {
+        writes.push({ kind: "insert", stringId, index, anchor: { ...anchor }, before, after });
       },
     },
   };
@@ -1257,3 +1304,266 @@ describe("Alt+click on a pin", () => {
   });
 });
 
+
+/**
+ * The headline gesture: grab a string in the middle and pull a loop of it out
+ * to a new pin (DESIGN section 3.4).
+ *
+ * Nothing here needs a rope simulation. `hitString` above answers against the
+ * chord, which for a taut string is the same point the real one finds, and the
+ * tool's job starts from that answer: which node the insert lands at, where the
+ * pin goes, and how the sag divides.
+ */
+describe("pulling a pin out of a string", () => {
+  const SLACK = 0.2;
+
+  function putString(
+    id: string,
+    pins: readonly string[],
+    { closed = false, layer = "over" }: { closed?: boolean; layer?: string } = {},
+  ): void {
+    scene.strings.set(id, {
+      id,
+      nodes: pins.map((pin) => ({ pin, slackAfter: SLACK })),
+      color: "#a8322c",
+      thickness: 3,
+      material: "string",
+      layer,
+      closed,
+    });
+  }
+
+  /** Two pins 200 apart, a string between them, and the midpoint at (100, 0). */
+  function taut(): void {
+    putPin("p0", null, 0, 0);
+    putPin("p1", null, 200, 0);
+    putString("s", ["p0", "p1"]);
+  }
+
+  function lastInsert(): Extract<Write, { kind: "insert" }> {
+    const write = writes[writes.length - 1];
+    if (write?.kind !== "insert") throw new Error("expected an insert");
+    return write;
+  }
+
+  it("makes the pin and its node in one write, after the node it hangs from", () => {
+    taut();
+    down(100, 0);
+    move(100, 20);
+    up(100, 20);
+
+    const write = lastInsert();
+    expect(writes).toHaveLength(1);
+    expect(write.stringId).toBe("s");
+    // The segment starts at node 0, so the new node goes between it and node 1.
+    expect(write.index).toBe(1);
+    expect(write.anchor).toEqual({ parent: null, lx: 100, ly: 20 });
+  });
+
+  /**
+   * AC-73, from the tool's side. `lib/slack.ts` proves the arithmetic; this
+   * proves the tool hands it the right chords — measured to where the pin was
+   * actually dropped, not to where the string was grabbed.
+   */
+  it("splits the slack so the two halves hold exactly as much string as one did", () => {
+    taut();
+    down(100, 0);
+    move(100, 20);
+    up(100, 20);
+
+    const write = lastInsert();
+    const first = Math.hypot(100 - 0, 20 - 0);
+    const second = Math.hypot(200 - 100, 0 - 20);
+    expect(first * (1 + write.before) + second * (1 + write.after)).toBeCloseTo(
+      200 * (1 + SLACK),
+      6,
+    );
+  });
+
+  it("divides the sag where the string was grabbed, not down the middle", () => {
+    taut();
+    // A quarter of the way along, and pulled straight down from there.
+    down(50, 0);
+    move(50, 20);
+    up(50, 20);
+
+    const write = lastInsert();
+    const first = Math.hypot(50, 20);
+    const second = Math.hypot(150, 20);
+    // A quarter of the rest length went to the near side, so its own chord is
+    // proportionally the tauter of the two.
+    expect(first * (1 + write.before)).toBeCloseTo(200 * (1 + SLACK) * 0.25, 6);
+    expect(second * (1 + write.after)).toBeCloseTo(200 * (1 + SLACK) * 0.75, 6);
+  });
+
+  it("drops the new pin into an item, so it travels with it", () => {
+    taut();
+    put("a", 100, 120, 100, 100);
+    down(100, 0);
+    move(100, 120);
+    up(100, 120);
+    expect(lastInsert().anchor).toEqual({ parent: "a", lx: 0, ly: 0 });
+  });
+
+  it("puts the wrap segment's node at the end of a closed run", () => {
+    putPin("p0", null, 0, 0);
+    putPin("p1", null, 200, 0);
+    putPin("p2", null, 100, 200);
+    putString("s", ["p0", "p1", "p2"], { closed: true });
+
+    // The middle of the leg from p2 back round to p0.
+    down(50, 100);
+    move(20, 100);
+    up(20, 100);
+    expect(lastInsert().index).toBe(3);
+  });
+
+  /** AC-71. Nothing is written until the release, so the revert is that there
+   *  was never anything to revert. */
+  it("reverts completely on Esc mid-drag", () => {
+    taut();
+    down(100, 0);
+    move(100, 20);
+    key("Escape");
+    up(100, 20);
+
+    expect(writes).toEqual([]);
+    expect(scene.strings.get("s")!.nodes).toHaveLength(2);
+    // And the gesture is over rather than merely paused: the next move must not
+    // pick it back up.
+    move(100, 60);
+    up(100, 60);
+    expect(writes).toEqual([]);
+  });
+
+  it("reverts the same way when the pointer is taken away", () => {
+    taut();
+    down(100, 0);
+    move(100, 20);
+    tool.handle({ kind: "cancel" }, ctx);
+    expect(writes).toEqual([]);
+  });
+
+  it("writes nothing when the loop is dropped back on a pin it already runs between", () => {
+    taut();
+    down(100, 0);
+    move(150, 0);
+    up(200, 0);
+    expect(writes).toEqual([]);
+  });
+
+  /** AC-72. */
+  it("selects the string when the press never became a drag", () => {
+    taut();
+    down(100, 0);
+    up(100, 0);
+
+    expect([...selection.strings]).toEqual(["s"]);
+    expect(writes).toEqual([]);
+  });
+
+  it("selects the string instead of whatever was selected before, and back again", () => {
+    taut();
+    put("a", 400, 400);
+
+    down(400, 400);
+    up(400, 400);
+    expect(selection.toArray()).toEqual(["a"]);
+
+    down(100, 0);
+    up(100, 0);
+    expect([...selection.strings]).toEqual(["s"]);
+    expect(selection.isEmpty).toBe(true);
+
+    down(400, 400);
+    up(400, 400);
+    expect(selection.toArray()).toEqual(["a"]);
+    expect(selection.strings.size).toBe(0);
+  });
+
+  it("leaves the selection alone when the press turned into a pull", () => {
+    taut();
+    put("a", 400, 400);
+    down(400, 400);
+    up(400, 400);
+
+    down(100, 0);
+    move(100, 20);
+    up(100, 20);
+    expect(selection.toArray()).toEqual(["a"]);
+    expect(selection.strings.size).toBe(0);
+  });
+
+  it("drops a selected string a collaborator deleted rather than acting on a ghost", () => {
+    taut();
+    down(100, 0);
+    up(100, 0);
+    expect(selection.strings.size).toBe(1);
+
+    scene.strings.delete("s");
+    down(400, 400);
+    up(400, 400);
+    expect(selection.strings.size).toBe(0);
+  });
+
+  it("gives the pin under it the press, because the pin is on top", () => {
+    taut();
+    // Right on p1, which is also a point on the string.
+    down(200, 0);
+    move(240, 40);
+    up(240, 40);
+
+    expect(selection.strings.size).toBe(0);
+    expect(writes.some((w) => w.kind === "insert")).toBe(false);
+    expect(writes.some((w) => w.kind === "place")).toBe(true);
+  });
+
+  it("cannot be grabbed through a photograph it is tucked behind", () => {
+    putPin("p0", null, 0, 0);
+    putPin("p1", null, 200, 0);
+    putString("s", ["p0", "p1"], { layer: "under" });
+    put("a", 100, 0, 80, 80);
+
+    down(100, 0);
+    up(100, 0);
+    // The press fell through to the photograph on top of it.
+    expect(selection.toArray()).toEqual(["a"]);
+    expect(selection.strings.size).toBe(0);
+  });
+
+  it("still grabs a tucked string where no item covers it", () => {
+    putPin("p0", null, 0, 0);
+    putPin("p1", null, 200, 0);
+    putString("s", ["p0", "p1"], { layer: "under" });
+    put("a", 20, 0, 20, 20);
+
+    down(100, 0);
+    up(100, 0);
+    expect([...selection.strings]).toEqual(["s"]);
+  });
+
+  it("draws the loop between the two pins it is being pulled out from", () => {
+    taut();
+    expect(tool.loopPreview({ x: 100, y: 20 })).toBeNull();
+
+    down(100, 0);
+    move(100, 20);
+    expect(tool.loopPreview({ x: 100, y: 20 })).toEqual([
+      { x: 0, y: 0 },
+      { x: 100, y: 20 },
+      { x: 200, y: 0 },
+    ]);
+
+    up(100, 20);
+    expect(tool.loopPreview({ x: 100, y: 20 })).toBeNull();
+  });
+
+  it("is no gesture at all when the string went away before the pointer moved", () => {
+    taut();
+    down(100, 0);
+    scene.strings.delete("s");
+    move(100, 20);
+    up(100, 20);
+    expect(writes).toEqual([]);
+  });
+});
