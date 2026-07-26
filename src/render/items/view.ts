@@ -42,6 +42,14 @@ export interface ItemLayer {
    */
   setSelected(ids: ReadonlySet<string>): void;
 
+  /**
+   * The scale board content is drawn at, `devicePixelRatio * zoom`, so the layer
+   * can ask for a stored variant that suits the size rather than the source.
+   * Like `setSelected`, it cannot come through the scene: the scene knows board
+   * units and has never heard of the camera.
+   */
+  setRasterScale(scale: number): void;
+
   /** How many item presentations currently exist — for the dev HUD. */
   readonly mounted: number;
 

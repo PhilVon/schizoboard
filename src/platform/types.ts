@@ -17,6 +17,26 @@
 export type AssetVariant = "thumb" | "display" | "original";
 
 /**
+ * Longest edge of each generated variant, in pixels.
+ *
+ * Mirrors `THUMB_MAX_EDGE` and `DISPLAY_MAX_EDGE` in `src-tauri/src/assets.rs`,
+ * which is a duplicated constant and cannot not be: the store decides what it
+ * generates and the renderer decides what to ask for, and they are in different
+ * languages. `original` is whatever was pasted, so it has no bound.
+ *
+ * These exist so a caller can pick a variant by the size an image will actually
+ * be drawn at. Getting that wrong is expensive in a way that is easy to miss: an
+ * `<img>` decodes at first paint, so pointing a 16-pixel-wide item at a 2560px
+ * photograph pays for the whole decode to throw almost all of it away. D-15
+ * measured that cost arriving as a 243 ms frame.
+ */
+export const VARIANT_MAX_EDGE: Record<AssetVariant, number> = {
+  thumb: 256,
+  display: 2560,
+  original: Number.POSITIVE_INFINITY,
+};
+
+/**
  * What ingestion returns. Note what is *not* here: the bytes.
  *
  * Ingestion returns as soon as the hash and dimensions are known, so the item

@@ -48,7 +48,15 @@ import type { ItemLayer } from "@/render/items/view";
 import type { DirtySets } from "@/state/dirty";
 import type { ItemCold, Scene } from "@/state/scene";
 
-export type AssetResolver = (sha256: string) => string;
+/**
+ * Where an item's photograph comes from.
+ *
+ * `screenPx` is the longest edge the image is about to be *drawn* at, in device
+ * pixels. The layer knows that and nothing else useful; which stored variant best
+ * serves it is a fact about the asset store, so the caller decides — that is what
+ * keeps `render/` from needing to know that variants exist at all.
+ */
+export type AssetResolver = (sha256: string, screenPx: number) => string;
 
 type Archetype = "polaroid" | "paper";
 
@@ -59,7 +67,7 @@ function archetypeOf(type: string): Archetype {
 interface View {
   readonly el: HTMLDivElement;
   readonly archetype: Archetype;
-  bind(cold: ItemCold, assetUrl: AssetResolver): void;
+  bind(cold: ItemCold, assetUrl: AssetResolver, screenPx: number): void;
   /** `lift` is the scene's carry transient, 0 at rest and 1 while carried. */
   transform(x: number, y: number, rot: number, w: number, h: number, lift: number): void;
   release(): void;
@@ -159,6 +167,8 @@ class PolaroidView implements View {
   private readonly caption: HTMLDivElement;
   private boundAsset: string | null = null;
   private boundCold: ItemCold | null = null;
+  /** The URL this view wants to be showing — see `swapPhoto`. */
+  private pending: string | null = null;
   private framedFor = -1;
 
   private readonly shadow = new ShadowNode();
@@ -199,33 +209,71 @@ class PolaroidView implements View {
     this.el.append(this.shadow.el, this.frame);
   }
 
-  bind(cold: ItemCold, assetUrl: AssetResolver): void {
+  bind(cold: ItemCold, assetUrl: AssetResolver, screenPx: number): void {
     // Two inputs, so two guards. The binding mints a fresh cold record every
     // time the *document* changes and `setPose` leaves it alone, so identity
     // covers everything the document can say — that is what lets a drag skip
     // sixty rebinds a second. The resolved URL is the other input, and it
     // changes with no document write at all when an item's bytes finally
-    // arrive (DESIGN section 7.5); guarding on the record alone would leave
-    // that photograph undeveloped for good.
-    const url = cold.assetId ? assetUrl(cold.assetId) : "";
+    // arrive (DESIGN section 7.5), and again when the zoom crosses far enough
+    // for a different variant to be the right one; guarding on the record alone
+    // would leave that photograph undeveloped for good.
+    const url = cold.assetId ? assetUrl(cold.assetId, screenPx) : "";
     if (this.boundCold === cold && url === this.boundAsset) return;
     this.boundCold = cold;
     if (url !== this.boundAsset) {
+      const replacing = Boolean(this.boundAsset);
       this.boundAsset = url;
-      // An empty src would trigger a network request for the page itself.
-      if (url) this.photo.src = url;
-      else this.photo.removeAttribute("src");
-      // Waiting until the load actually lands, rather than until a URL exists.
-      // Missing is a render state, not an error: the item is fully usable —
-      // pinnable, stringable, annotatable — before its bytes arrive (DESIGN
-      // section 7.5), and it should look like undeveloped film for the whole of
-      // that, not for the instant before the src is assigned. The proper
-      // treatment, with grain and a chemical wash, is T-75.
-      this.el.classList.add("is-waiting");
+      this.swapPhoto(url, replacing);
     }
     this.caption.textContent = cold.text;
     this.caption.classList.toggle("is-empty", cold.text.length === 0);
     this.el.style.filter = sheetTint(cold.seed);
+  }
+
+  /**
+   * Point the `<img>` at `url`.
+   *
+   * When there is nothing on screen yet, assign it and show the undeveloped-film
+   * state until the load lands. Missing is a render state, not an error: the item
+   * is fully usable — pinnable, stringable, annotatable — before its bytes arrive
+   * (DESIGN section 7.5), and it should look like undeveloped film for the whole
+   * of that wait, not for the instant before the src is assigned. The proper
+   * treatment, with grain and a chemical wash, is T-75.
+   *
+   * When there *is* something on screen, this is a variant swap at a zoom
+   * boundary, and assigning `src` would blank the photograph until the new bytes
+   * decoded. So decode first and swap after. That is not a new idea — it is the
+   * rule DESIGN already sets for ink, which re-rasters on a debounced zoom-end
+   * with "the stale bitmap stretched in the interim" (T-63) — and it is also the
+   * bounded decode policy D-15 asked for: only mounted items, only when the
+   * variant actually changes, never a blanket warm-up of the whole board.
+   */
+  private swapPhoto(url: string, replacing: boolean): void {
+    this.pending = url;
+    if (!url) {
+      // An empty src would trigger a network request for the page itself.
+      this.photo.removeAttribute("src");
+      this.el.classList.add("is-waiting");
+      return;
+    }
+    if (!replacing) {
+      this.photo.src = url;
+      this.el.classList.add("is-waiting");
+      return;
+    }
+    const next = new Image();
+    next.decoding = "async";
+    next.src = url;
+    const apply = (): void => {
+      // The view may have been released onto another item, or moved on to a
+      // third variant, while this was in flight.
+      if (this.pending !== url) return;
+      this.photo.src = url;
+    };
+    // Either way: a decode that fails still has to hand over, or the item keeps
+    // a variant it has outgrown for as long as the zoom stays there.
+    void next.decode().then(apply, apply);
   }
 
   transform(x: number, y: number, rot: number, w: number, h: number, lift: number): void {
@@ -252,6 +300,9 @@ class PolaroidView implements View {
     // otherwise pass the URL guard, never request anything, and sit there
     // wearing the previous item's picture or its failure.
     this.boundAsset = null;
+    // And an in-flight variant decode must not land on whoever gets this node
+    // next; clearing `pending` is what `swapPhoto` checks before it assigns.
+    this.pending = null;
     this.photo.removeAttribute("src");
     this.el.classList.remove("is-selected", "is-lifted", "is-waiting");
     this.shadow.reset();
@@ -297,7 +348,7 @@ class PaperView implements View {
     this.el.append(this.shadow.el, this.surface);
   }
 
-  bind(cold: ItemCold, _assetUrl: AssetResolver): void {
+  bind(cold: ItemCold, _assetUrl: AssetResolver, _screenPx: number): void {
     if (this.boundCold === cold) return;
     this.boundCold = cold;
     const stock = defaultStock(cold.type, cold.seed);
@@ -361,6 +412,15 @@ export class DomItemLayer implements ItemLayer {
    * — a selected item panned off screen and back is a fresh mount.
    */
   private selected: ReadonlySet<string> = new Set();
+
+  /**
+   * `devicePixelRatio * zoom` — the scale the world layer was last rasterised
+   * at, which is also the scale an item's photograph is about to be drawn at.
+   *
+   * 1 until told otherwise, so a layer nobody wires up asks for full-size images
+   * rather than thumbnails: wrong in the cheap direction.
+   */
+  private rasterScale = 1;
 
   constructor(host: HTMLElement, assetUrl: AssetResolver) {
     this.host = host;
@@ -441,7 +501,10 @@ export class DomItemLayer implements ItemLayer {
       }
 
       if (isNew || dirty.all || dirty.items.has(id)) {
-        view.bind(cold, this.assetUrl);
+        // The longest edge this item is about to occupy, in device pixels. What
+        // the resolver does with it is the resolver's business.
+        const screenPx = Math.max(scene.w[slot]!, scene.h[slot]!) * this.rasterScale;
+        view.bind(cold, this.assetUrl, screenPx);
         view.transform(
           scene.x[slot]!,
           scene.y[slot]!,
@@ -549,6 +612,22 @@ export class DomItemLayer implements ItemLayer {
    * of the geometry. Selection is genuinely not in the scene — it is
    * per-person and never in the document — which is why it comes in by hand.
    */
+  /**
+   * The scale board content is being drawn at, `devicePixelRatio * zoom`.
+   *
+   * Arrives from `World.onRasterize` on the debounced gesture end — the same
+   * moment everything holding its own bitmap is told to re-raster (DESIGN section
+   * 6.6), which is exactly when a photograph should reconsider which stored
+   * variant it wants. Per-frame would mean re-picking mid-gesture, and the whole
+   * point of the debounce is that mid-gesture is when not to.
+   *
+   * The caller is expected to make the next frame dirty; this only records the
+   * number, so that nothing is written outside the DOM phase.
+   */
+  setRasterScale(scale: number): void {
+    if (Number.isFinite(scale) && scale > 0) this.rasterScale = scale;
+  }
+
   setSelected(ids: ReadonlySet<string>): void {
     // Copied, because the caller's set is live and this outlives the call.
     this.selected = new Set(ids);

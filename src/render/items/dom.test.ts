@@ -4,7 +4,7 @@
 
 import { beforeEach, describe, expect, it } from "vitest";
 
-import { DomItemLayer } from "@/render/items/dom";
+import { DomItemLayer, type AssetResolver } from "@/render/items/dom";
 import { DirtySets } from "@/state/dirty";
 import { Scene, type ItemCold, type ItemPose } from "@/state/scene";
 
@@ -358,6 +358,112 @@ describe("DomItemLayer", () => {
     layer.sync(scene, dirty, null);
     expect(host.children.length).toBe(1);
     expect((host.children[0] as HTMLElement).classList.contains("is-waiting")).toBe(true);
+  });
+});
+
+describe("asset variants", () => {
+  /** Records what the layer asked for, so the assertions are about the ask. */
+  function recording(): { asked: { sha: string; px: number }[]; resolve: AssetResolver } {
+    const asked: { sha: string; px: number }[] = [];
+    return {
+      asked,
+      resolve: (sha, px) => {
+        asked.push({ sha, px });
+        return `asset://sha256/${sha}?px=${Math.round(px)}`;
+      },
+    };
+  }
+
+  it("asks for the size the item will be drawn at, not the size it is", () => {
+    const { asked, resolve } = recording();
+    const layer = new DomItemLayer(host, resolve);
+    add("a", { assetId: "abc" }, { w: 320, h: 240 });
+
+    // Zoomed out to 5% on a 2x display: a 320-unit polaroid is 32 device pixels.
+    layer.setRasterScale(0.05 * 2);
+    layer.sync(scene, dirty, null);
+    expect(asked).toEqual([{ sha: "abc", px: 32 }]);
+
+    // And at 400% on the same display it is 2560.
+    asked.length = 0;
+    layer.setRasterScale(4 * 2);
+    dirty.everything();
+    layer.sync(scene, dirty, null);
+    expect(asked).toEqual([{ sha: "abc", px: 2560 }]);
+    layer.destroy();
+  });
+
+  it("defaults to the full size when nobody has said what the scale is", () => {
+    // Wrong in the cheap direction: a layer nobody wires up should look right and
+    // cost too much, not look wrong.
+    const { asked, resolve } = recording();
+    const layer = new DomItemLayer(host, resolve);
+    add("a", { assetId: "abc" }, { w: 320, h: 240 });
+    layer.sync(scene, dirty, null);
+    expect(asked[0]!.px).toBe(320);
+    layer.destroy();
+  });
+
+  it("ignores a nonsense scale rather than asking for a zero-pixel image", () => {
+    const { asked, resolve } = recording();
+    const layer = new DomItemLayer(host, resolve);
+    add("a", { assetId: "abc" }, { w: 320, h: 240 });
+    layer.setRasterScale(0);
+    layer.setRasterScale(Number.NaN);
+    layer.sync(scene, dirty, null);
+    expect(asked[0]!.px).toBe(320);
+    layer.destroy();
+  });
+
+  it("keeps the photograph on screen while a replacement variant decodes", async () => {
+    const { resolve } = recording();
+    const layer = new DomItemLayer(host, resolve);
+    add("a", { assetId: "abc" }, { w: 320, h: 240 });
+    layer.setRasterScale(1);
+    layer.sync(scene, dirty, null);
+
+    const photo = host.querySelector(".pol-photo") as HTMLImageElement;
+    const first = photo.getAttribute("src");
+    expect(first).toContain("px=320");
+    photo.dispatchEvent(new Event("load"));
+
+    // A zoom-end crossing into the larger variant. Assigning src straight away
+    // would blank the item until the new bytes decoded; DESIGN's rule for a
+    // re-raster is that the stale bitmap stays up in the interim (T-63).
+    layer.setRasterScale(8);
+    dirty.everything();
+    layer.sync(scene, dirty, null);
+    expect(photo.getAttribute("src")).toBe(first);
+    expect(photo.closest(".item")!.classList.contains("is-waiting")).toBe(false);
+
+    // ...and once the decode has had a turn, it swaps.
+    await new Promise((r) => setTimeout(r, 0));
+    expect(photo.getAttribute("src")).toContain("px=2560");
+    layer.destroy();
+  });
+
+  it("does not land a late variant decode on a recycled node", async () => {
+    const { resolve } = recording();
+    const layer = new DomItemLayer(host, resolve);
+    add("a", { assetId: "abc" }, { w: 320, h: 240 });
+    layer.setRasterScale(1);
+    layer.sync(scene, dirty, null);
+    const photo = host.querySelector(".pol-photo") as HTMLImageElement;
+    photo.dispatchEvent(new Event("load"));
+
+    // Start a swap, then cull the item away before it can finish.
+    layer.setRasterScale(8);
+    dirty.everything();
+    layer.sync(scene, dirty, null);
+    dirty.everything();
+    layer.sync(scene, dirty, new Set());
+    expect(layer.mounted).toBe(0);
+
+    await new Promise((r) => setTimeout(r, 0));
+    // The pooled node must be blank, not wearing the photograph of the item it
+    // used to be — the whole hazard of recycling.
+    expect(photo.hasAttribute("src")).toBe(false);
+    layer.destroy();
   });
 });
 

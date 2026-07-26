@@ -17,6 +17,7 @@ import { Persistence } from "@/crdt/persistence";
 import { UndoHistory } from "@/crdt/undo";
 import { Paste } from "@/app/paste";
 import { initPlatform } from "@/platform";
+import { VARIANT_MAX_EDGE } from "@/platform/types";
 import { Cork } from "@/render/cork";
 import { Culler } from "@/render/cull";
 import { DomItemLayer } from "@/render/items/dom";
@@ -76,7 +77,27 @@ async function boot(): Promise<void> {
    * yet — undeveloped film, which is what DESIGN section 7.5 asks for.
    */
   const showable = new Set<string>();
-  const assetUrl = (sha256: string): string => (showable.has(sha256) ? native.assetUrl(sha256) : "");
+  /**
+   * Which stored variant serves an item that is about to be drawn `screenPx`
+   * across.
+   *
+   * The renderer says how big; this says which file, because which variants exist
+   * and how large they are is a fact about the asset store rather than about
+   * drawing. Getting it wrong is expensive in a way that is easy to miss: an
+   * `<img>` decodes at first paint, so a 16-pixel item pointed at a 2560-pixel
+   * photograph pays for the whole decode and throws almost all of it away. D-15
+   * measured that as a 243 ms frame, and it is culling that made it visible —
+   * before culling every item was mounted from the start and had already paid.
+   *
+   * `original` is never chosen. It is the untouched paste, kept for export
+   * (T-94); `display` is capped at 2560px, which DISPLAY_MAX_EDGE derives from
+   * the 400% zoom ceiling on a 2x display, so nothing on screen can out-resolve
+   * it.
+   */
+  const assetUrl = (sha256: string, screenPx: number): string => {
+    if (!showable.has(sha256)) return "";
+    return native.assetUrl(sha256, screenPx <= VARIANT_MAX_EDGE.thumb ? "thumb" : "display");
+  };
   const items = new DomItemLayer(world.layers.world, assetUrl);
 
   /** Re-bind every item wearing this asset. A walk, on a once-per-photograph
@@ -229,6 +250,21 @@ async function boot(): Promise<void> {
       mounted: items.mounted,
     };
   };
+
+  /**
+   * The debounced gesture end, where everything holding a bitmap re-rasterises
+   * at the scale it is actually being displayed at (DESIGN section 6.6). A
+   * photograph's "bitmap" is whichever stored variant it is pointed at, so this
+   * is where it reconsiders.
+   *
+   * `everything()` because the choice depends on each item's size and there is no
+   * cheaper way to say "every item may want a different file now". Once per
+   * gesture, on the frame the whole world layer is repainting regardless.
+   */
+  world.onRasterize((scale) => {
+    items.setRasterScale(scale);
+    dirty.everything();
+  });
 
   const resize = (): void => {
     const { innerWidth: w, innerHeight: h } = window;
