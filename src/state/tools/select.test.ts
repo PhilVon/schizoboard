@@ -15,11 +15,12 @@ import { Camera } from "@/state/camera";
 import { DirtySets } from "@/state/dirty";
 import { Scene } from "@/state/scene";
 import { Selection } from "@/state/selection";
-import { LIVE_WRITE_MS, SelectTool } from "@/state/tools/select";
-import type { PointerSample, ToolContext, WritePose } from "@/state/tools/tool";
+import { MIN_RESIZE, LIVE_WRITE_MS, SelectTool } from "@/state/tools/select";
+import type { PointerSample, ToolContext, WritePose, WriteSize } from "@/state/tools/tool";
 
 type Write =
   | { kind: "poses"; phase: "live" | "final"; poses: Map<string, WritePose> }
+  | { kind: "sizes"; phase: "live" | "final"; sizes: Map<string, WriteSize> }
   | { kind: "delete"; ids: string[]; keepPins: boolean };
 
 let scene: Scene;
@@ -49,6 +50,14 @@ function hitTest(bx: number, by: number): string | null {
 function put(id: string, x: number, y: number, w = 100, h = 100, rot = 0): void {
   scene.putItem(
     { id, type: "polaroid", z: "a0", seed: 1, assetId: null, createdBy: 1, createdAt: 0, text: "" },
+    { x, y, rot, w, h },
+  );
+}
+
+/** A sheet of paper, which is the only thing that resizes. */
+function paper(id: string, x: number, y: number, w = 200, h = 100, rot = 0): void {
+  scene.putItem(
+    { id, type: "note", z: "a0", seed: 1, assetId: null, createdBy: 1, createdAt: 0, text: "" },
     { x, y, rot, w, h },
   );
 }
@@ -84,6 +93,14 @@ function lastPoses(): Map<string, WritePose> {
   throw new Error("no pose write");
 }
 
+function lastSizes(): Map<string, WriteSize> {
+  for (let i = writes.length - 1; i >= 0; i--) {
+    const w = writes[i]!;
+    if (w.kind === "sizes") return w.sizes;
+  }
+  throw new Error("no size write");
+}
+
 beforeEach(() => {
   scene = new Scene();
   dirty = new DirtySets();
@@ -102,6 +119,7 @@ beforeEach(() => {
     held,
     write: {
       setPoses: (poses, phase) => writes.push({ kind: "poses", phase, poses: new Map(poses) }),
+      setSizes: (sizes, phase) => writes.push({ kind: "sizes", phase, sizes: new Map(sizes) }),
       deleteItems: (ids, keepPins) => writes.push({ kind: "delete", ids: [...ids], keepPins }),
     },
   };
@@ -464,6 +482,185 @@ describe("rotating", () => {
     move(-100, 0);
     move(0, -100);
     expect(scene.poseOf("a")!.rot).toBeCloseTo((3 * Math.PI) / 2, 3);
+  });
+});
+
+describe("the rotation handle", () => {
+  /** Where the knob sits for a 100x100 item at the board origin: 50 of item,
+   *  3.25 of chrome offset, 26 of stalk. */
+  const KNOB_Y = -79.25;
+
+  function selectOnly(id: string, x: number, y: number): void {
+    down(x, y);
+    up(x, y);
+    expect(selection.toArray()).toEqual([id]);
+  }
+
+  it("turns the item, rather than starting the marquee it is standing on", () => {
+    put("a", 0, 0, 100, 100);
+    selectOnly("a", 0, 0);
+
+    // The knob is out over bare cork. A press there used to mean "marquee", and
+    // a marquee started off an item clears the selection the knob belongs to.
+    down(0, KNOB_Y);
+    expect(tool.marquee).toBeNull();
+    move(100, 0);
+    move(0, 100);
+    up(0, 100);
+
+    expect(selection.toArray()).toEqual(["a"]);
+    const pose = scene.poseOf("a")!;
+    expect(pose.rot).toBeCloseTo(Math.PI / 2, 3);
+    // A single item turns about its own centre, so it has not travelled.
+    expect(pose.x).toBeCloseTo(0, 6);
+    expect(pose.y).toBeCloseTo(0, 6);
+  });
+
+  it("rides the item's own rotation, so it is always off the top of the paper", () => {
+    put("a", 0, 0, 100, 100, Math.PI / 2);
+    selectOnly("a", 0, 0);
+    // A quarter turn puts the paper's top edge — and its handle — due east.
+    down(-KNOB_Y, 0);
+    move(-KNOB_Y, 60);
+    up(-KNOB_Y, 60);
+    expect(scene.poseOf("a")!.rot).toBeGreaterThan(Math.PI / 2);
+  });
+
+  it("does nothing at all for a click that never becomes a drag", () => {
+    put("a", 0, 0, 100, 100);
+    selectOnly("a", 0, 0);
+    writes.length = 0;
+
+    down(0, KNOB_Y);
+    up(0, KNOB_Y);
+    expect(writes).toEqual([]);
+    expect(selection.toArray()).toEqual(["a"]);
+    expect(scene.poseOf("a")!.rot).toBe(0);
+  });
+
+  it("belongs to one item, so a group still has to use R+drag", () => {
+    put("a", -200, 0, 100, 100);
+    put("b", 200, 0, 100, 100);
+    selection.replace(["a", "b"]);
+
+    // Where "a"'s knob would be if it had one on its own. With two items
+    // selected there is no chrome to grab, so this is a marquee on bare cork.
+    down(-200, KNOB_Y);
+    move(-190, KNOB_Y + 10);
+    expect(tool.marquee).not.toBeNull();
+  });
+});
+
+describe("resizing paper from its edges", () => {
+  /** A 200x100 note at (200, 200): edges at x 100 and 300, y 150 and 250. */
+  function note(): void {
+    paper("n", 200, 200, 200, 100);
+    down(200, 200);
+    up(200, 200);
+    writes.length = 0;
+  }
+
+  it("moves the edge you have hold of and leaves the opposite one exactly", () => {
+    note();
+    down(300, 200);
+    move(350, 200);
+    up(350, 200);
+
+    const pose = scene.poseOf("n")!;
+    expect(pose.w).toBeCloseTo(250, 6);
+    expect(pose.h).toBeCloseTo(100, 6);
+    expect(pose.x - pose.w / 2).toBeCloseTo(100, 6);
+    expect(lastSizes().get("n")).toMatchObject({ w: 250, h: 100 });
+  });
+
+  it("takes both axes from a corner, and the far corner stays put", () => {
+    note();
+    down(300, 250);
+    move(340, 280);
+    up(340, 280);
+
+    const pose = scene.poseOf("n")!;
+    expect(pose.w).toBeCloseTo(240, 6);
+    expect(pose.h).toBeCloseTo(130, 6);
+    expect(pose.x - pose.w / 2).toBeCloseTo(100, 6);
+    expect(pose.y - pose.h / 2).toBeCloseTo(150, 6);
+  });
+
+  it("grows along the paper's own axes when the paper is turned", () => {
+    paper("n", 0, 0, 200, 100, Math.PI / 2);
+    down(0, 0);
+    up(0, 0);
+    // A quarter turn: the note's own east edge points due south, at y = +100.
+    down(0, 100);
+    move(0, 140);
+    up(0, 140);
+
+    const pose = scene.poseOf("n")!;
+    expect(pose.w).toBeCloseTo(240, 4);
+    // The centre travelled south by half the growth, and nowhere else.
+    expect(pose.x).toBeCloseTo(0, 4);
+    expect(pose.y).toBeCloseTo(20, 4);
+  });
+
+  it("stops at the floor without the anchored edge sliding away", () => {
+    note();
+    down(300, 200);
+    move(0, 200);
+    expect(scene.poseOf("n")!.w).toBeCloseTo(MIN_RESIZE, 6);
+    expect(scene.poseOf("n")!.x - MIN_RESIZE / 2).toBeCloseTo(100, 6);
+
+    // Dragging further must not ratchet the note off across the board.
+    move(-400, 200);
+    expect(scene.poseOf("n")!.w).toBeCloseTo(MIN_RESIZE, 6);
+    expect(scene.poseOf("n")!.x - MIN_RESIZE / 2).toBeCloseTo(100, 6);
+  });
+
+  it("leaves a photograph alone — its edge is somewhere to pick it up", () => {
+    put("p", 200, 200, 200, 100);
+    down(200, 200);
+    up(200, 200);
+    writes.length = 0;
+
+    // Just inside the east edge, which on a note would be the resize band.
+    down(299, 200);
+    move(319, 200);
+    up(319, 200);
+
+    const pose = scene.poseOf("p")!;
+    expect(pose.w).toBeCloseTo(200, 6);
+    expect(pose.x).toBeCloseTo(220, 6);
+    expect(writes.every((w) => w.kind !== "sizes")).toBe(true);
+  });
+
+  it("writes a crash-safety size while a long resize is still going", () => {
+    note();
+    down(300, 200);
+    move(340, 200);
+    tick(LIVE_WRITE_MS);
+    expect(writes.filter((w) => w.kind === "sizes" && w.phase === "live")).toHaveLength(1);
+
+    move(360, 200);
+    up(360, 200);
+    expect(lastSizes().get("n")).toMatchObject({ w: 260 });
+    // One entry per gesture: the live write is merged into the release's, which
+    // is what the shared undo capture window is for.
+    expect(writes.filter((w) => w.kind === "sizes" && w.phase === "final")).toHaveLength(1);
+  });
+
+  it("puts the note back on Escape, through the op that moved its pins", () => {
+    note();
+    down(300, 200);
+    move(360, 200);
+    tick(LIVE_WRITE_MS);
+    key("Escape");
+
+    const pose = scene.poseOf("n")!;
+    expect(pose.w).toBeCloseTo(200, 6);
+    expect(pose.x).toBeCloseTo(200, 6);
+    // The document is holding the intermediate size, so putting the scene back
+    // is not enough — and the revert has to go back through the resize op, or
+    // the pins it moved on the way out stay moved.
+    expect(lastSizes().get("n")).toMatchObject({ x: 200, y: 200, w: 200, h: 100 });
   });
 });
 

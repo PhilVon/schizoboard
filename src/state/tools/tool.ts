@@ -47,6 +47,20 @@ export interface WritePose {
 }
 
 /**
+ * A resize. The centre comes with the size and is not optional, because dragging
+ * one edge of a note holds the opposite edge still — which means the centre moves
+ * by half of whatever the size changed by. Sending the two apart would let a peer
+ * observe a note that had grown but not moved, and it would be the wrong shape on
+ * screen for as long as that took to correct.
+ */
+export interface WriteSize {
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+}
+
+/**
  * The document writes tools are allowed to make.
  *
  * Narrow and injected, so `state/tools/` needs no import from `crdt/` at all
@@ -60,6 +74,13 @@ export interface BoardWriter {
    * undo (section 3.2).
    */
   setPoses(poses: ReadonlyMap<string, WritePose>, phase: "live" | "final"): void;
+  /**
+   * The same two phases, for a resize. Separate from `setPoses` because it is a
+   * different write with a different cascade: a resize slides the paper under
+   * pins that are pushed into the cork, so the op has to move them the other way
+   * to leave them where they are.
+   */
+  setSizes(sizes: ReadonlyMap<string, WriteSize>, phase: "live" | "final"): void;
   /** `keepPins` is Shift+Delete: the evidence goes, the string web keeps its
    *  shape with a hole where it was (DESIGN section 3.8). */
   deleteItems(ids: readonly string[], keepPins: boolean): void;

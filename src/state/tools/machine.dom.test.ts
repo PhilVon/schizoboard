@@ -69,7 +69,7 @@ beforeEach(() => {
     dirty: new DirtySets(),
     camera: new Camera(),
     selection: new Selection(),
-    write: { setPoses: () => {}, deleteItems: () => {} },
+    write: { setPoses: () => {}, setSizes: () => {}, deleteItems: () => {} },
     hitTest: () => null,
     suppressed: () => suppressed,
   });

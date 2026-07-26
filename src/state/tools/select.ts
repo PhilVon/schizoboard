@@ -2,8 +2,19 @@
  * The select tool — `V`, and the one the board starts in.
  *
  * Click to select, `Shift`+click to add, drag on empty cork for a marquee,
- * `Ctrl+A` for everything visible, `Delete` to remove, `R`+drag to rotate
- * (DESIGN sections 3.2 and 3.8).
+ * `Ctrl+A` for everything visible, `Delete` to remove, `R`+drag or the rotation
+ * handle to rotate, and an edge of a sheet of paper to resize it (DESIGN
+ * sections 3.2 and 3.8).
+ *
+ * ## The chrome is asked first
+ *
+ * A press is offered to the selection's handles before it is offered to the
+ * board, because the rotation knob stands off the top edge in open cork and the
+ * resize band straddles the paper's edge — in both cases the press would
+ * otherwise mean something else entirely, and in the knob's case that something
+ * else is a marquee that clears the selection the knob belongs to. Where the
+ * handles are is `state/handles.ts`, shared with the overlay that draws them, so
+ * that what is grabbable and what is visible are the same geometry.
  *
  * ## Nothing snaps to anything
  *
@@ -37,12 +48,22 @@
  */
 
 import type { Bounds, Vec2 } from "@/state/camera";
+import {
+  chromeFrame,
+  emptyFrame,
+  handleAt,
+  handleAxes,
+  type HandleFrame,
+  type HandleId,
+} from "@/state/handles";
+import type { ItemPose } from "@/state/scene";
 import type {
   PointerSample,
   Tool,
   ToolContext,
   ToolInput,
   WritePose,
+  WriteSize,
 } from "@/state/tools/tool";
 
 /** Screen pixels the pointer must travel before a press becomes a drag. Below
@@ -90,13 +111,17 @@ const SETTLED_EPSILON = 5e-5;
 /** Screen pixels from the pivot inside which a rotation angle is noise. */
 const ROTATE_DEAD_RADIUS_PX = 24;
 
-type GesturePhase = "idle" | "pending" | "dragging" | "rotating" | "marquee";
+/**
+ * The smallest a sheet of paper can be dragged down to, in board units.
+ *
+ * The schema floor is one unit (invariant 6), and an item one unit across is a
+ * dot: legal, unhittable, and unrecoverable without undo. Items arrive between
+ * about 170 and 330 units across (`lib/polaroid.ts`), so this is small enough to
+ * be a deliberate scrap and large enough to still be a thing you can get hold of.
+ */
+export const MIN_RESIZE = 24;
 
-interface StartPose {
-  x: number;
-  y: number;
-  rot: number;
-}
+type GesturePhase = "idle" | "pending" | "dragging" | "rotating" | "resizing" | "marquee";
 
 function approach(current: number, target: number, dt: number, tau: number): number {
   return current + (target - current) * (1 - Math.exp(-dt / tau));
@@ -120,7 +145,7 @@ export class SelectTool implements Tool {
   private prevTickX = 0;
 
   /** Pose of every item the gesture picked up, at the moment it picked it up. */
-  private readonly starts = new Map<string, StartPose>();
+  private readonly starts = new Map<string, ItemPose>();
 
   /** Items whose `lift`/`swing` are not zero and not finished moving. */
   private readonly animating = new Set<string>();
@@ -149,6 +174,20 @@ export class SelectTool implements Tool {
   private rotateApplied = 0;
   private lastAngle: number | null = null;
 
+  /**
+   * Which piece of selection chrome this gesture started on, or null for a press
+   * that landed on the board itself. Set at pointer-down and read at `begin`,
+   * because the handle under the *press* is what the gesture means — by the time
+   * it has become a drag the pointer is somewhere else entirely.
+   */
+  private grabbed: HandleId | null = null;
+  private resizeId: string | null = null;
+  /** Which way the grabbed edge pushes, in the item's un-rotated frame. */
+  private axisU = 0;
+  private axisV = 0;
+  /** Reused; `chromeFrame` fills it rather than minting one per press. */
+  private readonly frame: HandleFrame = emptyFrame();
+
   private sinceWrite = 0;
   /** Has this gesture already put a crash-safety pose in the document? */
   private wroteLive = false;
@@ -164,6 +203,16 @@ export class SelectTool implements Tool {
    *  board is being changed. */
   get gesturing(): boolean {
     return this.phase !== "idle";
+  }
+
+  /**
+   * The handle this gesture has hold of, or null. Read by the cursor, which must
+   * keep saying "resize" while the pointer is dragged far away from the edge it
+   * started on — a cursor that reverts halfway through the gesture reads as the
+   * gesture having been dropped.
+   */
+  get activeHandle(): HandleId | null {
+    return this.grabbed;
   }
 
   handle(input: ToolInput, ctx: ToolContext): void {
@@ -196,9 +245,29 @@ export class SelectTool implements Tool {
     this.downX = this.lastX = this.prevTickX = at.x;
     this.downY = this.lastY = at.y;
     this.pendingSelect = null;
+    this.grabbed = null;
     const board = ctx.camera.screenToBoard(at.x, at.y, this.board);
     this.downBoardX = board.x;
     this.downBoardY = board.y;
+
+    /**
+     * The chrome gets the press before the board does, and that ordering is the
+     * whole reason the handle works at all: the rotation knob stands off the top
+     * edge in open cork, so a press that reached it would otherwise fall through
+     * to `hitTest`, find nothing, and start a marquee — which clears the very
+     * selection the knob belongs to. The edges are the same story one step in,
+     * where falling through starts a drag instead of a resize.
+     *
+     * Nothing about the selection changes here, `Shift` included. Pressing an
+     * item's own handle is not a statement about what is selected.
+     */
+    const frame = chromeFrame(ctx.camera, ctx.scene, ctx.selection, this.frame);
+    const handle = frame ? handleAt(frame, at.x, at.y) : null;
+    if (handle !== null) {
+      this.grabbed = handle;
+      this.phase = "pending";
+      return;
+    }
 
     const hit = ctx.hitTest(board.x, board.y);
 
@@ -250,6 +319,7 @@ export class SelectTool implements Tool {
       }
       case "dragging":
       case "rotating":
+      case "resizing":
         this.applyGesture(ctx);
         return;
       case "marquee":
@@ -261,7 +331,7 @@ export class SelectTool implements Tool {
   }
 
   private onUp(at: PointerSample, ctx: ToolContext): void {
-    if (this.phase === "dragging" || this.phase === "rotating") {
+    if (this.phase === "dragging" || this.phase === "rotating" || this.phase === "resizing") {
       // The release position is part of the gesture. Skipping it drops the
       // last few pixels of a fast flick, which is exactly where the pointer
       // moves furthest between samples.
@@ -279,13 +349,18 @@ export class SelectTool implements Tool {
       ctx.selection.replace([this.pendingSelect]);
     }
     this.pendingSelect = null;
+    // A click on a handle that never became a drag rotates and resizes by
+    // nothing, which is the right amount, and must not deselect either.
+    this.grabbed = null;
     this.phase = "idle";
   }
 
   /**
    * `R` is read here rather than at pointer-down so that pressing it after
    * putting the cursor down still rotates — which is how people actually reach
-   * for a modifier they only just decided they wanted.
+   * for a modifier they only just decided they wanted. The *handle*, by
+   * contrast, was decided at pointer-down, because a handle is a place and the
+   * pointer has left it by now.
    *
    * Returns false if there turned out to be nothing to pick up.
    */
@@ -294,10 +369,11 @@ export class SelectTool implements Tool {
     // one item is off.
     this.pendingSelect = null;
     this.starts.clear();
+    this.resizeId = null;
     for (const id of ctx.selection.members) {
       const pose = ctx.scene.poseOf(id);
       if (!pose) continue;
-      this.starts.set(id, { x: pose.x, y: pose.y, rot: pose.rot });
+      this.starts.set(id, pose);
       this.animating.add(id);
     }
     if (this.starts.size === 0) {
@@ -308,7 +384,18 @@ export class SelectTool implements Tool {
     this.sinceWrite = 0;
     this.prevTickX = this.lastX;
 
-    if (ctx.held.has("KeyR")) {
+    if (this.grabbed !== null && this.grabbed !== "rotate") {
+      // A resize handle only exists on a single selection (`state/handles.ts`),
+      // so there is exactly one item here and it is the one that was grabbed.
+      const axes = handleAxes(this.grabbed);
+      this.axisU = axes.u;
+      this.axisV = axes.v;
+      for (const id of this.starts.keys()) this.resizeId = id;
+      this.phase = "resizing";
+      return true;
+    }
+
+    if (this.grabbed === "rotate" || ctx.held.has("KeyR")) {
       // The centre of what is being turned. For one item that is its own
       // centre, so it spins in place; for a group it is the middle of the
       // group, so the whole arrangement turns as one thing.
@@ -325,6 +412,11 @@ export class SelectTool implements Tool {
   }
 
   private applyGesture(ctx: ToolContext): void {
+    if (this.phase === "resizing") {
+      this.applyResize(ctx);
+      return;
+    }
+
     const board = ctx.camera.screenToBoard(this.lastX, this.lastY, this.board);
 
     if (this.phase === "rotating") {
@@ -368,6 +460,57 @@ export class SelectTool implements Tool {
       ctx.scene.setPose(id, { x: start.x + dx, y: start.y + dy });
       ctx.dirty.item(id);
     }
+  }
+
+  /**
+   * The edge follows the cursor and the opposite edge stays exactly where it is.
+   *
+   * All of it happens in the item's own un-rotated frame — the cursor's travel is
+   * rotated into that frame, the size changes along those axes, and the centre's
+   * compensating half-step is rotated back out. Working in board space instead
+   * would mean the east edge of a note lying at 30° grew towards the screen's
+   * right rather than towards the note's own right, which is not what the cursor
+   * looked like it was doing.
+   *
+   * Measured from the press point against the *start* pose rather than
+   * accumulated per move, for the same reason the drag is (see the file header):
+   * zooming mid-gesture then leaves the edge under the cursor instead of drifting
+   * off it, and the clamp at [`MIN_RESIZE`] cannot ratchet. When an axis is
+   * clamped the centre stops moving with it, because both come from the same
+   * clamped size — so a note squashed to the floor and dragged further stays put
+   * rather than sliding away.
+   *
+   * The angle is the item's *authored* rotation, not the rendered one. A resize
+   * cannot start while the item is still turning, and the settling swing of an
+   * item just released is at most a few degrees for a few frames.
+   */
+  private applyResize(ctx: ToolContext): void {
+    const id = this.resizeId;
+    const start = id === null ? undefined : this.starts.get(id);
+    if (id === null || !start) return;
+
+    const board = ctx.camera.screenToBoard(this.lastX, this.lastY, this.board);
+    const dx = board.x - this.downBoardX;
+    const dy = board.y - this.downBoardY;
+    const cos = Math.cos(start.rot);
+    const sin = Math.sin(start.rot);
+    // Into the item's frame: the inverse rotation, written out.
+    const travelU = dx * cos + dy * sin;
+    const travelV = -dx * sin + dy * cos;
+
+    const w = this.axisU === 0 ? start.w : Math.max(MIN_RESIZE, start.w + this.axisU * travelU);
+    const h = this.axisV === 0 ? start.h : Math.max(MIN_RESIZE, start.h + this.axisV * travelV);
+    // Half the growth, towards the edge being dragged, so the other one holds.
+    const shiftU = (this.axisU * (w - start.w)) / 2;
+    const shiftV = (this.axisV * (h - start.h)) / 2;
+
+    ctx.scene.setPose(id, {
+      x: start.x + shiftU * cos - shiftV * sin,
+      y: start.y + shiftU * sin + shiftV * cos,
+      w,
+      h,
+    });
+    ctx.dirty.item(id);
   }
 
   /**
@@ -438,7 +581,10 @@ export class SelectTool implements Tool {
   // --- the frame ------------------------------------------------------------
 
   tick(dt: number, ctx: ToolContext): void {
-    if (dt > 0 && (this.phase === "dragging" || this.phase === "rotating")) {
+    if (
+      dt > 0 &&
+      (this.phase === "dragging" || this.phase === "rotating" || this.phase === "resizing")
+    ) {
       this.sinceWrite += dt;
       if (this.sinceWrite >= LIVE_WRITE_MS) {
         this.sinceWrite = 0;
@@ -506,18 +652,29 @@ export class SelectTool implements Tool {
    * had just cancelled out of.
    */
   cancel(ctx: ToolContext): void {
-    if (this.phase === "dragging" || this.phase === "rotating") {
+    if (this.phase === "dragging" || this.phase === "rotating" || this.phase === "resizing") {
       // "Esc mid-drag → the whole thing reverts" (DESIGN section 3.4).
-      const restore = new Map<string, WritePose>();
+      const resizing = this.phase === "resizing";
+      const poses = new Map<string, WritePose>();
+      const sizes = new Map<string, WriteSize>();
       for (const [id, start] of this.starts) {
         ctx.scene.setPose(id, start);
         ctx.dirty.item(id);
-        restore.set(id, { x: start.x, y: start.y, rot: start.rot });
+        if (resizing) sizes.set(id, { x: start.x, y: start.y, w: start.w, h: start.h });
+        else poses.set(id, { x: start.x, y: start.y, rot: start.rot });
       }
       // Putting the scene back is only half of it if a crash-safety write has
       // already landed: the document would still hold the intermediate pose
       // and the next observer event would drag the item straight back out.
-      if (this.wroteLive && restore.size > 0) ctx.write.setPoses(restore, "final");
+      // Reverting a resize goes back through the resize op, because the pins it
+      // moved on the way out have to come back with it.
+      if (this.wroteLive) {
+        if (resizing) {
+          if (sizes.size > 0) ctx.write.setSizes(sizes, "final");
+        } else if (poses.size > 0) {
+          ctx.write.setPoses(poses, "final");
+        }
+      }
       this.release();
     } else if (this.phase === "marquee") {
       ctx.selection.replace(this.marqueeBase);
@@ -538,6 +695,7 @@ export class SelectTool implements Tool {
     this.animating.clear();
 
     this.pendingSelect = null;
+    this.grabbed = null;
     this.rect = null;
     this.phase = "idle";
   }
@@ -550,9 +708,15 @@ export class SelectTool implements Tool {
     this.rotateApplied = 0;
     this.sinceWrite = 0;
     this.wroteLive = false;
+    this.grabbed = null;
+    this.resizeId = null;
   }
 
   private commit(ctx: ToolContext, phase: "live" | "final"): void {
+    if (this.phase === "resizing") {
+      this.commitSize(ctx, phase);
+      return;
+    }
     const poses = new Map<string, WritePose>();
     const rotating = this.phase === "rotating";
     // Once a crash-safety pose is in the document, the release must write
@@ -568,5 +732,26 @@ export class SelectTool implements Tool {
     if (poses.size === 0) return;
     if (phase === "live") this.wroteLive = true;
     ctx.write.setPoses(poses, phase);
+  }
+
+  /** The same two writes, for the gesture that changes the paper's size as well
+   *  as where its centre is. */
+  private commitSize(ctx: ToolContext, phase: "live" | "final"): void {
+    const id = this.resizeId;
+    const start = id === null ? undefined : this.starts.get(id);
+    if (id === null || !start) return;
+    const pose = ctx.scene.poseOf(id);
+    if (!pose) return;
+
+    const force = phase === "final" && this.wroteLive;
+    const unchanged =
+      pose.x === start.x && pose.y === start.y && pose.w === start.w && pose.h === start.h;
+    if (!force && unchanged) return;
+
+    if (phase === "live") this.wroteLive = true;
+    ctx.write.setSizes(
+      new Map([[id, { x: pose.x, y: pose.y, w: pose.w, h: pose.h }]]),
+      phase,
+    );
   }
 }

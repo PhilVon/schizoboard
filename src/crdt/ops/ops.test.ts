@@ -18,7 +18,7 @@ import {
   reparentPin,
   sendToBack,
   setItemPoses,
-  setItemSize,
+  resizeItems,
 } from "@/crdt/ops";
 import { readItem, readPin, SCHEMA_VERSION } from "@/crdt/schema";
 import { compareOrder } from "@/crdt/zindex";
@@ -163,7 +163,7 @@ describe("item pose", () => {
     const b = board();
     const { itemId } = polaroid(b, 10, 20);
     setItemPoses(b, new Map([[itemId, { x: Number.NaN, y: 5 }]]));
-    setItemSize(b, itemId, Number.POSITIVE_INFINITY, 10);
+    resizeItems(b, new Map([[itemId, { x: 0, y: 0, w: Number.POSITIVE_INFINITY, h: 10 }]]));
     const item = readItem(itemId, b.items.get(itemId)!)!;
     expect(item.x).toBe(10);
     expect(item.w).toBe(300);
@@ -176,6 +176,99 @@ describe("item pose", () => {
     b.doc.on("afterTransaction", (t) => origins.push(t.origin));
     setItemPoses(b, new Map([[itemId, { x: 1, y: 2 }]]), Origin.DRAG_THROTTLE);
     expect(origins).toContain(Origin.DRAG_THROTTLE);
+  });
+});
+
+describe("resizing an item", () => {
+  /** A 200x100 note at the origin, with one pin 40 units left of its centre. */
+  function note(b: BoardDoc, rot = 0): { itemId: string; pinId: string } {
+    const { itemId } = createItems(b, [
+      { type: "note", x: 0, y: 0, w: 200, h: 100, rot, withPin: false },
+    ])[0]!;
+    return { itemId, pinId: createPin(b, { parent: itemId, lx: -40, ly: 0 }) };
+  }
+
+  it("holds the pin still in the cork while the paper grows out from under it", () => {
+    const b = board();
+    const { itemId, pinId } = note(b);
+    const before = pinWorldPosition(b, pinId)!;
+
+    // The east edge, dragged 60 units out: the centre travels 30, the west edge
+    // does not move, and neither does the pin — a pin is pushed through the
+    // paper and into the board behind it, not attached to a proportion of it.
+    resizeItems(b, new Map([[itemId, { x: 30, y: 0, w: 260, h: 100 }]]));
+
+    const after = pinWorldPosition(b, pinId)!;
+    expect(after.x).toBeCloseTo(before.x, 6);
+    expect(after.y).toBeCloseTo(before.y, 6);
+    const item = readItem(itemId, b.items.get(itemId)!)!;
+    expect(item.x - item.w / 2).toBeCloseTo(-100, 6);
+  });
+
+  it("does the same through the item's rotation", () => {
+    const b = board();
+    const { itemId, pinId } = note(b, Math.PI / 3);
+    const before = pinWorldPosition(b, pinId)!;
+
+    // The centre travels 30 units along the item's own east, whatever that is
+    // on screen — the same displacement the tool computes.
+    const cos = Math.cos(Math.PI / 3);
+    const sin = Math.sin(Math.PI / 3);
+    resizeItems(b, new Map([[itemId, { x: 30 * cos, y: 30 * sin, w: 260, h: 100 }]]));
+
+    const after = pinWorldPosition(b, pinId)!;
+    expect(after.x).toBeCloseTo(before.x, 6);
+    expect(after.y).toBeCloseTo(before.y, 6);
+  });
+
+  it("composes across the throttled writes of one long drag", () => {
+    const b = board();
+    const { itemId, pinId } = note(b);
+    const before = pinWorldPosition(b, pinId)!;
+
+    // Three crash-safety writes on the way to the same place one release would
+    // have written. Each is measured against the document, not against where
+    // the gesture started, so they must not compound.
+    resizeItems(b, new Map([[itemId, { x: 10, y: 0, w: 220, h: 100 }]]), Origin.DRAG_THROTTLE);
+    resizeItems(b, new Map([[itemId, { x: 20, y: 0, w: 240, h: 100 }]]), Origin.DRAG_THROTTLE);
+    resizeItems(b, new Map([[itemId, { x: 30, y: 0, w: 260, h: 100 }]]));
+
+    const after = pinWorldPosition(b, pinId)!;
+    expect(after.x).toBeCloseTo(before.x, 6);
+    expect(after.y).toBeCloseTo(before.y, 6);
+  });
+
+  it("leaves pins alone when the centre did not move", () => {
+    const b = board();
+    const { itemId, pinId } = note(b);
+    resizeItems(b, new Map([[itemId, { x: 0, y: 0, w: 400, h: 300 }]]));
+    const pin = readPin(pinId, b.pins.get(pinId)!)!;
+    expect(pin.lx).toBe(-40);
+    expect(pin.ly).toBe(0);
+  });
+
+  it("does not touch a pin belonging to a different item", () => {
+    const b = board();
+    const { itemId } = note(b);
+    const other = createItems(b, [
+      { type: "note", x: 500, y: 0, w: 100, h: 100, withPin: false },
+    ])[0]!;
+    const strayId = createPin(b, { parent: other.itemId, lx: 7, ly: 9 });
+
+    resizeItems(b, new Map([[itemId, { x: 30, y: 0, w: 260, h: 100 }]]));
+
+    const stray = readPin(strayId, b.pins.get(strayId)!)!;
+    expect(stray.lx).toBe(7);
+    expect(stray.ly).toBe(9);
+  });
+
+  it("is one transaction, so undo takes the item and its pins back together", () => {
+    const b = board();
+    const { itemId } = note(b);
+    let transactions = 0;
+    b.doc.on("afterTransaction", () => transactions++);
+    resizeItems(b, new Map([[itemId, { x: 30, y: 0, w: 260, h: 100 }]]));
+    expect(transactions).toBe(1);
   });
 });
 

@@ -11,7 +11,7 @@
 
 import { Binding } from "@/crdt/binding";
 import { boardSeed, encodedSize, initialiseBoard, openBoardDoc } from "@/crdt/doc";
-import { deleteItems, setItemPoses } from "@/crdt/ops";
+import { deleteItems, resizeItems, setItemPoses } from "@/crdt/ops";
 import { Origin } from "@/crdt/origins";
 import { Persistence } from "@/crdt/persistence";
 import { UndoHistory } from "@/crdt/undo";
@@ -26,6 +26,7 @@ import { Overlay } from "@/render/overlay";
 import { World } from "@/render/world";
 import { Camera } from "@/state/camera";
 import { DirtySets } from "@/state/dirty";
+import { chromeFrame, emptyFrame, handleAt, handleCursor } from "@/state/handles";
 import { isTextTarget } from "@/state/input";
 import { Navigation } from "@/state/navigation";
 import { Scene } from "@/state/scene";
@@ -144,6 +145,16 @@ async function boot(): Promise<void> {
           // A live pose is the throttled crash-safety write; the undo manager
           // (T-29) merges it into the release's entry rather than stacking one
           // entry per half second of dragging.
+          phase === "live" ? Origin.DRAG_THROTTLE : Origin.LOCAL_USER,
+        ),
+      );
+    },
+    setSizes: (sizes, phase) => {
+      const snapshot = new Map(sizes);
+      queued.push(() =>
+        resizeItems(
+          board,
+          snapshot,
           phase === "live" ? Origin.DRAG_THROTTLE : Origin.LOCAL_USER,
         ),
       );
@@ -317,10 +328,43 @@ async function boot(): Promise<void> {
     culler.update(scene, dirty, camera);
   });
 
+  /**
+   * The cursor, which is the only affordance a resize edge has.
+   *
+   * Nothing is drawn for one — "notes, cards and scraps resize from their edges"
+   * and the edge is the handle — so without this the band is invisible, and a
+   * drag that started 4 px inside a note's edge and made it taller instead of
+   * moving it would read as the board misbehaving.
+   *
+   * A DOM write, so it belongs in phase 5 with the other ones, and it is written
+   * only when the answer changes. `panReady` is the truce with `Navigation`,
+   * which owns this same property while the space bar is down: null means "it
+   * wrote something, so say it again when it hands back".
+   */
+  const handleFrame = emptyFrame();
+  let writtenCursor: string | null = "";
+  const applyCursor = (): void => {
+    if (navigation.panReady) {
+      writtenCursor = null;
+      return;
+    }
+    const frame = chromeFrame(camera, scene, selection, handleFrame);
+    const hover = tools.cursor;
+    // The active handle wins: mid-gesture the pointer is nowhere near the edge
+    // it took hold of, and a cursor that reverted would read as a dropped grab.
+    const handle =
+      select.activeHandle ?? (frame && hover ? handleAt(frame, hover.x, hover.y) : null);
+    const want = frame && handle ? handleCursor(handle, frame.angle) : "";
+    if (want === writtenCursor) return;
+    writtenCursor = want;
+    root.style.cursor = want;
+  };
+
   loop.on("dom", () => {
     world.applyCamera(camera);
     cork.apply(camera);
     items.sync(scene, dirty, culler.visible);
+    applyCursor();
   });
 
   // 6 INK  T-57   7 ROPES  T-43
@@ -378,7 +422,8 @@ async function boot(): Promise<void> {
         "and is being left alone rather than written over. See the console. · "
       : "") +
     `platform: ${native.kind} · paste a picture or some text, or drop a file in · ` +
-    `drag to move · R+drag to rotate · drag the cork to marquee · Delete removes · ` +
+    `drag to move · drag the handle or R+drag to rotate · drag a note's edge to resize · ` +
+    `drag the cork to marquee · Delete removes · ` +
     `Ctrl+Z undoes · space+drag pans · Ctrl+0 fit · F frame · \` for the HUD`;
   world.layers.ui.append(hint);
   hud.toggle();

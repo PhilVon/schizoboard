@@ -11,9 +11,9 @@ import * as Y from "yjs";
 
 import { freshId, mutate, type BoardDoc } from "@/crdt/doc";
 import { Origin } from "@/crdt/origins";
-import { localToBoard, pinsOfItems, removePinsFromStrings } from "@/crdt/ops/cascade";
+import { boardToLocal, localToBoard, pinsOfItems, removePinsFromStrings } from "@/crdt/ops/cascade";
 import { buildPin, DEFAULT_PIN_INSET } from "@/crdt/ops/pins";
-import { readItem, readPin, type ItemType, type YMap } from "@/crdt/schema";
+import { MIN_ITEM_SIZE, readItem, readPin, type ItemType, type YMap } from "@/crdt/schema";
 import { keyAbove } from "@/crdt/zindex";
 import { highestZ } from "@/crdt/ops/z";
 import { newSeed, scatterAngle } from "@/lib/seed";
@@ -176,14 +176,69 @@ export function setItemPoses(
   });
 }
 
-export function setItemSize(board: BoardDoc, itemId: string, w: number, h: number): void {
-  if (!Number.isFinite(w) || !Number.isFinite(h)) return;
-  mutate(board, Origin.LOCAL_USER, () => {
-    const item = board.items.get(itemId);
-    if (!item) return;
-    // Invariant 6 — never zero or negative, whatever the caller thinks.
-    item.set("w", Math.max(1, w));
-    item.set("h", Math.max(1, h));
+/** Where an item ends up after a resize: the new size, and the centre it implies. */
+export interface Extent {
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+}
+
+/**
+ * Resize items, moving their pins so the pins do not move.
+ *
+ * "Notes, cards and scraps resize from their edges" (DESIGN section 3.2), and
+ * dragging one edge holds the opposite one still — so the centre travels by half
+ * of the growth. Everything parented to the item is stored relative to that
+ * centre, and a pin left at the same local offset would therefore slide across
+ * the cork by half the growth, taking every string running through it along.
+ *
+ * A pin is not attached to a *proportion* of a note; it is pushed through the
+ * paper and into the board behind it. Growing the note from its bottom edge adds
+ * paper, it does not drag the top of the note out from under the pin holding it
+ * up. So the compensation is exactly the centre's own movement, expressed in the
+ * item's un-rotated frame and applied the other way — which leaves the pin at the
+ * same board coordinates and, as it happens, over the same fibres of paper.
+ *
+ * The shift is measured against what is **in the document** rather than against
+ * where the gesture started, so the throttled crash-safety writes during a drag
+ * compose: each one moves the pins by that write's share and no more.
+ *
+ * One transaction per batch, pins included — half a cascade is worse than none
+ * (DATA-MODEL section 8).
+ */
+export function resizeItems(
+  board: BoardDoc,
+  extents: ReadonlyMap<string, Extent>,
+  origin: typeof Origin.LOCAL_USER | typeof Origin.DRAG_THROTTLE = Origin.LOCAL_USER,
+): void {
+  if (extents.size === 0) return;
+  mutate(board, origin, () => {
+    for (const [id, next] of extents) {
+      if (!Number.isFinite(next.x) || !Number.isFinite(next.y)) continue;
+      if (!Number.isFinite(next.w) || !Number.isFinite(next.h)) continue;
+      const map = board.items.get(id);
+      const before = map ? readItem(id, map) : null;
+      if (!map || !before) continue;
+
+      const shift = boardToLocal(next.x, next.y, before.x, before.y, before.rot);
+      map.set("x", next.x);
+      map.set("y", next.y);
+      // Invariant 6 — never zero or negative, whatever the caller thinks.
+      map.set("w", Math.max(MIN_ITEM_SIZE, next.w));
+      map.set("h", Math.max(MIN_ITEM_SIZE, next.h));
+
+      // A resize that did not move the centre — both edges of an axis growing
+      // equally, or nothing changing at all — leaves the pins alone, and the walk
+      // is worth skipping on the second of two identical crash-safety writes.
+      if (shift.lx === 0 && shift.ly === 0) continue;
+      for (const [pinId, pinMap] of board.pins) {
+        const pin = readPin(pinId, pinMap);
+        if (!pin || pin.parent !== id) continue;
+        pinMap.set("lx", pin.lx - shift.lx);
+        pinMap.set("ly", pin.ly - shift.ly);
+      }
+    }
   });
 }
 
