@@ -47,6 +47,7 @@
  * entry — one drag, one undo.
  */
 
+import { rotateIn, rotateOut, type Point } from "@/lib/rotate";
 import type { Bounds, Vec2 } from "@/state/camera";
 import {
   chromeFrame,
@@ -168,6 +169,10 @@ export class SelectTool implements Tool {
   /** Reused, because the camera hands back a fresh object otherwise and this
    *  runs on every pointer move of every gesture. */
   private readonly board: Vec2 = { x: 0, y: 0 };
+  /** Two, not one: a resize converts a point in and another one back out on the
+   *  same pointer move, and sharing a scratch between them is a trap. */
+  private readonly probe: Point = { x: 0, y: 0 };
+  private readonly placed: Point = { x: 0, y: 0 };
 
   private pivotX = 0;
   private pivotY = 0;
@@ -439,14 +444,23 @@ export class SelectTool implements Tool {
         this.lastAngle = angle;
       }
 
+      // Hoisted, so turning forty selected items about one pivot costs two
+      // calls to Math.cos rather than eighty.
       const cos = Math.cos(this.rotateApplied);
       const sin = Math.sin(this.rotateApplied);
       for (const [id, start] of this.starts) {
-        const ox = start.x - this.pivotX;
-        const oy = start.y - this.pivotY;
+        const turned = rotateOut(
+          start.x - this.pivotX,
+          start.y - this.pivotY,
+          this.pivotX,
+          this.pivotY,
+          cos,
+          sin,
+          this.probe,
+        );
         ctx.scene.setPose(id, {
-          x: this.pivotX + ox * cos - oy * sin,
-          y: this.pivotY + ox * sin + oy * cos,
+          x: turned.x,
+          y: turned.y,
           rot: start.rot + this.rotateApplied,
         });
         ctx.dirty.item(id);
@@ -490,26 +504,26 @@ export class SelectTool implements Tool {
     if (id === null || !start) return;
 
     const board = ctx.camera.screenToBoard(this.lastX, this.lastY, this.board);
-    const dx = board.x - this.downBoardX;
-    const dy = board.y - this.downBoardY;
     const cos = Math.cos(start.rot);
     const sin = Math.sin(start.rot);
-    // Into the item's frame: the inverse rotation, written out.
-    const travelU = dx * cos + dy * sin;
-    const travelV = -dx * sin + dy * cos;
+    // How far the cursor has travelled, in the item's frame. The press point is
+    // the centre of that frame, so the "point" being converted is the delta.
+    const travel = rotateIn(board.x, board.y, this.downBoardX, this.downBoardY, cos, sin, this.probe);
 
-    const w = this.axisU === 0 ? start.w : Math.max(MIN_RESIZE, start.w + this.axisU * travelU);
-    const h = this.axisV === 0 ? start.h : Math.max(MIN_RESIZE, start.h + this.axisV * travelV);
+    const w = this.axisU === 0 ? start.w : Math.max(MIN_RESIZE, start.w + this.axisU * travel.x);
+    const h = this.axisV === 0 ? start.h : Math.max(MIN_RESIZE, start.h + this.axisV * travel.y);
     // Half the growth, towards the edge being dragged, so the other one holds.
-    const shiftU = (this.axisU * (w - start.w)) / 2;
-    const shiftV = (this.axisV * (h - start.h)) / 2;
+    const centre = rotateOut(
+      (this.axisU * (w - start.w)) / 2,
+      (this.axisV * (h - start.h)) / 2,
+      start.x,
+      start.y,
+      cos,
+      sin,
+      this.placed,
+    );
 
-    ctx.scene.setPose(id, {
-      x: start.x + shiftU * cos - shiftV * sin,
-      y: start.y + shiftU * sin + shiftV * cos,
-      w,
-      h,
-    });
+    ctx.scene.setPose(id, { x: centre.x, y: centre.y, w, h });
     ctx.dirty.item(id);
   }
 

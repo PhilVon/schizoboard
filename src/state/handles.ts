@@ -38,6 +38,7 @@
  */
 
 import { carryScale } from "@/lib/carry";
+import { rotateIn, rotateOut, type Point } from "@/lib/rotate";
 import type { Camera, Vec2 } from "@/state/camera";
 import type { Scene } from "@/state/scene";
 import type { Selection } from "@/state/selection";
@@ -101,6 +102,8 @@ export function emptyFrame(): HandleFrame {
 
 /** `boardToScreen` allocates otherwise, and this runs every frame. */
 const scratch: Vec2 = { x: 0, y: 0 };
+/** The same, for `handleAt`, which is asked on every pointer move. */
+const probe: Point = { x: 0, y: 0 };
 
 /**
  * The box the handles hang off, or null when the selection is not exactly one
@@ -135,12 +138,17 @@ export function chromeFrame(
   return out;
 }
 
-/** Screen position of the rotation knob's centre. */
+/** Screen position of the rotation knob's centre: straight up out of the paper. */
 export function rotateHandle(frame: HandleFrame, out: Vec2): Vec2 {
-  const reach = frame.hh + HANDLE_STALK;
-  out.x = frame.cx + reach * Math.sin(frame.angle);
-  out.y = frame.cy - reach * Math.cos(frame.angle);
-  return out;
+  return rotateOut(
+    0,
+    -(frame.hh + HANDLE_STALK),
+    frame.cx,
+    frame.cy,
+    Math.cos(frame.angle),
+    Math.sin(frame.angle),
+    out,
+  );
 }
 
 /** Indexed `(v + 1) * 3 + (u + 1)`, where u and v are the edge signs. */
@@ -160,12 +168,17 @@ const COMPASS: readonly (HandleId | null)[] = [
 export function handleAt(frame: HandleFrame, sx: number, sy: number): HandleId | null {
   // Into the item's own frame, so "the top edge" means the top of the paper
   // rather than the top of the screen.
-  const cos = Math.cos(-frame.angle);
-  const sin = Math.sin(-frame.angle);
-  const dx = sx - frame.cx;
-  const dy = sy - frame.cy;
-  const lx = dx * cos - dy * sin;
-  const ly = dx * sin + dy * cos;
+  const local = rotateIn(
+    sx,
+    sy,
+    frame.cx,
+    frame.cy,
+    Math.cos(frame.angle),
+    Math.sin(frame.angle),
+    probe,
+  );
+  const lx = local.x;
+  const ly = local.y;
 
   const ky = ly + frame.hh + HANDLE_STALK;
   if (lx * lx + ky * ky <= HANDLE_GRAB * HANDLE_GRAB) return "rotate";

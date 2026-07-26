@@ -24,6 +24,8 @@
  * and every item on the cork shares them.
  */
 
+import { rotateIn, type Point } from "@/lib/rotate";
+
 /** Radians, measured from straight down, leaning to the right. */
 export const LIGHT_ANGLE = (30 * Math.PI) / 180;
 
@@ -123,12 +125,8 @@ export function shadowSprite(elevation: Elevation): ShadowSprite {
  * private direction. So the offset is counter-rotated out of the item's frame
  * before it is written.
  */
-export function counterRotate(
-  dx: number,
-  dy: number,
-  rot: number,
-): { x: number; y: number } {
-  const cos = Math.cos(rot);
-  const sin = Math.sin(rot);
-  return { x: dx * cos + dy * sin, y: -dx * sin + dy * cos };
+export function counterRotate(dx: number, dy: number, rot: number): Point {
+  // The same inverse rotation the hit test uses, about the origin rather than
+  // about an item's centre — a direction has no centre.
+  return rotateIn(dx, dy, 0, 0, Math.cos(rot), Math.sin(rot));
 }

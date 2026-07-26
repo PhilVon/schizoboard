@@ -15,6 +15,7 @@ import type * as Y from "yjs";
 
 import type { BoardDoc } from "@/crdt/doc";
 import { readStringNodes, type YMap } from "@/crdt/schema";
+import { rotateIn, rotateOut } from "@/lib/rotate";
 
 /**
  * Remove every node referencing one of `pinIds` from every string, and delete
@@ -67,6 +68,10 @@ export function pinsOfItems(board: BoardDoc, itemIds: ReadonlySet<string>): Set<
  * Pins parented to an item store un-rotated local coordinates, which is what
  * makes rotating an item transport its pins for free. Un-parenting has to
  * undo that.
+ *
+ * The arithmetic is `lib/rotate.ts`, which is where the sign convention lives;
+ * these two are the ops-shaped door onto it — they take an angle rather than
+ * its trig, and they hand back the field names their callers store.
  */
 export function localToBoard(
   lx: number,
@@ -75,12 +80,7 @@ export function localToBoard(
   itemY: number,
   itemRot: number,
 ): { x: number; y: number } {
-  const cos = Math.cos(itemRot);
-  const sin = Math.sin(itemRot);
-  return {
-    x: itemX + lx * cos - ly * sin,
-    y: itemY + lx * sin + ly * cos,
-  };
+  return rotateOut(lx, ly, itemX, itemY, Math.cos(itemRot), Math.sin(itemRot));
 }
 
 export function boardToLocal(
@@ -90,12 +90,6 @@ export function boardToLocal(
   itemY: number,
   itemRot: number,
 ): { lx: number; ly: number } {
-  const cos = Math.cos(-itemRot);
-  const sin = Math.sin(-itemRot);
-  const dx = x - itemX;
-  const dy = y - itemY;
-  return {
-    lx: dx * cos - dy * sin,
-    ly: dx * sin + dy * cos,
-  };
+  const local = rotateIn(x, y, itemX, itemY, Math.cos(itemRot), Math.sin(itemRot));
+  return { lx: local.x, ly: local.y };
 }

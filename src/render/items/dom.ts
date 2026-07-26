@@ -36,6 +36,7 @@ import "@/render/items/items.css";
 // transform, so every percentage in an item would silently compute to zero.
 import { carryScale } from "@/lib/carry";
 import { FRAME_BOTTOM, FRAME_SIDE } from "@/lib/polaroid";
+import { rotateIn, type Point } from "@/lib/rotate";
 import {
   defaultStock,
   grainPosition,
@@ -406,6 +407,9 @@ export class DomItemLayer implements ItemLayer {
    */
   private rasterScale = 1;
 
+  /** Reused by `hitTest`, which walks the paint order on every pointer move. */
+  private readonly probe: Point = { x: 0, y: 0 };
+
   constructor(host: HTMLElement, assetUrl: AssetResolver) {
     this.host = host;
     this.assetUrl = assetUrl;
@@ -568,14 +572,19 @@ export class DomItemLayer implements ItemLayer {
       const id = this.order[i]!;
       const slot = scene.slotOf(id);
       if (slot === undefined) continue;
-      const angle = -(scene.rot[slot]! + scene.swing[slot]!);
-      const dx = boardX - scene.x[slot]!;
-      const dy = boardY - scene.y[slot]!;
-      const cos = Math.cos(angle);
-      const sin = Math.sin(angle);
-      const lx = dx * cos - dy * sin;
-      const ly = dx * sin + dy * cos;
-      if (Math.abs(lx) <= scene.w[slot]! / 2 && Math.abs(ly) <= scene.h[slot]! / 2) return id;
+      const angle = scene.rot[slot]! + scene.swing[slot]!;
+      const local = rotateIn(
+        boardX,
+        boardY,
+        scene.x[slot]!,
+        scene.y[slot]!,
+        Math.cos(angle),
+        Math.sin(angle),
+        this.probe,
+      );
+      if (Math.abs(local.x) <= scene.w[slot]! / 2 && Math.abs(local.y) <= scene.h[slot]! / 2) {
+        return id;
+      }
     }
     return null;
   }

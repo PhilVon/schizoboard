@@ -25,6 +25,7 @@
  */
 
 import { carryScale } from "@/lib/carry";
+import { rotateOut } from "@/lib/rotate";
 import type { Bounds, Camera, Vec2 } from "@/state/camera";
 import type { DirtySets } from "@/state/dirty";
 import {
@@ -258,13 +259,21 @@ export class Overlay {
     ctx.lineWidth = SELECT_WIDTH;
     ctx.beginPath();
     // From the outline out to the near side of the knob, so the line does not
-    // show through the disc.
-    const sin = Math.sin(frame.angle);
+    // show through the disc. Straight up the paper, like the knob itself.
     const cos = Math.cos(frame.angle);
-    const near = frame.hh;
-    const far = frame.hh + HANDLE_STALK - HANDLE_RADIUS;
-    ctx.moveTo(frame.cx + near * sin, frame.cy - near * cos);
-    ctx.lineTo(frame.cx + far * sin, frame.cy - far * cos);
+    const sin = Math.sin(frame.angle);
+    const near = rotateOut(0, -frame.hh, frame.cx, frame.cy, cos, sin, this.a);
+    ctx.moveTo(near.x, near.y);
+    const far = rotateOut(
+      0,
+      -(frame.hh + HANDLE_STALK - HANDLE_RADIUS),
+      frame.cx,
+      frame.cy,
+      cos,
+      sin,
+      this.b,
+    );
+    ctx.lineTo(far.x, far.y);
     ctx.stroke();
 
     ctx.beginPath();

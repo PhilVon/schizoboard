@@ -30,7 +30,12 @@
  * hand. If that ever stops being true the change is this file and nothing else.
  */
 
+import { rotateOut, type Point } from "@/lib/rotate";
+
 const INITIAL_CAPACITY = 256;
+
+/** Reused by `layoutPins`; see the note there. */
+const scratch: Point = { x: 0, y: 0 };
 
 /** Cold fields — read when a view is built or rebuilt, not per frame. */
 export interface ItemCold {
@@ -274,10 +279,12 @@ export class Scene {
       // Rendered rotation, not authored: a pin stays on the photograph while
       // the photograph swings.
       const angle = this.rot[slot]! + this.swing[slot]!;
-      const cos = Math.cos(angle);
-      const sin = Math.sin(angle);
-      pin.wx = this.x[slot]! + pin.lx * cos - pin.ly * sin;
-      pin.wy = this.y[slot]! + pin.lx * sin + pin.ly * cos;
+      // Into the shared scratch and straight back out again — this runs over
+      // every pin on the board on every frame anything moved, so it must not
+      // mint an object per pin.
+      rotateOut(pin.lx, pin.ly, this.x[slot]!, this.y[slot]!, Math.cos(angle), Math.sin(angle), scratch);
+      pin.wx = scratch.x;
+      pin.wy = scratch.y;
     }
   }
 
