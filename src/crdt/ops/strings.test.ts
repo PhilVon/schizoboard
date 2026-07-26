@@ -31,6 +31,7 @@ import {
   stringsThroughPin,
 } from "@/crdt/ops/strings";
 import { MIN_SLACK, readString, type YMap } from "@/crdt/schema";
+import { MIN_SLACK as LIB_MIN_SLACK } from "@/lib/slack";
 
 let board: BoardDoc;
 
@@ -154,6 +155,16 @@ describe("slack is a ratio, not a length (AC-66)", () => {
     expect(slacks(id)[0]).toBe(MIN_SLACK);
     setStringSlack(board, id, -1);
     expect(slacks(id)[0]).toBe(MIN_SLACK);
+  });
+
+  /**
+   * The minimum is written down twice — here and in `lib/slack.ts`, which
+   * splits and merges it — because `lib/` is dependency-free and may not
+   * import `crdt/`. This is the assertion that stops the two copies drifting
+   * apart in silence, made from the side that is allowed to see both.
+   */
+  it("is the same minimum the split and merge clamp to", () => {
+    expect(MIN_SLACK).toBe(LIB_MIN_SLACK);
   });
 
   /** A slack that fails every comparison would reach a rest length, a particle
