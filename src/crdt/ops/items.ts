@@ -26,6 +26,19 @@ export interface CreateItemInput {
   w: number;
   h: number;
   assetId?: string | null;
+  /**
+   * Metadata for `assetId`, registered in the same transaction.
+   *
+   * DATA-MODEL section 10 keeps `{w, h, mime, size, origName}` in the document
+   * and nothing else — bytes never enter it. Supplying it here rather than in a
+   * second op is what keeps a paste to one undo entry, and it is the *only*
+   * moment the information exists: ingestion returns it once and the store
+   * cannot be asked again, because Rust owns bytes and owns no schema.
+   *
+   * Without it a peer merging this item learns a hash and a size to draw at,
+   * and has no way to know what it is being asked to transfer.
+   */
+  asset?: AssetInput;
   text?: string;
   /** Supply one only to reproduce an item exactly; otherwise it is minted. */
   seed?: number;
@@ -37,6 +50,15 @@ export interface CreateItemInput {
   rot?: number;
   /** DESIGN section 3.1 — everything created by paste gets one pin. */
   withPin?: boolean;
+}
+
+/** DATA-MODEL section 10. `addedBy` and `addedAt` are filled in here. */
+export interface AssetInput {
+  w: number;
+  h: number;
+  mime: string;
+  size: number;
+  origName?: string;
 }
 
 export interface CreatedItem {
@@ -88,6 +110,21 @@ export function createItems(
       item.set("createdBy", board.doc.clientID);
       item.set("createdAt", now);
       board.items.set(itemId, item);
+
+      // Written once and never again: two people pasting the same photograph
+      // produce the same hash, and the second write is byte-identical to the
+      // first, so re-registering it would be churn on the wire for no change.
+      if (input.assetId && input.asset && !board.assets.has(input.assetId)) {
+        const asset = new Y.Map<unknown>();
+        asset.set("w", input.asset.w);
+        asset.set("h", input.asset.h);
+        asset.set("mime", input.asset.mime);
+        asset.set("size", input.asset.size);
+        asset.set("origName", input.asset.origName ?? null);
+        asset.set("addedBy", board.doc.clientID);
+        asset.set("addedAt", now);
+        board.assets.set(input.assetId, asset);
+      }
 
       let pinId: string | null = null;
       if (input.withPin !== false) {

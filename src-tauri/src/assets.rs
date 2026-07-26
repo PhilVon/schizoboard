@@ -445,14 +445,24 @@ impl AssetStore {
     /// so a pasted `<img src="http://192.168.1.1/admin/config">` would hand its
     /// answer straight back to the page over `asset://`. Hence:
     ///
-    ///   - every hop is resolved and refused unless it is a routable address,
-    ///   - redirects are followed by hand so the check applies to each one
+    ///   - every hop's host is looked up and refused unless every address it
+    ///     answers with is routable,
+    ///   - redirects are followed by hand so that check applies to each one
     ///     rather than only to the URL the user thinks they are fetching,
     ///   - the body is bounded *after* decompression, since the wire limit a
     ///     client library enforces is no limit at all against gzip,
     ///   - and there is a wall-clock timeout, because the default is none and a
     ///     server that accepts a connection and then says nothing would hold a
     ///     blocking thread for the life of the process.
+    ///
+    /// **What this does not stop, stated plainly:** the check resolves the host
+    /// and the HTTP client then resolves it again, so a name that answers
+    /// differently the second time — DNS rebinding, a zero-TTL record flipped
+    /// between the two lookups — reaches an address the check never saw. Closing
+    /// that means resolving once and connecting to the vetted address, which
+    /// needs a resolver this HTTP client does not expose on its stable surface.
+    /// The gap is narrow and it is real; it has its own task rather than a
+    /// comment claiming otherwise.
     pub fn ingest_url(&self, url: &str) -> Result<AssetMeta> {
         let agent: ureq::Agent = ureq::Agent::config_builder()
             .timeout_global(Some(Duration::from_secs(30)))

@@ -31,6 +31,23 @@ const MUTATE_ONLY_IN_OPS = {
     "origin nobody registered, so undo silently ignores it (DATA-MODEL section 11).",
 };
 
+/**
+ * `lib/` stays dependency-free.
+ *
+ * Not one of the two rules, but the thing that keeps rule 2 checkable. The
+ * rule below is an import-graph rule one hop deep, so the day `render/` imports
+ * a `lib/` module that imports `crdt/`, `render/` depends on the document and
+ * lint says nothing. `lib/seed.ts` states the contract — "dependency-free
+ * primitives, importable by anyone" — and this is what holds it.
+ */
+const LIB_IMPORTS_NOTHING = {
+  group: ["@/crdt", "@/crdt/*", "@/render/*", "@/state/*", "@/app/*", "@/platform/*"],
+  message:
+    "lib/ is dependency-free primitives, importable by anyone — including render/, " +
+    "which may not reach crdt/ even through one of these. Policy that needs the rest " +
+    "of the application belongs next to the thing that uses it.",
+};
+
 /** Rule 2 — sim/ and render/ read the scene mirror, never the document. */
 const NO_CRDT_FROM_RENDER_OR_SIM = {
   group: ["@/crdt", "@/crdt/*", "**/crdt/*"],
@@ -80,6 +97,16 @@ export default tseslint.config(
       "no-restricted-imports": [
         "error",
         { paths: [YJS_ONLY_IN_CRDT], patterns: [NO_CRDT_FROM_RENDER_OR_SIM] },
+      ],
+    },
+  },
+
+  {
+    files: ["src/lib/**/*.ts"],
+    rules: {
+      "no-restricted-imports": [
+        "error",
+        { paths: [YJS_ONLY_IN_CRDT], patterns: [LIB_IMPORTS_NOTHING] },
       ],
     },
   },

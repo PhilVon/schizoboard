@@ -19,6 +19,7 @@
 //! nobody can attribute to anything.
 
 mod assets;
+mod clipboard;
 mod protocol;
 
 use std::collections::HashSet;
@@ -229,6 +230,9 @@ pub fn run() {
         .setup(|app| {
             let root = app.path().app_data_dir()?.join("assets");
             app.manage(AssetStore::new(root)?);
+            if let Some(window) = app.get_webview_window("main") {
+                clipboard::forward_drops(&window, app.handle());
+            }
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -238,6 +242,8 @@ pub fn run() {
             asset_ingest_url,
             asset_has,
             asset_gc,
+            clipboard::clipboard_read_manifest,
+            clipboard::clipboard_read_item,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

@@ -65,6 +65,7 @@ export class ToolMachine {
   private readonly queue: ToolInput[] = [];
   private readonly heldKeys = new Set<string>();
   private pointer: number | null = null;
+  private hover: { x: number; y: number } | null = null;
 
   constructor(tool: Tool, target: HTMLElement, options: ToolMachineOptions) {
     this.tool = tool;
@@ -84,6 +85,20 @@ export class ToolMachine {
 
   get active(): Tool {
     return this.tool;
+  }
+
+  /**
+   * Where the cursor is, in screen space, or null when it is not over the
+   * board. Paste needs it ("the cursor if it's over the board, otherwise the
+   * viewport centre" — DESIGN section 3.7), and so will the pin tool and the
+   * awareness cursor.
+   *
+   * A level rather than an event, and read straight from the listener rather
+   * than buffered — nobody wants last frame's hover, and there is nothing to
+   * coalesce.
+   */
+  get cursor(): { x: number; y: number } | null {
+    return this.hover;
   }
 
   /** Switching tools abandons whatever the old one had hold of, rather than
@@ -146,6 +161,7 @@ export class ToolMachine {
     });
 
     add(this.target, "pointermove", (e: PointerEvent) => {
+      this.hover = { x: e.clientX, y: e.clientY };
       if (this.pointer !== e.pointerId) return;
       // The last coalesced sample is the true current position; the OS may
       // have delivered several between frames.
@@ -186,6 +202,10 @@ export class ToolMachine {
         default:
           break;
       }
+    });
+
+    add(this.target, "pointerleave", () => {
+      this.hover = null;
     });
 
     add(window, "keyup", (e: KeyboardEvent) => {

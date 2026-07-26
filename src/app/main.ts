@@ -11,8 +11,9 @@
 
 import { Binding } from "@/crdt/binding";
 import { boardSeed, encodedSize, initialiseBoard, openBoardDoc } from "@/crdt/doc";
-import { createItems, deleteItems, setItemPoses } from "@/crdt/ops";
+import { deleteItems, setItemPoses } from "@/crdt/ops";
 import { Origin } from "@/crdt/origins";
+import { Paste } from "@/app/paste";
 import { initPlatform } from "@/platform";
 import { Cork } from "@/render/cork";
 import { DomItemLayer } from "@/render/items/dom";
@@ -133,6 +134,17 @@ async function boot(): Promise<void> {
     suppressed: () => navigation.panReady,
   });
 
+  const paste = new Paste({
+    native,
+    board,
+    camera,
+    cursor: () => tools.cursor,
+    // Putting something down and then wanting to move it is one gesture in two
+    // halves, so the second half starts with it already held.
+    onCreated: (ids) => selection.replace(ids),
+  });
+  await paste.attach();
+
   const hud = new Hud(world.layers.ui, loop, () => stats());
   let docBytes = 0;
   let docMeasuredAt = 0;
@@ -212,7 +224,9 @@ async function boot(): Promise<void> {
     queued.length = 0;
   });
 
-  seedDemoBoard(board);
+  // An empty board is the correct first thing to see. Nothing seeds it any
+  // more: there is a real way to put things on it now, and a board that opens
+  // holding somebody else's placeholders is a demo rather than a tool.
   camera.fit(scene.contentBounds() ?? { minX: -400, minY: -300, maxX: 400, maxY: 300 }, 120);
 
   loop.start();
@@ -240,53 +254,11 @@ async function boot(): Promise<void> {
   const hint = document.createElement("div");
   hint.className = "hint";
   hint.textContent =
-    `platform: ${native.kind} · drag to move · R+drag to rotate · drag the cork to marquee · ` +
-    `Delete removes · space+drag pans · Ctrl+0 fit · F frame · \` for the HUD`;
+    `platform: ${native.kind} · paste a picture or some text, or drop a file in · ` +
+    `drag to move · R+drag to rotate · drag the cork to marquee · Delete removes · ` +
+    `space+drag pans · Ctrl+0 fit · F frame · \` for the HUD`;
   world.layers.ui.append(hint);
   hud.toggle();
-}
-
-/**
- * Temporary. Removed when paste lands (T-23) and there is a real way to get
- * things onto the board.
- *
- * The polaroids deliberately have no asset. That is not a placeholder for a
- * missing feature — it is the state DESIGN section 7.5 says must be fully
- * usable: an item is pinnable, stringable and annotatable before its
- * photograph has arrived, because its dimensions are in the document.
- */
-function seedDemoBoard(board: ReturnType<typeof openBoardDoc>): void {
-  if (board.items.size > 0) return;
-  createItems(board, [
-    { type: "polaroid", x: -420, y: -180, w: 300, h: 340 },
-    { type: "polaroid", x: -60, y: -230, w: 260, h: 300 },
-    { type: "polaroid", x: 300, y: -160, w: 320, h: 280 },
-    {
-      type: "note",
-      x: -380,
-      y: 220,
-      w: 260,
-      h: 200,
-      text: "the string is the product\n\neverything else is in\nservice of getting string\nbetween things",
-    },
-    {
-      type: "card",
-      x: 20,
-      y: 200,
-      w: 300,
-      h: 180,
-      text: "mess is a feature.\nnothing snaps to a grid.",
-    },
-    { type: "scrap", x: 360, y: 210, w: 200, h: 200 },
-    {
-      type: "note",
-      x: 640,
-      y: 40,
-      w: 220,
-      h: 160,
-      text: "nothing arrives\nstraight",
-    },
-  ]);
 }
 
 /**

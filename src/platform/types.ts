@@ -51,7 +51,14 @@ export type ClipboardPayload =
   | { kind: "image"; sha256: string }
   | { kind: "text"; text: string }
   | { kind: "html"; html: string; srcUrl?: string }
-  | { kind: "files"; sha256s: string[] };
+  /**
+   * Paths, not hashes. Both routes for a file that came from the OS — a
+   * clipboard copy and a drag-drop — then converge on `assetIngestPath`, which
+   * is one ingest path with one set of tests rather than two that have to agree
+   * about size limits and error handling. A path is not the bytes; nothing is
+   * read into JavaScript by handing one over.
+   */
+  | { kind: "files"; paths: string[] };
 
 export interface SyncConfig {
   mode: "lan" | "relay";

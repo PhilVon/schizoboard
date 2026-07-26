@@ -26,6 +26,15 @@
 
 import "@/render/items/items.css";
 
+// The frame proportions live in lib/ because paste has to size an item to the
+// same shape this draws it at, and a mismatch is silently a crop rather than
+// visibly a bug.
+//
+// Written in pixels rather than as CSS percentages, and that is not a style
+// preference. Percentage padding resolves against the *containing block's*
+// width — and the world wrapper is a zero-width point carrying the camera
+// transform, so every percentage in an item would silently compute to zero.
+import { FRAME_BOTTOM, FRAME_SIDE } from "@/lib/polaroid";
 import {
   defaultStock,
   grainPosition,
@@ -142,18 +151,6 @@ function writeTransform(
 function round(value: number, factor: number): number {
   return Math.round(value * factor) / factor;
 }
-
-/**
- * The classic frame, as fractions of the photograph's width: a thin border on
- * three sides and a thick one at the bottom (DESIGN section 4.3).
- *
- * Written in pixels rather than as CSS percentages, and that is not a style
- * preference. Percentage padding resolves against the *containing block's*
- * width — and the world wrapper is a zero-width point carrying the camera
- * transform, so every percentage in an item would silently compute to zero.
- */
-const FRAME_SIDE = 0.045;
-const FRAME_BOTTOM = 0.17;
 
 class PolaroidView implements View {
   readonly archetype = "polaroid" as const;
