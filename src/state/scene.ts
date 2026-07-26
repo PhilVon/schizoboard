@@ -417,6 +417,21 @@ export class Scene {
     return this.byParent.get(itemId) ?? EMPTY_PINS;
   }
 
+  /**
+   * The one pin holding this item, or null if it is held by none or by
+   * several. The physics question of DESIGN section 2.2, asked directly.
+   *
+   * Two things want it and want it for the same reason: an item on one pin
+   * hangs from that pin, and turns about it — so both `sim/torsion.ts` and the
+   * rotation gesture need to know which point that is.
+   */
+  solePin(itemId: string): PinNode | null {
+    const held = this.byParent.get(itemId);
+    if (!held || held.size !== 1) return null;
+    for (const id of held) return this.pins.get(id) ?? null;
+    return null;
+  }
+
   // --- geometry -----------------------------------------------------------
 
   /**

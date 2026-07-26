@@ -1,4 +1,4 @@
-/**
+﻿/**
  * The select tool, with no document, no renderer and no browser.
  *
  * That is the point of the seam in `tool.ts`: everything below is the real
@@ -73,7 +73,7 @@ function putPin(id: string, parent: string | null, wx: number, wy: number): void
 /**
  * Screen space, like the real one in `render/pins/dom.ts`, and with a radius in
  * the same neighbourhood as its floor. The tool is handed this rather than
- * reaching for the renderer's — which is the whole point of the seam.
+ * reaching for the renderer's â€” which is the whole point of the seam.
  */
 const PIN_GRAB = 10;
 function hitPin(sx: number, sy: number): string | null {
@@ -397,7 +397,7 @@ describe("the carry", () => {
     move(210, 0);
     tick();
     // Carried to the right, an object held above its centre trails to the
-    // left — a clockwise turn in a y-down space, so a positive angle.
+    // left â€” a clockwise turn in a y-down space, so a positive angle.
     expect(scene.swing[slot]).toBeGreaterThan(0);
 
     move(10, 0);
@@ -557,7 +557,7 @@ describe("the rotation handle", () => {
   it("rides the item's own rotation, so it is always off the top of the paper", () => {
     put("a", 0, 0, 100, 100, Math.PI / 2);
     selectOnly("a", 0, 0);
-    // A quarter turn puts the paper's top edge — and its handle — due east.
+    // A quarter turn puts the paper's top edge â€” and its handle â€” due east.
     down(-KNOB_Y, 0);
     move(-KNOB_Y, 60);
     up(-KNOB_Y, 60);
@@ -653,7 +653,7 @@ describe("resizing paper from its edges", () => {
     expect(scene.poseOf("n")!.x - MIN_RESIZE / 2).toBeCloseTo(100, 6);
   });
 
-  it("leaves a photograph alone — its edge is somewhere to pick it up", () => {
+  it("leaves a photograph alone â€” its edge is somewhere to pick it up", () => {
     put("p", 200, 200, 200, 100);
     down(200, 200);
     up(200, 200);
@@ -696,7 +696,7 @@ describe("resizing paper from its edges", () => {
     expect(pose.w).toBeCloseTo(200, 6);
     expect(pose.x).toBeCloseTo(200, 6);
     // The document is holding the intermediate size, so putting the scene back
-    // is not enough — and the revert has to go back through the resize op, or
+    // is not enough â€” and the revert has to go back through the resize op, or
     // the pins it moved on the way out stay moved.
     expect(lastSizes().get("n")).toMatchObject({ x: 200, y: 200, w: 200, h: 100 });
   });
@@ -802,8 +802,8 @@ describe("deleting", () => {
 
 describe("the crash-safety write", () => {
   it("lands inside the undo manager's capture window", () => {
-    // The two halves of DESIGN section 7.3 — "a throttled write every half
-    // second", "merged into the same undo entry" — are in conflict, because
+    // The two halves of DESIGN section 7.3 â€” "a throttled write every half
+    // second", "merged into the same undo entry" â€” are in conflict, because
     // DATA-MODEL section 11 fixes the window at 400 ms and merging is purely a
     // matter of the gap between transactions. At 500 ms every live write lands
     // outside it and a three-second drag becomes seven undo entries.
@@ -964,6 +964,128 @@ describe("dragging a pin", () => {
   });
 });
 
+/**
+ * A pin is stuck in the cork, so an item hanging from one turns about it â€”
+ * `sim/torsion.ts` follows that rule for the swing and this is the one place
+ * the gesture was not following it.
+ */
+describe("turning a hanging item", () => {
+  /** Where the pin ends up once the gesture's pose is applied: the stored
+   *  centre plus the pin's local offset through the item's rotation. */
+  function pinWorld(itemId: string, pinId: string): { x: number; y: number } {
+    const slot = scene.slotOf(itemId)!;
+    const pin = scene.pins.get(pinId)!;
+    const rot = scene.rot[slot]!;
+    const cos = Math.cos(rot);
+    const sin = Math.sin(rot);
+    return {
+      x: scene.x[slot]! + pin.lx * cos - pin.ly * sin,
+      y: scene.y[slot]! + pin.lx * sin + pin.ly * cos,
+    };
+  }
+
+  it("turns about the pin, leaving it exactly where it was", () => {
+    put("a", 0, 0, 200, 200);
+    // Top left of the item, so turning about it is visibly not turning about
+    // the centre.
+    scene.putPin({
+      id: "p",
+      parent: "a",
+      lx: -80,
+      ly: -60,
+      kind: "pushpin",
+      color: "#c8352f",
+      wx: -80,
+      wy: -60,
+    });
+    down(0, 0);
+    up(0, 0);
+    const before = pinWorld("a", "p");
+
+    held.add("KeyR");
+    // Out from the pin, then a quarter turn about it. The first move is what
+    // anchors the reference angle; the second is the turn.
+    down(0, 0);
+    move(40, 0);
+    move(-80, 140);
+    up(-80, 140);
+
+    // Four decimals of a board unit, because the pose round-trips through the
+    // scene's `Float32Array`s and nothing survives more than about seven
+    // significant digits of that.
+    const after = pinWorld("a", "p");
+    expect(after.x).toBeCloseTo(before.x, 4);
+    expect(after.y).toBeCloseTo(before.y, 4);
+    // It really did turn, and it really did move.
+    expect(scene.poseOf("a")!.rot).not.toBeCloseTo(0, 3);
+    expect(scene.poseOf("a")!.x).not.toBeCloseTo(0, 3);
+  });
+
+  it("turns a rigid item about its own centre, as before", () => {
+    put("a", 0, 0, 200, 200);
+    for (const [id, lx] of [["p1", -80], ["p2", 80]] as const) {
+      scene.putPin({
+        id,
+        parent: "a",
+        lx,
+        ly: -60,
+        kind: "pushpin",
+        color: "#c8352f",
+        wx: lx,
+        wy: -60,
+      });
+    }
+    down(0, 0);
+    up(0, 0);
+
+    held.add("KeyR");
+    down(0, 0);
+    move(80, 0);
+    move(0, 80);
+    up(0, 80);
+
+    expect(scene.poseOf("a")!.rot).toBeCloseTo(Math.PI / 2, 3);
+    expect(scene.poseOf("a")!.x).toBeCloseTo(0, 6);
+    expect(scene.poseOf("a")!.y).toBeCloseTo(0, 6);
+  });
+
+  /** A group has no single pin to turn about, and asking two pinned
+   *  photographs to turn about one of their pins would fling the other. */
+  it("turns a group about the middle of the group, as before", () => {
+    put("a", -100, 0, 100, 100);
+    put("b", 100, 0, 100, 100);
+    for (const [id, parent] of [["pa", "a"], ["pb", "b"]] as const) {
+      scene.putPin({
+        id,
+        parent,
+        lx: 0,
+        ly: -40,
+        kind: "pushpin",
+        color: "#c8352f",
+        wx: 0,
+        wy: -40,
+      });
+    }
+    down(-100, 0);
+    up(-100, 0);
+    down(100, 0, { shift: true });
+    up(100, 0);
+
+    held.add("KeyR");
+    down(100, 0);
+    move(140, 0);
+    move(0, 140);
+    up(0, 140);
+
+    // Half a turn about the origin would swap them; any turn about it keeps
+    // them the same distance from it and from each other.
+    const a = scene.poseOf("a")!;
+    const b = scene.poseOf("b")!;
+    expect(Math.hypot(a.x, a.y)).toBeCloseTo(100, 4);
+    expect(Math.hypot(b.x, b.y)).toBeCloseTo(100, 4);
+  });
+});
+
 describe("Alt+click on a pin", () => {
   it("removes it", () => {
     putPin("p", null, 0, 0);
@@ -990,3 +1112,4 @@ describe("Alt+click on a pin", () => {
     expect(selection.toArray()).toEqual(["a"]);
   });
 });
+

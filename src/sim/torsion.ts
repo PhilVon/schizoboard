@@ -293,13 +293,10 @@ export class Torsion {
    * every "is it hanging yet?" comparison true and it never wakes.
    */
   private restOf(scene: Scene, slot: number, id: string): Rest | null {
-    // Exactly one, by the caller's check — but the pin can still have gone
-    // between the count and the lookup on a document that a peer is editing.
-    let pin: { lx: number; ly: number } | undefined;
-    for (const pinId of scene.pinsOf(id)) {
-      pin = scene.pins.get(pinId);
-      break;
-    }
+    // The same question the rotation gesture asks, from the same place —
+    // "which one pin holds this?" — so the two cannot end up disagreeing about
+    // what an item is hanging from.
+    const pin = scene.solePin(id);
     if (!pin) return null;
     const omega = naturalRate(pin.lx, pin.ly, scene.w[slot]!, scene.h[slot]!);
     const eq =

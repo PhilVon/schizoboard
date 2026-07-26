@@ -517,12 +517,24 @@ export class SelectTool implements Tool {
     }
 
     if (this.grabbed === "rotate" || ctx.held.has("KeyR")) {
-      // The centre of what is being turned. For one item that is its own
-      // centre, so it spins in place; for a group it is the middle of the
-      // group, so the whole arrangement turns as one thing.
-      const bounds = ctx.scene.boundsOfMany(this.starts.keys());
-      this.pivotX = bounds ? (bounds.minX + bounds.maxX) / 2 : this.downBoardX;
-      this.pivotY = bounds ? (bounds.minY + bounds.maxY) / 2 : this.downBoardY;
+      /**
+       * What is being turned about what.
+       *
+       * A single item hanging on a single pin turns about **the pin**, because
+       * the pin is stuck in the cork and does not move — the same rule the
+       * swing follows (`sim/torsion.ts`), and the one place it was not being
+       * followed. Turning such an item about its own centre slides the pin
+       * across the board for as long as the handle is held, which is exactly
+       * the thing that makes a hanging photograph read as a sticker.
+       *
+       * Otherwise the centre of what is being turned: for a rigid or loose item
+       * its own centre, so it spins in place; for a group the middle of the
+       * group, so the whole arrangement turns as one thing.
+       */
+      const sole = this.solePinPivot(ctx);
+      const bounds = sole ? null : ctx.scene.boundsOfMany(this.starts.keys());
+      this.pivotX = sole ? sole.wx : bounds ? (bounds.minX + bounds.maxX) / 2 : this.downBoardX;
+      this.pivotY = sole ? sole.wy : bounds ? (bounds.minY + bounds.maxY) / 2 : this.downBoardY;
       this.rotateApplied = 0;
       this.lastAngle = null;
       this.phase = "rotating";
@@ -544,6 +556,24 @@ export class SelectTool implements Tool {
    * re-hangs when it is let go, which is also what happens when you move a pin
    * on a wall: the photograph does not move until you take your hand off it.
    */
+  /**
+   * The pin a rotation should turn about, or null.
+   *
+   * One item, one pin. A group has no single pin to turn about, and asking two
+   * pinned photographs to rotate about one of their pins would swing the other
+   * one across the board.
+   *
+   * `wx`/`wy` are the pin's world position, which for a hanging item is
+   * invariant under the swing by construction — so the arithmetic below holds
+   * whether the item is mid-swing or settled: rotating its stored centre about
+   * this point and adding the same angle to `rot` leaves the pin exactly here.
+   */
+  private solePinPivot(ctx: ToolContext): { wx: number; wy: number } | null {
+    if (this.starts.size !== 1) return null;
+    for (const id of this.starts.keys()) return ctx.scene.solePin(id);
+    return null;
+  }
+
   private markPinHold(): void {
     this.holding.clear();
     const from = this.pinDrag.origin;
