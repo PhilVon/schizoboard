@@ -611,18 +611,40 @@ async function boot(): Promise<void> {
   camera.fit(scene.contentBounds() ?? { minX: -400, minY: -300, maxX: 400, maxY: 300 }, 120);
 
   /**
-   * A handle on the running board, for driving it from outside.
+   * `window.schizo` — a handle on the running board, for driving it from
+   * outside the window.
    *
-   * Dev builds only — `import.meta.env.DEV` is a compile-time constant, so the
+   * Dev builds only. `import.meta.env.DEV` is a compile-time constant, so the
    * whole block is dropped from a production bundle rather than merely being
    * unreachable in one.
    *
-   * It exists because "does it actually work" is a question about the running
-   * application and not about the test suite, and some of what the board can do
-   * has no interaction attached to it yet. String is the current example: the
-   * document ops, the simulation and the painter all landed before the tool
-   * that would let a person draw one (T-42), and without this there was no way
-   * to put a string on screen and look at it.
+   * ## Why it exists
+   *
+   * "Does it actually work" is a question about the running application, and
+   * the test suite cannot answer it. Three times now the answer has been no in
+   * a way nothing else caught: the highlight on a default-thickness string
+   * rasterised to a smear and made every string look flat; `Enter` never
+   * reached tools at all, because `machine.ts` forwards a keydown allowlist
+   * and nothing had previously ended a gesture on a keystroke; and the leg of
+   * a string run chasing the cursor was simply missing, because a tool is only
+   * handed `move` while a pointer is captured. Every one of those passed every
+   * unit test, twice — before and after the fix.
+   *
+   * It also covers the gap where a capability lands before the interaction
+   * that reaches it. The string ops, the simulation and the painter were all
+   * finished before the tool that lets a person draw one, and without this
+   * there was no way to put a string on screen and look at it.
+   *
+   * ## What belongs in it
+   *
+   * The board's own long-lived objects, and nothing that exists only to be
+   * driven. It is a window onto the application, not an API for it: anything
+   * here must be something the application already has and already uses, so
+   * that reaching through this handle and reaching through the app cannot
+   * disagree. `snapshot` is the one function rather than an object, and it is
+   * a one-line call to something `crdt/doc.ts` already exports.
+   *
+   * Nothing in the application may read it. It is write-only from here.
    */
   if (import.meta.env.DEV) {
     (window as unknown as { schizo: unknown }).schizo = {
@@ -634,6 +656,8 @@ async function boot(): Promise<void> {
       loop,
       ops,
       tools,
+      /** The document as persistence would write it — for reopening a board
+       *  and checking it comes back still (Phase 3's AC-15). */
       snapshot: () => snapshot(board),
     };
   }
