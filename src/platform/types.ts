@@ -37,6 +37,28 @@ export const VARIANT_MAX_EDGE: Record<AssetVariant, number> = {
 };
 
 /**
+ * Which stored variant serves an image about to be drawn `screenPx` across, in
+ * device pixels.
+ *
+ * Here rather than in `app/main.ts` for one reason: `main.ts` is the wiring
+ * module and nothing tests it, so a decision left there is a decision nothing
+ * checks. The renderer supplies the size and this supplies the answer.
+ *
+ * `original` is never chosen. It is the untouched paste, kept for export (T-94),
+ * and `display` is capped at 2560px — which `DISPLAY_MAX_EDGE` derives from the
+ * 400% zoom ceiling on a 2x display, so nothing on screen can out-resolve it.
+ *
+ * The thumbnail is chosen only when a positive, finite size *establishes* that it
+ * is enough. Everything else — zero, negative, NaN, infinite — falls through to
+ * `display`, which is wrong in the direction that costs pixels rather than the
+ * one that loses them: a thumbnail stretched across a 400% item is visibly
+ * broken, a display variant on a tiny one is merely wasteful.
+ */
+export function variantFor(screenPx: number): AssetVariant {
+  return screenPx > 0 && screenPx <= VARIANT_MAX_EDGE.thumb ? "thumb" : "display";
+}
+
+/**
  * What ingestion returns. Note what is *not* here: the bytes.
  *
  * Ingestion returns as soon as the hash and dimensions are known, so the item

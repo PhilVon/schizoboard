@@ -17,7 +17,7 @@ import { Persistence } from "@/crdt/persistence";
 import { UndoHistory } from "@/crdt/undo";
 import { Paste } from "@/app/paste";
 import { initPlatform } from "@/platform";
-import { VARIANT_MAX_EDGE } from "@/platform/types";
+import { variantFor } from "@/platform/types";
 import { Cork } from "@/render/cork";
 import { Culler } from "@/render/cull";
 import { DomItemLayer } from "@/render/items/dom";
@@ -89,15 +89,11 @@ async function boot(): Promise<void> {
    * measured that as a 243 ms frame, and it is culling that made it visible —
    * before culling every item was mounted from the start and had already paid.
    *
-   * `original` is never chosen. It is the untouched paste, kept for export
-   * (T-94); `display` is capped at 2560px, which DISPLAY_MAX_EDGE derives from
-   * the 400% zoom ceiling on a 2x display, so nothing on screen can out-resolve
-   * it.
+   * The choice itself is `variantFor`, over in `platform/`, because this module
+   * is wiring and nothing tests it.
    */
-  const assetUrl = (sha256: string, screenPx: number): string => {
-    if (!showable.has(sha256)) return "";
-    return native.assetUrl(sha256, screenPx <= VARIANT_MAX_EDGE.thumb ? "thumb" : "display");
-  };
+  const assetUrl = (sha256: string, screenPx: number): string =>
+    showable.has(sha256) ? native.assetUrl(sha256, variantFor(screenPx)) : "";
   const items = new DomItemLayer(world.layers.world, assetUrl);
 
   /** Re-bind every item wearing this asset. A walk, on a once-per-photograph
