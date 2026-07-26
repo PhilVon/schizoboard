@@ -1,0 +1,59 @@
+/*
+ * Pin presentation.
+ *
+ * The pins layer is in *screen* space, not inside the camera transform — see
+ * `render/pins/dom.ts` for why. So everything here is sized in CSS pixels and
+ * the layer rewrites those pixels itself when the camera moves.
+ *
+ * The same two rules as items: no drop shadows (the pin's own shadow is baked
+ * into its sprite), and no transitions (the frame loop owns all motion).
+ */
+
+.pin {
+  position: absolute;
+  left: 0;
+  top: 0;
+  background-repeat: no-repeat;
+  background-size: 100% 100%;
+  contain: layout style;
+  /*
+   * The board hit-tests from the scene mirror, never from the DOM — there is no
+   * elementFromPoint anywhere in the loop, and a pin that swallowed its own
+   * press would put the answer in two places that could disagree.
+   */
+  pointer-events: none;
+}
+
+/*
+ * The eyelet.
+ *
+ * > Pins show a small eyelet highlight on hover so the pin-precise path stays
+ * > discoverable. — DESIGN section 3.4
+ *
+ * A ring just inside the head, which is where a string threading onto this pin
+ * would sit. A pseudo-element rather than a child node, because a pin is one of
+ * the most numerous things on the board and this is only ever visible on one of
+ * them at a time.
+ *
+ * `display` rather than `opacity`: an invisible ring on every mounted pin is
+ * still a paint the compositor has to consider.
+ */
+.pin::after {
+  content: "";
+  display: none;
+  position: absolute;
+  /*
+   * A little over half the head, which is itself 52% of the box across
+   * (`sprite.ts`). Any wider and it stops reading as a hole in the head and
+   * starts reading as an outline around it — which says "selected", not
+   * "thread a string through here".
+   */
+  inset: 35%;
+  border-radius: 50%;
+  border: 1.5px solid rgba(255, 249, 235, 0.92);
+  box-shadow: 0 0 0 1px rgba(var(--shadow-warm), 0.55);
+}
+
+.pin.is-hovered::after {
+  display: block;
+}

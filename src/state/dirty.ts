@@ -14,6 +14,16 @@
 export class DirtySets {
   /** Items whose transform needs writing. */
   readonly items = new Set<string>();
+  /**
+   * Pins whose position, kind or colour changed.
+   *
+   * Separate from `items` because a pin is not an item and most pin movement
+   * is not its own: a parented pin moves when its item does, and the item is
+   * what is dirty then. This set is for the rest — a free pin dragged across
+   * bare cork, a pin re-coloured, a pin created — none of which touches an
+   * item at all, and every one of which the pin layer has to redraw.
+   */
+  readonly pins = new Set<string>();
   /** Items whose ink canvas needs re-rastering. */
   readonly ink = new Set<string>();
   /** Ropes whose geometry changed. */
@@ -41,6 +51,7 @@ export class DirtySets {
       !this.camera &&
       !this.culling &&
       this.items.size === 0 &&
+      this.pins.size === 0 &&
       this.ink.size === 0 &&
       this.ropes.size === 0
     );
@@ -48,6 +59,10 @@ export class DirtySets {
 
   item(id: string): void {
     this.items.add(id);
+  }
+
+  pin(id: string): void {
+    this.pins.add(id);
   }
 
   inkFor(id: string): void {
@@ -67,6 +82,7 @@ export class DirtySets {
   /** Called at the end of the frame, after the write phases have consumed it. */
   clear(): void {
     this.items.clear();
+    this.pins.clear();
     this.ink.clear();
     this.ropes.clear();
     this.camera = false;

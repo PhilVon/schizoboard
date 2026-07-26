@@ -24,6 +24,7 @@ import { Culler } from "@/render/cull";
 import { DomItemLayer } from "@/render/items/dom";
 import { FrameLoop } from "@/render/loop";
 import { Overlay } from "@/render/overlay";
+import { PinLayer } from "@/render/pins/dom";
 import { World } from "@/render/world";
 import { Camera } from "@/state/camera";
 import { DirtySets } from "@/state/dirty";
@@ -116,6 +117,13 @@ async function boot(): Promise<void> {
     refreshAsset(sha256);
   });
   const overlay = new Overlay(world.layers.overlay);
+  /**
+   * Pins, in their own screen-space layer above everything else on the board.
+   * Not inside the world transform, and `render/pins/dom.ts` explains why: a
+   * pin's head has a floor in *screen* pixels so that a zoomed-out board still
+   * has something visible holding it together (DESIGN section 4.5).
+   */
+  const pins = new PinLayer(world.layers.pins);
   /**
    * Which items are worth having in the DOM. The spike (D-12) measured the
    * gesture-end repaint at 777 ms with 500 live nodes, so this is load-bearing
@@ -369,6 +377,17 @@ async function boot(): Promise<void> {
 
   // 2 PRESENCE  T-72   3 SIM  T-39
 
+  /**
+   * The pin the cursor is over, or null — the eyelet (DESIGN section 3.4).
+   *
+   * Resolved in the LAYOUT phase and consumed in the DOM phase, like culling,
+   * because it is a question about where things are and the write phase may
+   * only consume answers. It is asked *after* `layoutPins`, so it is this
+   * frame's positions rather than last frame's.
+   */
+  let hoveredPin: string | null = null;
+  let hoverAskedX = Number.NaN;
+  let hoverAskedY = Number.NaN;
   loop.on("layout", () => {
     // World pin positions for items that moved. Nothing reads the DOM.
     if (dirty.all) scene.layoutPins();
@@ -376,6 +395,19 @@ async function boot(): Promise<void> {
     // And which items are near enough the viewport to be worth mounting. A read
     // phase, deliberately: the DOM phase below only consumes the answer.
     culler.update(scene, dirty, camera);
+
+    // Asked only when the answer can have changed — the cursor moved, or the
+    // board did. An idle board with the pointer at rest on it must stay free,
+    // and a hit test is a walk over every pin.
+    const cursor = navigation.panReady ? null : tools.cursor;
+    if (!cursor) {
+      hoveredPin = null;
+      hoverAskedX = Number.NaN;
+    } else if (cursor.x !== hoverAskedX || cursor.y !== hoverAskedY || !dirty.isClean) {
+      hoverAskedX = cursor.x;
+      hoverAskedY = cursor.y;
+      hoveredPin = pins.hitTest(scene, camera, cursor.x, cursor.y);
+    }
   });
 
   /**
@@ -414,6 +446,7 @@ async function boot(): Promise<void> {
     world.applyCamera(camera);
     cork.apply(camera);
     items.sync(scene, dirty, culler.visible);
+    pins.sync(scene, camera, dirty, hoveredPin);
     applyCursor();
   });
 

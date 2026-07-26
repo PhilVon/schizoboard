@@ -100,7 +100,7 @@ export class Binding {
   private syncPin(id: string, map: YMap): void {
     const fields = readPin(id, map);
     if (!fields) {
-      this.scene.removePin(id);
+      if (this.scene.removePin(id)) this.dirty.pin(id);
       return;
     }
     const existing = this.scene.pins.get(id);
@@ -116,6 +116,7 @@ export class Binding {
       wx: existing?.wx ?? fields.lx,
       wy: existing?.wy ?? fields.ly,
     });
+    this.dirty.pin(id);
     if (fields.parent !== null) this.dirty.item(fields.parent);
     // The item it *left*, too. Dragging a pin off a photograph does not move
     // the photograph, so this looks like nothing for now — but pin count is
@@ -157,6 +158,7 @@ export class Binding {
           if (change.action === "delete") {
             const gone = this.scene.pins.get(id);
             this.scene.removePin(id);
+            this.dirty.pin(id);
             if (gone?.parent) this.dirty.item(gone.parent);
           } else {
             const map = this.board.pins.get(id);
