@@ -184,6 +184,12 @@ class PolaroidView implements View {
     this.photo.decoding = "async";
     this.photo.draggable = false;
     this.photo.alt = "";
+    // A photograph nobody can produce is a *render state*, not an error
+    // (DESIGN section 7.5) — the asset store 404s for bytes this peer has not
+    // been sent yet, and the item has to go on looking like undeveloped film
+    // rather than like a broken image.
+    this.photo.addEventListener("error", () => this.el.classList.add("is-waiting"));
+    this.photo.addEventListener("load", () => this.el.classList.remove("is-waiting"));
 
     const gloss = document.createElement("div");
     gloss.className = "pol-gloss";
@@ -212,11 +218,14 @@ class PolaroidView implements View {
       // An empty src would trigger a network request for the page itself.
       if (url) this.photo.src = url;
       else this.photo.removeAttribute("src");
+      // Waiting until the load actually lands, rather than until a URL exists.
+      // Missing is a render state, not an error: the item is fully usable —
+      // pinnable, stringable, annotatable — before its bytes arrive (DESIGN
+      // section 7.5), and it should look like undeveloped film for the whole of
+      // that, not for the instant before the src is assigned. The proper
+      // treatment, with grain and a chemical wash, is T-75.
+      this.el.classList.add("is-waiting");
     }
-    // Missing is a render state, not an error: the item is fully usable —
-    // pinnable, stringable, annotatable — before its bytes arrive
-    // (DESIGN section 7.5). The proper undeveloped-film treatment is T-75.
-    this.el.classList.toggle("is-waiting", !url);
     this.caption.textContent = cold.text;
     this.caption.classList.toggle("is-empty", cold.text.length === 0);
     this.el.style.filter = sheetTint(cold.seed);
@@ -241,7 +250,13 @@ class PolaroidView implements View {
   release(): void {
     this.caption.textContent = "";
     this.boundCold = null;
-    this.el.classList.remove("is-selected", "is-lifted");
+    // The photograph goes too. A pooled node keeps its subtree, so a view
+    // recycled onto an item that happens to reference the same asset would
+    // otherwise pass the URL guard, never request anything, and sit there
+    // wearing the previous item's picture or its failure.
+    this.boundAsset = null;
+    this.photo.removeAttribute("src");
+    this.el.classList.remove("is-selected", "is-lifted", "is-waiting");
     this.shadow.reset();
   }
 }

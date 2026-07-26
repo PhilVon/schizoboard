@@ -20,10 +20,46 @@ tauri-plugin-opener = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 
+# --- assets (T-21, T-22) ----------------------------------------------------
+# Rust owns bytes (ARCHITECTURE section 4.1): hashing, decode, EXIF, variants.
+sha2 = "0.10"
+# Only the formats a board can actually hold. The default feature set drags in
+# the AVIF encoder — rav1e, ravif and a video-codec tree behind them — which is
+# a lot of build for a format nobody is going to paste onto a corkboard.
+image = { version = "0.25", default-features = false, features = [
+  "jpeg",
+  "png",
+  "gif",
+  "webp",
+  "rayon",
+] }
+# Orientation only. `image` can report it too, but the tag is worth reading
+# explicitly: a portrait photograph stored landscape-plus-EXIF has to report
+# portrait dimensions, or every item made from one is created the wrong shape.
+kamadak-exif = "0.6"
+# URL ingestion, which exists because the webview has a CORS wall and the shell
+# does not (ARCHITECTURE section 4.1). Blocking, and called from a blocking
+# thread — the alternative is a second async HTTP stack in the binary.
+ureq = "3"
+
+[dev-dependencies]
+tempfile = "3"
+
 [profile.dev]
 # Rope solving and image decode are unusable at opt-level 0; the app itself
-# still builds unoptimised so incremental dev rebuilds stay fast.
+# still builds nearly unoptimised so dev rebuilds stay quick.
 opt-level = 1
+# Not a preference. With incremental compilation on, linking the `cdylib` half
+# of the lib target fails on Windows with fifty-odd `unresolved external symbol
+# anon.<hash>.N.llvm.<id>` errors as soon as `image` is in the graph — the
+# known rustc bug where incremental codegen units reference LLVM-internal
+# anonymous symbols across the cdylib boundary. `cargo check` and `cargo test`
+# are unaffected, so it only shows up the moment someone tries to run the app.
+#
+# The cdylib and staticlib crate types exist for mobile and cannot be made
+# conditional on the target, so this is the lever there is. Rebuilds cost about
+# a minute; the alternative is an application that does not link.
+incremental = false
 
 [profile.dev.package."*"]
 opt-level = 3

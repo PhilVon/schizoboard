@@ -7,8 +7,28 @@
 //!
 //! Modules land as their tasks do: `assets` (T-21), `protocol` (T-22),
 //! `docstore` (T-20), `clipboard` (T-23), `bundle` (T-84), `sync` (T-69).
+//!
+//! ## Nothing runs on the main thread
+//!
+//! Every command below is `async` and does its work inside `spawn_blocking`,
+//! including the ones that look trivial. A synchronous Tauri command runs on
+//! the *main* thread, which is the thread the window is drawn from — so a
+//! `stat` per asset on a large board, or a directory walk during collection,
+//! is a visible hitch on a board that is otherwise holding 60 fps. The cost of
+//! being careful here is one `await`; the cost of not being is a stutter
+//! nobody can attribute to anything.
+
+mod assets;
+mod protocol;
+
+use std::collections::HashSet;
+use std::path::PathBuf;
 
 use serde::Serialize;
+use tauri::ipc::InvokeBody;
+use tauri::{AppHandle, Emitter, Manager};
+
+use assets::{AssetMeta, AssetStore};
 
 /// What shell the frontend is actually running inside. Consumed by the boot
 /// panel now and by the dev HUD (T-14) later.
@@ -31,11 +51,194 @@ fn app_info(app: tauri::AppHandle) -> AppInfo {
     }
 }
 
+// --- assets -----------------------------------------------------------------
+
+#[derive(Clone, Serialize)]
+struct AssetReady {
+    sha256: String,
+}
+
+/// Run the slow half of ingestion — decode, orientation, downscale — and tell
+/// the frontend when it lands.
+///
+/// Deliberately fire-and-forget, and deliberately after the command has already
+/// returned. Ingestion's contract is "returns as soon as the hash and the
+/// dimensions are known" (AC-46), because those two facts are all the document
+/// needs for the item to exist at its correct size. Everything here is about
+/// making it *sharper*, and none of it is allowed to be in the way.
+///
+/// `asset:ready` fires even when variant building failed. The event means "the
+/// bytes are here", not "the downscale worked" — the original is servable
+/// either way, and an item that waits forever because a thumbnail could not be
+/// encoded is a worse outcome than a slightly heavier image.
+fn schedule_variants(app: &AppHandle, sha256: String) {
+    let app = app.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        if let Some(store) = app.try_state::<AssetStore>() {
+            if let Err(error) = store.build_variants(&sha256) {
+                eprintln!("assets: no variants for {sha256}: {error}");
+            }
+        }
+        let _ = app.emit("asset:ready", AssetReady { sha256 });
+    });
+}
+
+/// Run `job` off the main thread and flatten both failure modes into the string
+/// the frontend's promise rejects with.
+async fn blocking<T, F>(job: F) -> Result<T, String>
+where
+    F: FnOnce() -> assets::Result<T> + Send + 'static,
+    T: Send + 'static,
+{
+    tauri::async_runtime::spawn_blocking(job)
+        .await
+        .map_err(|e| e.to_string())?
+        .map_err(|e| e.to_string())
+}
+
+fn store_of(app: &AppHandle) -> Result<tauri::State<'_, AssetStore>, String> {
+    app.try_state::<AssetStore>()
+        .ok_or_else(|| "the asset store failed to open".to_string())
+}
+
+/// The bytes arrive as a **raw request body**, not as a JSON array of numbers —
+/// a third smaller and no serialisation stall (ARCHITECTURE section 4.4).
+///
+/// The mime hint rides on a header of our own rather than `Content-Type`,
+/// which Tauri uses itself to decide that this payload is raw in the first
+/// place. It is only a hint: `sniff_mime` trusts the magic numbers first.
+#[tauri::command]
+async fn asset_ingest_bytes(
+    app: AppHandle,
+    request: tauri::ipc::Request<'_>,
+) -> Result<AssetMeta, String> {
+    let InvokeBody::Raw(bytes) = request.body() else {
+        return Err("asset_ingest_bytes expects a raw body".into());
+    };
+    let bytes = bytes.clone();
+    let mime = request
+        .headers()
+        .get("x-asset-mime")
+        .and_then(|v| v.to_str().ok())
+        .map(str::to_string);
+
+    let handle = app.clone();
+    let meta = blocking(move || {
+        store_of(&handle)
+            .map_err(assets::Error::Unavailable)?
+            .ingest_bytes(&bytes, mime.as_deref())
+    })
+    .await?;
+
+    schedule_variants(&app, meta.sha256.clone());
+    Ok(meta)
+}
+
+#[tauri::command]
+async fn asset_ingest_path(app: AppHandle, path: String) -> Result<AssetMeta, String> {
+    let handle = app.clone();
+    let meta = blocking(move || {
+        store_of(&handle)
+            .map_err(assets::Error::Unavailable)?
+            .ingest_path(&PathBuf::from(path))
+    })
+    .await?;
+    schedule_variants(&app, meta.sha256.clone());
+    Ok(meta)
+}
+
+#[tauri::command]
+async fn asset_ingest_url(app: AppHandle, url: String) -> Result<AssetMeta, String> {
+    let handle = app.clone();
+    let meta = blocking(move || {
+        store_of(&handle)
+            .map_err(assets::Error::Unavailable)?
+            .ingest_url(&url)
+    })
+    .await?;
+    schedule_variants(&app, meta.sha256.clone());
+    Ok(meta)
+}
+
+#[tauri::command]
+async fn asset_has(app: AppHandle, hashes: Vec<String>) -> Result<Vec<bool>, String> {
+    blocking(move || {
+        let store = store_of(&app).map_err(assets::Error::Unavailable)?;
+        Ok(hashes.iter().map(|hash| store.has(hash)).collect())
+    })
+    .await
+}
+
+// `asset_export` is deliberately **not** in the invoke handler yet, and
+// `AssetStore::export` sits there unexposed with its own tests.
+//
+// The command takes a destination path and `fs::copy` overwrites whatever is
+// already at it. Paired with `asset_ingest_bytes` — which lets a caller choose
+// the *content* — that is a write-anything-anywhere primitive: pick some bytes,
+// then export them over a file in the Startup folder. The webview only ever
+// loads our own frontend today, so nothing can reach it; the moment paste
+// starts ingesting HTML from other people's pages (T-23), that stops being a
+// comfortable thing to rely on.
+//
+// Exporting is inherently "save this somewhere the *user* chose", so the fix is
+// a native save dialog owning the path rather than a validator guessing at one.
+// Until the `dialog` plugin lands (ARCHITECTURE section 4.6), the frontend's
+// `assetExport` rejects with "command not found", which is exactly what
+// `platform/tauri.ts` documents an unimplemented command doing.
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct GcReport {
+    freed_bytes: u64,
+}
+
+#[tauri::command]
+async fn asset_gc(app: AppHandle, keep: Vec<String>) -> Result<GcReport, String> {
+    blocking(move || {
+        let keep: HashSet<String> = keep.into_iter().collect();
+        let freed = store_of(&app)
+            .map_err(assets::Error::Unavailable)?
+            .gc(&keep)?;
+        Ok(GcReport { freed_bytes: freed })
+    })
+    .await
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
-        .invoke_handler(tauri::generate_handler![app_info])
+        // T-22. Registered on the builder, but the store it reads is managed in
+        // `setup` below — which is fine, because nothing can request an asset
+        // until there is a window to request it from.
+        .register_asynchronous_uri_scheme_protocol("asset", |ctx, request, responder| {
+            let app = ctx.app_handle().clone();
+            // Off the main thread: this reads a file, and the whole point of
+            // the scheme is that a photograph arriving never costs a frame.
+            tauri::async_runtime::spawn_blocking(move || {
+                let response = match app.try_state::<AssetStore>() {
+                    Some(store) => protocol::respond(&store, &request),
+                    None => tauri::http::Response::builder()
+                        .status(tauri::http::StatusCode::SERVICE_UNAVAILABLE)
+                        .body(Vec::new())
+                        .expect("static response"),
+                };
+                responder.respond(response);
+            });
+        })
+        .setup(|app| {
+            let root = app.path().app_data_dir()?.join("assets");
+            app.manage(AssetStore::new(root)?);
+            Ok(())
+        })
+        .invoke_handler(tauri::generate_handler![
+            app_info,
+            asset_ingest_bytes,
+            asset_ingest_path,
+            asset_ingest_url,
+            asset_has,
+            asset_gc,
+        ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }

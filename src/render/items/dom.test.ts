@@ -266,12 +266,45 @@ describe("DomItemLayer", () => {
     expect(el.classList.contains("is-lifted")).toBe(false);
   });
 
-  it("shows the waiting state for a polaroid with no bytes yet", () => {
+  it("waits until a photograph has actually arrived, not until a URL exists", () => {
     add("a", { assetId: null });
     add("b", { assetId: "abc" });
     layer.sync(scene, dirty, null);
+    // Both: one has no photograph coming, the other has one in flight. The
+    // undeveloped-film state covers the whole of the wait, which is the only
+    // time anyone would see it.
     const waiting = [...host.children].filter((el) => el.classList.contains("is-waiting"));
-    expect(waiting.length).toBe(1);
+    expect(waiting.length).toBe(2);
+
+    const photo = host.querySelectorAll(".pol-photo")[1] as HTMLImageElement;
+    photo.dispatchEvent(new Event("load"));
+    expect(photo.closest(".item")!.classList.contains("is-waiting")).toBe(false);
+
+    // ...and a photograph this peer cannot produce goes straight back to it,
+    // rather than showing a broken-image icon.
+    photo.dispatchEvent(new Event("error"));
+    expect(photo.closest(".item")!.classList.contains("is-waiting")).toBe(true);
+  });
+
+  it("does not leave a recycled node wearing the last item's photograph", () => {
+    add("a", { assetId: "abc" });
+    layer.sync(scene, dirty, null);
+    const photo = host.querySelector(".pol-photo") as HTMLImageElement;
+    photo.dispatchEvent(new Event("load"));
+    expect(photo.getAttribute("src")).toBe("asset://sha256/abc");
+
+    dirty.clear();
+    scene.removeItem("a");
+    dirty.item("a");
+    layer.sync(scene, dirty, null);
+
+    // Same asset, new item, pooled node. The URL guard would otherwise match,
+    // skip the assignment, and never request anything.
+    dirty.clear();
+    add("b", { assetId: "abc" });
+    layer.sync(scene, dirty, null);
+    expect(host.children.length).toBe(1);
+    expect((host.children[0] as HTMLElement).classList.contains("is-waiting")).toBe(true);
   });
 });
 

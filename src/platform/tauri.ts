@@ -10,7 +10,7 @@
  * what stops `invoke` calls sprouting across the renderer later.
  */
 
-import { invoke } from "@tauri-apps/api/core";
+import { convertFileSrc, invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 
 import type {
@@ -40,11 +40,15 @@ export class TauriPlatform implements Platform {
   // Passing a Uint8Array as the whole payload sends it as a raw request body
   // rather than a JSON array of numbers — a third smaller and no serialisation
   // stall (ARCHITECTURE section 4.4).
+  //
+  // The mime rides on a header of our own and not on `Content-Type`, which is
+  // how Tauri itself decides the payload is raw in the first place. Rust treats
+  // it as a hint anyway and trusts the magic numbers first.
   assetIngestBytes(bytes: Uint8Array, mime?: string): Promise<AssetMeta> {
     return invoke<AssetMeta>(
       "asset_ingest_bytes",
       bytes,
-      mime ? { headers: { "Content-Type": mime } } : undefined,
+      mime ? { headers: { "x-asset-mime": mime } } : undefined,
     );
   }
 
@@ -68,9 +72,18 @@ export class TauriPlatform implements Platform {
     return invoke<{ freedBytes: number }>("asset_gc", { keep });
   }
 
+  /**
+   * Never through IPC. The scheme handler streams from disk.
+   *
+   * The URL is *not* the same on every platform: WebView2 cannot register a
+   * real custom scheme, so Tauri maps `asset` onto `http://asset.localhost/...`
+   * on Windows and Android while macOS and Linux get `asset://localhost/...`.
+   * `convertFileSrc` is Tauri's own answer to that question, and hard-coding
+   * either form would produce an application that works on one developer's
+   * machine and shows nothing but grey rectangles on another's.
+   */
   assetUrl(sha256: string, variant: AssetVariant = "display"): string {
-    // Never through IPC. The scheme handler (T-22) streams from disk.
-    return `asset://sha256/${sha256}?v=${variant}`;
+    return `${convertFileSrc(sha256, "asset")}?v=${variant}`;
   }
 
   docAppendUpdate(bytes: Uint8Array): Promise<void> {

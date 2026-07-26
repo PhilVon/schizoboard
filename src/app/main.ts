@@ -48,7 +48,43 @@ async function boot(): Promise<void> {
   const camera = new Camera();
   const world = new World(root);
   const cork = new Cork(world.layers.cork, boardSeed(board));
-  const items = new DomItemLayer(world.layers.world, (sha) => native.assetUrl(sha));
+  /**
+   * Which assets this machine can actually show.
+   *
+   * `platform/types.ts` says `assetUrl` "returns an empty string for an asset
+   * this process has never seen, which the item renders as its `unknown` state
+   * rather than as an error" — and under the shell it cannot keep that promise
+   * on its own, because building the URL is pure string work that knows
+   * nothing about what is on disk. So the knowledge lives here, and this is
+   * the local per-asset state DATA-MODEL section 9 says is never in the
+   * document.
+   *
+   * It matters more than a contract detail. Without it an item points an
+   * `<img>` at bytes that have not arrived, gets a 404, and the only thing
+   * standing between the user and a broken-image icon is an error handler. With
+   * it, an item with no photograph yet is simply an item with no photograph
+   * yet — undeveloped film, which is what DESIGN section 7.5 asks for.
+   */
+  const showable = new Set<string>();
+  const assetUrl = (sha256: string): string => (showable.has(sha256) ? native.assetUrl(sha256) : "");
+  const items = new DomItemLayer(world.layers.world, assetUrl);
+
+  /** Re-bind every item wearing this asset. A walk, on a once-per-photograph
+   *  event. */
+  const refreshAsset = (sha256: string): void => {
+    for (const id of scene.itemIds()) {
+      if (scene.cold(id)?.assetId === sha256) dirty.item(id);
+    }
+  };
+
+  // Awaited, not fired and forgotten: `listen` is itself a round trip, and an
+  // `asset:ready` emitted before it resolves is simply lost — which would
+  // strand that one photograph undeveloped for the session while every later
+  // one worked.
+  await native.on("asset:ready", ({ sha256 }) => {
+    showable.add(sha256);
+    refreshAsset(sha256);
+  });
   const overlay = new Overlay(world.layers.overlay);
   const loop = new FrameLoop();
   const selection = new Selection();
@@ -180,6 +216,26 @@ async function boot(): Promise<void> {
   camera.fit(scene.contentBounds() ?? { minX: -400, minY: -300, maxX: 400, maxY: 300 }, 120);
 
   loop.start();
+
+  // `asset:ready` only ever fires for something ingested *this run*, so on the
+  // second launch of a board every photograph on it would sit undeveloped
+  // forever. Ask the store what it has once the document is loaded, and let the
+  // answer stand in for the events that already happened.
+  void (async () => {
+    const referenced = new Set<string>();
+    for (const id of scene.itemIds()) {
+      const asset = scene.cold(id)?.assetId;
+      if (asset) referenced.add(asset);
+    }
+    if (referenced.size === 0) return;
+    const hashes = [...referenced];
+    const present = await native.assetHas(hashes);
+    hashes.forEach((sha256, i) => {
+      if (!present[i]) return;
+      showable.add(sha256);
+      refreshAsset(sha256);
+    });
+  })();
 
   const hint = document.createElement("div");
   hint.className = "hint";
