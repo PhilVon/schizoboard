@@ -108,6 +108,16 @@ export function looksLikeImageUrl(url: string): boolean {
 export interface PastedHtml {
   /** Absolute image sources, in document order. */
   images: string[];
+  /**
+   * Sources that named a path rather than a location, in document order.
+   *
+   * Kept apart rather than resolved here, because resolving needs the page the
+   * fragment was copied from and this module has no way to ask. The caller can
+   * get that from the shell (`clipboardSourceUrl`) and come back with
+   * [`resolveAgainst`] — but only when it is worth an IPC round trip, which is
+   * only when there was nothing absolute to use.
+   */
+  relative: string[];
   /** The fragment's own text. Empty is the signature of an image copy. */
   text: string;
 }
@@ -134,22 +144,54 @@ export interface PastedHtml {
  *
  * `getAttribute`, not `.src`: the parsed document has no base URL, so `.src`
  * would helpfully resolve a relative path against *our* page and produce a
- * plausible-looking URL pointing at the application. Relative sources are
- * dropped instead; resolving them needs the source URL, which the web clipboard
- * event does not carry.
+ * plausible-looking URL pointing at the application. Relative sources come back
+ * separately instead, for a caller that can find out what to resolve them
+ * against — see [`resolveAgainst`].
  */
 export function readHtml(html: string): PastedHtml {
-  if (!html.trim()) return { images: [], text: "" };
+  if (!html.trim()) return { images: [], relative: [], text: "" };
   const parsed = new DOMParser().parseFromString(html, "text/html");
   const images: string[] = [];
+  const relative: string[] = [];
   for (const img of parsed.querySelectorAll("img")) {
     const src = img.getAttribute("src")?.trim();
     if (!src) continue;
     // Only schemes that name bytes somewhere else. `javascript:`, `blob:` and
     // `filesystem:` are not sources of a photograph and never reach a fetch.
     if (isHttpUrl(src) || src.startsWith("data:image/")) images.push(src);
+    // Anything else *with a scheme* is one of those, and stays refused. What is
+    // left is a path — the ordinary case for an image copied out of a page.
+    else if (!/^[a-z][a-z0-9+.-]*:/i.test(src)) relative.push(src);
   }
-  return { images, text: (parsed.body?.textContent ?? "").trim() };
+  return { images, relative, text: (parsed.body?.textContent ?? "").trim() };
+}
+
+/**
+ * Resolve the paths [`readHtml`] could not, against the page they came from.
+ *
+ * `base` comes from the shell reading `CF_HTML`'s `SourceURL:` — never from our
+ * own origin, which is the mistake this function exists to not make. It is
+ * checked here as well as at the source, because a base that is not a page turns
+ * every relative path into a plausible URL to nothing, and one bad answer is
+ * harder to notice than none.
+ *
+ * A source that will not parse is dropped rather than guessed at.
+ */
+export function resolveAgainst(sources: readonly string[], base: string): string[] {
+  if (!isHttpUrl(base)) return [];
+  const out: string[] = [];
+  for (const source of sources) {
+    try {
+      const resolved = new URL(source, base).href;
+      // The base is http(s), so a relative path can only resolve to http(s) —
+      // but `new URL` also accepts a source that turned out to be absolute
+      // after all, and the scheme rule has to hold either way.
+      if (isHttpUrl(resolved)) out.push(resolved);
+    } catch {
+      // Not a path this board can make a URL out of. There is nothing to fetch.
+    }
+  }
+  return out;
 }
 
 /** The bytes behind a `data:` URL, or null if it is not one we can read. */

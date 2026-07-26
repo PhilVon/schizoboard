@@ -183,6 +183,17 @@ export interface Platform {
   // --- clipboard ---------------------------------------------------------
   clipboardReadManifest(): Promise<ClipboardManifest>;
   clipboardReadItem(kind: ClipboardKind): Promise<ClipboardPayload | null>;
+  /**
+   * The page a copied fragment came from, or null.
+   *
+   * "Copy image" in a browser puts markup on the clipboard whose `<img src>` is
+   * very often relative, and the only thing that can resolve it is the source
+   * URL — which lives in a `CF_HTML` header the webview strips before the
+   * `paste` event ever sees it. So it has to come from the shell, and null is
+   * an ordinary answer: on a platform that has not been taught to read it, and
+   * whenever the clipboard is carrying something else.
+   */
+  clipboardSourceUrl(): Promise<string | null>;
 
   // --- sync --------------------------------------------------------------
   syncStart(config: SyncConfig): Promise<void>;

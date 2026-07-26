@@ -47,6 +47,7 @@ import {
   layout,
   looksLikeImageUrl,
   readHtml,
+  resolveAgainst,
   type BoardPoint,
   type Ingested,
 } from "@/app/ingest";
@@ -311,12 +312,23 @@ export class Paste {
    * is about copying an image; a fragment with words in it is the row below.
    */
   private async fromHtml(html: string): Promise<Ingested[]> {
-    const { images, text } = readHtml(html);
-    if (images.length === 0 || text.length > 0) return [];
+    const { images, relative, text } = readHtml(html);
+    if (text.length > 0) return [];
+
+    let sources = images;
+    if (sources.length === 0 && relative.length > 0) {
+      // The ordinary case for an image copied out of a page: `<img src="/a.jpg">`,
+      // which means nothing without the page it came from. That is in a CF_HTML
+      // header the webview strips, so it takes a trip to the shell — worth it
+      // only here, where there is otherwise nothing at all to fetch.
+      const base = await this.options.native.clipboardSourceUrl().catch(() => null);
+      if (base) sources = resolveAgainst(relative, base);
+    }
+    if (sources.length === 0) return [];
 
     const out: Ingested[] = [];
     for (const source of this.capped(
-      images.slice(0, MAX_REMOTE_FETCHES),
+      sources.slice(0, MAX_REMOTE_FETCHES),
       "images in the pasted markup",
     )) {
       await this.fetchImage(out, source);

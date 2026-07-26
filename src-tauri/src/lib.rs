@@ -371,6 +371,7 @@ pub fn run() {
             doc_compact,
             clipboard::clipboard_read_manifest,
             clipboard::clipboard_read_item,
+            clipboard::clipboard_source_url,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

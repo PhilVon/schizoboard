@@ -68,6 +68,13 @@ class FakeNative {
   async clipboardReadItem(): Promise<ClipboardPayload | null> {
     return this.nativeFiles.length > 0 ? { kind: "files", paths: this.nativeFiles } : null;
   }
+  /** The page a fragment was copied from, as the shell would report it. Null is
+   *  the answer on a platform that cannot read CF_HTML — which is most of them. */
+  sourceUrl: string | null = null;
+  async clipboardSourceUrl(): Promise<string | null> {
+    this.calls.push({ method: "sourceUrl", arg: null });
+    return this.sourceUrl;
+  }
   async on(event: string, handler: (payload: never) => void): Promise<() => void> {
     if (event === "files:dropped") {
       this.handler = handler as (p: PlatformEvents["files:dropped"]) => void;
@@ -294,6 +301,33 @@ describe("what wins", () => {
     });
     expect(native.calls).toEqual([]);
     expect(itemsOnBoard()[0]).toMatchObject({ type: "note", text: "Dunes migrate downwind." });
+  });
+
+  it("resolves a relative image source against the page it was copied from", async () => {
+    // What "copy image" actually puts on the clipboard on a great many sites.
+    // Without the SourceURL it names nothing, and the paste used to be dropped.
+    native.sourceUrl = "https://example.com/gallery/index.html";
+    await firePaste({ html: '<img src="../photos/1.jpg">' });
+    expect(native.calls).toEqual([
+      { method: "sourceUrl", arg: null },
+      { method: "url", arg: "https://example.com/photos/1.jpg" },
+    ]);
+    expect(itemsOnBoard()[0]).toMatchObject({ type: "polaroid" });
+  });
+
+  it("drops it when the shell has no source URL to offer", async () => {
+    // Every platform but Windows, today. It asks, gets nothing, and leaves the
+    // board alone rather than resolving against our own origin.
+    native.sourceUrl = null;
+    await firePaste({ html: '<img src="/photos/1.jpg">' });
+    expect(native.calls).toEqual([{ method: "sourceUrl", arg: null }]);
+    expect(itemsOnBoard()).toEqual([]);
+  });
+
+  it("does not go asking when the markup already names a location", async () => {
+    // The round trip is only worth it when there is otherwise nothing to fetch.
+    await firePaste({ html: '<img src="https://example.com/a.png">' });
+    expect(native.calls.some((c) => c.method === "sourceUrl")).toBe(false);
   });
 
   it("does nothing at all with an empty clipboard", async () => {

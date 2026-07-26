@@ -182,6 +182,11 @@ export class MockPlatform implements Platform {
     return null;
   }
 
+  /** No browser exposes it — that is the whole reason it is a shell call. */
+  async clipboardSourceUrl(): Promise<string | null> {
+    return null;
+  }
+
   syncStart(_config: SyncConfig): Promise<void> {
     return unavailable("Sync");
   }

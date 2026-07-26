@@ -10,6 +10,7 @@ import { describe, expect, it } from "vitest";
 import {
   decodeDataUrl,
   readHtml,
+  resolveAgainst,
   isHttpUrl,
   layout,
   looksLikeImageUrl,
@@ -132,15 +133,49 @@ describe("reading a clipboard's mind", () => {
   });
 
   it("drops a source that is not a place bytes live", () => {
-    // The parsed document has no base URL, so `.src` would resolve a relative
-    // path against the application and produce a plausible, wrong URL.
-    expect(readHtml('<img src="/photo.jpg">').images).toEqual([]);
-    expect(readHtml('<img src="../up.png">').images).toEqual([]);
-    // And these are not sources of a photograph at all.
+    // Not sources of a photograph at all, whatever anyone knows about the page.
     expect(readHtml('<img src="javascript:alert(1)">').images).toEqual([]);
     expect(readHtml('<img src="blob:http://localhost/abc">').images).toEqual([]);
     expect(readHtml('<img src="file:///C:/Windows/win.ini">').images).toEqual([]);
     expect(readHtml('<img src="data:text/html;base64,PHNjcmlwdD4=">').images).toEqual([]);
+    // And none of them is a path, so none is offered up for resolving either.
+    expect(readHtml('<img src="javascript:alert(1)">').relative).toEqual([]);
+    expect(readHtml('<img src="file:///C:/Windows/win.ini">').relative).toEqual([]);
+  });
+
+  it("sets a path aside rather than resolving it against the application", () => {
+    // The parsed document has no base URL, so `.src` would resolve against our
+    // own origin and produce a plausible, wrong URL. These are not images yet —
+    // they are images once somebody says what page they came from.
+    const read = readHtml('<img src="/photo.jpg"><img src="../up.png">');
+    expect(read.images).toEqual([]);
+    expect(read.relative).toEqual(["/photo.jpg", "../up.png"]);
+  });
+
+  it("resolves those paths once the page they came from is known", () => {
+    const base = "https://example.com/gallery/index.html";
+    expect(resolveAgainst(["/photo.jpg", "../up.png", "next.gif"], base)).toEqual([
+      "https://example.com/photo.jpg",
+      "https://example.com/up.png",
+      "https://example.com/gallery/next.gif",
+    ]);
+  });
+
+  it("refuses a base that is not a page, however plausible the result looks", () => {
+    // The whole failure this exists to avoid is a confident URL to nothing.
+    expect(resolveAgainst(["/a.png"], "about:blank")).toEqual([]);
+    expect(resolveAgainst(["/a.png"], "file:///C:/notes.docx")).toEqual([]);
+    expect(resolveAgainst(["/a.png"], "")).toEqual([]);
+    // Including our own origin, which is the mistake `.src` would have made.
+    expect(resolveAgainst(["/a.png"], "tauri://localhost/")).toEqual([]);
+  });
+
+  it("cannot be talked into a scheme it would not have fetched anyway", () => {
+    const base = "https://example.com/a/";
+    expect(resolveAgainst(["javascript:alert(1)", "file:///C:/win.ini"], base)).toEqual([]);
+    expect(resolveAgainst(["\\\\?\\bad", "http://ok.example/x.png"], base)).toContain(
+      "http://ok.example/x.png",
+    );
   });
 
   it("is not fooled by an img inside a comment", () => {

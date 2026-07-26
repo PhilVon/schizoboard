@@ -51,6 +51,18 @@ kamadak-exif = "0.6"
 # thread — the alternative is a second async HTTP stack in the binary.
 ureq = "3"
 
+# --- the clipboard's SourceURL (T-97) ---------------------------------------
+# CF_HTML carries the page a fragment was copied from, in a header the webview
+# strips before the `paste` event ever sees it. Reading it needs the raw Win32
+# clipboard, and nothing safe wraps that format. Already in the tree at this
+# version via Tauri, so this adds an import rather than a build.
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.60", features = [
+  "Win32_Foundation",
+  "Win32_System_DataExchange",
+  "Win32_System_Memory",
+] }
+
 [dev-dependencies]
 tempfile = "3"
 

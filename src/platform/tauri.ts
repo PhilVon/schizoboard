@@ -154,6 +154,10 @@ export class TauriPlatform implements Platform {
     return invoke<ClipboardPayload | null>("clipboard_read_item", { kind });
   }
 
+  clipboardSourceUrl(): Promise<string | null> {
+    return invoke<string | null>("clipboard_source_url");
+  }
+
   syncStart(config: SyncConfig): Promise<void> {
     return invoke<void>("sync_start", { config });
   }
