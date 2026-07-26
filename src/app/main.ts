@@ -11,6 +11,7 @@
 
 import { Binding } from "@/crdt/binding";
 import { boardSeed, encodedSize, initialiseBoard, openBoardDoc } from "@/crdt/doc";
+import * as ops from "@/crdt/ops";
 import {
   createItems,
   createPin,
@@ -33,6 +34,7 @@ import { DomItemLayer } from "@/render/items/dom";
 import { FrameLoop } from "@/render/loop";
 import { Overlay } from "@/render/overlay";
 import { PinLayer } from "@/render/pins/dom";
+import { RopeLayer } from "@/render/ropes/paint";
 import { World } from "@/render/world";
 import { RopeSet } from "@/sim/ropes";
 import { Torsion } from "@/sim/torsion";
@@ -128,6 +130,14 @@ async function boot(): Promise<void> {
     refreshAsset(sha256);
   });
   const overlay = new Overlay(world.layers.overlay);
+  /**
+   * The two rope canvases — DESIGN section 6.2's "two rope canvases, not one".
+   * Real boards have string running behind photographs that were pinned on top
+   * of it later, and one overlay would force every string above or every string
+   * below. Same painter twice; the string's own `layer` field picks.
+   */
+  const ropesUnder = new RopeLayer(world.layers.ropesUnder, "under");
+  const ropesOver = new RopeLayer(world.layers.ropesOver, "over");
   /**
    * Pins, in their own screen-space layer above everything else on the board.
    * Not inside the world transform, and `render/pins/dom.ts` explains why: a
@@ -383,6 +393,10 @@ async function boot(): Promise<void> {
     const { innerWidth: w, innerHeight: h } = window;
     camera.resize(w, h);
     world.resizeCanvases(w, h);
+    // Resizing blanks the backing store, so every cached screen-space path is
+    // now a picture of a canvas that no longer exists.
+    ropesUnder.invalidate();
+    ropesOver.invalidate();
   };
   window.addEventListener("resize", resize);
   resize();
@@ -527,7 +541,18 @@ async function boot(): Promise<void> {
     applyCursor();
   });
 
-  // 6 INK  T-57   7 ROPES  T-43
+  // 6 INK  T-57
+
+  /**
+   * Phase 7. Under first, then over, which is only a matter of taste — they are
+   * separate canvases and the stacking is CSS. Both are cheap to *ask*: a frame
+   * where the camera is still and no rope moved returns without touching either
+   * context.
+   */
+  loop.on("ropes", () => {
+    ropesUnder.draw(scene, ropes, camera, dirty);
+    ropesOver.draw(scene, ropes, camera, dirty);
+  });
 
   loop.on("overlay", (frame) => {
     // Selection chrome is drawn here, not on the item nodes, so its width is in
@@ -551,6 +576,32 @@ async function boot(): Promise<void> {
   // more: there is a real way to put things on it now, and a board that opens
   // holding somebody else's placeholders is a demo rather than a tool.
   camera.fit(scene.contentBounds() ?? { minX: -400, minY: -300, maxX: 400, maxY: 300 }, 120);
+
+  /**
+   * A handle on the running board, for driving it from outside.
+   *
+   * Dev builds only — `import.meta.env.DEV` is a compile-time constant, so the
+   * whole block is dropped from a production bundle rather than merely being
+   * unreachable in one.
+   *
+   * It exists because "does it actually work" is a question about the running
+   * application and not about the test suite, and some of what the board can do
+   * has no interaction attached to it yet. String is the current example: the
+   * document ops, the simulation and the painter all landed before the tool
+   * that would let a person draw one (T-42), and without this there was no way
+   * to put a string on screen and look at it.
+   */
+  if (import.meta.env.DEV) {
+    (window as unknown as { schizo: unknown }).schizo = {
+      board,
+      scene,
+      camera,
+      ropes,
+      dirty,
+      loop,
+      ops,
+    };
+  }
 
   loop.start();
 
