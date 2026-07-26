@@ -12,6 +12,7 @@ import {
   bringToFront,
   createItems,
   createPin,
+  createPinAt,
   deleteItems,
   deletePins,
   pinWorldPosition,
@@ -283,6 +284,41 @@ describe("pins", () => {
     // A quarter turn takes local +x onto board +y.
     expect(world.x).toBeCloseTo(100, 9);
     expect(world.y).toBeCloseTo(110, 9);
+  });
+
+  /** What the pin tool does with a click: the caller says which item it landed
+   *  on, and the op works out which frame that implies. */
+  it("pushes a pin in at a board point, in whichever frame it lands in", () => {
+    const b = board();
+    const { itemId } = createItems(b, [
+      { type: "note", x: 50, y: -30, w: 200, h: 200, rot: 0.7, withPin: false },
+    ])[0]!;
+
+    const onItem = createPinAt(b, itemId, 80, 10)!;
+    expect(readPin(onItem, b.pins.get(onItem)!)!.parent).toBe(itemId);
+    // Un-rotated item-local, so it comes back out at the point it went in.
+    const world = pinWorldPosition(b, onItem)!;
+    expect(world.x).toBeCloseTo(80, 9);
+    expect(world.y).toBeCloseTo(10, 9);
+
+    const onCork = createPinAt(b, null, -200, 400)!;
+    const free = readPin(onCork, b.pins.get(onCork)!)!;
+    expect(free.parent).toBeNull();
+    expect([free.lx, free.ly]).toEqual([-200, 400]);
+  });
+
+  it("leaves a pin free rather than stranding it in a frame that has gone", () => {
+    const b = board();
+    const id = createPinAt(b, "an-item-that-never-existed", 40, 60)!;
+    const pin = readPin(id, b.pins.get(id)!)!;
+    expect(pin.parent).toBeNull();
+    expect([pin.lx, pin.ly]).toEqual([40, 60]);
+  });
+
+  it("refuses a non-finite placement rather than poisoning the document", () => {
+    const b = board();
+    expect(createPinAt(b, null, Number.NaN, 0)).toBeNull();
+    expect(b.pins.size).toBe(0);
   });
 
   it("re-parents as a two-field write that preserves the board position", () => {

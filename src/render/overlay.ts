@@ -62,6 +62,21 @@ const SELECT_STROKE = "rgba(34, 21, 10, 0.8)";
  */
 const HANDLE_RING = "rgba(255, 244, 214, 0.9)";
 
+/**
+ * The ring round the item a pin would land on — "candidate items highlight with
+ * a ring" (DESIGN section 3.3).
+ *
+ * Two strokes, a dark one under a pale one, for the reason the selection
+ * outline is dark: neither colour alone is legible against both cork and an
+ * off-white polaroid frame, and this line has to be readable in the half second
+ * before somebody commits to a drop. Pale on top, so it reads as a different
+ * thing from the selection outline rather than as a thicker one.
+ */
+const CANDIDATE_UNDER = "rgba(34, 21, 10, 0.7)";
+const CANDIDATE_OVER = "rgba(255, 246, 222, 0.95)";
+const CANDIDATE_PAD = 5;
+const CANDIDATE_WIDTH = 2;
+
 export class Overlay {
   private readonly canvas: HTMLCanvasElement;
   private readonly ctx: CanvasRenderingContext2D | null;
@@ -85,6 +100,9 @@ export class Overlay {
   private cameraVersion = -1;
   private selectionVersion = -1;
   private hadMarquee = false;
+  /** The candidate ring changes with nothing else: dragging a pin across a
+   *  still board moves no item, no camera and no selection. */
+  private highlighted: string | null = null;
   /** Reset at the top of every `draw` — see [`Overlay.clear`]. */
   private cleared = false;
 
@@ -109,6 +127,8 @@ export class Overlay {
     selection: Selection,
     marquee: Bounds | null,
     dirty: DirtySets,
+    /** The item a pin being dragged would parent to, ringed. */
+    highlight: string | null = null,
   ): void {
     const ctx = this.ctx;
     if (!ctx) return;
@@ -116,6 +136,10 @@ export class Overlay {
     const wantsMarquee = marquee !== null;
     const stale =
       wantsMarquee ||
+      highlight !== this.highlighted ||
+      // A candidate that is itself moving — a pin held over a photograph being
+      // dragged by a collaborator — restrokes with it.
+      (highlight !== null && (dirty.all || dirty.items.has(highlight))) ||
       // It was there last frame and is not now, so the canvas is wrong even if
       // nothing else changed — dragging a marquee across empty cork and letting
       // go never touches the selection.
@@ -124,6 +148,7 @@ export class Overlay {
       selection.version !== this.selectionVersion ||
       this.selectedMoved(selection, dirty);
     this.hadMarquee = wantsMarquee;
+    this.highlighted = highlight;
     this.cameraVersion = camera.version;
     this.selectionVersion = selection.version;
     if (!stale) return;
@@ -141,6 +166,7 @@ export class Overlay {
     // knob is — so what is drawn and what is grabbable cannot drift apart.
     const frame = chromeFrame(camera, scene, selection, this.frame);
     if (frame && this.drawRotateHandle(ctx, camera, frame)) drew = true;
+    if (highlight !== null && this.drawCandidate(ctx, camera, scene, highlight)) drew = true;
     if (marquee) {
       this.drawMarquee(ctx, camera, marquee);
       drew = true;
@@ -282,6 +308,44 @@ export class Overlay {
     ctx.fill();
     ctx.strokeStyle = HANDLE_RING;
     ctx.stroke();
+    return true;
+  }
+
+  /**
+   * The candidate ring: the item's own box, the same geometry the selection
+   * outline uses, a couple of pixels further out and in the opposite value.
+   *
+   * Independent of whether the item is selected, and drawn after it, so a pin
+   * dragged onto something already selected still says so.
+   */
+  private drawCandidate(
+    ctx: CanvasRenderingContext2D,
+    camera: Camera,
+    scene: Scene,
+    id: string,
+  ): boolean {
+    const slot = scene.slotOf(id);
+    if (slot === undefined) return false;
+
+    const scale = carryScale(scene.lift[slot]!);
+    const hw = (scene.w[slot]! * camera.zoom * scale) / 2 + CANDIDATE_PAD;
+    const hh = (scene.h[slot]! * camera.zoom * scale) / 2 + CANDIDATE_PAD;
+    const centre = camera.boardToScreen(scene.x[slot]!, scene.y[slot]!, this.a);
+    const reach = Math.hypot(hw, hh);
+    if (centre.x + reach < 0 || centre.x - reach > camera.width) return false;
+    if (centre.y + reach < 0 || centre.y - reach > camera.height) return false;
+
+    this.clear(ctx);
+    ctx.save();
+    ctx.translate(centre.x, centre.y);
+    ctx.rotate(scene.rot[slot]! + scene.swing[slot]!);
+    ctx.lineWidth = CANDIDATE_WIDTH + 2;
+    ctx.strokeStyle = CANDIDATE_UNDER;
+    ctx.strokeRect(-hw, -hh, hw * 2, hh * 2);
+    ctx.lineWidth = CANDIDATE_WIDTH;
+    ctx.strokeStyle = CANDIDATE_OVER;
+    ctx.strokeRect(-hw, -hh, hw * 2, hh * 2);
+    ctx.restore();
     return true;
   }
 

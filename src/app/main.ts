@@ -11,7 +11,15 @@
 
 import { Binding } from "@/crdt/binding";
 import { boardSeed, encodedSize, initialiseBoard, openBoardDoc } from "@/crdt/doc";
-import { createItems, deleteItems, resizeItems, setItemPoses } from "@/crdt/ops";
+import {
+  createItems,
+  createPinAt,
+  deleteItems,
+  deletePins,
+  reparentPin,
+  resizeItems,
+  setItemPoses,
+} from "@/crdt/ops";
 import { Origin } from "@/crdt/origins";
 import { Persistence } from "@/crdt/persistence";
 import { UndoHistory } from "@/crdt/undo";
@@ -35,6 +43,7 @@ import { Scene } from "@/state/scene";
 import { Selection } from "@/state/selection";
 import { ToolMachine } from "@/state/tools/machine";
 import { NoteTool } from "@/state/tools/note";
+import { PinTool } from "@/state/tools/pin";
 import { SelectTool } from "@/state/tools/select";
 import type { BoardWriter } from "@/state/tools/tool";
 import { Hud, type HudStats } from "@/ui/hud";
@@ -190,6 +199,22 @@ async function boot(): Promise<void> {
         if (made.length > 0) selection.replace(made.map((item) => item.itemId));
       });
     },
+    /**
+     * The three pin writes. All of them take *board* coordinates and let
+     * `crdt/ops/pins.ts` work out which frame the parent implies, because that
+     * conversion needs the item's authored rotation and the scene mirror only
+     * ever offers the rendered one.
+     */
+    createPin: (parent, x, y) => {
+      queued.push(() => createPinAt(board, parent, x, y));
+    },
+    placePin: (pinId, parent, x, y) => {
+      queued.push(() => reparentPin(board, pinId, parent, x, y));
+    },
+    deletePins: (ids) => {
+      const snapshot = [...ids];
+      queued.push(() => deletePins(board, snapshot));
+    },
   };
 
   /**
@@ -251,6 +276,7 @@ async function boot(): Promise<void> {
    * under the loop mid-drain is how a gesture ends up half delivered to each.
    */
   const note = new NoteTool({ onDone: () => queued.push(() => tools.setTool(select)) });
+  const pinTool = new PinTool({ onDone: () => queued.push(() => tools.setTool(select)) });
   const tools = new ToolMachine(select, root, {
     scene,
     dirty,
@@ -258,6 +284,9 @@ async function boot(): Promise<void> {
     selection,
     write: writer,
     hitTest: (bx, by) => items.hitTest(scene, bx, by),
+    // Screen space, because a pin's grab radius is in screen pixels and has a
+    // floor — see `render/pins/dom.ts`.
+    hitPin: (sx, sy) => pins.hitTest(scene, camera, sx, sy),
     // Space+drag and middle-drag belong to the camera, not to the board.
     suppressed: () => navigation.panReady,
   });
@@ -265,7 +294,7 @@ async function boot(): Promise<void> {
   /**
    * Picking a tool (DESIGN section 3.9).
    *
-   * Two of the seven exist; `P`, `S`, `M`, `H` and `E` are each their own phase,
+   * Three of the seven exist; `S`, `M`, `H` and `E` are each their own phase,
    * and a key that silently does nothing is worse than one that is not bound, so
    * they are not listed here until they have something to switch to.
    *
@@ -275,7 +304,14 @@ async function boot(): Promise<void> {
   window.addEventListener("keydown", (e) => {
     if (e.ctrlKey || e.metaKey || e.altKey || e.repeat) return;
     if (isTextTarget(e.target)) return;
-    const next = e.code === "KeyV" ? select : e.code === "KeyN" ? note : null;
+    const next =
+      e.code === "KeyV"
+        ? select
+        : e.code === "KeyN"
+          ? note
+          : e.code === "KeyP"
+            ? pinTool
+            : null;
     if (!next) return;
     e.preventDefault();
     // Queued for the same reason `onDone` is: switching cancels the outgoing
@@ -390,8 +426,12 @@ async function boot(): Promise<void> {
   let hoverAskedY = Number.NaN;
   loop.on("layout", () => {
     // World pin positions for items that moved. Nothing reads the DOM.
+    // `dirty.pins` gets a pass too, and with the *item* set — which for a free
+    // pin dragged across bare cork is empty, and an empty set is exactly right:
+    // `layoutPins` always recomputes an unparented pin and skips every parented
+    // one whose item is not in the set.
     if (dirty.all) scene.layoutPins();
-    else if (dirty.items.size > 0) scene.layoutPins(dirty.items);
+    else if (dirty.items.size > 0 || dirty.pins.size > 0) scene.layoutPins(dirty.items);
     // And which items are near enough the viewport to be worth mounting. A read
     // phase, deliberately: the DOM phase below only consumes the answer.
     culler.update(scene, dirty, camera);
@@ -456,7 +496,7 @@ async function boot(): Promise<void> {
     // Selection chrome is drawn here, not on the item nodes, so its width is in
     // screen pixels at every zoom (T-91). `dirty` comes along only so it can tell
     // "a selected photograph is being dragged" from "nothing has changed".
-    overlay.draw(camera, scene, selection, select.marquee, dirty);
+    overlay.draw(camera, scene, selection, select.marquee, dirty, select.pinCandidate);
     hud.update(frame.now);
   });
 
@@ -505,7 +545,9 @@ async function boot(): Promise<void> {
         "and is being left alone rather than written over. See the console. · "
       : "") +
     `platform: ${native.kind} · paste a picture or some text, or drop a file in · ` +
-    `N then click for a blank sheet · V back to select · ` +
+    `N then click for a blank sheet · P then click for a pin · V back to select · ` +
+    `drag a pin to move it, onto an item to parent it, Ctrl to keep it put · ` +
+    `Alt+click a pin removes it · ` +
     `drag to move · drag the handle or R+drag to rotate · drag a note's edge to resize · ` +
     `drag the cork to marquee · Delete removes · ` +
     `Ctrl+Z undoes · space+drag pans · Ctrl+0 fit · F frame · \` for the HUD`;

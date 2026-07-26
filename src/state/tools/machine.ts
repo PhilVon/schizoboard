@@ -47,6 +47,8 @@ export interface ToolMachineOptions {
   selection: Selection;
   write: BoardWriter;
   hitTest: (boardX: number, boardY: number) => string | null;
+  /** Screen space, not board — see `ToolContext.hitPin`. */
+  hitPin: (screenX: number, screenY: number) => string | null;
   /** True when navigation owns the pointer — space held, or mid-pan. */
   suppressed?: () => boolean;
 }
@@ -80,6 +82,7 @@ export class ToolMachine {
       selection: options.selection,
       write: options.write,
       hitTest: options.hitTest,
+      hitPin: options.hitPin,
       held: this.heldKeys,
     };
     this.attach();

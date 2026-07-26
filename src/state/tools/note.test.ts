@@ -40,11 +40,15 @@ beforeEach(() => {
     camera,
     selection: new Selection(),
     hitTest: () => null,
+    hitPin: () => null,
     held: new Set<string>(),
     write: {
       setPoses: () => {},
       setSizes: () => {},
       deleteItems: () => {},
+      createPin: () => {},
+      placePin: () => {},
+      deletePins: () => {},
       createNote: (x, y) => created.push({ x, y }),
     },
   };

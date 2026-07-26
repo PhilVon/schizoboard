@@ -21,7 +21,9 @@ import type { PointerSample, ToolContext, WritePose, WriteSize } from "@/state/t
 type Write =
   | { kind: "poses"; phase: "live" | "final"; poses: Map<string, WritePose> }
   | { kind: "sizes"; phase: "live" | "final"; sizes: Map<string, WriteSize> }
-  | { kind: "delete"; ids: string[]; keepPins: boolean };
+  | { kind: "delete"; ids: string[]; keepPins: boolean }
+  | { kind: "place"; pinId: string; parent: string | null; x: number; y: number }
+  | { kind: "unpin"; ids: string[] };
 
 let scene: Scene;
 let dirty: DirtySets;
@@ -60,6 +62,31 @@ function paper(id: string, x: number, y: number, w = 200, h = 100, rot = 0): voi
     { id, type: "note", z: "a0", seed: 1, assetId: null, createdBy: 1, createdAt: 0, text: "" },
     { x, y, rot, w, h },
   );
+}
+
+function putPin(id: string, parent: string | null, wx: number, wy: number): void {
+  // `lx`/`ly` are the same numbers for a free pin, and for a parented one the
+  // tests below place the item at the origin unrotated, so they still are.
+  scene.putPin({ id, parent, lx: wx, ly: wy, kind: "pushpin", color: "#c8352f", wx, wy });
+}
+
+/**
+ * Screen space, like the real one in `render/pins/dom.ts`, and with a radius in
+ * the same neighbourhood as its floor. The tool is handed this rather than
+ * reaching for the renderer's — which is the whole point of the seam.
+ */
+const PIN_GRAB = 10;
+function hitPin(sx: number, sy: number): string | null {
+  let best: string | null = null;
+  let bestDist = PIN_GRAB * PIN_GRAB;
+  for (const [id, pin] of scene.pins) {
+    const p = camera.boardToScreen(pin.wx, pin.wy);
+    const d = (p.x - sx) ** 2 + (p.y - sy) ** 2;
+    if (d > bestDist) continue;
+    bestDist = d;
+    best = id;
+  }
+  return best;
 }
 
 function at(x: number, y: number, mods: Partial<PointerSample> = {}): PointerSample {
@@ -116,15 +143,21 @@ beforeEach(() => {
     camera,
     selection,
     hitTest,
+    hitPin,
     held,
     write: {
       setPoses: (poses, phase) => writes.push({ kind: "poses", phase, poses: new Map(poses) }),
       setSizes: (sizes, phase) => writes.push({ kind: "sizes", phase, sizes: new Map(sizes) }),
       deleteItems: (ids, keepPins) => writes.push({ kind: "delete", ids: [...ids], keepPins }),
+      placePin: (pinId, parent, x, y) => writes.push({ kind: "place", pinId, parent, x, y }),
+      deletePins: (ids) => writes.push({ kind: "unpin", ids: [...ids] }),
       // The select tool never creates anything; a sheet arrives from the note
-      // tool or from paste.
+      // tool or from paste, and a pin from the pin tool.
       createNote: () => {
         throw new Error("select must not create items");
+      },
+      createPin: () => {
+        throw new Error("select must not create pins");
       },
     },
   };
@@ -775,5 +808,183 @@ describe("the crash-safety write", () => {
     // matter of the gap between transactions. At 500 ms every live write lands
     // outside it and a three-second drag becomes seven undo entries.
     expect(LIVE_WRITE_MS).toBeLessThan(CAPTURE_TIMEOUT_MS);
+  });
+});
+
+/**
+ * Pins are grabbable here rather than only in the pin tool - DESIGN section 3.3
+ * names the tool for the rows that place a pin and for none of the rows that
+ * move one, and 6.2 puts pins in a layer of their own labelled "hit targets".
+ */
+describe("dragging a pin", () => {
+  it("parents a free pin to the item it is dropped on", () => {
+    put("a", 300, 300);
+    putPin("p", null, 0, 0);
+
+    down(0, 0);
+    move(300, 300);
+    up(300, 300);
+
+    expect(scene.pins.get("p")!.parent).toBe("a");
+    expect(writes).toEqual([{ kind: "place", pinId: "p", parent: "a", x: 300, y: 300 }]);
+  });
+
+  it("frees a parented pin dragged off onto bare cork", () => {
+    put("a", 0, 0);
+    putPin("p", "a", 10, 10);
+
+    down(10, 10);
+    move(600, 600);
+    up(600, 600);
+
+    expect(scene.pins.get("p")!.parent).toBeNull();
+    expect(writes).toEqual([{ kind: "place", pinId: "p", parent: null, x: 600, y: 600 }]);
+  });
+
+  /** "Hold Ctrl while dragging - stays within the current parent". */
+  it("keeps its parent while Ctrl is held, even over another item", () => {
+    put("a", 0, 0);
+    put("b", 300, 300);
+    putPin("p", "a", 10, 10);
+    held.add("ControlLeft");
+
+    down(10, 10);
+    move(300, 300);
+    up(300, 300);
+
+    expect(scene.pins.get("p")!.parent).toBe("a");
+    expect(writes).toEqual([{ kind: "place", pinId: "p", parent: "a", x: 300, y: 300 }]);
+  });
+
+  it("constrains a free pin to staying free", () => {
+    put("a", 300, 300);
+    putPin("p", null, 0, 0);
+    held.add("ControlRight");
+
+    down(0, 0);
+    move(300, 300);
+    up(300, 300);
+
+    expect(scene.pins.get("p")!.parent).toBeNull();
+  });
+
+  /** The only feedback that says whether the drop has taken. */
+  it("names the candidate item while the drag is in flight, and nothing after", () => {
+    put("a", 300, 300);
+    putPin("p", null, 0, 0);
+    expect(tool.pinCandidate).toBeNull();
+
+    down(0, 0);
+    move(300, 300);
+    expect(tool.pinCandidate).toBe("a");
+    move(900, 900);
+    expect(tool.pinCandidate).toBeNull();
+
+    up(900, 900);
+    expect(tool.pinCandidate).toBeNull();
+  });
+
+  /** A press that takes hold of a pin is routinely a few pixels off its centre,
+   *  because the grab radius is deliberately wider than the head. */
+  it("keeps the offset between the pin and the press", () => {
+    putPin("p", null, 0, 0);
+    down(6, 0);
+    move(106, 0);
+    up(106, 0);
+    expect(scene.pins.get("p")!.wx).toBe(100);
+  });
+
+  it("takes the pin rather than the item beneath it, and leaves the selection alone", () => {
+    put("a", 0, 0);
+    putPin("p", "a", 0, 0);
+
+    down(0, 0);
+    move(200, 200);
+    up(200, 200);
+
+    expect(selection.toArray()).toEqual([]);
+    expect(scene.poseOf("a")).toMatchObject({ x: 0, y: 0 });
+  });
+
+  it("writes nothing for a click that never became a drag", () => {
+    put("a", 0, 0);
+    putPin("p", "a", 0, 0);
+    down(0, 0);
+    up(0, 0);
+    expect(writes).toEqual([]);
+    expect(scene.pins.get("p")!.parent).toBe("a");
+  });
+
+  it("writes nothing for a drag that came back to where it started", () => {
+    put("a", 0, 0);
+    putPin("p", "a", 0, 0);
+    down(0, 0);
+    move(200, 200);
+    move(0, 0);
+    up(0, 0);
+    expect(writes).toEqual([]);
+  });
+
+  /** Nothing was written, so the revert is the scene and nothing else. */
+  it("puts the pin back on Escape and never writes", () => {
+    put("a", 300, 300);
+    putPin("p", null, 0, 0);
+    down(0, 0);
+    move(300, 300);
+    expect(scene.pins.get("p")!.parent).toBe("a");
+
+    key("Escape");
+    expect(scene.pins.get("p")).toMatchObject({ parent: null, lx: 0, ly: 0 });
+    expect(writes).toEqual([]);
+  });
+
+  it("does the same when the window takes the gesture away", () => {
+    put("a", 300, 300);
+    putPin("p", null, 0, 0);
+    down(0, 0);
+    move(300, 300);
+    tool.handle({ kind: "cancel" }, ctx);
+    expect(scene.pins.get("p")!.parent).toBeNull();
+    expect(writes).toEqual([]);
+  });
+
+  /** Both ends of a re-parent, because pin count is an item's physics. */
+  it("dirties the item it left as well as the one it arrived at", () => {
+    put("a", 0, 0);
+    put("b", 300, 300);
+    putPin("p", "a", 0, 0);
+
+    down(0, 0);
+    move(300, 300);
+    expect(dirty.items.has("a")).toBe(true);
+    expect(dirty.items.has("b")).toBe(true);
+    expect(dirty.pins.has("p")).toBe(true);
+  });
+});
+
+describe("Alt+click on a pin", () => {
+  it("removes it", () => {
+    putPin("p", null, 0, 0);
+    down(0, 0, { alt: true });
+    up(0, 0);
+    expect(writes).toEqual([{ kind: "unpin", ids: ["p"] }]);
+  });
+
+  it("does not also select or drag the item under it", () => {
+    put("a", 0, 0);
+    putPin("p", "a", 0, 0);
+    down(0, 0, { alt: true });
+    move(200, 200);
+    up(200, 200);
+    expect(selection.toArray()).toEqual([]);
+    expect(scene.poseOf("a")).toMatchObject({ x: 0, y: 0 });
+    expect(writes).toEqual([{ kind: "unpin", ids: ["p"] }]);
+  });
+
+  it("is an ordinary press when there is no pin under it", () => {
+    put("a", 0, 0);
+    down(0, 0, { alt: true });
+    up(0, 0);
+    expect(selection.toArray()).toEqual(["a"]);
   });
 });

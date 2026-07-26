@@ -58,6 +58,7 @@ import {
   type HandleId,
 } from "@/state/handles";
 import type { ItemPose } from "@/state/scene";
+import { PinDrag } from "@/state/tools/pindrag";
 import type {
   PointerSample,
   Tool,
@@ -122,7 +123,14 @@ const ROTATE_DEAD_RADIUS_PX = 24;
  */
 export const MIN_RESIZE = 24;
 
-type GesturePhase = "idle" | "pending" | "dragging" | "rotating" | "resizing" | "marquee";
+type GesturePhase =
+  | "idle"
+  | "pending"
+  | "dragging"
+  | "rotating"
+  | "resizing"
+  | "marquee"
+  | "pin";
 
 function approach(current: number, target: number, dt: number, tau: number): number {
   return current + (target - current) * (1 - Math.exp(-dt / tau));
@@ -197,6 +205,19 @@ export class SelectTool implements Tool {
   /** Has this gesture already put a crash-safety pose in the document? */
   private wroteLive = false;
 
+  /**
+   * Pins are grabbable in the select tool, not only in the pin tool — DESIGN
+   * section 3.3 names the tool for the three rows that *place* a pin and for
+   * none of the rows that manipulate one, and section 6.2 puts pins in a layer
+   * of their own labelled "hit targets", above items. See `state/tools/pin.ts`.
+   *
+   * The gesture itself lives next door because it shares none of this tool's
+   * state: no selection, no start poses, no marquee.
+   */
+  private readonly pinDrag = new PinDrag();
+  /** The pin a press took hold of, before the press became a drag. */
+  private pendingPin: string | null = null;
+
   /** The marquee rectangle in **board** coordinates, or null. Board rather
    *  than screen so it stays anchored to the cork if the camera moves under
    *  it. Read by the overlay in phase 8. */
@@ -218,6 +239,16 @@ export class SelectTool implements Tool {
    */
   get activeHandle(): HandleId | null {
     return this.grabbed;
+  }
+
+  /**
+   * The item a pin being dragged would parent to if it were let go now, or
+   * null. Drawn as a ring by the overlay — "candidate items highlight with a
+   * ring" (DESIGN section 3.3), which is the only feedback that says whether
+   * the drop has taken before you commit to it.
+   */
+  get pinCandidate(): string | null {
+    return this.pinDrag.candidate;
   }
 
   handle(input: ToolInput, ctx: ToolContext): void {
@@ -250,10 +281,23 @@ export class SelectTool implements Tool {
     this.downX = this.lastX = this.prevTickX = at.x;
     this.downY = this.lastY = at.y;
     this.pendingSelect = null;
+    this.pendingPin = null;
     this.grabbed = null;
     const board = ctx.camera.screenToBoard(at.x, at.y, this.board);
     this.downBoardX = board.x;
     this.downBoardY = board.y;
+
+    /**
+     * `Alt`+click removes a pin (DESIGN sections 3.3 and 3.9), and it is asked
+     * first because it is the one gesture here that names its own modifier.
+     * "Strings through it heal", which the op does in the same transaction.
+     */
+    const pin = ctx.hitPin(at.x, at.y);
+    if (pin !== null && at.alt) {
+      ctx.write.deletePins([pin]);
+      this.phase = "idle";
+      return;
+    }
 
     /**
      * The chrome gets the press before the board does, and that ordering is the
@@ -270,6 +314,18 @@ export class SelectTool implements Tool {
     const handle = frame ? handleAt(frame, at.x, at.y) : null;
     if (handle !== null) {
       this.grabbed = handle;
+      this.phase = "pending";
+      return;
+    }
+
+    /**
+     * A pin, then. It beats the item beneath it because it is physically on
+     * top of it — and nothing about the selection changes, for the same reason
+     * pressing a handle does not: taking hold of a pin is not a statement about
+     * which photographs are selected.
+     */
+    if (pin !== null) {
+      this.pendingPin = pin;
       this.phase = "pending";
       return;
     }
@@ -325,6 +381,7 @@ export class SelectTool implements Tool {
       case "dragging":
       case "rotating":
       case "resizing":
+      case "pin":
         this.applyGesture(ctx);
         return;
       case "marquee":
@@ -336,7 +393,16 @@ export class SelectTool implements Tool {
   }
 
   private onUp(at: PointerSample, ctx: ToolContext): void {
-    if (this.phase === "dragging" || this.phase === "rotating" || this.phase === "resizing") {
+    if (this.phase === "pin") {
+      this.lastX = at.x;
+      this.lastY = at.y;
+      this.pinDrag.move(at.x, at.y, ctx);
+      this.pinDrag.end(ctx);
+    } else if (
+      this.phase === "dragging" ||
+      this.phase === "rotating" ||
+      this.phase === "resizing"
+    ) {
       // The release position is part of the gesture. Skipping it drops the
       // last few pixels of a fast flick, which is exactly where the pointer
       // moves furthest between samples.
@@ -355,7 +421,10 @@ export class SelectTool implements Tool {
     }
     this.pendingSelect = null;
     // A click on a handle that never became a drag rotates and resizes by
-    // nothing, which is the right amount, and must not deselect either.
+    // nothing, which is the right amount, and must not deselect either. A click
+    // on a pin is the same: it moves the pin nowhere, and leaves the selection
+    // exactly as it found it.
+    this.pendingPin = null;
     this.grabbed = null;
     this.phase = "idle";
   }
@@ -370,6 +439,19 @@ export class SelectTool implements Tool {
    * Returns false if there turned out to be nothing to pick up.
    */
   private begin(ctx: ToolContext): boolean {
+    // A pin was under the press, so this drag is that pin's and nothing else's
+    // — no selection is picked up and no item moves.
+    if (this.pendingPin !== null) {
+      const pin = this.pendingPin;
+      this.pendingPin = null;
+      if (!this.pinDrag.begin(pin, this.downX, this.downY, ctx)) {
+        this.phase = "idle";
+        return false;
+      }
+      this.phase = "pin";
+      return true;
+    }
+
     // This is a drag, so the click that would have narrowed the selection to
     // one item is off.
     this.pendingSelect = null;
@@ -417,6 +499,10 @@ export class SelectTool implements Tool {
   }
 
   private applyGesture(ctx: ToolContext): void {
+    if (this.phase === "pin") {
+      this.pinDrag.move(this.lastX, this.lastY, ctx);
+      return;
+    }
     if (this.phase === "resizing") {
       this.applyResize(ctx);
       return;
@@ -666,6 +752,9 @@ export class SelectTool implements Tool {
    * had just cancelled out of.
    */
   cancel(ctx: ToolContext): void {
+    // Nothing was written, so putting the pin back is the whole of the revert.
+    if (this.phase === "pin") this.pinDrag.cancel(ctx);
+
     if (this.phase === "dragging" || this.phase === "rotating" || this.phase === "resizing") {
       // "Esc mid-drag → the whole thing reverts" (DESIGN section 3.4).
       const resizing = this.phase === "resizing";
@@ -709,6 +798,7 @@ export class SelectTool implements Tool {
     this.animating.clear();
 
     this.pendingSelect = null;
+    this.pendingPin = null;
     this.grabbed = null;
     this.rect = null;
     this.phase = "idle";

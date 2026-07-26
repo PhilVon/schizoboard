@@ -55,6 +55,58 @@ export function createPin(board: BoardDoc, input: CreatePinInput): string {
   });
 }
 
+/**
+ * A board point, expressed in whichever frame `parent` implies — and the
+ * parent that frame actually belongs to.
+ *
+ * Re-parenting onto an item that just vanished would strand the pin in a frame
+ * that does not exist, so a missing item resolves to `null` and the board
+ * coordinates stand. That is the same outcome the renderer already gives a
+ * dangling pin (DATA-MODEL section 8.1), reached before the write rather than
+ * papered over after it.
+ *
+ * The angle used is the item's **authored** rotation, which is the only one the
+ * document has. An item mid-swing (DESIGN section 5.5) is therefore pinned a
+ * degree or two from where the cursor was — and it has to be, because the swing
+ * is local and transient and a pin placed in it would land somewhere different
+ * on every peer.
+ */
+function inParentFrame(
+  board: BoardDoc,
+  parent: string | null,
+  boardX: number,
+  boardY: number,
+): CreatePinInput {
+  if (parent === null) return { parent: null, lx: boardX, ly: boardY };
+  const itemMap = board.items.get(parent);
+  const item = itemMap ? readItem(parent, itemMap) : null;
+  if (!item) return { parent: null, lx: boardX, ly: boardY };
+  const local = boardToLocal(boardX, boardY, item.x, item.y, item.rot);
+  return { parent, lx: local.lx, ly: local.ly };
+}
+
+/**
+ * Push a pin in at a board point — what the pin tool does with a click.
+ *
+ * The caller says which item it landed on, because paint order is the
+ * renderer's and "the topmost item under the cursor" is a question only it can
+ * answer. Everything after that is this module's: which frame that implies, and
+ * getting both fields down in one transaction.
+ */
+export function createPinAt(
+  board: BoardDoc,
+  parent: string | null,
+  boardX: number,
+  boardY: number,
+): string | null {
+  if (!Number.isFinite(boardX) || !Number.isFinite(boardY)) return null;
+  return mutate(board, Origin.LOCAL_USER, () => {
+    const { id, map } = buildPin(board, inParentFrame(board, parent, boardX, boardY));
+    board.pins.set(id, map);
+    return id;
+  });
+}
+
 /** Move a pin within its current frame. Does not change ownership. */
 export function movePin(board: BoardDoc, pinId: string, lx: number, ly: number): void {
   if (!Number.isFinite(lx) || !Number.isFinite(ly)) return;
@@ -85,30 +137,10 @@ export function reparentPin(
   mutate(board, Origin.LOCAL_USER, () => {
     const pin = board.pins.get(pinId);
     if (!pin) return;
-
-    if (newParent === null) {
-      pin.set("parent", null);
-      pin.set("lx", boardX);
-      pin.set("ly", boardY);
-      return;
-    }
-
-    const itemMap = board.items.get(newParent);
-    const item = itemMap ? readItem(newParent, itemMap) : null;
-    // Re-parenting onto an item that just vanished would strand the pin in a
-    // frame that does not exist. Leaving it free at the cursor is the same
-    // outcome the renderer already gives a dangling pin.
-    if (!item) {
-      pin.set("parent", null);
-      pin.set("lx", boardX);
-      pin.set("ly", boardY);
-      return;
-    }
-
-    const local = boardToLocal(boardX, boardY, item.x, item.y, item.rot);
-    pin.set("parent", newParent);
-    pin.set("lx", local.lx);
-    pin.set("ly", local.ly);
+    const placed = inParentFrame(board, newParent, boardX, boardY);
+    pin.set("parent", placed.parent);
+    pin.set("lx", placed.lx);
+    pin.set("ly", placed.ly);
   });
 }
 

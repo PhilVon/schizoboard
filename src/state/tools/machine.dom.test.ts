@@ -74,8 +74,12 @@ beforeEach(() => {
       setSizes: () => {},
       deleteItems: () => {},
       createNote: () => {},
+      createPin: () => {},
+      placePin: () => {},
+      deletePins: () => {},
     },
     hitTest: () => null,
+    hitPin: () => null,
     suppressed: () => suppressed,
   });
 });
