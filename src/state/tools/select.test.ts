@@ -160,6 +160,9 @@ beforeEach(() => {
       createPin: () => {
         throw new Error("select must not create pins");
       },
+      createString: () => {
+        throw new Error("select must not create strings");
+      },
     },
   };
 });

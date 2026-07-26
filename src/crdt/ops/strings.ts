@@ -61,6 +61,7 @@ import * as Y from "yjs";
 
 import { freshId, mutate, type BoardDoc } from "@/crdt/doc";
 import { newId } from "@/crdt/ids";
+import { buildPin } from "@/crdt/ops/pins";
 import { Origin } from "@/crdt/origins";
 import {
   MIN_SLACK,
@@ -149,6 +150,60 @@ export function buildString(
 export function createString(board: BoardDoc, input: CreateStringInput): string | null {
   return mutate(board, Origin.LOCAL_USER, () => {
     const built = buildString(board, input);
+    if (!built) return null;
+    board.strings.set(built.id, built.map);
+    return built.id;
+  });
+}
+
+/**
+ * One stop on a run being drawn: a pin that already exists, or a place to push
+ * a new one in.
+ *
+ * The second case is DESIGN section 3.4's fast path — "click an item rather
+ * than a pin while stringing" and "click empty cork" — expressed as data, so
+ * that the tool can hold a whole run of them before any of it is written down.
+ */
+export type StringAnchor =
+  | { readonly pin: string }
+  | { readonly parent: string | null; readonly lx: number; readonly ly: number };
+
+/**
+ * Make a string through a run of anchors, pushing in whatever pins the run
+ * needs on the way.
+ *
+ * **One transaction for the run and every pin it created.** A four-click run
+ * that made three pins is one thing the user did, so it is one undo entry and
+ * one update on the wire — the same argument `createItems` makes for pasting
+ * twenty photographs at once, and the same argument `cascade.ts` makes for
+ * deletions. Without it, undoing a string would leave its pins behind as
+ * litter nobody asked for.
+ *
+ * It is also what lets `state/tools/string.ts` exist without ever seeing an id.
+ * A tool's writes are queued to phase 9, so a tool that had to name the pin it
+ * just created could not: the id does not exist yet when the next click
+ * arrives. Handing over the whole run at once removes the question.
+ */
+export function createStringThrough(
+  board: BoardDoc,
+  anchors: readonly StringAnchor[],
+  input: Omit<CreateStringInput, "pins"> = {},
+): string | null {
+  if (anchors.length < 2) return null;
+  return mutate(board, Origin.LOCAL_USER, () => {
+    const pins: string[] = [];
+    for (const anchor of anchors) {
+      if ("pin" in anchor) {
+        // A node naming a pin that has since gone would be dropped on read
+        // anyway; skipping it here keeps the run contiguous instead.
+        if (board.pins.has(anchor.pin)) pins.push(anchor.pin);
+        continue;
+      }
+      const { id, map } = buildPin(board, anchor);
+      board.pins.set(id, map);
+      pins.push(id);
+    }
+    const built = buildString(board, { ...input, pins });
     if (!built) return null;
     board.strings.set(built.id, built.map);
     return built.id;

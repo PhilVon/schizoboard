@@ -76,6 +76,7 @@ beforeEach(() => {
       deleteItems: () => {},
       createNote: () => {},
       placePin: () => {},
+    createString: () => {},
       deletePins: () => {},
       createPin: (parent, x, y) => placed.push({ parent, x, y }),
     },

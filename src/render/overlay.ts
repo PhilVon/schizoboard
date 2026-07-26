@@ -77,6 +77,16 @@ const CANDIDATE_OVER = "rgba(255, 246, 222, 0.95)";
 const CANDIDATE_PAD = 5;
 const CANDIDATE_WIDTH = 2;
 
+/**
+ * The string run being drawn. The cotton red of a real string, so the run
+ * reads as the thing it is about to become rather than as UI chrome — but
+ * thinner and flat, with no shadow and no highlight, because it is not string
+ * yet and must not be mistaken for some.
+ */
+const PENDING_STROKE = "rgba(168, 50, 44, 0.9)";
+const PENDING_WIDTH = 2;
+const PENDING_DASH: readonly number[] = [7, 5];
+
 export class Overlay {
   private readonly canvas: HTMLCanvasElement;
   private readonly ctx: CanvasRenderingContext2D | null;
@@ -85,6 +95,7 @@ export class Overlay {
   /** Reused; `boardToScreen` allocates otherwise, and this runs per frame. */
   private readonly a: Vec2 = { x: 0, y: 0 };
   private readonly b: Vec2 = { x: 0, y: 0 };
+  private hadPending = false;
   private readonly knob: Vec2 = { x: 0, y: 0 };
   private readonly frame: HandleFrame = emptyFrame();
 
@@ -129,13 +140,26 @@ export class Overlay {
     dirty: DirtySets,
     /** The item a pin being dragged would parent to, ringed. */
     highlight: string | null = null,
+    /**
+     * The string run being drawn, in board space, with the live cursor as its
+     * last point.
+     *
+     * Here rather than on a rope canvas because it is a *gesture*, and this is
+     * the layer for those: it belongs to whoever is holding the mouse, it is
+     * never in the document, and it vanishes the moment the run ends
+     * (ARCHITECTURE section 3, phase 8).
+     */
+    pending: readonly Vec2[] | null = null,
   ): void {
     const ctx = this.ctx;
     if (!ctx) return;
 
     const wantsMarquee = marquee !== null;
+    const wantsPending = pending !== null && pending.length >= 2;
     const stale =
       wantsMarquee ||
+      wantsPending ||
+      this.hadPending ||
       highlight !== this.highlighted ||
       // A candidate that is itself moving â€” a pin held over a photograph being
       // dragged by a collaborator â€” restrokes with it.
@@ -148,6 +172,7 @@ export class Overlay {
       selection.version !== this.selectionVersion ||
       this.selectedMoved(selection, dirty);
     this.hadMarquee = wantsMarquee;
+    this.hadPending = wantsPending;
     this.highlighted = highlight;
     this.cameraVersion = camera.version;
     this.selectionVersion = selection.version;
@@ -171,9 +196,62 @@ export class Overlay {
       this.drawMarquee(ctx, camera, marquee);
       drew = true;
     }
+    if (wantsPending && this.drawPending(ctx, camera, pending)) drew = true;
     // Nothing to draw, but last frame there was â€” so the clear is the work.
     if (!drew && this.inked) this.clear(ctx);
     this.inked = drew;
+  }
+
+  /**
+   * The string run in progress: straight legs between the stops, and a dashed
+   * one to the cursor.
+   *
+   * Straight rather than sagging, deliberately. A run that has not been written
+   * down has no rope in `sim/ropes.ts` and therefore no pose to draw, and
+   * inventing one here would mean a second, subtly different catenary in the
+   * renderer — and a visible jump at the moment the real one took over. A
+   * drawn-taut run reads as intent rather than as string, which is what it is.
+   */
+  private drawPending(
+    ctx: CanvasRenderingContext2D,
+    camera: Camera,
+    points: readonly Vec2[],
+  ): boolean {
+    if (!this.cleared) this.clear(ctx);
+    ctx.save();
+    ctx.lineWidth = PENDING_WIDTH;
+    ctx.lineCap = "round";
+    ctx.lineJoin = "round";
+    ctx.strokeStyle = PENDING_STROKE;
+
+    // The committed part of the run is solid.
+    ctx.beginPath();
+    for (let i = 0; i < points.length - 1; i++) {
+      const p = camera.boardToScreen(points[i]!.x, points[i]!.y, this.a);
+      if (i === 0) ctx.moveTo(p.x, p.y);
+      else ctx.lineTo(p.x, p.y);
+    }
+    const lastStop = camera.boardToScreen(
+      points[points.length - 2]!.x,
+      points[points.length - 2]!.y,
+      this.a,
+    );
+    ctx.lineTo(lastStop.x, lastStop.y);
+    ctx.stroke();
+
+    // The leg chasing the cursor is dashed, because it is not a decision yet.
+    const cursor = camera.boardToScreen(
+      points[points.length - 1]!.x,
+      points[points.length - 1]!.y,
+      this.b,
+    );
+    ctx.setLineDash([...PENDING_DASH]);
+    ctx.beginPath();
+    ctx.moveTo(lastStop.x, lastStop.y);
+    ctx.lineTo(cursor.x, cursor.y);
+    ctx.stroke();
+    ctx.restore();
+    return true;
   }
 
   /**

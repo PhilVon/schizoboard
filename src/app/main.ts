@@ -15,6 +15,7 @@ import * as ops from "@/crdt/ops";
 import {
   createItems,
   createPin,
+  createStringThrough,
   deleteItems,
   deletePins,
   placePin,
@@ -49,6 +50,7 @@ import { ToolMachine } from "@/state/tools/machine";
 import { NoteTool } from "@/state/tools/note";
 import { PinTool } from "@/state/tools/pin";
 import { SelectTool } from "@/state/tools/select";
+import { StringTool } from "@/state/tools/string";
 import type { BoardWriter } from "@/state/tools/tool";
 import { Hud, type HudStats } from "@/ui/hud";
 
@@ -227,6 +229,12 @@ async function boot(): Promise<void> {
     placePin: (pinId, parent, lx, ly) => {
       queued.push(() => placePin(board, pinId, parent, lx, ly));
     },
+    createString: (anchors, closed) => {
+      // Copied, like every other queued write: this runs in phase 9 and the
+      // tool has moved on by then.
+      const run = anchors.map((a) => ({ ...a }));
+      queued.push(() => createStringThrough(board, run, { closed }));
+    },
     deletePins: (ids, settle) => {
       const snapshot = [...ids];
       // Copied, like every other queued write: this runs in phase 9 and the
@@ -296,6 +304,8 @@ async function boot(): Promise<void> {
    */
   const note = new NoteTool({ onDone: () => queued.push(() => tools.setTool(select)) });
   const pinTool = new PinTool({ onDone: () => queued.push(() => tools.setTool(select)) });
+  /** `S`. The primary verb — DESIGN section 1.3, "the string is the product". */
+  const stringTool = new StringTool({ onDone: () => queued.push(() => tools.setTool(select)) });
   const tools = new ToolMachine(select, root, {
     scene,
     dirty,
@@ -330,7 +340,9 @@ async function boot(): Promise<void> {
           ? note
           : e.code === "KeyP"
             ? pinTool
-            : null;
+            : e.code === "KeyS"
+              ? stringTool
+              : null;
     if (!next) return;
     e.preventDefault();
     // Queued for the same reason `onDone` is: switching cancels the outgoing
@@ -558,7 +570,19 @@ async function boot(): Promise<void> {
     // Selection chrome is drawn here, not on the item nodes, so its width is in
     // screen pixels at every zoom (T-91). `dirty` comes along only so it can tell
     // "a selected photograph is being dragged" from "nothing has changed".
-    overlay.draw(camera, scene, selection, select.marquee, dirty, select.pinCandidate);
+    overlay.draw(
+      camera,
+      scene,
+      selection,
+      select.marquee,
+      dirty,
+      select.pinCandidate,
+      // The machine's hover, not a `move` the tool was handed: between clicks
+      // nothing is captured, so the tool never hears about the pointer.
+      tools.current === stringTool
+        ? stringTool.preview(tools.cursor ? camera.screenToBoard(tools.cursor.x, tools.cursor.y) : null)
+        : null,
+    );
     hud.update(frame.now);
   });
 
@@ -600,6 +624,7 @@ async function boot(): Promise<void> {
       dirty,
       loop,
       ops,
+      tools,
     };
   }
 

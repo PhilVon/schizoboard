@@ -77,6 +77,7 @@ beforeEach(() => {
       createPin: () => {},
       placePin: () => {},
       deletePins: () => {},
+    createString: () => {},
     },
     hitTest: () => null,
     hitPin: () => null,

@@ -49,6 +49,7 @@ beforeEach(() => {
       createPin: () => {},
       placePin: () => {},
       deletePins: () => {},
+    createString: () => {},
       createNote: (x, y) => created.push({ x, y }),
     },
   };

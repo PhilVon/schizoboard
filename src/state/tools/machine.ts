@@ -123,6 +123,12 @@ export class ToolMachine {
 
   /** Switching tools abandons whatever the old one had hold of, rather than
    *  leaving a half-finished gesture nobody will ever deliver an up for. */
+  /** Which tool has the board. Read by `main.ts` so a tool that wants chrome
+   *  drawn — the string run in progress — is only asked while it is active. */
+  get current(): Tool {
+    return this.tool;
+  }
+
   setTool(tool: Tool): void {
     if (tool === this.tool) return;
     this.tool.cancel(this.ctx);
@@ -213,6 +219,11 @@ export class ToolMachine {
       if (e.repeat) return;
 
       switch (e.code) {
+        // > Enter/Esc end run — DESIGN section 3.9's key table. `Enter` joined
+        // this list with the string tool (T-42); before that nothing had a
+        // gesture that ended on a keystroke rather than on a pointer.
+        case "Enter":
+        case "NumpadEnter":
         case "Escape":
         case "Delete":
         case "Backspace":

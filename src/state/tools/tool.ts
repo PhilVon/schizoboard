@@ -122,7 +122,29 @@ export interface BoardWriter {
    * pose lives in the scene mirror and `crdt/` may not read it.
    */
   deletePins(ids: readonly string[], settle?: ReadonlyMap<string, WritePose>): void;
+  /**
+   * A whole run of string, and any pins it needs, in one write.
+   *
+   * A run is handed over complete rather than a node at a time because a tool's
+   * writes are queued to phase 9 and it therefore never learns the id of
+   * anything it creates — see `state/tools/string.ts`. It is also the atomicity
+   * the run deserves: four clicks that pushed in three pins is one thing the
+   * user did, so it is one undo entry.
+   */
+  createString(anchors: readonly StringAnchor[], closed: boolean): void;
 }
+
+/**
+ * One stop on a run being drawn: a pin that already exists, or somewhere to
+ * push a new one in — an item, or the bare cork.
+ *
+ * Declared here rather than imported from `crdt/`, so that the tool seam still
+ * names every write a gesture can make without `state/tools/` depending on the
+ * document at all.
+ */
+export type StringAnchor =
+  | { readonly pin: string }
+  | { readonly parent: string | null; readonly lx: number; readonly ly: number };
 
 export interface ToolContext {
   readonly scene: Scene;
