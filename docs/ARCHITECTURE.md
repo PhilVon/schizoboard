@@ -53,7 +53,7 @@ src/
     ropes.ts          rope set allocation, sleep manager, bounds index
     torsion.ts        single-pin item swing
     collide.ts        rope↔item draping
-    constants.ts      every tuning value, one place, bound to a debug panel
+    tuning.ts         every tuning value, one place, bound to a debug panel
 
   render/
     loop.ts           THE single requestAnimationFrame
@@ -61,7 +61,7 @@ src/
     cull.ts           viewport culling — uniform spatial grid, hysteresis band
     items/            one view per archetype, node pooling — behind an interface
     ink/              stroke geometry, per-item canvas, wet overlay, re-raster policy
-    ropes/            under.ts + over.ts, screen-space painter
+    ropes/            paint.ts — one screen-space painter, instantiated per canvas
     pins/             pin DOM nodes
     presence/         remote cursors, drag ghosts, remote wet ink
     cork.ts

@@ -440,6 +440,10 @@ Working numbers, to be tuned: particles spaced 10–14 board units, so 12–20 p
 
 Fixed timestep of 1/120 s with an accumulator and a cap of four substeps per frame, so behaviour doesn't change with frame rate and a stalled tab doesn't explode on resume.
 
+> **Tuned, and one of those numbers was wrong — see D-17.** Six constraint iterations leaves a rope settled **23% longer than its own rest length**, hanging 19 board units below the analytic pose, because position-based dynamics holds a load by holding a violation and the error is therefore permanent rather than transient. Iterating harder barely helps; halving the timestep quarters it. Shipped: sixteen micro-steps inside each fixed 1/120 s step, two alternating constraint passes each. The fixed step, the accumulator and the four-substep cap above are unchanged — those are what framerate independence is measured in.
+>
+> Step 3 also went the other way round in the end. Re-pinning *after* the passes leaves the link next to each pin stretched by however far that pin moved, every frame; the endpoints are seated on their pins *before* projection and never integrated, which is the same statement made as infinite mass.
+
 ### 5.3 Rest, wake and sleep
 
 **Ropes are seeded analytically, not simulated into place.** On load or creation, solve the catenary for the segment's chord and rest length, evaluate it at the particle positions, and mark the rope **asleep immediately**. A board opens perfectly still. Simulating from a straight line instead produces a whip-crack across every string every time the file opens, which looks like a bug and takes half a second to settle.
