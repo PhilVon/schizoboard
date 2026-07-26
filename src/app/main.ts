@@ -53,7 +53,7 @@ import { PinTool } from "@/state/tools/pin";
 import { stringAt } from "@/state/tools/frame";
 import { SelectTool } from "@/state/tools/select";
 import { StringTool } from "@/state/tools/string";
-import type { BoardWriter } from "@/state/tools/tool";
+import type { BoardWriter, WritePose } from "@/state/tools/tool";
 import { Hud, type HudStats } from "@/ui/hud";
 
 async function boot(): Promise<void> {
@@ -175,6 +175,18 @@ async function boot(): Promise<void> {
    * phases 4 and 5 have already read (ARCHITECTURE section 3).
    */
   const queued: (() => void)[] = [];
+  /**
+   * A settle map, copied and normalised for the queue.
+   *
+   * Copied like every other queued write, because this runs in phase 9 and the
+   * tool has moved on by then; and an empty one becomes `undefined` so that the
+   * ops below can keep asking "was I given any poses" rather than "was I given
+   * a map, and if so does it contain anything".
+   */
+  const settled = (
+    settle?: ReadonlyMap<string, WritePose>,
+  ): Map<string, WritePose> | undefined =>
+    settle && settle.size > 0 ? new Map(settle) : undefined;
   const writer: BoardWriter = {
     setPoses: (poses, phase) => {
       const snapshot = new Map(poses);
@@ -225,17 +237,20 @@ async function boot(): Promise<void> {
      * parent implies — the tool converts, because only the tool knows the pose
      * a hanging item is actually drawn at (`state/tools/frame.ts`).
      */
-    createPin: (parent, lx, ly) => {
-      queued.push(() => createPin(board, { parent, lx, ly }));
+    createPin: (parent, lx, ly, settle) => {
+      const poses = settled(settle);
+      queued.push(() => createPin(board, { parent, lx, ly }, poses));
     },
-    placePin: (pinId, parent, lx, ly) => {
-      queued.push(() => placePin(board, pinId, parent, lx, ly));
+    placePin: (pinId, parent, lx, ly, settle) => {
+      const poses = settled(settle);
+      queued.push(() => placePin(board, pinId, parent, lx, ly, poses));
     },
-    createString: (anchors, closed) => {
+    createString: (anchors, closed, settle) => {
       // Copied, like every other queued write: this runs in phase 9 and the
       // tool has moved on by then.
       const run = anchors.map((a) => ({ ...a }));
-      queued.push(() => createStringThrough(board, run, { closed }));
+      const poses = settled(settle);
+      queued.push(() => createStringThrough(board, run, { closed }, poses));
     },
     /**
      * The headline gesture: a loop of string pulled out to a new pin (DESIGN
@@ -248,18 +263,14 @@ async function boot(): Promise<void> {
      */
     insertPin: (stringId, index, anchor, slackBefore, slackAfter, settle) => {
       const at = { ...anchor };
-      // Copied, like every other queued write: this runs in phase 9 and the
-      // tool has moved on by then.
-      const poses = settle && settle.size > 0 ? new Map(settle) : undefined;
+      const poses = settled(settle);
       queued.push(() =>
         insertPinIntoString(board, stringId, index, at, slackBefore, slackAfter, poses),
       );
     },
     deletePins: (ids, settle) => {
       const snapshot = [...ids];
-      // Copied, like every other queued write: this runs in phase 9 and the
-      // tool has moved on by then.
-      const poses = settle ? new Map(settle) : undefined;
+      const poses = settled(settle);
       queued.push(() => deletePins(board, snapshot, poses));
     },
   };
@@ -738,6 +749,7 @@ async function boot(): Promise<void> {
        *  and checking it comes back still (Phase 3's AC-15). */
       snapshot: () => snapshot(board),
     };
+
   }
 
   loop.start();

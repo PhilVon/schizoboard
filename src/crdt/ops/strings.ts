@@ -184,14 +184,21 @@ export type StringAnchor =
  * A tool's writes are queued to phase 9, so a tool that had to name the pin it
  * just created could not: the id does not exist yet when the next click
  * arrives. Handing over the whole run at once removes the question.
+ *
+ * `settle` is `insertPinIntoString`'s argument, plural: a run can push a pin
+ * into several items, and each one that had a single pin has stopped hanging by
+ * the end of it. Their drawn poses land in this same transaction, so the run,
+ * its pins and the paper they went into are one undo entry.
  */
 export function createStringThrough(
   board: BoardDoc,
   anchors: readonly StringAnchor[],
   input: Omit<CreateStringInput, "pins"> = {},
+  settle?: ReadonlyMap<string, Pose>,
 ): string | null {
   if (anchors.length < 2) return null;
   return mutate(board, Origin.LOCAL_USER, () => {
+    if (settle) writePoses(board, settle);
     const pins: string[] = [];
     for (const anchor of anchors) {
       if ("pin" in anchor) {

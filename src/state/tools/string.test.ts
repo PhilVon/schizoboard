@@ -18,7 +18,8 @@ import { Camera } from "@/state/camera";
 import { DirtySets } from "@/state/dirty";
 import { Scene, type ItemPose } from "@/state/scene";
 import { Selection } from "@/state/selection";
-import type { StringAnchor, ToolContext } from "@/state/tools/tool";
+import type { StringAnchor, ToolContext, WritePose } from "@/state/tools/tool";
+import { Torsion } from "@/sim/torsion";
 
 let scene: Scene;
 let dirty: DirtySets;
@@ -26,6 +27,9 @@ let camera: Camera;
 let tool: StringTool;
 let ctx: ToolContext;
 let written: Array<{ anchors: readonly StringAnchor[]; closed: boolean }>;
+/** Kept beside `written` rather than in it, so the run assertions stay about
+ *  the run. */
+let settles: Array<Map<string, WritePose>>;
 let done: number;
 let clock: number;
 
@@ -71,6 +75,7 @@ beforeEach(() => {
   camera = new Camera();
   camera.resize(1000, 800);
   written = [];
+  settles = [];
   done = 0;
   clock = 1000;
   cursor = null;
@@ -114,8 +119,9 @@ beforeEach(() => {
       },
       placePin: () => {},
       deletePins: () => {},
-      createString: (anchors, closed) => {
+      createString: (anchors, closed, settle) => {
         written.push({ anchors: anchors.map((a) => ({ ...a })), closed });
+        settles.push(new Map(settle));
       },
       insertPin: () => {
         throw new Error("the string tool does not insert into an existing run");
@@ -341,5 +347,76 @@ describe("the run on screen", () => {
     click(200, 0);
     key("Enter");
     expect(tool.preview(cursor)).toBeNull();
+  });
+});
+
+/**
+ * A run's fast path pushes a pin into every bare item it touches, and any of
+ * those items may be hanging — so a run is also the one gesture that can stop
+ * *several* items hanging at once.
+ */
+describe("stringing through items that hang", () => {
+  /** One pin at the top left of a 200-square, settled with no motion the way a
+   *  load is, which leaves it a long way from its authored rotation. */
+  function hang(id: string, x: number): void {
+    item(id, { x, y: 0, w: 200, h: 200 });
+    scene.putPin({
+      id: `${id}-hook`,
+      parent: id,
+      lx: -80,
+      ly: -60,
+      kind: "pushpin",
+      color: "#c8352f",
+      wx: x - 80,
+      wy: -60,
+    });
+    dirty.all = true;
+    new Torsion().step(scene, dirty, 16);
+    scene.layoutPins();
+  }
+
+  function drawn(id: string): WritePose {
+    const slot = scene.slotOf(id)!;
+    return {
+      x: scene.renderX(slot),
+      y: scene.renderY(slot),
+      rot: scene.rot[slot]! + scene.swing[slot]!,
+    };
+  }
+
+  it("settles every item the run pinned, in the one write the run already is", () => {
+    hang("photo", 0);
+    hang("note", 600);
+    expect(Math.abs(scene.swing[scene.slotOf("photo")!]!)).toBeGreaterThan(0.5);
+
+    click(0, 0);
+    click(600, 0);
+    key("Enter");
+
+    expect(written).toHaveLength(1);
+    const settle = settles[0]!;
+    expect(settle.get("photo")).toEqual(drawn("photo"));
+    expect(settle.get("note")).toEqual(drawn("note"));
+  });
+
+  /** A run may stop on the same paper twice. It hangs on one pin either way, so
+   *  it settles once — a second copy of the same pose would be the same write. */
+  it("settles an item twice-stopped-on only once", () => {
+    hang("photo", 0);
+    click(-40, 0);
+    click(600, 0);
+    click(40, 0);
+    key("Enter");
+    expect([...settles[0]!.keys()]).toEqual(["photo"]);
+  });
+
+  /** A run made entirely of existing pins and bare cork changes nobody's count. */
+  it("settles nothing for a run that pinned no item", () => {
+    hang("photo", 0);
+    pin("p1", 900, 0);
+    click(900, 0);
+    click(1200, 400);
+    key("Enter");
+    expect(settles[0]!.size).toBe(0);
   });
 });

@@ -38,8 +38,8 @@
 
 import type { Point } from "@/lib/rotate";
 import type { Vec2 } from "@/state/camera";
-import { itemLocal } from "@/state/tools/frame";
-import type { ToolContext } from "@/state/tools/tool";
+import { drawnPose, itemLocal } from "@/state/tools/frame";
+import type { ToolContext, WritePose } from "@/state/tools/tool";
 
 /**
  * Read as a level, not as an edge — the same reason `R`+drag is (see
@@ -147,7 +147,45 @@ export class PinDrag {
       return;
     }
     // What the scene already holds, which is the frame this gesture resolved.
-    ctx.write.placePin(id, pin.parent, pin.lx, pin.ly);
+    ctx.write.placePin(id, pin.parent, pin.lx, pin.ly, this.settle(ctx, pin.parent));
+  }
+
+  /**
+   * The poses to write alongside the placement: up to two items, because a
+   * re-parent changes the pin count at *both* ends and pin count is what an
+   * item's physics is made of (DESIGN section 5.5).
+   *
+   * - The item it lands on, if that pin makes two. It was hanging and is now
+   *   rigid, so `sim/torsion.ts` is about to zero the swing and the drift it
+   *   was drawn with — and the pin was placed against exactly those.
+   * - The item it left, if that took its last pin. It has stopped hanging
+   *   altogether, which zeroes the same two transients. This is T-107's jump
+   *   reached by dragging the pin off rather than deleting it, and
+   *   `settleOnUnpin` never covered this route.
+   *
+   * Two-to-one at either end needs nothing: an item that *starts* hanging
+   * swings there from where it already is, which is motion rather than a jump.
+   *
+   * The counts are read from the scene rather than through `settleOnPin`,
+   * because this gesture re-parents the scene on every move — by the time it
+   * commits, the pin has already been counted at its destination and
+   * discounted at its origin. So the numbers tested here are one further on
+   * than the ones every other tool tests.
+   */
+  private settle(ctx: ToolContext, onto: string | null): ReadonlyMap<string, WritePose> {
+    const settle = new Map<string, WritePose>();
+    const from = this.start.parent;
+    if (onto !== from) {
+      if (onto !== null && ctx.scene.pinCount(onto) === 2) {
+        const pose = drawnPose(ctx.scene, onto);
+        if (pose) settle.set(onto, pose);
+      }
+      if (from !== null && ctx.scene.pinCount(from) === 0) {
+        const pose = drawnPose(ctx.scene, from);
+        if (pose) settle.set(from, pose);
+      }
+    }
+    return settle;
   }
 
   /**

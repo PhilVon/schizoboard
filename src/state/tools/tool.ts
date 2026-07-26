@@ -103,14 +103,34 @@ export interface BoardWriter {
    * the op, because only the tool can: an item hanging on one pin is drawn at a
    * rotation and about a centre that are both transient and neither of which is
    * in the document (`state/tools/frame.ts`).
+   *
+   * `settle` is `frame.ts`'s `settleOnPin`: the pose to write for an item this
+   * pin stops from hanging. Every write on this interface that can hand an item
+   * a pin carries one, and they all mean the same thing.
    */
-  createPin(parent: string | null, lx: number, ly: number): void;
+  createPin(
+    parent: string | null,
+    lx: number,
+    ly: number,
+    settle?: ReadonlyMap<string, WritePose>,
+  ): void;
   /**
    * Put an existing pin down: its parent and its position, in one transaction,
    * so no peer ever sees a pin whose two halves disagree. `parent` of `null` is
    * the cork — which is how a pin is un-parented (DESIGN section 3.3).
+   *
+   * `settle` carries up to *two* items here rather than one, because a
+   * re-parent changes the count at both ends: the item that gained the pin may
+   * have stopped hanging, and the item that lost it may have stopped hanging
+   * too. See `state/tools/pindrag.ts`.
    */
-  placePin(pinId: string, parent: string | null, lx: number, ly: number): void;
+  placePin(
+    pinId: string,
+    parent: string | null,
+    lx: number,
+    ly: number,
+    settle?: ReadonlyMap<string, WritePose>,
+  ): void;
   /**
    * `Alt`+click. The strings through them heal in the same entry.
    *
@@ -130,8 +150,16 @@ export interface BoardWriter {
    * anything it creates — see `state/tools/string.ts`. It is also the atomicity
    * the run deserves: four clicks that pushed in three pins is one thing the
    * user did, so it is one undo entry.
+   *
+   * `settle` may name several items, since a run can push a pin into each of
+   * them; `frame.ts`'s `settleOnPin` takes the whole run at once for that
+   * reason.
    */
-  createString(anchors: readonly StringAnchor[], closed: boolean): void;
+  createString(
+    anchors: readonly StringAnchor[],
+    closed: boolean,
+    settle?: ReadonlyMap<string, WritePose>,
+  ): void;
   /**
    * Push a pin into the middle of a run — the headline gesture (DESIGN section
    * 3.4), as one transaction so that undoing it takes the pin with it.

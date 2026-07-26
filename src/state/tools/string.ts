@@ -53,7 +53,7 @@
  */
 
 import type { Vec2 } from "@/state/camera";
-import { anchorAt } from "@/state/tools/frame";
+import { anchorAt, anchorParent, settleOnPin } from "@/state/tools/frame";
 import type {
   PointerSample,
   StringAnchor,
@@ -207,7 +207,16 @@ export class StringTool implements Tool {
     const anchors = this.stops.map((stop) => stop.anchor);
     this.stops.length = 0;
     ctx.dirty.camera = true;
-    if (anchors.length >= 2) ctx.write.createString(anchors, closed);
+    // Every item the run pushes a pin into, asked before any of it is written:
+    // a run that clicked two hanging photographs stops both of them hanging,
+    // and both poses belong in the one transaction the run already is.
+    if (anchors.length >= 2) {
+      ctx.write.createString(
+        anchors,
+        closed,
+        settleOnPin(ctx.scene, anchors.map(anchorParent)),
+      );
+    }
     this.options.onDone?.();
   }
 }

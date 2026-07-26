@@ -48,10 +48,24 @@ export function buildPin(board: BoardDoc, input: CreatePinInput): { id: string; 
   return { id, map };
 }
 
-export function createPin(board: BoardDoc, input: CreatePinInput): string {
+/**
+ * `settle` is the pose to write for an item this pin stops from hanging — the
+ * same argument `deletePins` takes, and here for the mirror-image reason. An
+ * item that had one pin and now has two is rigid, so the swing and the drift it
+ * was drawn with cease to exist; its rendered pose written inside this
+ * transaction is what keeps the paper still at the moment they stop applying,
+ * and keeps it one undo entry. It comes from the caller because the rendered
+ * pose lives in the scene mirror and `crdt/` may not read it.
+ */
+export function createPin(
+  board: BoardDoc,
+  input: CreatePinInput,
+  settle?: ReadonlyMap<string, Pose>,
+): string {
   return mutate(board, Origin.LOCAL_USER, () => {
     const { id, map } = buildPin(board, input);
     board.pins.set(id, map);
+    if (settle) writePoses(board, settle);
     return id;
   });
 }
@@ -97,6 +111,11 @@ function inParentFrame(
  * (`sim/torsion.ts`), and neither of those is in the document; converting here
  * from board coordinates would put the pin where the paper would have been if
  * it were not hanging.
+ *
+ * `settle` can name **two** items here where the other pin ops name one, since
+ * a re-parent changes the pin count at both ends: the item that gained the pin
+ * may have stopped hanging, and so may the item that lost it. Both poses are
+ * the caller's for the same reason the coordinates are.
  */
 export function placePin(
   board: BoardDoc,
@@ -104,6 +123,7 @@ export function placePin(
   parent: string | null,
   lx: number,
   ly: number,
+  settle?: ReadonlyMap<string, Pose>,
 ): void {
   if (!Number.isFinite(lx) || !Number.isFinite(ly)) return;
   mutate(board, Origin.LOCAL_USER, () => {
@@ -112,6 +132,7 @@ export function placePin(
     pin.set("parent", parent);
     pin.set("lx", lx);
     pin.set("ly", ly);
+    if (settle) writePoses(board, settle);
   });
 }
 

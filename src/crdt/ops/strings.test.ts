@@ -24,6 +24,7 @@ import {
   appendStringNode,
   clampSlack,
   createString,
+  createStringThrough,
   DEFAULT_SLACK,
   deleteStrings,
   insertPinIntoString,
@@ -353,6 +354,69 @@ describe("growing and shrinking a run", () => {
     expect(() => removeStringNodes(board, id, new Set(["nope"]))).not.toThrow();
     expect(appendStringNode(board, id, "p3")).toBeNull();
     expect(insertStringNode(board, id, 0, "p3")).toBeNull();
+  });
+});
+
+describe("making a string through a run of anchors", () => {
+  /**
+   * `insertPinIntoString`'s settle, plural — and the thing that makes this op
+   * different from the pin ops, which each settle one sheet of paper. A run
+   * pushes a pin into every item it was clicked through, so a four-click run
+   * can stop two things hanging at once, and both were drawn at poses the
+   * document does not hold. The run, the pins it made and those poses are one
+   * transaction; anything less and `Ctrl+Z` would take the string back and
+   * leave two sheets of paper at angles nobody authored.
+   */
+  it("settles every item the run pinned, in the same entry", () => {
+    // Each hanging on the one pin it was created with, so the pin the run
+    // pushes in is the second, and the second is the one that stops the swing.
+    const [note, card] = createItems(board, [
+      { type: "note", x: 0, y: 0, w: 200, h: 200, rot: 0 },
+      { type: "card", x: 400, y: 0, w: 200, h: 200, rot: 0 },
+    ]);
+    const a = note!.itemId;
+    const b = card!.itemId;
+    const history = new UndoHistory(board);
+
+    let updates = 0;
+    board.doc.on("update", () => updates++);
+    const id = createStringThrough(
+      board,
+      [{ parent: a, lx: 10, ly: -20 }, { parent: b, lx: -10, ly: -20 }],
+      { slack: 0.2 },
+      new Map([
+        [a, { x: 5, y: 7, rot: 0.3 }],
+        [b, { x: 395, y: -9, rot: -0.6 }],
+      ]),
+    )!;
+    expect(updates).toBe(1);
+
+    // A second pin in each sheet of paper, which is what makes both settles
+    // the run's business rather than two things the caller has to remember.
+    const made = pins(id);
+    expect(made).toHaveLength(2);
+    expect(board.pins.get(made[0])!.get("parent")).toBe(a);
+    expect(board.pins.get(made[1])!.get("parent")).toBe(b);
+    expect(board.pins.size).toBe(4);
+
+    const settledNote = board.items.get(a)!;
+    expect(settledNote.get("x")).toBe(5);
+    expect(settledNote.get("y")).toBe(7);
+    expect(settledNote.get("rot")).toBe(0.3);
+    const settledCard = board.items.get(b)!;
+    expect(settledCard.get("x")).toBe(395);
+    expect(settledCard.get("y")).toBe(-9);
+    expect(settledCard.get("rot")).toBe(-0.6);
+
+    history.undo();
+    expect(board.strings.has(id)).toBe(false);
+    // The two the items were created with, and neither of the run's.
+    expect(board.pins.size).toBe(2);
+    expect(board.items.get(a)!.get("x")).toBe(0);
+    expect(board.items.get(a)!.get("rot")).toBe(0);
+    expect(board.items.get(b)!.get("x")).toBe(400);
+    expect(board.items.get(b)!.get("rot")).toBe(0);
+    history.destroy();
   });
 });
 

@@ -43,6 +43,13 @@ let camera: Camera;
 let selection: Selection;
 let tool: SelectTool;
 let writes: Write[];
+/**
+ * The settle maps that came with `placePin` and `createString`, kept beside
+ * `writes` rather than in it — the assertions above compare whole write records
+ * with `toEqual`, and those are about placement rather than about physics.
+ */
+let placeSettles: Array<Map<string, WritePose>>;
+let stringSettles: Array<Map<string, WritePose>>;
 let held: Set<string>;
 let ctx: ToolContext;
 
@@ -181,6 +188,8 @@ beforeEach(() => {
   selection = new Selection();
   tool = new SelectTool();
   writes = [];
+  placeSettles = [];
+  stringSettles = [];
   held = new Set<string>();
   ctx = {
     scene,
@@ -195,7 +204,10 @@ beforeEach(() => {
       setPoses: (poses, phase) => writes.push({ kind: "poses", phase, poses: new Map(poses) }),
       setSizes: (sizes, phase) => writes.push({ kind: "sizes", phase, sizes: new Map(sizes) }),
       deleteItems: (ids, keepPins) => writes.push({ kind: "delete", ids: [...ids], keepPins }),
-      placePin: (pinId, parent, x, y) => writes.push({ kind: "place", pinId, parent, x, y }),
+      placePin: (pinId, parent, x, y, settle) => {
+        writes.push({ kind: "place", pinId, parent, x, y });
+        placeSettles.push(new Map(settle));
+      },
       deletePins: (ids, settle) =>
         writes.push({ kind: "unpin", ids: [...ids], settle: [...(settle ?? [])] }),
       // The select tool never creates anything; a sheet arrives from the note
@@ -208,8 +220,9 @@ beforeEach(() => {
       },
       // `Alt`+drag from a pin pulls a new string out without switching tools
       // (DESIGN section 3.4, T-44). It is the one thing select creates.
-      createString: (anchors, closed) => {
+      createString: (anchors, closed, settle) => {
         writes.push({ kind: "string", anchors: anchors.map((a) => ({ ...a })), closed });
+        stringSettles.push(new Map(settle));
       },
       // The other one: a loop pulled out of the middle of a string, which makes
       // a pin and the node that carries it in one transaction (DESIGN 3.4).
@@ -1622,5 +1635,142 @@ describe("pulling a pin out of a string", () => {
     move(100, 20);
     up(100, 20);
     expect(writes).toEqual([]);
+  });
+});
+
+/**
+ * Both ends of a re-parent, and the `Alt` pull, against items that hang.
+ *
+ * Pin count is an item's physics (DESIGN section 5.5), so a gesture that moves
+ * a pin between items can change how *two* items hang at once — and every
+ * change out of "hanging on exactly one" throws away a swing and a drift the
+ * document never held.
+ */
+describe("moving a pin between items that hang", () => {
+  /** A 200-square on one pin at its top left, settled with no motion the way a
+   *  load is, which leaves it a long way from its authored rotation. */
+  function hang(id: string, x: number, y: number): void {
+    put(id, x, y, 200, 200);
+    scene.putPin({
+      id: `${id}-hook`,
+      parent: id,
+      lx: -80,
+      ly: -60,
+      kind: "pushpin",
+      color: "#c8352f",
+      wx: x - 80,
+      wy: y - 60,
+    });
+    dirty.all = true;
+    new Torsion().step(scene, dirty, 16);
+    scene.layoutPins();
+  }
+
+  function drawn(id: string): WritePose {
+    const slot = scene.slotOf(id)!;
+    return {
+      x: scene.renderX(slot),
+      y: scene.renderY(slot),
+      rot: scene.rot[slot]! + scene.swing[slot]!,
+    };
+  }
+
+  it("settles the item the pin lands on, when that pin makes two", () => {
+    hang("a", 0, 0);
+    expect(Math.abs(scene.swing[scene.slotOf("a")!]!)).toBeGreaterThan(0.5);
+    putPin("p", null, 400, 400);
+    const pose = drawn("a");
+
+    down(400, 400);
+    move(0, 0);
+    up(0, 0);
+
+    expect(scene.pins.get("p")!.parent).toBe("a");
+    expect(placeSettles[0]!.get("a")).toEqual(pose);
+  });
+
+  /**
+   * T-107's jump, reached by dragging the pin off rather than deleting it —
+   * which is why `settleOnUnpin` never caught this one. An item that has lost
+   * its last pin has stopped hanging, and stops being drawn at a swing.
+   */
+  it("settles the item the pin left, when that was its last one", () => {
+    hang("a", 0, 0);
+    const pose = drawn("a");
+
+    down(-80, -60);
+    move(600, 600);
+    up(600, 600);
+
+    expect(scene.pins.get("a-hook")!.parent).toBeNull();
+    expect(placeSettles[0]!.get("a")).toEqual(pose);
+  });
+
+  /** Both ends at once: one item stops hanging because it has two now, the
+   *  other because it has none. */
+  it("settles both ends of a re-parent", () => {
+    hang("a", 0, 0);
+    hang("b", 600, 0);
+    const from = drawn("a");
+    const onto = drawn("b");
+
+    down(-80, -60);
+    move(600, 0);
+    up(600, 0);
+
+    const settle = placeSettles[0]!;
+    expect(settle.get("a")).toEqual(from);
+    expect(settle.get("b")).toEqual(onto);
+  });
+
+  /** Two to one *starts* an item hanging, which is a swing from where it
+   *  already is rather than a jump. */
+  it("settles nothing when the item it left still has a pin", () => {
+    put("a", 0, 0, 200, 200);
+    putPin("p1", "a", -80, -60);
+    putPin("p2", "a", 80, -60);
+
+    down(-80, -60);
+    move(600, 600);
+    up(600, 600);
+
+    expect(placeSettles[0]!.size).toBe(0);
+  });
+
+  /** Nought to one, at the far end. */
+  it("settles nothing when the item it lands on had no pin", () => {
+    put("a", 0, 0, 200, 200);
+    putPin("p", null, 400, 400);
+
+    down(400, 400);
+    move(0, 0);
+    up(0, 0);
+
+    expect(placeSettles[0]!.size).toBe(0);
+  });
+
+  /** Sliding a pin around the paper it is already in changes no count at all. */
+  it("settles nothing for a pin moved within its own item", () => {
+    hang("a", 0, 0);
+    down(-80, -60);
+    move(40, 40);
+    up(40, 40);
+    expect(scene.pins.get("a-hook")!.parent).toBe("a");
+    expect(placeSettles[0]!.size).toBe(0);
+  });
+
+  /** The `Alt` pull ends by the same rule every other string end does, so it
+   *  settles by the same rule too. */
+  it("settles an item an Alt+drag released a new string onto", () => {
+    hang("a", 0, 0);
+    putPin("far", null, 600, 600);
+    const pose = drawn("a");
+
+    down(600, 600, { alt: true });
+    move(300, 300, { alt: true });
+    up(0, 0);
+
+    expect(writes.some((w) => w.kind === "string")).toBe(true);
+    expect(stringSettles[0]!.get("a")).toEqual(pose);
   });
 });

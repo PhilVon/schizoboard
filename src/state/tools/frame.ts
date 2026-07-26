@@ -21,7 +21,7 @@
 import { rotateIn, type Point } from "@/lib/rotate";
 import type { Camera } from "@/state/camera";
 import type { Scene } from "@/state/scene";
-import type { StringAnchor, StringHit } from "@/state/tools/tool";
+import type { StringAnchor, StringHit, WritePose } from "@/state/tools/tool";
 
 /** Null when the item is not on the board. */
 export function itemLocal(
@@ -43,6 +43,71 @@ export function itemLocal(
     Math.sin(angle),
     out,
   );
+}
+
+/**
+ * The pose an item is **drawn** at, as something the document can hold.
+ *
+ * An item hanging on one pin is drawn at `rot + swing` about a centre shifted
+ * by `drift`, and neither transient is in the document by rule. Write this and
+ * the stored pose becomes the drawn one, which is how a gesture leaves paper
+ * exactly where it looks at the moment those transients stop applying.
+ *
+ * Null when the item is not on the board.
+ */
+export function drawnPose(scene: Scene, itemId: string): WritePose | null {
+  const slot = scene.slotOf(itemId);
+  if (slot === undefined) return null;
+  return {
+    x: scene.renderX(slot),
+    y: scene.renderY(slot),
+    rot: scene.rot[slot]! + scene.swing[slot]!,
+  };
+}
+
+/**
+ * The poses to write for items about to be handed a pin — empty when none of
+ * them is about to change how it hangs.
+ *
+ * One pin hangs and two are rigid (DESIGN section 5.5), so the pin that makes
+ * two is the pin that ends the swing — and `sim/torsion.ts` ends it by zeroing
+ * both transients outright, which puts the paper back at an authored rotation
+ * that has been invisible ever since it started hanging. That alone would be a
+ * paper that jumps. Worse, a pin being pushed into that paper is placed against
+ * the pose it is *drawn* at, because that is the only pose a cursor can aim at
+ * — so the jump takes the new pin, and anything strung through it, along.
+ *
+ * Writing the drawn pose in the same transaction as the pin makes the stored
+ * and the rendered pose the same pose at the instant the transients stop
+ * mattering. Nothing moves.
+ *
+ * Only the *second* pin, which is what the count of one tests for. Nought to
+ * one starts an item hanging, which is a swing from where it already is rather
+ * than a jump; two to three is rigid either way and has nothing to settle.
+ *
+ * Counted **before** the write, so every caller here is a tool holding an
+ * unwritten intention. `state/tools/pindrag.ts` is the exception and does not
+ * use this: it re-parents the scene as you drag, so by the time it commits the
+ * counts have already moved.
+ */
+export function settleOnPin(
+  scene: Scene,
+  items: Iterable<string | null>,
+): ReadonlyMap<string, WritePose> {
+  const settle = new Map<string, WritePose>();
+  for (const id of items) {
+    if (id === null || settle.has(id)) continue;
+    if (scene.pinCount(id) !== 1) continue;
+    const pose = drawnPose(scene, id);
+    if (pose) settle.set(id, pose);
+  }
+  return settle;
+}
+
+/** The item an anchor will push a new pin into, or null — an anchor naming a
+ *  pin that already exists changes nobody's count. */
+export function anchorParent(anchor: StringAnchor): string | null {
+  return "pin" in anchor ? null : anchor.parent;
 }
 
 /**

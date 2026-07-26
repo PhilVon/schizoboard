@@ -59,11 +59,10 @@ import {
   type HandleId,
 } from "@/state/handles";
 import type { ItemPose } from "@/state/scene";
-import { anchorAt, stringAt } from "@/state/tools/frame";
+import { anchorAt, anchorParent, drawnPose, settleOnPin, stringAt } from "@/state/tools/frame";
 import { PinDrag } from "@/state/tools/pindrag";
 import type {
   PointerSample,
-  StringAnchor,
   StringHit,
   Tool,
   ToolContext,
@@ -163,50 +162,8 @@ function settleOnUnpin(ctx: ToolContext, pinId: string): ReadonlyMap<string, Wri
   const settle = new Map<string, WritePose>();
   const parent = ctx.scene.pins.get(pinId)?.parent ?? null;
   if (parent === null || ctx.scene.pinCount(parent) !== 1) return settle;
-  return settledPose(ctx, parent, settle);
-}
-
-/**
- * The same thing arriving from the other direction: the pose to write for an
- * item about to gain its *second* pin, or an empty map when nothing is.
- *
- * One pin hangs and two are rigid (DESIGN section 5.5), so the pin that makes
- * two ends the swing — and `sim/torsion.ts`'s `rigid()` ends it by zeroing both
- * transients outright, which puts the paper back at an authored rotation that
- * has been invisible ever since it started hanging. That alone would be a
- * paper that jumps. Worse, the pin being placed was measured against the pose
- * the paper was *drawn* at, because that is the only pose a cursor can aim at
- * (`state/tools/frame.ts`) — so the jump takes the new pin, and whatever string
- * runs through it, along with it.
- *
- * Writing the drawn pose in the same transaction is what makes the rendered and
- * the stored pose the same pose at the instant the transients stop mattering.
- * Nothing moves, and the pin stays under the cursor.
- *
- * Only the *second* pin. Nought to one starts it hanging, which is a swing from
- * where it already is rather than a jump; two to three is rigid either way and
- * has nothing to settle.
- */
-function settleOnPin(ctx: ToolContext, anchor: StringAnchor): ReadonlyMap<string, WritePose> {
-  const settle = new Map<string, WritePose>();
-  if ("pin" in anchor || anchor.parent === null) return settle;
-  if (ctx.scene.pinCount(anchor.parent) !== 1) return settle;
-  return settledPose(ctx, anchor.parent, settle);
-}
-
-/** The pose an item is drawn at, which is what both settles write down. */
-function settledPose(
-  ctx: ToolContext,
-  itemId: string,
-  settle: Map<string, WritePose>,
-): ReadonlyMap<string, WritePose> {
-  const slot = ctx.scene.slotOf(itemId);
-  if (slot === undefined) return settle;
-  settle.set(itemId, {
-    x: ctx.scene.renderX(slot),
-    y: ctx.scene.renderY(slot),
-    rot: ctx.scene.rot[slot]! + ctx.scene.swing[slot]!,
-  });
+  const pose = drawnPose(ctx.scene, parent);
+  if (pose) settle.set(parent, pose);
   return settle;
 }
 
@@ -624,7 +581,16 @@ export class SelectTool implements Tool {
         // is not a string. Nothing written, nothing removed — it was a drag,
         // so it was not a click either.
         const onItself = "pin" in to.anchor && to.anchor.pin === from;
-        if (!onItself) ctx.write.createString([{ pin: from }, to.anchor], false);
+        // The far end may be an item that hangs, and this is the pin that stops
+        // it — `settleOnPin`. The near end is a pin that already exists and
+        // changes nobody's count.
+        if (!onItself) {
+          ctx.write.createString(
+            [{ pin: from }, to.anchor],
+            false,
+            settleOnPin(ctx.scene, [anchorParent(to.anchor)]),
+          );
+        }
       } else {
         // "Strings through it heal", which the op does in the same transaction.
         ctx.write.deletePins([from], settleOnUnpin(ctx, from));
@@ -936,7 +902,7 @@ export class SelectTool implements Tool {
       drop.anchor,
       before,
       after,
-      settleOnPin(ctx, drop.anchor),
+      settleOnPin(ctx.scene, [anchorParent(drop.anchor)]),
     );
   }
 

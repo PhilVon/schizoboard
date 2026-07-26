@@ -33,7 +33,7 @@
  */
 
 import type { Vec2 } from "@/state/camera";
-import { itemLocal } from "@/state/tools/frame";
+import { itemLocal, settleOnPin } from "@/state/tools/frame";
 import type { PointerSample, Tool, ToolContext, ToolInput } from "@/state/tools/tool";
 
 export interface PinToolOptions {
@@ -95,7 +95,14 @@ export class PinTool implements Tool {
     // `state/tools/frame.ts`.
     const local = onto === null ? null : itemLocal(ctx.scene, onto, at.x, at.y);
     if (onto !== null && !local) return;
-    ctx.write.createPin(onto, local?.x ?? at.x, local?.y ?? at.y);
+    // And if this is the item's second pin it stops hanging, so the pose it was
+    // drawn at goes down with the pin — `settleOnPin`, same transaction.
+    ctx.write.createPin(
+      onto,
+      local?.x ?? at.x,
+      local?.y ?? at.y,
+      settleOnPin(ctx.scene, [onto]),
+    );
     this.options.onDone?.();
   }
 
