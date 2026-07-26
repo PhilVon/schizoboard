@@ -10,7 +10,7 @@
  */
 
 import { Binding } from "@/crdt/binding";
-import { boardSeed, encodedSize, initialiseBoard, openBoardDoc } from "@/crdt/doc";
+import { boardSeed, encodedSize, initialiseBoard, openBoardDoc, snapshot } from "@/crdt/doc";
 import * as ops from "@/crdt/ops";
 import {
   createItems,
@@ -634,6 +634,7 @@ async function boot(): Promise<void> {
       loop,
       ops,
       tools,
+      snapshot: () => snapshot(board),
     };
   }
 
