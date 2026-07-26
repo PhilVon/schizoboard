@@ -333,9 +333,25 @@ export class DomItemLayer implements ItemLayer {
   private readonly views = new Map<string, View>();
   private readonly pool: Record<Archetype, View[]> = { polaroid: [], paper: [] };
 
-  /** Item ids in paint order, and the z keys the order was computed from. */
+  /**
+   * Paint order over the **whole scene**, not over what is mounted, plus the z
+   * keys it was computed from and the `z-index` each id was given.
+   *
+   * Scene-wide on purpose, and it is the fix for a measured 243 ms frame (D-13).
+   * Ranking the mounted subset means every mount and unmount renumbers all its
+   * neighbours, so under culling a zoom rewrote an inline style on ~180 nodes on
+   * every frame of the gesture — a style invalidation on 180 elements per frame,
+   * invisible in the phase timings because the cost lands in the browser after
+   * the frame. Ranked against the whole scene, culling cannot perturb the
+   * numbering at all: a mount is one style write, and only a real z change or a
+   * created or deleted item re-sorts anything.
+   *
+   * The ranks are only ever used as relative integers, so the gaps that culled
+   * items leave in the sequence cost nothing.
+   */
   private order: string[] = [];
   private readonly orderedBy = new Map<string, string>();
+  private readonly rank = new Map<string, number>();
 
   /**
    * The last selection it was told about, kept so a view that mounts *later*
@@ -367,10 +383,28 @@ export class DomItemLayer implements ItemLayer {
       view.el.remove();
       this.pool[view.archetype].push(view);
       this.views.delete(id);
-      this.orderedBy.delete(id);
     }
 
-    let orderChanged = false;
+    /**
+     * Does paint order need recomputing?
+     *
+     * Read off `dirty.items` rather than off the mounted walk below, because an
+     * item that changed its z key while off screen still changes the order, and
+     * the walk below never sees it.
+     */
+    let orderChanged = dirty.all;
+    if (!orderChanged) {
+      for (const id of dirty.items) {
+        const cold = scene.cold(id);
+        if (cold === null) {
+          // Deleted. Only interesting if it was in the order to begin with.
+          if (this.orderedBy.has(id)) orderChanged = true;
+        } else if (this.orderedBy.get(id) !== cold.z) {
+          orderChanged = true;
+        }
+        if (orderChanged) break;
+      }
+    }
 
     for (const id of wanted) {
       // One map lookup per item per frame, and then the typed arrays directly.
@@ -399,6 +433,10 @@ export class DomItemLayer implements ItemLayer {
         view = this.pool[archetype].pop() ?? this.create(archetype);
         this.views.set(id, view);
         this.host.append(view.el);
+        // Its rank is already known unless the order is about to be rebuilt
+        // anyway, so mounting costs one style write and disturbs nobody else.
+        const rank = this.rank.get(id);
+        if (rank !== undefined) view.el.style.zIndex = String(rank);
         if (this.selected.has(id)) view.el.classList.add("is-selected");
       }
 
@@ -414,34 +452,31 @@ export class DomItemLayer implements ItemLayer {
         );
       }
 
-      if (this.orderedBy.get(id) !== cold.z) {
-        this.orderedBy.set(id, cold.z);
-        orderChanged = true;
-      }
     }
 
-    if (orderChanged || this.order.length !== this.views.size) this.reorder(scene);
+    // `scene.size`, not `views.size`: the order covers the board, so what
+    // invalidates it is an item arriving or leaving the board, never the
+    // viewport. This is the comparison that used to make a pan re-sort.
+    if (orderChanged || this.order.length !== scene.size) this.reorder(scene);
   }
 
   /**
    * Paint order.
    *
    * `z` is a fractional-index *string*, so it cannot be handed to CSS. The
-   * sorted position becomes the `z-index` instead. Sorting runs only when a
-   * key actually changed — dragging a photograph around does not reorder
-   * anything, and neither does typing.
+   * sorted position becomes the `z-index` instead. Sorting runs only when a key
+   * actually changed or an item joined or left the board — dragging a photograph
+   * around does not reorder anything, typing does not, and neither does panning
+   * the whole board past the viewport.
    *
-   * Culling adds one caller it was not written for: a mount is a membership
-   * change, so a sustained pan re-sorts every frame. That is a few tens of
-   * microseconds at a few hundred mounted items, most of it the comparator's map
-   * lookups. If it ever matters, the fix is to rank against a sorted order over
-   * the *whole* scene, which culling cannot perturb, rather than over the mounted
-   * subset — the ranks are only ever used as relative integers.
+   * The style write is conditional on the rank having moved, which is what makes
+   * a mount cheap: the common recompute is one item created, which shifts the
+   * ranks above it and leaves everything below untouched and unwritten.
    */
   private reorder(scene: Scene): void {
-    // In place, reusing the backing store: this now runs per frame during a pan.
+    // In place, reusing the backing store.
     this.order.length = 0;
-    for (const id of this.views.keys()) this.order.push(id);
+    for (const id of scene.itemIds()) this.order.push(id);
     this.order.sort((a, b) => {
       const ca = scene.cold(a);
       const cb = scene.cold(b);
@@ -452,8 +487,26 @@ export class DomItemLayer implements ItemLayer {
       if (ca.createdBy !== cb.createdBy) return ca.createdBy - cb.createdBy;
       return ca.id < cb.id ? -1 : 1;
     });
+
     for (let i = 0; i < this.order.length; i++) {
-      this.views.get(this.order[i]!)!.el.style.zIndex = String(i + 1);
+      const id = this.order[i]!;
+      this.orderedBy.set(id, scene.cold(id)!.z);
+      const next = i + 1;
+      if (this.rank.get(id) === next) continue;
+      this.rank.set(id, next);
+      const view = this.views.get(id);
+      if (view) view.el.style.zIndex = String(next);
+    }
+
+    // Ranks for items that have left the board. Only when the count says some
+    // must have, so the ordinary recompute pays nothing for this.
+    if (this.rank.size > this.order.length) {
+      const live = new Set(this.order);
+      for (const id of this.rank.keys()) {
+        if (live.has(id)) continue;
+        this.rank.delete(id);
+        this.orderedBy.delete(id);
+      }
     }
   }
 
@@ -481,7 +534,8 @@ export class DomItemLayer implements ItemLayer {
     return null;
   }
 
-  /** Which items the layer is currently painting, bottom to top. */
+  /** Every item on the board in paint order, bottom to top — not just the
+   *  mounted ones, since culling must not be able to change the answer. */
   paintOrder(): readonly string[] {
     return this.order;
   }
@@ -514,5 +568,6 @@ export class DomItemLayer implements ItemLayer {
     this.pool.paper.length = 0;
     this.order = [];
     this.orderedBy.clear();
+    this.rank.clear();
   }
 }

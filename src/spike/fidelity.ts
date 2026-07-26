@@ -23,6 +23,10 @@
  *                          run ends visibly blurry and that one does not.
  *   VITE_SPIKE=culled      the discipline again, with `render/cull.ts` deciding
  *                          which of the 500 are in the tree at all (T-27).
+ *   VITE_SPIKE=culled-warm the same, but every photograph is decoded before the
+ *                          flight starts instead of at the frame it first
+ *                          appears. Isolates image decode from everything else,
+ *                          and the answer is not the one you would guess (D-15).
  *
  * Everything is scripted. There is no input to drive, the camera flies itself,
  * and the run ends holding at 400% with the numbers on screen.
@@ -96,12 +100,13 @@ interface Sample {
   mounted: number;
 }
 
-type Kind = "discipline" | "pinned" | "culled";
+type Kind = "discipline" | "pinned" | "culled" | "culled-warm";
 
 const LABELS: Record<Kind, string> = {
   discipline: "will-change discipline",
   pinned: "will-change PINNED — control",
   culled: "will-change discipline + culling (T-27)",
+  "culled-warm": "culling, with all 500 decoded up front",
 };
 
 function percentile(sorted: number[], p: number): number {
@@ -153,8 +158,9 @@ async function loadManifest(): Promise<string[]> {
 export async function run(): Promise<void> {
   const mode = String(import.meta.env["VITE_SPIKE"]);
   const pinned = mode === "pinned";
-  const culling = mode === "culled";
-  const kind: Kind = pinned ? "pinned" : culling ? "culled" : "discipline";
+  const warm = mode === "culled-warm";
+  const culling = mode === "culled" || warm;
+  const kind: Kind = pinned ? "pinned" : warm ? "culled-warm" : culling ? "culled" : "discipline";
   const label = LABELS[kind];
 
   const root = document.querySelector<HTMLDivElement>("#board-root");
@@ -186,6 +192,7 @@ export async function run(): Promise<void> {
   const pending: Promise<void>[] = [];
   /** Kept by index so the culled run can put them in and take them out. */
   const els: HTMLDivElement[] = [];
+  const imgs: HTMLImageElement[] = [];
 
   for (let i = 0; i < PHOTO_COUNT; i++) {
     const spot = layout[i]!;
@@ -217,6 +224,7 @@ export async function run(): Promise<void> {
 
     el.append(img, caption);
     els.push(el);
+    imgs.push(img);
     // The culled run starts with an empty tree; the first frame mounts whatever
     // the camera can see. An `<img>` loads whether or not it is in the document,
     // so the wait below is the same wait in both runs.
@@ -225,6 +233,17 @@ export async function run(): Promise<void> {
   if (!culling) world.layers.world.append(fragment);
 
   await Promise.all(pending);
+  if (warm) {
+    // `load` is not `decode`. An `<img>` decodes at first paint, and in the culled
+    // run these images are not in the document while we wait above — so ~500 first
+    // decodes are deferred out of startup and scattered across the flight, landing
+    // as each item is first mounted. That is a cost culling *moves* rather than
+    // causes, and this run exists to show what happens if it is paid up front.
+    //
+    // allSettled, not all: `decode()` rejects for an image that failed to load,
+    // and one missing photograph out of 500 must not take the spike down.
+    await Promise.allSettled(imgs.map((img) => img.decode()));
+  }
   const buildMs = performance.now() - buildStart;
 
   /**

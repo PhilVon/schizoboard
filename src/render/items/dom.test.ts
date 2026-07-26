@@ -133,6 +133,59 @@ describe("DomItemLayer", () => {
     expect(layer.paintOrder()).toEqual(["b", "a"]);
   });
 
+  it("orders the whole board, not only what is mounted", () => {
+    add("a", { z: "a0" });
+    add("b", { z: "a1" });
+    add("c", { z: "a2" });
+    dirty.everything();
+    layer.sync(scene, dirty, new Set(["b"]));
+    expect(layer.mounted).toBe(1);
+    // Culling decides what is drawn; it must not get a say in what order things
+    // are drawn in, or panning would shuffle the board.
+    expect(layer.paintOrder()).toEqual(["a", "b", "c"]);
+  });
+
+  it("does not renumber a surviving item when its neighbours mount and unmount", () => {
+    add("a", { z: "a0" });
+    add("b", { z: "a1" });
+    add("c", { z: "a2" });
+    layer.sync(scene, dirty, null);
+    const b = host.children[1] as HTMLElement;
+    const before = b.style.zIndex;
+    expect(before).not.toBe("");
+
+    // A zoom, in the spike, unmounted ~180 items across one gesture. Every one
+    // of those used to rewrite an inline style on every other mounted node, and
+    // 180 style invalidations a frame is a 243 ms frame (D-13).
+    dirty.everything();
+    layer.sync(scene, dirty, new Set(["b"]));
+    expect(b.style.zIndex).toBe(before);
+
+    dirty.everything();
+    layer.sync(scene, dirty, null);
+    expect(b.style.zIndex).toBe(before);
+  });
+
+  it("gives a remounted item the z-index it had before", () => {
+    add("under", { z: "a0" });
+    add("over", { z: "a1" });
+    layer.sync(scene, dirty, null);
+    const over = host.children[1] as HTMLElement;
+    const overZ = over.style.zIndex;
+
+    dirty.everything();
+    layer.sync(scene, dirty, new Set(["under"]));
+    expect(over.parentElement).toBeNull();
+
+    // Blanked, so the assertion is that mounting *writes* the rank rather than
+    // that the pooled node happened to keep it.
+    over.style.zIndex = "";
+    dirty.everything();
+    layer.sync(scene, dirty, null);
+    expect(over.parentElement).toBe(host);
+    expect(over.style.zIndex).toBe(overZ);
+  });
+
   it("writes a transform that positions by centre", () => {
     add("a", {}, { x: 100, y: 50, w: 40, h: 20 });
     layer.sync(scene, dirty, null);
