@@ -334,6 +334,15 @@ export class ToolMachine {
           this.push({ kind: "key", code: e.code, shift: e.shiftKey, ctrl: e.ctrlKey, alt: e.altKey });
           e.preventDefault();
           break;
+        // > Tuck behind — DESIGN section 3.4, whose row says context menu. The
+        // menu comes with the restyle verbs (T-52); `B` is the interim, and
+        // `select.ts` says why at length. Bare only, and not
+        // `preventDefault`ed — like the digits below, a lone letter over a
+        // canvas has no webview default worth stopping.
+        case "KeyB":
+          if (e.ctrlKey || e.metaKey || e.altKey || e.shiftKey) break;
+          this.push({ kind: "key", code: "KeyB", shift: false, ctrl: false, alt: false });
+          break;
         case "KeyA":
           if (!(e.ctrlKey || e.metaKey)) break;
           this.push({ kind: "key", code: "KeyA", shift: e.shiftKey, ctrl: true, alt: e.altKey });

@@ -1327,6 +1327,40 @@ export class SelectTool implements Tool {
         return;
       }
 
+      case "KeyB": {
+        /**
+         * > | Tuck behind | Context menu → *Tuck behind* | Flips `layer`; the
+         * > string now runs behind items instead of over them — DESIGN 3.4
+         *
+         * The context menu that row names does not exist, and it is not this
+         * task's job to build one: DESIGN 3.4 puts three verbs in it — tuck,
+         * restyle, cut — and a menu framework that pays for a single verb is
+         * the worst version of itself. It arrives with the restyle work (T-52),
+         * which is the two rows that actually need a palette. Until then `B`,
+         * which is the only free letter left in DESIGN 3.9's map, does the one
+         * verb whose machinery is already built and otherwise unreachable.
+         *
+         * Everything downstream of this keystroke has been in place since the
+         * rope renderer landed: two canvases either side of the item layer,
+         * `RopeLayer` filtering on the field, the hit test refusing to grab a
+         * tucked string through the photograph covering it. Only the write was
+         * missing.
+         *
+         * One target layer for the whole selection rather than each string
+         * flipping its own: `B` on a mixed selection means "put these behind",
+         * and only a selection that is *already* entirely behind comes back
+         * out. Independent flips would shuffle a mixed selection into a
+         * different mixed selection, which is not a thing anyone presses a key
+         * to get.
+         */
+        if (input.ctrl || input.alt || this.gesturing) return;
+        const strings = [...ctx.selection.strings];
+        if (strings.length === 0) return;
+        const allUnder = strings.every((id) => ctx.scene.strings.get(id)?.layer === "under");
+        ctx.write.setStringLayer(strings, allUnder ? "over" : "under");
+        return;
+      }
+
       default: {
         /**
          * > | Slack presets | `1`-`9` with a string selected | Taut through to

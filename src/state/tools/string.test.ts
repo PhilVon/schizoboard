@@ -138,6 +138,9 @@ beforeEach(() => {
       scaleStringSlack: () => {
         throw new Error("the string tool does not edit an existing run's slack");
       },
+      setStringLayer: () => {
+        throw new Error("the string tool does not restyle an existing run");
+      },
     },
   };
 });

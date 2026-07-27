@@ -40,7 +40,8 @@ type Write =
   | { kind: "nodeSlack"; stringId: string; nodeId: string; slack: number }
   | { kind: "scaleNode"; stringId: string; nodeId: string; factor: number }
   | { kind: "stringSlack"; stringIds: string[]; slack: number }
-  | { kind: "scaleString"; stringIds: string[]; factor: number };
+  | { kind: "scaleString"; stringIds: string[]; factor: number }
+  | { kind: "layer"; stringIds: string[]; layer: "over" | "under" };
 
 let scene: Scene;
 let dirty: DirtySets;
@@ -164,9 +165,18 @@ function move(x: number, y: number, mods?: Partial<PointerSample>): void {
 function up(x: number, y: number): void {
   tool.handle({ kind: "up", at: at(x, y) }, ctx);
 }
-function key(code: string, mods: { shift?: boolean; ctrl?: boolean } = {}): void {
+function key(
+  code: string,
+  mods: { shift?: boolean; ctrl?: boolean; alt?: boolean } = {},
+): void {
   tool.handle(
-    { kind: "key", code, shift: mods.shift ?? false, ctrl: mods.ctrl ?? false, alt: false },
+    {
+      kind: "key",
+      code,
+      shift: mods.shift ?? false,
+      ctrl: mods.ctrl ?? false,
+      alt: mods.alt ?? false,
+    },
     ctx,
   );
 }
@@ -266,6 +276,10 @@ beforeEach(() => {
         writes.push({ kind: "stringSlack", stringIds: [...stringIds], slack }),
       scaleStringSlack: (stringIds, factor) =>
         writes.push({ kind: "scaleString", stringIds: [...stringIds], factor }),
+      // Tuck behind (DESIGN section 3.4), which is the same shape: the tool
+      // names one absolute layer for the whole selection.
+      setStringLayer: (stringIds, layer) =>
+        writes.push({ kind: "layer", stringIds: [...stringIds], layer }),
     },
   };
 });
@@ -2246,5 +2260,103 @@ describe("slack controls", () => {
       doubleClick(600, 400);
       expect(writes).toEqual([]);
     });
+  });
+});
+
+/**
+ * > | Tuck behind | Context menu → *Tuck behind* | Flips `layer`; the string
+ * > now runs behind items instead of over them — DESIGN section 3.4
+ *
+ * On `B` rather than that menu, which does not exist yet and which arrives with
+ * the restyle verbs it shares — `select.ts` says why. What is under test here
+ * is only the write: everything the flip then *does* was already built and is
+ * proved elsewhere. `render/ropes/paint.test.ts` has the canvas filter, and
+ * "cannot be grabbed through a photograph it is tucked behind" above has the
+ * hit test.
+ */
+describe("tucking a string behind the items", () => {
+  const SLACK = 0.2;
+
+  /** A string through two pins, on the layer named. */
+  function span(id: string, y: number, layer = "over"): void {
+    putPin(`${id}-a`, null, 0, y);
+    putPin(`${id}-b`, null, 200, y);
+    scene.strings.set(id, {
+      id,
+      nodes: [
+        { nodeId: `${id}-n0`, pin: `${id}-a`, slackAfter: SLACK },
+        { nodeId: `${id}-n1`, pin: `${id}-b`, slackAfter: SLACK },
+      ],
+      color: "#a8322c",
+      thickness: 3,
+      material: "string",
+      layer,
+      closed: false,
+    });
+  }
+
+  it("puts a selected string under the items", () => {
+    span("s", 0);
+    selection.replaceStrings(["s"]);
+    key("KeyB");
+    expect(writes).toEqual([{ kind: "layer", stringIds: ["s"], layer: "under" }]);
+  });
+
+  it("brings it back over when it is already under", () => {
+    span("s", 0, "under");
+    selection.replaceStrings(["s"]);
+    key("KeyB");
+    expect(writes).toEqual([{ kind: "layer", stringIds: ["s"], layer: "over" }]);
+  });
+
+  /**
+   * The reason the write carries a layer rather than meaning "invert each of
+   * these": independent flips would turn one mixed selection into a different
+   * mixed selection, and pressing the key again would put it back — a gesture
+   * that never converges on the thing the eye is asking for.
+   */
+  it("puts a mixed selection all the way under, and only then all the way back", () => {
+    span("s0", 0);
+    span("s1", 300, "under");
+    selection.replaceStrings(["s0", "s1"]);
+
+    key("KeyB");
+    expect(writes).toEqual([{ kind: "layer", stringIds: ["s0", "s1"], layer: "under" }]);
+
+    // The write is queued to phase 9 and the scene has not seen it yet, so the
+    // second press is made to look like the frame after it landed.
+    scene.strings.get("s0")!.layer = "under";
+    key("KeyB");
+    expect(writes[1]).toEqual({ kind: "layer", stringIds: ["s0", "s1"], layer: "over" });
+  });
+
+  it("does nothing with no string selected", () => {
+    span("s", 0);
+    put("a", 0, 0);
+    selection.replace(["a"]);
+    key("KeyB");
+    expect(writes).toEqual([]);
+  });
+
+  /** `Ctrl`+`B` is bold in every text field ever built, and `Alt` is the
+   *  whole-string modifier. The machine filters both; a tool that acted on them
+   *  anyway is a bug waiting for the day something else forwards a key. */
+  it("ignores B with Ctrl or Alt held", () => {
+    span("s", 0);
+    selection.replaceStrings(["s"]);
+    key("KeyB", { ctrl: true });
+    key("KeyB", { alt: true });
+    expect(writes).toEqual([]);
+  });
+
+  /** Mid-gesture, like every other key here: a press that arrives while a loop
+   *  is being pulled out of the string is not a second verb. */
+  it("does nothing mid-gesture", () => {
+    span("s", 0);
+    selection.replaceStrings(["s"]);
+    down(100, 0);
+    move(100, 40);
+    key("KeyB");
+    expect(writes.every((w) => w.kind !== "layer")).toBe(true);
   });
 });

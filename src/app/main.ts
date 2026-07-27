@@ -26,6 +26,7 @@ import {
   setItemPoses,
   setNodeSlack,
   setStringSlack,
+  setStringStyle,
 } from "@/crdt/ops";
 import { Origin } from "@/crdt/origins";
 import { Persistence } from "@/crdt/persistence";
@@ -315,6 +316,19 @@ async function boot(): Promise<void> {
     scaleStringSlack: (stringIds, factor) => {
       const snapshot = [...stringIds];
       queued.push(() => scaleStringSlack(board, snapshot, factor));
+    },
+    /**
+     * Tuck behind, and the only thing in the app that writes `layer`.
+     *
+     * `setStringStyle` takes the whole style and applies only the fields it is
+     * given, so this hands over the one field rather than reading the other
+     * four out of the scene and writing them back — a restyle that echoed the
+     * colour and thickness would collide with a concurrent restyle of those
+     * fields for no reason at all.
+     */
+    setStringLayer: (stringIds, layer) => {
+      const snapshot = [...stringIds];
+      queued.push(() => setStringStyle(board, snapshot, { layer }));
     },
   };
 

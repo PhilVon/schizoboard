@@ -237,6 +237,17 @@ export interface BoardWriter {
    * drape without losing the shape `lib/slack.ts` gave it.
    */
   scaleStringSlack(stringIds: readonly string[], factor: number): void;
+  /**
+   * Which side of the items these strings run — DESIGN section 3.4's "tuck
+   * behind", and the one field the two rope canvases sort themselves by.
+   *
+   * Absolute rather than a toggle, for the same reason the `1`-`9` presets are:
+   * a mixed selection has no single state to flip, and a write that meant
+   * "invert whatever each one currently is" would scatter a selection the
+   * gesture was trying to make agree. The tool decides the one target layer and
+   * names it; see `SelectTool.onKey`.
+   */
+  setStringLayer(stringIds: readonly string[], layer: "over" | "under"): void;
 }
 
 /**
