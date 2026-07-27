@@ -24,6 +24,10 @@ interface Calls {
   /** The rotation knob: centre and radius of every arc drawn. */
   arcs: [number, number, number][];
   lines: [number, number][];
+  /** The `lineWidth` in force at each `stroke()`. Separate from `lineWidths`,
+   *  which is the width at each `strokeRect` — the two chrome families do not
+   *  share a stroke call and must not share an assertion. */
+  strokeWidths: number[];
 }
 
 let calls: Calls;
@@ -55,7 +59,9 @@ function stubCanvas(): HTMLCanvasElement {
     moveTo: (...args: [number, number]) => calls.lines.push(args),
     lineTo: (...args: [number, number]) => calls.lines.push(args),
     arc: (x: number, y: number, r: number) => calls.arcs.push([x, y, r]),
-    stroke: vi.fn(),
+    stroke: () => {
+      calls.strokeWidths.push(ctx.lineWidth);
+    },
     fill: vi.fn(),
     fillStyle: "",
     strokeStyle: "",
@@ -98,6 +104,7 @@ beforeEach(() => {
     lineWidths: [],
     arcs: [],
     lines: [],
+    strokeWidths: [],
   };
   camera = new Camera();
   camera.resize(1000, 800);
@@ -530,5 +537,115 @@ describe("chrome for a selected pin", () => {
     putPin("p", null, 0, 0);
     frame();
     expect(calls.arcs.length).toBe(0);
+  });
+});
+
+/**
+ * > | See its threads | Hover | Every string through the pin highlights |
+ * > — DESIGN section 3.3
+ *
+ * The lit wash is one stroke per string at the string's own width, so what is
+ * countable here is how many strokes and how wide — which is exactly the
+ * difference between this and the selection halo, and the thing that would
+ * silently drift if somebody reused the halo's constants.
+ */
+describe("Overlay, hovering a pin lights its threads", () => {
+  const pool = new Float64Array([0, 0, 100, 40, 200, 0, 200, 0, 300, 40, 400, 0]);
+  const ropes = {
+    positions: pool,
+    visit: (id: string, fn: (at: number, count: number) => void): void => {
+      if (id === "s0") fn(0, 3);
+      if (id === "s1") fn(6, 3);
+    },
+  };
+
+  function run(id: string, thickness: number, ...pins: string[]): void {
+    scene.putString({
+      id,
+      nodes: pins.map((p, i) => ({ nodeId: `${id}-n${i}`, pin: p, slackAfter: 0.2 })),
+      color: "#a8322c",
+      thickness,
+      material: "string",
+      layer: "over",
+      closed: false,
+    });
+  }
+
+  function draw(hoveredPin: string | null): void {
+    overlay.draw(camera, scene, selection, null, dirty, null, null, ropes, null, hoveredPin);
+  }
+
+  it("lights the string through the pin, at the string's own width", () => {
+    run("s0", 7, "hub", "far");
+    draw("hub");
+    // One stroke at the string's own thickness — not the halo's two, and not
+    // widened. A hover must not look like a selection.
+    expect(calls.lines.length).toBe(3);
+    expect(calls.strokeWidths).toEqual([7]);
+  });
+
+  /** A hub can host strings of different thicknesses, so the width is set per
+   *  string rather than hoisted out of the loop with the colour. */
+  it("uses each string's own thickness", () => {
+    run("s0", 3, "hub", "a");
+    run("s1", 9, "hub", "b");
+    draw("hub");
+    expect([...calls.strokeWidths].sort((a, b) => a - b)).toEqual([3, 9]);
+  });
+
+  /** The hub pin of DESIGN section 2.3, which is what makes this worth having:
+   *  hover it and the whole junction lights up at once. */
+  it("lights every string of a hub pin", () => {
+    run("s0", 3, "hub", "a");
+    run("s1", 3, "hub", "b");
+    draw("hub");
+    // Two polylines of three points each: six moveTo/lineTo calls.
+    expect(calls.lines.length).toBe(6);
+  });
+
+  it("lights nothing for a pin with no strings on it", () => {
+    run("s0", 3, "hub", "a");
+    draw("bare");
+    expect(calls.lines.length).toBe(0);
+  });
+
+  it("lights nothing when the cursor is on no pin at all", () => {
+    run("s0", 3, "hub", "a");
+    draw(null);
+    expect(calls.lines.length).toBe(0);
+  });
+
+  /** Moving off a pin has to clear, or the last thread stays lit for as long as
+   *  nothing else happens to touch this canvas. */
+  it("clears the frame the cursor leaves the pin", () => {
+    run("s0", 3, "hub", "a");
+    draw("hub");
+    const before = calls.clearRect;
+    const lit = calls.lines.length;
+    draw(null);
+    expect(calls.clearRect).toBeGreaterThan(before);
+    // Cleared, and nothing drawn in its place.
+    expect(calls.lines.length).toBe(lit);
+  });
+
+  /** A still board with the cursor resting on a pin is free, like everything
+   *  else on this canvas. */
+  it("does not restroke while the cursor rests on the same pin", () => {
+    run("s0", 3, "hub", "a");
+    draw("hub");
+    const drawn = calls.lines.length;
+    draw("hub");
+    draw("hub");
+    expect(calls.lines.length).toBe(drawn);
+  });
+
+  /** The lit strings sag and settle like any others. */
+  it("restrokes when a lit string moves", () => {
+    run("s0", 3, "hub", "a");
+    draw("hub");
+    const drawn = calls.lines.length;
+    dirty.rope("s0");
+    draw("hub");
+    expect(calls.lines.length).toBeGreaterThan(drawn);
   });
 });

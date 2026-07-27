@@ -167,6 +167,23 @@ const STRING_HALO_WIDEN = 7;
 /** A shade wider than the string, so the fringe does not eat its own edges. */
 const STRING_HALO_CLEAR = 2;
 
+/**
+ * > | See its threads | Hover | Every string through the pin highlights |
+ * > — DESIGN section 3.3
+ *
+ * A *lit* string rather than a haloed one, and the difference is the whole
+ * design of it: the halo is what a **selected** string looks like, and hovering
+ * must not look like having selected something. So this is a warm pale wash
+ * inside the string's own width — the cotton lifts toward the light and does
+ * not gain an outline, which is exactly the difference between "this is the one
+ * you are pointing at" and "this is the one you have hold of".
+ *
+ * Confined to the string's own width for the reason `STRING_HALO` is not: a
+ * wide pale stroke laid over a string reads as faded, and a faded string on
+ * hover would say the opposite of what this means.
+ */
+const THREAD_LIT = "rgba(255, 236, 196, 0.32)";
+
 export class Overlay {
   private readonly canvas: HTMLCanvasElement;
   private readonly ctx: CanvasRenderingContext2D | null;
@@ -198,6 +215,10 @@ export class Overlay {
    *  curve that nothing else on this canvas knows about, so it is its own
    *  flag — the frame it disappears is a frame that has to clear. */
   private hadStringHover = false;
+  /** The pin whose threads were lit last frame. Like the candidate ring, it
+   *  changes with nothing else: moving the cursor from one pin to the next
+   *  touches no camera, no selection and no item. */
+  private hoveredPin: string | null = null;
   /** Reset at the top of every `draw` â€” see [`Overlay.clear`]. */
   private cleared = false;
 
@@ -241,6 +262,16 @@ export class Overlay {
     ropes: RopeGeometry | null = null,
     /** The point on a string under the cursor, board space (DESIGN 3.4). */
     stringHover: Vec2 | null = null,
+    /**
+     * The pin under the cursor, whose threads light up — DESIGN section 3.3's
+     * "see its threads" row.
+     *
+     * The id rather than the strings, because the scene is already here and
+     * `stringsThrough` is the index that answers it: handing over a list would
+     * make `main.ts` do the lookup on every frame the cursor moves, whether or
+     * not this canvas turned out to need it.
+     */
+    hoveredPin: string | null = null,
   ): void {
     const ctx = this.ctx;
     if (!ctx) return;
@@ -248,11 +279,16 @@ export class Overlay {
     const wantsMarquee = marquee !== null;
     const wantsPending = pending !== null && pending.points.length >= 2;
     const wantsStrings = ropes !== null && selection.strings.size > 0;
+    const wantsThreads = ropes !== null && hoveredPin !== null;
     const stale =
       wantsMarquee ||
       wantsPending ||
       stringHover !== null ||
       this.hadStringHover ||
+      hoveredPin !== this.hoveredPin ||
+      // The lit strings sag and settle like any others, and hovering a pin on a
+      // board where something is still swinging must not freeze them.
+      (wantsThreads && (dirty.all || dirty.ropes.size > 0 || dirty.strings.size > 0)) ||
       // A selected string sags, settles and follows the photograph it is tied
       // to, none of which touches the camera or the selection.
       (wantsStrings && (dirty.all || dirty.ropes.size > 0 || dirty.strings.size > 0)) ||
@@ -271,6 +307,7 @@ export class Overlay {
     this.hadMarquee = wantsMarquee;
     this.hadPending = wantsPending;
     this.hadStringHover = stringHover !== null;
+    this.hoveredPin = hoveredPin;
     this.highlighted = highlight;
     this.cameraVersion = camera.version;
     this.selectionVersion = selection.version;
@@ -286,6 +323,9 @@ export class Overlay {
     // The halo first, so every other piece of chrome lands on top of it rather
     // than being washed out by it.
     let drew = wantsStrings && this.drawStrings(ctx, camera, scene, selection, ropes);
+    // Straight after the halo and before every other piece of chrome, so a
+    // string that is both hovered and selected still reads as selected first.
+    if (wantsThreads && this.drawThreads(ctx, camera, scene, ropes, hoveredPin)) drew = true;
     if (this.drawSelection(ctx, camera, scene, selection)) drew = true;
     if (this.drawPins(ctx, camera, scene, selection)) drew = true;
     // The rotation handle. `chromeFrame` is what decides that one item has one
@@ -420,6 +460,67 @@ export class Overlay {
       ctx.lineWidth = style.thickness + STRING_HALO_CLEAR;
       ctx.stroke();
       ctx.restore();
+      drew = true;
+    }
+    return drew;
+  }
+
+  /**
+   * Every string through the hovered pin, lit — DESIGN section 3.3.
+   *
+   * The whole reason this is cheap enough to do on a hover is
+   * `Scene.stringsThrough`: without it the answer to "what hangs off this pin"
+   * is a walk of every string on the board and every node in it, on every frame
+   * the cursor moves across a pin.
+   *
+   * Walked from the rope particles rather than the pins, like the halo above
+   * and for the same reason — a string with drape in it is nowhere near the
+   * chord between its pins, and a highlight along the chord would sit in
+   * mid-air over the string it claims to be lighting.
+   */
+  private drawThreads(
+    ctx: CanvasRenderingContext2D,
+    camera: Camera,
+    scene: Scene,
+    ropes: RopeGeometry,
+    pinId: string,
+  ): boolean {
+    const through = scene.stringsThrough(pinId);
+    if (through.size === 0) return false;
+
+    const pool = ropes.positions;
+    const zoom = camera.zoom;
+    const camX = camera.x;
+    const camY = camera.y;
+    let drew = false;
+
+    for (const id of through) {
+      const style = scene.strings.get(id);
+      if (style === undefined) continue;
+
+      let any = false;
+      ctx.beginPath();
+      ropes.visit(id, (at, count) => {
+        ctx.moveTo((pool[at]! - camX) * zoom, (pool[at + 1]! - camY) * zoom);
+        for (let i = 1; i < count; i++) {
+          const j = at + i * 2;
+          ctx.lineTo((pool[j]! - camX) * zoom, (pool[j + 1]! - camY) * zoom);
+        }
+        any = true;
+      });
+      if (!any) continue;
+
+      if (!drew) {
+        this.clear(ctx);
+        ctx.lineCap = "round";
+        ctx.lineJoin = "round";
+        ctx.strokeStyle = THREAD_LIT;
+      }
+      // The string's own width, so the wash stays inside the cotton — see
+      // [`THREAD_LIT`]. Set per string, because a hub pin can host strings of
+      // different thicknesses.
+      ctx.lineWidth = style.thickness;
+      ctx.stroke();
       drew = true;
     }
     return drew;

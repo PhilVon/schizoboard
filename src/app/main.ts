@@ -755,6 +755,12 @@ async function boot(): Promise<void> {
       // one the cursor is over (DESIGN section 3.4).
       ropes,
       hoveredString,
+      // > | See its threads | Hover | Every string through the pin highlights |
+      // > — DESIGN section 3.3
+      //
+      // The same hover the pin layer uses for the eyelet ring, resolved once in
+      // the layout phase and read by both.
+      hoveredPin,
     );
     hud.update(frame.now);
   });
