@@ -28,6 +28,7 @@
  * awkward half (what a right-click landed on) stays in one place.
  */
 
+import { inkColors, INK_SIZES, type InkTool } from "@/lib/ink";
 import { STRING_MATERIALS } from "@/lib/material";
 import { STRING_COLORS, STRING_THICKNESSES } from "@/lib/palette";
 import type { Scene } from "@/state/scene";
@@ -246,4 +247,64 @@ export function pinMenuRows(
       run: () => write.deletePins(live, settleOnUnpin(scene, live)),
     },
   ];
+}
+
+/**
+ * The rows for a right-click made while a pen is the tool in hand.
+ *
+ * > Colours live in a small palette per tool — marker in black, red, blue,
+ * > green; highlighter in yellow, pink, green, blue. Size is `[` and `]`.
+ * > — DESIGN section 3.9
+ *
+ * DESIGN gives the palette and binds no key to it, so this is the way in, and it
+ * is the fourth menu rather than a fourth thing a click can land on: with a pen
+ * held, a right-click is not about the paper under the cursor. Nothing here
+ * reads the scene or the click position at all — the marker is not editing an
+ * object, it is being loaded.
+ *
+ * The size row is here as well as on `[` and `]` for the same reason the string
+ * menu carries thickness: the keys are for somebody who already knows the
+ * ladder, and the chips are how anybody finds out there is one. The chips are
+ * drawn at the nib's *own* width (`weight`), so a size is picked by looking at
+ * it rather than by reading a number in board units, which is a unit nobody
+ * thinks in.
+ *
+ * A pen and not the document: nothing on this menu writes anything, which is why
+ * it takes no `BoardWriter`. That is also why there is no undo entry for picking
+ * a colour — changing pens is not an edit to the board.
+ */
+export function penMenuRows(pen: Pen): MenuEntry[] {
+  const colors: MenuChoice[] = inkColors(pen.kind).map(({ label, hex }) => ({
+    label,
+    swatch: hex,
+    current: pen.color === hex,
+    run: () => pen.load({ color: hex }),
+  }));
+
+  const sizes: MenuChoice[] = INK_SIZES.map((size) => ({
+    label: `${size}`,
+    weight: size,
+    current: pen.size === size,
+    run: () => pen.load({ size }),
+  }));
+
+  return [
+    { label: pen.kind === "highlighter" ? "Highlighter" : "Marker", choices: colors },
+    { label: "Size", choices: sizes },
+  ];
+}
+
+/**
+ * What `penMenuRows` needs of a pen, which is `state/tools/marker.ts`'s
+ * `MarkerTool` and is written here as the four members it actually uses.
+ *
+ * The narrow shape rather than the class, for the same reason every other
+ * function in this file takes ids: a menu row is a label and a closure, and
+ * nothing about building one should need a tool that owns a pointer.
+ */
+export interface Pen {
+  readonly kind: InkTool;
+  readonly color: string;
+  readonly size: number;
+  load(pen: { color?: string; size?: number }): void;
 }

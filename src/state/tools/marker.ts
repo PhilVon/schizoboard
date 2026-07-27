@@ -82,6 +82,8 @@ import {
   DEFAULT_HIGHLIGHTER_SIZE,
   DEFAULT_INK_SIZE,
   DEFAULT_MARKER_COLOR,
+  INK_SIZES,
+  inkSizeIndex,
   type InkSample,
   type InkTool,
   type WetStroke,
@@ -112,17 +114,26 @@ export class MarkerTool implements Tool {
   private readonly options: MarkerToolOptions;
   private readonly tool: InkTool;
   /**
-   * The four fields every stroke of this tool carries, resolved once in the
-   * constructor rather than per stroke.
+   * What this pen is currently loaded with. Every stroke it makes carries these.
    *
-   * Per tool and not per stroke because none of them can change mid-gesture:
-   * `[` and `]` and the colour palette (DESIGN section 3.9) pick a *pen*, and a
-   * pen picked halfway down a line would be a stroke with two widths in it that
-   * the document has no way to store.
+   * Per tool and not per stroke, which is the whole of why they live here: `[`
+   * and `]` and the palette (DESIGN section 3.9) pick a *pen*, not a mark. A
+   * stroke in progress is unaffected — see [`strokeInk`].
    */
-  private readonly color: string;
-  private readonly size: number;
+  private ink: string;
+  private nib: number;
   private readonly opacity: number;
+  /**
+   * The pen as it was at pen-down, which is the pen the whole stroke is made
+   * with.
+   *
+   * Copied at the press rather than read at the release, so that `[` pressed
+   * halfway down a line does not retroactively rewrite the width of the line
+   * being drawn — a stroke has one width in the document and it should be the
+   * one under the cursor while it was made. The next stroke gets the new pen.
+   */
+  private strokeInk = "";
+  private strokeNib = 0;
   /** In [`space`], oldest first. Empty means no stroke in progress. */
   private samples: InkSample[] = [];
   /**
@@ -149,9 +160,8 @@ export class MarkerTool implements Tool {
     this.tool = options.tool ?? "marker";
     this.id = this.tool;
     const highlighter = this.tool === "highlighter";
-    this.color =
-      options.color ?? (highlighter ? DEFAULT_HIGHLIGHTER_COLOR : DEFAULT_MARKER_COLOR);
-    this.size = options.size ?? (highlighter ? DEFAULT_HIGHLIGHTER_SIZE : DEFAULT_INK_SIZE);
+    this.ink = options.color ?? (highlighter ? DEFAULT_HIGHLIGHTER_COLOR : DEFAULT_MARKER_COLOR);
+    this.nib = options.size ?? (highlighter ? DEFAULT_HIGHLIGHTER_SIZE : DEFAULT_INK_SIZE);
     this.opacity = options.opacity ?? (highlighter ? DEFAULT_HIGHLIGHTER_OPACITY : 1);
   }
 
@@ -188,6 +198,53 @@ export class MarkerTool implements Tool {
     return this.drawing;
   }
 
+  /**
+   * Which pen this is, and what it is loaded with — for the menu that changes
+   * them (`ui/boardmenu.ts`), which has to mark the current choices.
+   *
+   * Read-only accessors over the fields rather than public fields, because the
+   * only supported way to change one is [`load`] and a menu that assigned
+   * directly would be a second one.
+   */
+  get kind(): InkTool {
+    return this.tool;
+  }
+
+  get color(): string {
+    return this.ink;
+  }
+
+  get size(): number {
+    return this.nib;
+  }
+
+  /**
+   * Load the pen: a colour, a width, or both.
+   *
+   * Takes effect on the next stroke and never on the one in progress — see
+   * [`strokeInk`]. Nothing validates the colour against the palette or the
+   * size against the ladder: the palette is what the menu offers and the ladder
+   * is what `[` and `]` walk, and a tool that also policed them would be a second
+   * opinion about the same thing.
+   */
+  load(pen: { color?: string; size?: number }): void {
+    if (pen.color !== undefined) this.ink = pen.color;
+    if (pen.size !== undefined && pen.size > 0) this.nib = pen.size;
+  }
+
+  /**
+   * `[` and `]` — one rung down or up the shared ladder (DESIGN section 3.9).
+   *
+   * Clamped at both ends rather than wrapping. A size key held down is somebody
+   * asking for "bigger" repeatedly, and a nib that silently became the finest one
+   * on the board at the top of the range is the opposite of what they asked for.
+   */
+  step(by: number): void {
+    const at = inkSizeIndex(this.nib);
+    const next = Math.min(INK_SIZES.length - 1, Math.max(0, at + by));
+    this.nib = INK_SIZES[next]!;
+  }
+
   handle(input: ToolInput, ctx: ToolContext): void {
     switch (input.kind) {
       case "down":
@@ -203,6 +260,9 @@ export class MarkerTool implements Tool {
         // Before the first sample, because the first sample is already converted
         // into it.
         this.space = this.spaceAt(input.at, ctx);
+        // The pen, fixed for this stroke — see the note on [`strokeInk`].
+        this.strokeInk = this.ink;
+        this.strokeNib = this.nib;
         // Also before the first sample, so this stroke starts from rest rather
         // than from wherever the last one's hand was going.
         this.velocity.reset();
@@ -288,8 +348,8 @@ export class MarkerTool implements Tool {
   private snapshot(): WetStroke {
     return {
       tool: this.tool,
-      color: this.color,
-      size: this.size,
+      color: this.strokeInk,
+      size: this.strokeNib,
       opacity: this.opacity,
       item: this.space,
       samples: this.samples,

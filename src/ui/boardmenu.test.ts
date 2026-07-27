@@ -13,7 +13,16 @@ import { Scene, type ItemPose } from "@/state/scene";
 import type { BoardWriter, StringStyle, WritePose } from "@/state/tools/tool";
 import { STRING_MATERIALS } from "@/lib/material";
 import { DEFAULT_STRING_COLOR, STRING_COLORS, STRING_THICKNESSES } from "@/lib/palette";
-import { itemMenuRows, pinMenuRows, stringMenuRows } from "@/ui/boardmenu";
+import {
+  DEFAULT_HIGHLIGHTER_COLOR,
+  DEFAULT_HIGHLIGHTER_SIZE,
+  DEFAULT_INK_SIZE,
+  DEFAULT_MARKER_COLOR,
+  HIGHLIGHTER_COLORS,
+  INK_SIZES,
+  MARKER_COLORS,
+} from "@/lib/ink";
+import { itemMenuRows, penMenuRows, pinMenuRows, stringMenuRows, type Pen } from "@/ui/boardmenu";
 import type { MenuChoice, MenuEntry, MenuRow } from "@/ui/menu";
 
 type Settle = [string, WritePose][];
@@ -475,5 +484,71 @@ describe("the pin context menu", () => {
     pin("p1", "i", 10);
     pick(pinMenuRows(scene, write, ["p0", "p1"]), "Remove");
     expect((writes[0] as Extract<Write, { kind: "deletePins" }>).settle).toEqual([]);
+  });
+});
+
+/**
+ * The pen menu (T-134) — the fourth menu, and the only one that writes nothing.
+ *
+ * DESIGN section 3.9 gives each pen a palette and binds no key to it, so this is
+ * the only way to pick a colour. What is worth pinning down is that the rows are
+ * the *pen's* palette rather than a shared one, that the current choice is
+ * marked, and that picking loads the pen rather than editing the board.
+ */
+describe("the pen menu", () => {
+  /** A stand-in for `MarkerTool`, which is what `Pen` exists to avoid needing. */
+  function pen(kind: "marker" | "highlighter"): Pen & { color: string; size: number } {
+    const held = {
+      kind,
+      color: kind === "highlighter" ? DEFAULT_HIGHLIGHTER_COLOR : DEFAULT_MARKER_COLOR,
+      size: kind === "highlighter" ? DEFAULT_HIGHLIGHTER_SIZE : DEFAULT_INK_SIZE,
+      load(next: { color?: string; size?: number }) {
+        if (next.color !== undefined) held.color = next.color;
+        if (next.size !== undefined) held.size = next.size;
+      },
+    };
+    return held;
+  }
+
+  it("offers each pen its own palette, not a shared one", () => {
+    expect(chips(penMenuRows(pen("marker")), "Marker").map((c) => c.swatch)).toEqual(
+      MARKER_COLORS.map((c) => c.hex),
+    );
+    expect(chips(penMenuRows(pen("highlighter")), "Highlighter").map((c) => c.swatch)).toEqual(
+      HIGHLIGHTER_COLORS.map((c) => c.hex),
+    );
+    // A marker's green is ink read at full strength and a highlighter's is a
+    // film at 0.4 over a photograph. The same hex cannot be both.
+    expect(MARKER_COLORS.map((c) => c.hex)).not.toEqual(HIGHLIGHTER_COLORS.map((c) => c.hex));
+  });
+
+  it("marks what the pen is loaded with, in both rows", () => {
+    const held = pen("marker");
+    const current = (label: string): (string | number | undefined)[] =>
+      chips(penMenuRows(held), label).filter((c) => c.current).map((c) => c.swatch ?? c.weight);
+
+    expect(current("Marker")).toEqual([DEFAULT_MARKER_COLOR]);
+    expect(current("Size")).toEqual([DEFAULT_INK_SIZE]);
+  });
+
+  it("loads the pen and writes nothing at all", () => {
+    const held = pen("highlighter");
+    const pink = HIGHLIGHTER_COLORS.find((c) => c.label === "Pink")!.hex;
+    chips(penMenuRows(held), "Highlighter").find((c) => c.swatch === pink)!.run();
+    chips(penMenuRows(held), "Size").find((c) => c.weight === 48)!.run();
+
+    expect(held.color).toBe(pink);
+    expect(held.size).toBe(48);
+    // Changing pens is not an edit to the board, which is why this menu takes no
+    // writer and why there is no undo entry for it.
+    expect(writes).toEqual([]);
+  });
+
+  it("offers every rung of the ladder, so the keys and the chips agree", () => {
+    // `[` and `]` walk INK_SIZES and the chips are INK_SIZES: two ways to the
+    // same set, rather than a menu with its own idea of what the sizes are.
+    expect(chips(penMenuRows(pen("marker")), "Size").map((c) => c.weight)).toEqual([...INK_SIZES]);
+    expect(INK_SIZES).toContain(DEFAULT_INK_SIZE);
+    expect(INK_SIZES).toContain(DEFAULT_HIGHLIGHTER_SIZE);
   });
 });

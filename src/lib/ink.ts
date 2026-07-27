@@ -106,6 +106,82 @@ export const DEFAULT_HIGHLIGHTER_SIZE = 22;
 export const DEFAULT_HIGHLIGHTER_OPACITY = 0.4;
 
 /**
+ * > Colours live in a small palette per tool — marker in black, red, blue,
+ * > green; highlighter in yellow, pink, green, blue. — DESIGN section 3.9
+ *
+ * Two palettes rather than one shared list, because the same word means a
+ * different pigment in each: a marker's green is a dark ink read at full
+ * strength, and a highlighter's is a fluorescent one about to be laid down at
+ * [`DEFAULT_HIGHLIGHTER_OPACITY`] and multiplied. Sharing the hexes would make
+ * one of the two wrong, and it would be the highlighter — a dark green film over
+ * a photograph is a stain rather than a highlight.
+ *
+ * Labels as well as hexes, because the menu shows swatches and a swatch has no
+ * name to read out. Same arrangement as `lib/palette.ts`'s string colours, and
+ * for the reason `ui/boardmenu.ts` gives: which red the red is, is a question
+ * only the cork can answer.
+ */
+export interface InkColor {
+  readonly label: string;
+  readonly hex: string;
+}
+
+/** Black first — it is [`DEFAULT_MARKER_COLOR`], and the default is where a
+ *  palette starts. */
+export const MARKER_COLORS: readonly InkColor[] = [
+  { label: "Black", hex: DEFAULT_MARKER_COLOR },
+  // Warm rather than pure, all three, for the reason the black is: this is
+  // pigment soaked into paper under a warm light, not a screen colour.
+  { label: "Red", hex: "#b8342a" },
+  { label: "Blue", hex: "#2a4d8f" },
+  { label: "Green", hex: "#2f6b3c" },
+];
+
+/** Saturated, all four, because every one of them is about to be drawn at 0.4
+ *  and multiplied — see [`DEFAULT_HIGHLIGHTER_COLOR`]. */
+export const HIGHLIGHTER_COLORS: readonly InkColor[] = [
+  { label: "Yellow", hex: DEFAULT_HIGHLIGHTER_COLOR },
+  { label: "Pink", hex: "#f0509b" },
+  { label: "Green", hex: "#5fd23c" },
+  { label: "Blue", hex: "#3fc4f0" },
+];
+
+/** The palette a tool draws from. */
+export function inkColors(tool: InkTool): readonly InkColor[] {
+  return tool === "highlighter" ? HIGHLIGHTER_COLORS : MARKER_COLORS;
+}
+
+/**
+ * The nib widths `[` and `]` walk, in board units.
+ *
+ * A ladder rather than a multiplier on a free number, so that the sizes are the
+ * same set every time and the two defaults are *on* it — a `]` that moved 6 to
+ * 7.5 would leave the marker somewhere no menu can show as current, and the
+ * ladder would be different on every board depending on how it was walked.
+ *
+ * Ratios of roughly 1.5, which is about the smallest step that reads as a
+ * different pen rather than as the same one drawn twice. It spans both tools:
+ * there is one ladder, and the marker merely starts near the bottom of it and
+ * the highlighter near the top.
+ */
+export const INK_SIZES: readonly number[] = [2, 4, 6, 10, 15, 22, 32, 48];
+
+/**
+ * The nearest rung to a size, which is what a pen constructed with an arbitrary
+ * one steps from.
+ *
+ * Nearest rather than "the one below", so a pen handed a size between two rungs
+ * does not shrink the first time it is asked to grow.
+ */
+export function inkSizeIndex(size: number): number {
+  let best = 0;
+  for (let i = 1; i < INK_SIZES.length; i++) {
+    if (Math.abs(INK_SIZES[i]! - size) < Math.abs(INK_SIZES[best]! - size)) best = i;
+  }
+  return best;
+}
+
+/**
  * A stroke that is still being drawn — "wet ink", in DESIGN section 6.5's terms.
  *
  * Declared here for the same reason `InkSample` is: the tool holding the pointer

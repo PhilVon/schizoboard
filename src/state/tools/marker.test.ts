@@ -17,6 +17,7 @@ import {
   DEFAULT_HIGHLIGHTER_SIZE,
   DEFAULT_INK_SIZE,
   DEFAULT_MARKER_COLOR,
+  INK_SIZES,
   type WetStroke,
 } from "@/lib/ink";
 import { PRESSURE_NEUTRAL } from "@/lib/pressure";
@@ -705,5 +706,68 @@ describe("the stroke the renderer is handed", () => {
     expect(held.map((s) => s.x)).toEqual([0, 10, 10]);
     expect(held).toHaveLength(finished);
     expect(tool.wet!.samples).not.toBe(held);
+  });
+});
+
+/**
+ * T-134. `[` and `]` walk a ladder (DESIGN section 3.9), and the right-click
+ * menu loads a colour. Both are per *pen* rather than per stroke, which is the
+ * property worth pinning: a nib that changed halfway down a line would be a
+ * stroke with two widths in it that the document cannot store.
+ */
+describe("loading the pen", () => {
+  it("takes a colour and a width, and gives them to the next stroke", () => {
+    tool.load({ color: "#b8342a", size: 15 });
+    down(0, 0);
+    move([at(10, 0)]);
+
+    expect(tool.wet).toMatchObject({ color: "#b8342a", size: 15 });
+    expect(tool.color).toBe("#b8342a");
+    expect(tool.size).toBe(15);
+  });
+
+  it("does not change the stroke already in progress", () => {
+    down(0, 0);
+    move([at(10, 0)]);
+    tool.load({ size: 48 });
+    move([at(20, 0)]);
+    up(30, 0);
+
+    // The width is read once, at the release. A stroke that picked up a new nib
+    // partway has no way to be stored and no way to be drawn.
+    expect(committed[0]!.size).toBe(DEFAULT_INK_SIZE);
+  });
+
+  it("steps the ladder rather than scaling by a factor", () => {
+    const seen: number[] = [];
+    for (let i = 0; i < INK_SIZES.length + 2; i++) {
+      seen.push(tool.size);
+      tool.step(1);
+    }
+    // Every size a pen can hold is on the ladder, so every one of them can be
+    // marked as current in the menu — which a free-running multiplier would
+    // quietly stop being true.
+    for (const size of seen) expect(INK_SIZES).toContain(size);
+  });
+
+  it("clamps at both ends instead of wrapping round", () => {
+    for (let i = 0; i < 20; i++) tool.step(1);
+    expect(tool.size).toBe(INK_SIZES[INK_SIZES.length - 1]);
+
+    for (let i = 0; i < 20; i++) tool.step(-1);
+    // A held-down `[` is somebody asking for "finer" repeatedly; landing on the
+    // fattest nib on the board is the opposite of what they asked for.
+    expect(tool.size).toBe(INK_SIZES[0]);
+  });
+
+  it("starts each pen on its own default, from a tool name alone", () => {
+    expect(tool.kind).toBe("marker");
+    expect(tool.color).toBe(DEFAULT_MARKER_COLOR);
+    expect(tool.size).toBe(DEFAULT_INK_SIZE);
+
+    const highlighter = new MarkerTool({ tool: "highlighter" });
+    expect(highlighter.kind).toBe("highlighter");
+    expect(highlighter.color).toBe(DEFAULT_HIGHLIGHTER_COLOR);
+    expect(highlighter.size).toBe(DEFAULT_HIGHLIGHTER_SIZE);
   });
 });

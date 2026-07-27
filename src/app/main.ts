@@ -63,7 +63,7 @@ import { stringAt } from "@/state/tools/frame";
 import { SelectTool } from "@/state/tools/select";
 import { StringTool } from "@/state/tools/string";
 import type { BoardWriter, WritePose } from "@/state/tools/tool";
-import { itemMenuRows, pinMenuRows, stringMenuRows } from "@/ui/boardmenu";
+import { itemMenuRows, penMenuRows, pinMenuRows, stringMenuRows } from "@/ui/boardmenu";
 import { Hud, type HudStats } from "@/ui/hud";
 import { ContextMenu, type MenuEntry } from "@/ui/menu";
 
@@ -507,6 +507,16 @@ async function boot(): Promise<void> {
     onDone: () => queued.push(() => tools.setTool(select)),
   });
   /**
+   * The pen currently in hand, or null when the tool is not one.
+   *
+   * Asked by the three things that treat the two pens as one tool with a
+   * variable in it: the right-click menu that loads it, the `[` and `]` keys
+   * that walk its ladder, and the overlay, which draws whichever one is holding
+   * the board.
+   */
+  const penInHand = (): MarkerTool | null =>
+    tools.current === marker ? marker : tools.current === highlighter ? highlighter : null;
+  /**
    * The three hit tests, named once. The tool machine is handed them, and so is
    * the hover in phase 4 — which asks the same questions between gestures that
    * a press asks during one, and has to get the same answers.
@@ -572,6 +582,32 @@ async function boot(): Promise<void> {
   });
 
   /**
+   * > Size is `[` and `]`. — DESIGN section 3.9
+   *
+   * Only while a pen is in hand, and silent otherwise: the two keys mean nothing
+   * to the select tool, and a board that quietly resized an invisible nib when
+   * they were pressed would be teaching the wrong thing.
+   *
+   * Not queued, unlike a tool change. Nothing about loading a pen touches the
+   * scene or the document — it is the tool's own state, read at the next release
+   * (`state/tools/marker.ts`) — so there is nothing for phase 9 to protect.
+   *
+   * Separate from the tool-picking listener above rather than another branch in
+   * it, because that one is a switch over which tool to *become* and returns
+   * early on anything else.
+   */
+  window.addEventListener("keydown", (e) => {
+    if (e.ctrlKey || e.metaKey || e.altKey) return;
+    if (isTextTarget(e.target)) return;
+    const by = e.code === "BracketRight" ? 1 : e.code === "BracketLeft" ? -1 : 0;
+    if (by === 0) return;
+    const pen = penInHand();
+    if (pen === null) return;
+    e.preventDefault();
+    pen.step(by);
+  });
+
+  /**
    * The context menu (DESIGN sections 3.2, 3.3 and 3.4).
    *
    * Ambient, like navigation and undo: a right-click means the same thing in
@@ -627,6 +663,24 @@ async function boot(): Promise<void> {
      * only thing on the board that says what a verb will hit, would be pointing
      * at it rather than at the string under the cursor.
      */
+    /**
+     * A pen in hand short-circuits the four hit tests below, because with one
+     * held a right-click is not about the paper under the cursor: there is no
+     * selection to act on and no verb to offer a photograph that drawing on it
+     * would want. The menu loads the pen instead — DESIGN section 3.9's palette,
+     * which is given a page of colours and no key to pick them with.
+     *
+     * Before the tests rather than after, so it holds over a pin and a string
+     * too. A pen does not care what is underneath, and a menu that changed its
+     * mind depending on what a stray pixel of string was doing under the cursor
+     * would be the worse surprise.
+     */
+    const pen = penInHand();
+    if (pen !== null) {
+      open(penMenuRows(pen));
+      return;
+    }
+
     const pinId = hitPin(e.clientX, e.clientY);
     if (pinId !== null) {
       const held = selection.hasPin(pinId);
@@ -1030,11 +1084,7 @@ async function boot(): Promise<void> {
       // Asked of the tool rather than tracked here for the same reason
       // `pendingRun` is: the gesture owns its own transient, and nothing about it
       // is in the scene.
-      tools.current === marker
-        ? marker.wet
-        : tools.current === highlighter
-          ? highlighter.wet
-          : null,
+      penInHand()?.wet ?? null,
     );
     hud.update(frame.now);
   });
@@ -1145,7 +1195,7 @@ async function boot(): Promise<void> {
     `drag a pin to move it, onto an item to parent it, Ctrl to keep it put · ` +
     `Alt+click a pin removes it · Alt+drag pulls a new string out of one · ` +
     `drag the middle of a string to pull a new pin out of it, click it to select · ` +
-    `right-click a string for its menu · ` +
+    `right-click a string for its menu · M or H to draw, right-click for ink · ` +
     `drag to move · drag the handle or R+drag to rotate · drag a note's edge to resize · ` +
     `drag the cork to marquee · Delete removes · ` +
     `Ctrl+Z undoes · space+drag pans · Ctrl+0 fit · F frame · \` for the HUD`;
