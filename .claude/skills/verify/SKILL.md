@@ -192,6 +192,22 @@ change from a snap.
 
 ## Reading the document on disk
 
+**Two screenshots are not evidence that something moved.** A swing is a local
+visual offset that is never stored (AC-60), and every boot re-fits the camera,
+so an item drawn somewhere new may not have moved at all — and one that *has*
+moved says nothing about who moved it. `scripts/read-doc.mjs` prints what the
+document actually holds; `scripts/replay-doc.mjs` replays the append-only log
+frame by frame and says what each one touched, or tracks one item's pose with
+`--item <id>`. Both run against the live board while the app has it open.
+
+Read the *shape*, not only the numbers. A run of consecutive single-item
+`[x:update,y:update]` frames is a drag — the throttle writes about every 300 ms
+— and a wobbling path that goes out and comes back is a hand on a mouse. A
+physics leak would be one write, or every item at once. **The human drives this
+board too**, so before filing "the app moved something", find the frame and
+check it is not simply after the last thing you did.
+
+
 `%APPDATA%\com.philw.schizoboard\` holds `assets/` and `doc/`
 (`log.bin`, `snapshot.bin`). `log.bin` starts with `SZBDLOG1`.
 
