@@ -924,6 +924,7 @@ async function boot(): Promise<void> {
     `drag a pin to move it, onto an item to parent it, Ctrl to keep it put · ` +
     `Alt+click a pin removes it · Alt+drag pulls a new string out of one · ` +
     `drag the middle of a string to pull a new pin out of it, click it to select · ` +
+    `right-click a string for its menu · ` +
     `drag to move · drag the handle or R+drag to rotate · drag a note's edge to resize · ` +
     `drag the cork to marquee · Delete removes · ` +
     `Ctrl+Z undoes · space+drag pans · Ctrl+0 fit · F frame · \` for the HUD`;
