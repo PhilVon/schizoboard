@@ -46,6 +46,20 @@ export function clampZoom(zoom: number): number {
   return Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, zoom));
 }
 
+/**
+ * Breathing room around a fitted board, screen pixels.
+ *
+ * One number because it answers one question — "how much cork do you leave
+ * round the edge when you frame the whole board?" — and it is asked from two
+ * places that must agree: `Ctrl+0` and the fit a board boots on.
+ *
+ * `state/navigation.ts` keeps a separate, larger `FRAME_MARGIN_PX` for `F`.
+ * That is deliberate rather than an oversight: framing a *selection* is asking
+ * to look at one thing among its surroundings, so it wants more room round it
+ * than framing everything there is does.
+ */
+export const FIT_MARGIN_PX = 120;
+
 export class Camera {
   /** Board coordinate at the viewport's top-left corner. */
   x = 0;
@@ -159,8 +173,18 @@ export class Camera {
     this.zoomTo(1, this.width / 2, this.height / 2);
   }
 
-  /** Ctrl+0 — frame a board rectangle with a margin, in screen pixels. */
-  fit(bounds: Bounds, marginPx = 64): void {
+  /**
+   * `Ctrl+0`, and the view a board opens on — frame a board rectangle with a
+   * margin, in screen pixels.
+   *
+   * The default is the whole point of `FIT_MARGIN_PX`: those two are the same
+   * view and have to come out identical. `app/main.ts` passed 120 and the
+   * shortcut took this default, which was 64, so pressing the key that says
+   * "fit" moved the camera off the view the board had just opened on — and it
+   * did it every time, which reads as the shortcut being slightly wrong rather
+   * than as two constants disagreeing (T-135).
+   */
+  fit(bounds: Bounds, marginPx = FIT_MARGIN_PX): void {
     const bw = Math.max(1e-6, bounds.maxX - bounds.minX);
     const bh = Math.max(1e-6, bounds.maxY - bounds.minY);
     const vw = Math.max(1, this.width - marginPx * 2);

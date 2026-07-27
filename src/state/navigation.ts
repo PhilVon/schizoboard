@@ -24,8 +24,15 @@ const WHEEL_ZOOM_RATE = 0.0015;
 /** Wheel deltas at or above this are a mouse notch, not trackpad inertia. */
 const WHEEL_NOTCH_PX = 50;
 const KEY_ZOOM_STEP = 1.2;
-/** Breathing room around a framed selection, screen pixels. Generous, because
- *  the point of framing something is to look at it in its surroundings. */
+/**
+ * Breathing room around a framed selection, screen pixels.
+ *
+ * Larger than `camera.ts`'s `FIT_MARGIN_PX`, and deliberately: framing a
+ * *selection* is asking to look at one thing among its surroundings, so it
+ * wants more room round it than framing everything there is does. Two numbers
+ * because there are two questions, which is not the case `Ctrl+0` and the
+ * opening fit were in (T-135).
+ */
 const FRAME_MARGIN_PX = 140;
 
 export type WheelIntent = "zoom" | "pan";

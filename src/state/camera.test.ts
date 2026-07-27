@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { Camera, MAX_ZOOM, MIN_ZOOM } from "@/state/camera";
+import { Camera, FIT_MARGIN_PX, MAX_ZOOM, MIN_ZOOM } from "@/state/camera";
 
 function viewport(width = 1440, height = 900): Camera {
   const camera = new Camera();
@@ -93,6 +93,28 @@ describe("Camera", () => {
     const framed = camera.screenToBoard(500, 250);
     expect(framed.x).toBeCloseTo(200, 9);
     expect(framed.y).toBeCloseTo(200, 9);
+  });
+
+  /**
+   * T-135. The view a board opens on and the view `Ctrl+0` gives are the same
+   * view, and they were not: `app/main.ts` passed 120 and the shortcut took
+   * this default, which was 64. So pressing the key that says "fit" shifted the
+   * camera off the framing the board had just opened with, every time — which
+   * reads as the shortcut being slightly wrong rather than as two constants
+   * quietly disagreeing.
+   *
+   * The default is now the whole of that agreement, so it is worth a test that
+   * says what it geometrically *means*. Comparing `fit(b)` against
+   * `fit(b, FIT_MARGIN_PX)` would pass whatever either of them did.
+   */
+  it("leaves exactly the fit margin around a board framed with no argument", () => {
+    const camera = viewport(1000, 500);
+    camera.fit({ minX: 0, minY: 0, maxX: 400, maxY: 400 });
+
+    // Height is the tight axis: 400 board units into 500 - 2*120 = 260 px.
+    expect(camera.zoom).toBeCloseTo(260 / 400, 9);
+    expect(camera.boardToScreen(0, 0).y).toBeCloseTo(FIT_MARGIN_PX, 6);
+    expect(camera.boardToScreen(400, 400).y).toBeCloseTo(500 - FIT_MARGIN_PX, 6);
   });
 
   it("reports visible bounds with a margin expressed as a fraction", () => {

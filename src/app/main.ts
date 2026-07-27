@@ -1240,7 +1240,9 @@ async function boot(): Promise<void> {
   // An empty board is the correct first thing to see. Nothing seeds it any
   // more: there is a real way to put things on it now, and a board that opens
   // holding somebody else's placeholders is a demo rather than a tool.
-  camera.fit(scene.contentBounds() ?? { minX: -400, minY: -300, maxX: 400, maxY: 300 }, 120);
+  // No margin argument: the opening view and `Ctrl+0` are the same view, so
+  // they take the same default (T-135).
+  camera.fit(scene.contentBounds() ?? { minX: -400, minY: -300, maxX: 400, maxY: 300 });
   // The zoom the board opens at is a zoom nobody gestured into, and until this
   // was here every bitmap was built for a scale of 1 — a board opened at 50%
   // spent twice the pixels it needed on ink, and one opened at 200% on a 2x
