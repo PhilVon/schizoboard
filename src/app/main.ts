@@ -334,6 +334,13 @@ async function boot(): Promise<void> {
       const snapshot = [...stringIds];
       queued.push(() => setStringStyle(board, snapshot, { layer }));
     },
+    /** Restyle — DESIGN section 3.4. Straight through: `setStringStyle` already
+     *  applies only the fields it is given, which is exactly the contract. */
+    setStringStyle: (stringIds, style) => {
+      const snapshot = [...stringIds];
+      const fields = { ...style };
+      queued.push(() => setStringStyle(board, snapshot, fields));
+    },
     /** DESIGN section 3.4's *Delete*. The pins stay; `deleteStrings` deletes
      *  the string map and nothing else, which is the whole of the rule. */
     deleteStrings: (stringIds) => {

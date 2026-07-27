@@ -8,7 +8,7 @@
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { ContextMenu, type MenuRow } from "@/ui/menu";
+import { ContextMenu, type MenuEntry, type MenuRow } from "@/ui/menu";
 
 let host: HTMLDivElement;
 let menu: ContextMenu;
@@ -19,10 +19,23 @@ function labels(): string[] {
   return [...host.querySelectorAll(".menu-row")].map((el) => el.textContent ?? "");
 }
 
-function rows(...items: (string | MenuRow)[]): MenuRow[] {
+function rows(...items: (string | MenuEntry)[]): MenuEntry[] {
   return items.map((item) =>
-    typeof item === "string" ? { label: item, run: () => {} } : item,
+    typeof item === "string" ? ({ label: item, run: () => {} } as MenuRow) : item,
   );
+}
+
+/** A colour picker with three swatches, the middle one current. */
+function picker(): MenuEntry {
+  return {
+    label: "Colour",
+    choices: ["Red", "Blue", "Green"].map((label, i) => ({
+      label,
+      swatch: ["#a8322c", "#2c5aa8", "#4a7a4e"][i]!,
+      current: i === 1,
+      run: () => {},
+    })),
+  };
 }
 
 function key(code: string): boolean {
@@ -82,7 +95,7 @@ describe("the context menu", () => {
   it("closes before it runs the row", () => {
     const openWhenRun: boolean[] = [];
     menu.openAt(10, 10, rows({ label: "Delete", run: () => openWhenRun.push(menu.isOpen) }));
-    host.querySelector<HTMLButtonElement>(".menu-row")!.click();
+    host.querySelector<HTMLButtonElement>(".menu-item")!.click();
     expect(openWhenRun).toEqual([false]);
     expect(menu.isOpen).toBe(false);
   });
@@ -106,7 +119,7 @@ describe("the context menu", () => {
 
     it("stays open for a press on itself", () => {
       menu.openAt(10, 10, rows("Tuck behind"));
-      press(host.querySelector(".menu-row")!);
+      press(host.querySelector(".menu-item")!);
       expect(menu.isOpen).toBe(true);
     });
 
@@ -153,7 +166,7 @@ describe("the context menu", () => {
 
     it("moves the focus down and up, and wraps", () => {
       menu.openAt(10, 10, rows("Tuck behind", "Restyle", "Delete"));
-      const buttons = [...host.querySelectorAll<HTMLButtonElement>(".menu-row")];
+      const buttons = [...host.querySelectorAll<HTMLButtonElement>(".menu-item")];
       expect(document.activeElement).toBe(buttons[0]);
 
       key("ArrowDown");
@@ -171,6 +184,87 @@ describe("the context menu", () => {
       menu.openAt(10, 10, rows("Tuck behind"));
       key("Tab");
       expect(menu.isOpen).toBe(false);
+    });
+  });
+
+  describe("pickers", () => {
+    it("draws a caption and one chip per choice", () => {
+      menu.openAt(10, 10, rows(picker(), "Delete"));
+      expect(host.querySelector(".menu-cap")?.textContent).toBe("Colour");
+      const swatches = [...host.querySelectorAll<HTMLElement>(".menu-chip .menu-swatch")];
+      expect(swatches.map((el) => el.style.background)).toEqual([
+        "#a8322c",
+        "#2c5aa8",
+        "#4a7a4e",
+      ]);
+    });
+
+    /** A swatch has no text of its own, so the name has to be somewhere a
+     *  screen reader can reach it. */
+    it("names each chip out loud, and says which one is on", () => {
+      menu.openAt(10, 10, rows(picker()));
+      const chips = [...host.querySelectorAll<HTMLElement>(".menu-chip")];
+      expect(chips.map((c) => c.getAttribute("aria-label"))).toEqual(["Red", "Blue", "Green"]);
+      expect(chips.map((c) => c.getAttribute("aria-checked"))).toEqual(["false", "true", "false"]);
+      expect(chips.filter((c) => c.classList.contains("menu-on"))).toHaveLength(1);
+    });
+
+    it("runs the chip that was clicked, and closes first", () => {
+      const picked: string[] = [];
+      const open: boolean[] = [];
+      menu.openAt(10, 10, [
+        {
+          label: "Colour",
+          choices: ["Red", "Blue"].map((label) => ({
+            label,
+            swatch: "#000000",
+            run: () => {
+              picked.push(label);
+              open.push(menu.isOpen);
+            },
+          })),
+        },
+      ]);
+      host.querySelectorAll<HTMLButtonElement>(".menu-chip")[1]!.click();
+      expect(picked).toEqual(["Blue"]);
+      expect(open).toEqual([false]);
+    });
+
+    /**
+     * Up and down between lines, left and right within one. A single ring
+     * would put Delete three presses further away for every picker above it,
+     * and six for a real colour strip.
+     */
+    it("navigates in two axes", () => {
+      menu.openAt(10, 10, rows(picker(), "Tuck behind", "Delete"));
+      const chips = [...host.querySelectorAll<HTMLButtonElement>(".menu-chip")];
+      const verbs = [...host.querySelectorAll<HTMLButtonElement>(".menu-row")];
+      expect(document.activeElement).toBe(chips[0]);
+
+      key("ArrowRight");
+      expect(document.activeElement).toBe(chips[1]);
+      // Down leaves the strip from wherever in it the focus was.
+      key("ArrowDown");
+      expect(document.activeElement).toBe(verbs[0]);
+      key("ArrowDown");
+      expect(document.activeElement).toBe(verbs[1]);
+      // And wraps back to the picker's first chip.
+      key("ArrowDown");
+      expect(document.activeElement).toBe(chips[0]);
+      // Left wraps within the strip.
+      key("ArrowLeft");
+      expect(document.activeElement).toBe(chips[2]);
+    });
+
+    /** A verb row is its own only item, so sideways does nothing there rather
+     *  than jumping into the picker above it. */
+    it("does not walk out of a verb row sideways", () => {
+      menu.openAt(10, 10, rows(picker(), "Delete"));
+      key("ArrowDown");
+      const verb = host.querySelector<HTMLButtonElement>(".menu-row");
+      expect(document.activeElement).toBe(verb);
+      key("ArrowRight");
+      expect(document.activeElement).toBe(verb);
     });
   });
 

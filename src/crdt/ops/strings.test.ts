@@ -38,6 +38,7 @@ import {
   stringsThroughPin,
 } from "@/crdt/ops/strings";
 import { MIN_SLACK, readString, type YMap } from "@/crdt/schema";
+import { DEFAULT_STRING_COLOR, DEFAULT_STRING_THICKNESS } from "@/lib/palette";
 import { MIN_SLACK as LIB_MIN_SLACK } from "@/lib/slack";
 
 let board: BoardDoc;
@@ -180,6 +181,32 @@ describe("slack is a ratio, not a length (AC-66)", () => {
    */
   it("is the same minimum the split and merge clamp to", () => {
     expect(MIN_SLACK).toBe(LIB_MIN_SLACK);
+  });
+
+  /**
+   * The same arrangement, for the colour and the thickness a string is born
+   * with. `lib/palette.ts` holds the policy — what an untouched string looks
+   * like, which the menu also has to draw swatches of — and `crdt/schema.ts`
+   * holds a *reader* fallback for a string that arrives from a peer without
+   * the field. Two literals, one meaning, and this is the side of the seam
+   * that can see both.
+   */
+  it("is born the palette's colour and weight, whichever literal answered", () => {
+    const id = createString(board, { pins: ["p1", "p2"] })!;
+    const made = readString(id, board.strings.get(id)!)!;
+    expect([made.color, made.thickness]).toEqual([
+      DEFAULT_STRING_COLOR,
+      DEFAULT_STRING_THICKNESS,
+    ]);
+
+    // And the reader's own fallback, for a field a peer never wrote.
+    board.strings.get(id)!.delete("color");
+    board.strings.get(id)!.delete("thickness");
+    const bare = readString(id, board.strings.get(id)!)!;
+    expect([bare.color, bare.thickness]).toEqual([
+      DEFAULT_STRING_COLOR,
+      DEFAULT_STRING_THICKNESS,
+    ]);
   });
 
   /** A slack that fails every comparison would reach a rest length, a particle

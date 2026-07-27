@@ -287,6 +287,8 @@ beforeEach(() => {
       // string — which until now went to `deleteItems` and was dropped.
       deleteStrings: (stringIds) =>
         writes.push({ kind: "deleteStrings", stringIds: [...stringIds] }),
+      // Restyle is the context menu's (ui/boardmenu.ts); no gesture reaches it.
+      setStringStyle: () => {},
       // The free pins a dragged or rotated thread carries with it (DESIGN 3.8).
       movePins: (positions, phase) =>
         writes.push({ kind: "pins", phase, positions: new Map(positions) }),

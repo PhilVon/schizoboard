@@ -21,9 +21,10 @@
  * worth doing and is not worth blocking the first menu on.
  */
 
+import { STRING_COLORS, STRING_THICKNESSES } from "@/lib/palette";
 import type { Scene } from "@/state/scene";
 import type { BoardWriter } from "@/state/tools/tool";
-import type { MenuRow } from "@/ui/menu";
+import type { MenuChoice, MenuEntry } from "@/ui/menu";
 
 /**
  * The rows for a right-click that landed on string.
@@ -38,9 +39,33 @@ export function stringMenuRows(
   scene: Scene,
   write: BoardWriter,
   targets: readonly string[],
-): MenuRow[] {
+): MenuEntry[] {
   const live = targets.filter((id) => scene.strings.has(id));
   if (live.length === 0) return [];
+
+  /**
+   * Whether every target already has this value, which is what marks a chip.
+   *
+   * *Every*, not the first one: a selection of four strings in three colours
+   * has no current colour, and marking the first one's would say the other
+   * three were already that and quietly invite the user not to bother.
+   */
+  const all = <T,>(read: (id: string) => T | undefined, value: T): boolean =>
+    live.every((id) => read(id) === value);
+
+  const colors: MenuChoice[] = STRING_COLORS.map(({ label, hex }) => ({
+    label,
+    swatch: hex,
+    current: all((id) => scene.strings.get(id)?.color, hex),
+    run: () => write.setStringStyle(live, { color: hex }),
+  }));
+
+  const weights: MenuChoice[] = STRING_THICKNESSES.map((thickness) => ({
+    label: `${thickness} px`,
+    weight: thickness,
+    current: all((id) => scene.strings.get(id)?.thickness, thickness),
+    run: () => write.setStringStyle(live, { thickness }),
+  }));
 
   /**
    * > | Tuck behind | Context menu → *Tuck behind* | Flips `layer`; the string
@@ -57,7 +82,20 @@ export function stringMenuRows(
   const layer = allUnder ? "over" : "under";
 
   return [
+    /**
+     * > | Restyle | Context menu | Colour (red is default - also blue, green,
+     * > yellow, black, white), thickness — DESIGN section 3.4
+     *
+     * The colours are `lib/palette.ts`, and the swatches are the *actual* hexes
+     * the painter will use rather than a set of approximations chosen to look
+     * right in a menu. That is the entire argument for swatches over the six
+     * words DESIGN writes them as: which red the red is, is a question only the
+     * cork can answer, and the menu is the place to answer it.
+     */
+    { label: "Colour", choices: colors },
+    { label: "Weight", choices: weights },
     {
+      divided: true,
       label: allUnder ? "Bring in front" : "Tuck behind",
       run: () => write.setStringLayer(live, layer),
     },

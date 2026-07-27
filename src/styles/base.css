@@ -260,6 +260,69 @@ body {
   background: rgba(255, 255, 255, 0.1);
 }
 
+/*
+ * A picker: a caption and a strip of chips, standing in for a submenu. The
+ * swatches are the painter's actual hexes — which red the red is, is a question
+ * only the cork can answer, so the menu answers it.
+ */
+.menu-pick {
+  padding: 6px 10px 8px;
+}
+
+.menu-cap {
+  display: block;
+  margin-bottom: 6px;
+  color: rgba(232, 222, 210, 0.45);
+  font-size: 10.5px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.menu-chips {
+  display: flex;
+  gap: 5px;
+}
+
+.menu-chip {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 22px;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  background: rgba(255, 255, 255, 0.05);
+  cursor: default;
+}
+
+.menu-chip:hover,
+.menu-chip:focus {
+  border-color: rgba(255, 255, 255, 0.3);
+  outline: none;
+}
+
+/* What the strings already are. A ring rather than a tick, because a tick over
+ * a swatch hides the one thing the swatch is for. */
+.menu-chip.menu-on {
+  border-color: #e8ded2;
+}
+
+.menu-swatch {
+  width: 15px;
+  height: 15px;
+  border-radius: 3px;
+  /* The palette holds a warm off-white; on a near-black menu it needs an edge
+   * or it reads as a hole rather than as a colour. */
+  box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.45);
+}
+
+.menu-bar {
+  width: 16px;
+  border-radius: 3px;
+  background: #d6cbbd;
+}
+
 /* --- phase-0 scaffolding, removed once items land (T-24) ------------------- */
 
 .hint {

@@ -60,6 +60,7 @@
 import * as Y from "yjs";
 
 import { freshId, mutate, type BoardDoc } from "@/crdt/doc";
+import { DEFAULT_STRING_COLOR, DEFAULT_STRING_THICKNESS } from "@/lib/palette";
 import { DEFAULT_SLACK } from "@/lib/slack";
 import { newId } from "@/crdt/ids";
 import { writePoses, type Pose } from "@/crdt/ops/items";
@@ -139,11 +140,12 @@ export function buildString(
 
   map.set("nodes", nodes);
   // The cotton red of DESIGN section 4.6, not a pure red — saturated red on
-  // brown cork vibrates unpleasantly. The same default `readString` falls back
-  // to, written down explicitly so a string carries its own colour rather than
-  // inheriting whatever the reader's default happens to be next year.
-  map.set("color", input.color ?? "#a8322c");
-  map.set("thickness", Math.max(0.5, input.thickness ?? 3));
+  // brown cork vibrates unpleasantly. Written onto the string explicitly, so it
+  // carries its own colour rather than inheriting whatever the reader's
+  // fallback happens to be next year. `lib/palette.test.ts` holds the two
+  // together, the same arrangement `DEFAULT_SLACK` already has.
+  map.set("color", input.color ?? DEFAULT_STRING_COLOR);
+  map.set("thickness", Math.max(0.5, input.thickness ?? DEFAULT_STRING_THICKNESS));
   map.set("material", input.material ?? "string");
   map.set("layer", input.layer ?? "over");
   map.set("closed", input.closed ?? false);

@@ -88,6 +88,7 @@ beforeEach(() => {
     scaleStringSlack: () => {},
     setStringLayer: () => {},
     deleteStrings: () => {},
+    setStringStyle: () => {},
     movePins: () => {},
       deletePins: () => {},
       // Kept beside `placed` rather than in it, so the placement assertions

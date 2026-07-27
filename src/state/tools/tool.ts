@@ -249,6 +249,21 @@ export interface BoardWriter {
    */
   setStringLayer(stringIds: readonly string[], layer: "over" | "under"): void;
   /**
+   * > | Restyle | Context menu | Colour (red is default - also blue, green,
+   * > yellow, black, white), thickness, material — DESIGN section 3.4
+   *
+   * Only the fields named are written. Not tidiness: a restyle that read the
+   * other four out of the scene and echoed them back would collide with a
+   * peer's concurrent restyle of *those* fields for no reason at all, and the
+   * last writer would win an argument nobody was having.
+   *
+   * Separate from `setStringLayer` even though both end in the same op, because
+   * `layer` is not styling — it decides which of the two rope canvases draws
+   * the string, and it carries a rule of its own about what a mixed selection
+   * means. These three are each one value applied to everything named.
+   */
+  setStringStyle(stringIds: readonly string[], style: StringStyle): void;
+  /**
    * > | Cut | Scissors modifier, or context menu → *Delete* | String removed;
    * > its pins stay where they are — DESIGN section 3.4
    *
@@ -275,6 +290,19 @@ export interface BoardWriter {
    * then writes the final position whether or not it changed.
    */
   movePins(positions: ReadonlyMap<string, Vec2>, phase: "live" | "final"): void;
+}
+
+/**
+ * The three restyle fields, all optional — see `BoardWriter.setStringStyle`.
+ *
+ * Named here rather than imported from `crdt/`, like `StringAnchor` below and
+ * for the same reason: the tool seam describes every write a gesture can make
+ * without `state/` depending on the document.
+ */
+export interface StringStyle {
+  readonly color?: string;
+  readonly thickness?: number;
+  readonly material?: "string" | "yarn" | "wire";
 }
 
 /**

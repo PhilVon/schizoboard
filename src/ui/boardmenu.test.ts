@@ -10,11 +10,14 @@
 import { beforeEach, describe, expect, it } from "vitest";
 
 import { Scene } from "@/state/scene";
-import type { BoardWriter } from "@/state/tools/tool";
+import type { BoardWriter, StringStyle } from "@/state/tools/tool";
+import { DEFAULT_STRING_COLOR, STRING_COLORS, STRING_THICKNESSES } from "@/lib/palette";
 import { stringMenuRows } from "@/ui/boardmenu";
+import type { MenuChoice, MenuEntry, MenuRow } from "@/ui/menu";
 
 type Write =
   | { kind: "layer"; stringIds: string[]; layer: "over" | "under" }
+  | { kind: "style"; stringIds: string[]; style: StringStyle }
   | { kind: "delete"; stringIds: string[] };
 
 let scene: Scene;
@@ -52,19 +55,35 @@ function span(id: string, y: number, layer = "over"): void {
   });
 }
 
-/** Pick a row by label prefix and run it. */
-function pick(rows: ReturnType<typeof stringMenuRows>, label: string): void {
-  const row = rows.find((r) => r.label.startsWith(label));
-  if (row === undefined) throw new Error(`no row starting "${label}" in ${rows.map((r) => r.label).join(", ")}`);
+/** The verb rows, which is everything that is not a picker. */
+function verbs(entries: readonly MenuEntry[]): MenuRow[] {
+  return entries.filter((e): e is MenuRow => !("choices" in e));
+}
+
+/** Pick a verb row by label prefix and run it. */
+function pick(entries: readonly MenuEntry[], label: string): void {
+  const row = verbs(entries).find((r) => r.label.startsWith(label));
+  if (row === undefined) {
+    throw new Error(`no row starting "${label}" in ${verbs(entries).map((r) => r.label).join(", ")}`);
+  }
   row.run();
+}
+
+/** A picker's chips, by its caption. */
+function chips(entries: readonly MenuEntry[], label: string): readonly MenuChoice[] {
+  const picker = entries.find((e) => "choices" in e && e.label === label);
+  if (picker === undefined || !("choices" in picker)) throw new Error(`no "${label}" picker`);
+  return picker.choices;
 }
 
 beforeEach(() => {
   scene = new Scene();
   writes = [];
-  const partial: Pick<BoardWriter, "setStringLayer" | "deleteStrings"> = {
+  const partial: Pick<BoardWriter, "setStringLayer" | "setStringStyle" | "deleteStrings"> = {
     setStringLayer: (stringIds, layer) =>
       writes.push({ kind: "layer", stringIds: [...stringIds], layer }),
+    setStringStyle: (stringIds, style) =>
+      writes.push({ kind: "style", stringIds: [...stringIds], style: { ...style } }),
     deleteStrings: (stringIds) => writes.push({ kind: "delete", stringIds: [...stringIds] }),
   };
   // The rows only ever reach these two. Everything else on the interface is a
@@ -81,7 +100,7 @@ describe("the string context menu", () => {
    *  one of them in between must not leave a row that writes against a ghost. */
   it("drops ids the scene no longer has, and offers nothing when all of them are gone", () => {
     span("s", 0);
-    expect(stringMenuRows(scene, write, ["s", "vanished"])).toHaveLength(2);
+    expect(verbs(stringMenuRows(scene, write, ["s", "vanished"]))).toHaveLength(2);
     expect(stringMenuRows(scene, write, ["vanished"])).toEqual([]);
   });
 
@@ -89,7 +108,7 @@ describe("the string context menu", () => {
     it("puts a string under the items", () => {
       span("s", 0);
       const rows = stringMenuRows(scene, write, ["s"]);
-      expect(rows[0]!.label).toBe("Tuck behind");
+      expect(verbs(rows)[0]!.label).toBe("Tuck behind");
       pick(rows, "Tuck");
       expect(writes).toEqual([{ kind: "layer", stringIds: ["s"], layer: "under" }]);
     });
@@ -97,7 +116,7 @@ describe("the string context menu", () => {
     it("brings it back over when it is already under, and says so", () => {
       span("s", 0, "under");
       const rows = stringMenuRows(scene, write, ["s"]);
-      expect(rows[0]!.label).toBe("Bring in front");
+      expect(verbs(rows)[0]!.label).toBe("Bring in front");
       pick(rows, "Bring");
       expect(writes).toEqual([{ kind: "layer", stringIds: ["s"], layer: "over" }]);
     });
@@ -123,6 +142,73 @@ describe("the string context menu", () => {
     });
   });
 
+  describe("restyle", () => {
+    /** > Colour (red is default - also blue, green, yellow, black, white)
+     *  > - DESIGN section 3.4 */
+    it("offers all six colours as their real hexes", () => {
+      span("s", 0);
+      const swatches = chips(stringMenuRows(scene, write, ["s"]), "Colour");
+      expect(swatches.map((c) => c.label)).toEqual(STRING_COLORS.map((c) => c.label));
+      expect(swatches.map((c) => c.swatch)).toEqual(STRING_COLORS.map((c) => c.hex));
+    });
+
+    it("writes only the colour", () => {
+      span("s", 0);
+      chips(stringMenuRows(scene, write, ["s"]), "Colour")[1]!.run();
+      expect(writes).toEqual([
+        { kind: "style", stringIds: ["s"], style: { color: STRING_COLORS[1]!.hex } },
+      ]);
+    });
+
+    it("writes only the thickness", () => {
+      span("s", 0);
+      chips(stringMenuRows(scene, write, ["s"]), "Weight")[3]!.run();
+      expect(writes).toEqual([
+        { kind: "style", stringIds: ["s"], style: { thickness: STRING_THICKNESSES[3] } },
+      ]);
+    });
+
+    /** One write naming every target, so a restyle of four strings is one undo
+     *  entry rather than four presses of Ctrl+Z. */
+    it("restyles a whole selection in one write", () => {
+      span("s0", 0);
+      span("s1", 300);
+      chips(stringMenuRows(scene, write, ["s0", "s1"]), "Colour")[2]!.run();
+      expect(writes).toEqual([
+        { kind: "style", stringIds: ["s0", "s1"], style: { color: STRING_COLORS[2]!.hex } },
+      ]);
+    });
+
+    it("marks what the string already is", () => {
+      span("s", 0);
+      scene.strings.get("s")!.color = DEFAULT_STRING_COLOR;
+      const swatches = chips(stringMenuRows(scene, write, ["s"]), "Colour");
+      expect(swatches.filter((c) => c.current).map((c) => c.label)).toEqual(["Red"]);
+    });
+
+    /**
+     * A selection in three colours has no current colour. Marking the first
+     * one's would say the other two were already that, and quietly invite the
+     * user not to bother.
+     */
+    it("marks nothing when the selection disagrees", () => {
+      span("s0", 0);
+      span("s1", 300);
+      scene.strings.get("s0")!.color = STRING_COLORS[0]!.hex;
+      scene.strings.get("s1")!.color = STRING_COLORS[1]!.hex;
+      const swatches = chips(stringMenuRows(scene, write, ["s0", "s1"]), "Colour");
+      expect(swatches.filter((c) => c.current)).toEqual([]);
+    });
+
+    /** A colour the palette does not hold - an older board, or a peer on a
+     *  later version - marks nothing rather than guessing at the nearest. */
+    it("marks nothing for a colour off the palette", () => {
+      span("s", 0);
+      scene.strings.get("s")!.color = "#ff00ff";
+      expect(chips(stringMenuRows(scene, write, ["s"]), "Colour").filter((c) => c.current)).toEqual([]);
+    });
+  });
+
   describe("delete", () => {
     it("deletes the string", () => {
       span("s", 0);
@@ -136,14 +222,14 @@ describe("the string context menu", () => {
       span("s0", 0);
       span("s1", 300);
       const rows = stringMenuRows(scene, write, ["s0", "s1"]);
-      expect(rows[1]!.label).toBe("Delete 2 strings");
+      expect(verbs(rows)[1]!.label).toBe("Delete 2 strings");
     });
 
     it("is drawn as destructive and set apart from the rows above it", () => {
       span("s", 0);
       const rows = stringMenuRows(scene, write, ["s"]);
-      expect(rows[1]!.danger).toBe(true);
-      expect(rows[1]!.divided).toBe(true);
+      expect(verbs(rows)[1]!.danger).toBe(true);
+      expect(verbs(rows)[1]!.divided).toBe(true);
     });
   });
 });

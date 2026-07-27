@@ -49,6 +49,47 @@ export interface MenuRow {
 }
 
 /**
+ * A caption and a strip of chips — one line of the menu that is a *choice*
+ * rather than a verb.
+ *
+ * This is what stands in for a submenu, and it is a better menu than the one it
+ * replaces. DESIGN section 3.4 asks for colour and thickness under *Restyle*,
+ * and a nested list of six colour **words** would be the same number of clicks
+ * as six swatches to reach a worse answer: nobody knows which red the red is
+ * until they see it against the cork. Six swatches is one line, one glance and
+ * one click.
+ *
+ * It also keeps the widget honest. Nesting is the part of a menu that is all
+ * edge cases — hover intent, open delay, which submenu closes when the pointer
+ * cuts a corner — and none of it is bought here.
+ */
+export interface MenuPicker {
+  readonly label: string;
+  readonly choices: readonly MenuChoice[];
+  readonly divided?: boolean;
+}
+
+/** One chip. Exactly one of `swatch` and `weight` paints it; `label` is what it
+ *  is called out loud either way, because a swatch has no text of its own. */
+export interface MenuChoice {
+  readonly label: string;
+  /** Painted as a filled square of this colour. */
+  readonly swatch?: string;
+  /** Painted as a horizontal bar this many pixels thick. */
+  readonly weight?: number;
+  /** Already what every target has. Marked, and still pickable — re-picking a
+   *  value is a harmless way to say "yes, that one". */
+  readonly current?: boolean;
+  readonly run: () => void;
+}
+
+export type MenuEntry = MenuRow | MenuPicker;
+
+function isPicker(entry: MenuEntry): entry is MenuPicker {
+  return "choices" in entry;
+}
+
+/**
  * How close to the viewport edge the menu may sit, in CSS pixels.
  *
  * A menu opened near the bottom right flips back along whichever axis has run
@@ -61,7 +102,14 @@ const EDGE = 8;
 export class ContextMenu {
   private readonly host: HTMLElement;
   private el: HTMLDivElement | null = null;
-  private rows: readonly MenuRow[] = [];
+  /**
+   * Every clickable thing in the menu, flattened in DOM order.
+   *
+   * Flattened rather than kept as the tree it was built from, because the only
+   * question a click ever asks is "which one" — and a chip inside a picker and
+   * a plain verb row are the same answer to it. `data-run` indexes into here.
+   */
+  private actions: (() => void)[] = [];
   private readonly disposers: (() => void)[] = [];
 
   constructor(host: HTMLElement) {
@@ -80,47 +128,41 @@ export class ContextMenu {
    * decides there is no menu here by handing over nothing, and does not also
    * have to remember not to call.
    */
-  openAt(screenX: number, screenY: number, rows: readonly MenuRow[]): void {
+  openAt(screenX: number, screenY: number, entries: readonly MenuEntry[]): void {
     this.close();
-    if (rows.length === 0) return;
+    if (entries.length === 0) return;
 
     const el = document.createElement("div");
     el.className = "menu";
     el.setAttribute("role", "menu");
+    this.actions = [];
 
-    for (let i = 0; i < rows.length; i++) {
-      const row = rows[i]!;
-      if (row.divided === true && i > 0) {
+    for (let i = 0; i < entries.length; i++) {
+      const entry = entries[i]!;
+      if (entry.divided === true && i > 0) {
         const rule = document.createElement("div");
         rule.className = "menu-rule";
         el.append(rule);
       }
-      const button = document.createElement("button");
-      button.type = "button";
-      button.className = row.danger === true ? "menu-row menu-danger" : "menu-row";
-      button.setAttribute("role", "menuitem");
-      button.dataset.row = String(i);
-      button.textContent = row.label;
-      el.append(button);
+      el.append(isPicker(entry) ? this.buildPicker(entry) : this.buildRow(entry));
     }
 
     this.host.append(el);
     this.el = el;
-    this.rows = rows;
     this.place(el, screenX, screenY);
     this.listen(el);
 
     // Focused so the arrows and `Enter` have somewhere to start. A `<button>`
     // rather than a div with a handler, so activation on `Enter` and `Space` is
     // the platform's and not a keymap of ours to get subtly wrong.
-    el.querySelector<HTMLButtonElement>(".menu-row")?.focus();
+    el.querySelector<HTMLButtonElement>(".menu-item")?.focus();
   }
 
   close(): void {
     const el = this.el;
     if (el === null) return;
     this.el = null;
-    this.rows = [];
+    this.actions = [];
     for (const dispose of this.disposers) dispose();
     this.disposers.length = 0;
     el.remove();
@@ -128,6 +170,64 @@ export class ContextMenu {
 
   destroy(): void {
     this.close();
+  }
+
+  /**
+   * A verb.
+   *
+   * `.menu-line` is what the arrows navigate *between* and `.menu-item` what
+   * they navigate *within*, which for a plain row is the same element wearing
+   * both — see `move`.
+   */
+  private buildRow(row: MenuRow): HTMLElement {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = `menu-line menu-item menu-row${row.danger === true ? " menu-danger" : ""}`;
+    button.setAttribute("role", "menuitem");
+    button.dataset.run = String(this.actions.push(row.run) - 1);
+    button.textContent = row.label;
+    return button;
+  }
+
+  /** A caption and a strip of chips. */
+  private buildPicker(picker: MenuPicker): HTMLElement {
+    const line = document.createElement("div");
+    line.className = "menu-line menu-pick";
+    line.setAttribute("role", "group");
+    line.setAttribute("aria-label", picker.label);
+
+    const caption = document.createElement("span");
+    caption.className = "menu-cap";
+    caption.textContent = picker.label;
+    line.append(caption);
+
+    const strip = document.createElement("div");
+    strip.className = "menu-chips";
+    for (const choice of picker.choices) {
+      const chip = document.createElement("button");
+      chip.type = "button";
+      chip.className = `menu-item menu-chip${choice.current === true ? " menu-on" : ""}`;
+      chip.setAttribute("role", "menuitemradio");
+      // The chip has no text of its own — it *is* the colour, or the weight —
+      // so the name has to be said somewhere a screen reader can reach.
+      chip.setAttribute("aria-label", choice.label);
+      chip.setAttribute("aria-checked", choice.current === true ? "true" : "false");
+      chip.title = choice.label;
+      chip.dataset.run = String(this.actions.push(choice.run) - 1);
+
+      const mark = document.createElement("i");
+      if (choice.swatch !== undefined) {
+        mark.className = "menu-swatch";
+        mark.style.background = choice.swatch;
+      } else {
+        mark.className = "menu-bar";
+        mark.style.height = `${choice.weight ?? 1}px`;
+      }
+      chip.append(mark);
+      strip.append(chip);
+    }
+    line.append(strip);
+    return line;
   }
 
   /**
@@ -178,8 +278,8 @@ export class ContextMenu {
     };
 
     add(el, "click", (e: MouseEvent) => {
-      const row = (e.target as HTMLElement | null)?.closest<HTMLElement>(".menu-row");
-      const at = row?.dataset.row;
+      const item = (e.target as HTMLElement | null)?.closest<HTMLElement>(".menu-item");
+      const at = item?.dataset.run;
       if (at === undefined) return;
       this.activate(Number(at));
     });
@@ -209,11 +309,21 @@ export class ContextMenu {
         switch (e.code) {
           case "Escape":
             break;
+          // Down and up step between *lines*; right and left step between the
+          // chips within one. Which is what a strip of six colour swatches
+          // needs to be usable from the keyboard at all - a single ring would
+          // put Delete six presses further away for every picker above it.
           case "ArrowDown":
-            this.move(el, 1);
+            this.move(el, 1, "line");
             break;
           case "ArrowUp":
-            this.move(el, -1);
+            this.move(el, -1, "line");
+            break;
+          case "ArrowRight":
+            this.move(el, 1, "item");
+            break;
+          case "ArrowLeft":
+            this.move(el, -1, "item");
             break;
           case "Home":
             this.focusAt(el, 0);
@@ -252,25 +362,48 @@ export class ContextMenu {
    * any of that happens means none of those cases is a case.
    */
   private activate(index: number): void {
-    const row = this.rows[index];
-    if (row === undefined) return;
+    const run = this.actions[index];
+    if (run === undefined) return;
     this.close();
-    row.run();
+    run();
   }
 
-  private move(el: HTMLDivElement, delta: number): void {
-    const rows = [...el.querySelectorAll<HTMLButtonElement>(".menu-row")];
-    if (rows.length === 0) return;
-    const at = rows.indexOf(document.activeElement as HTMLButtonElement);
-    // Wrapping, because a menu is a ring: `ArrowUp` on the first row is the
-    // fastest way to reach a Delete sitting at the bottom.
-    const next = (at + delta + rows.length) % rows.length;
-    rows[at < 0 && delta < 0 ? rows.length - 1 : at < 0 ? 0 : next]!.focus();
+  /**
+   * Move the focus one step, along one of the two axes.
+   *
+   * `"line"` walks the menu top to bottom, landing on the first item of each
+   * line; `"item"` walks the chips of the picker the focus is already in, and
+   * on a plain verb row it does nothing, because that row is its own only item.
+   * Both wrap, because a menu is a ring - `ArrowUp` on the first line is the
+   * fastest way to a Delete sitting at the bottom.
+   */
+  private move(el: HTMLDivElement, delta: number, axis: "line" | "item"): void {
+    const focused = document.activeElement as HTMLElement | null;
+    const line = focused?.closest<HTMLElement>(".menu-line") ?? null;
+
+    if (axis === "item") {
+      if (line === null) return;
+      const chips = [...line.querySelectorAll<HTMLButtonElement>(".menu-item")];
+      const at = chips.indexOf(focused as HTMLButtonElement);
+      if (chips.length === 0 || at < 0) return;
+      chips[(at + delta + chips.length) % chips.length]!.focus();
+      return;
+    }
+
+    // One stop per line: its first item, which for a verb row is the row.
+    const stops = [...el.querySelectorAll<HTMLElement>(".menu-line")].map((l) =>
+      l.classList.contains("menu-item") ? (l as HTMLButtonElement) : l.querySelector<HTMLButtonElement>(".menu-item"),
+    );
+    const live = stops.filter((stop): stop is HTMLButtonElement => stop !== null);
+    if (live.length === 0) return;
+    const at = live.findIndex((stop) => stop.closest(".menu-line") === line);
+    const next = at < 0 ? (delta < 0 ? live.length - 1 : 0) : (at + delta + live.length) % live.length;
+    live[next]!.focus();
   }
 
   private focusAt(el: HTMLDivElement, index: number): void {
-    const rows = [...el.querySelectorAll<HTMLButtonElement>(".menu-row")];
-    if (rows.length === 0) return;
-    rows[index < 0 ? rows.length - 1 : Math.min(index, rows.length - 1)]!.focus();
+    const items = [...el.querySelectorAll<HTMLButtonElement>(".menu-item")];
+    if (items.length === 0) return;
+    items[index < 0 ? items.length - 1 : Math.min(index, items.length - 1)]!.focus();
   }
 }
