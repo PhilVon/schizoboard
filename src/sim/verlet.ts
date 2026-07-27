@@ -12,6 +12,11 @@
  * > 4. Resolve item collisions if the string is on the `over` layer.
  * > — DESIGN section 5.2
  *
+ * Step 2 is no longer iterative relaxation and step 4 no longer exists. The
+ * chain's constraints form a tridiagonal system, which is solved directly —
+ * see "Why the constraints are solved rather than relaxed" below, and T-147
+ * for the bug that forced it.
+ *
  * Step 4 is not here, and is not anywhere: draping was built and then scrapped
  * (D-22). An `over` string draws above the item layer and passes over whatever
  * it crosses, so the solver has three steps and no seam for a fourth.
@@ -51,18 +56,28 @@
  * end of it can move. The endpoints are then on their pins at the end of the
  * step as well, which is what step 3 was asking for.
  *
- * ## Why the passes alternate direction
+ * ## Why the constraints are solved rather than relaxed
  *
  * A hanging chain carries its weight to the anchors. Gravity displaces every
  * particle equally, which violates nothing in the middle — a uniform shift
  * leaves interior link lengths untouched — and violates exactly the two links
  * next to the fixed ends. The correction has to travel from there inward.
  *
- * Gauss-Seidel in place is good at that in *one* direction: a forward sweep
- * corrects link 0, which moves particle 1, which is what link 1 then sees, so
- * a single pass carries one anchor's pull the length of the rope. Backwards it
- * carries nothing. A rope has an anchor at each end, so the passes alternate,
- * and `ROPE_ITERATIONS` is 2 because two is one round trip.
+ * Relaxation carries it slowly. A Gauss-Seidel sweep moves an anchor's pull
+ * along by one link per pass, so on a long rope the middle does not hear about
+ * the ends within a micro-step, and the pose it settles in hangs below the one
+ * `catenary.ts` predicts by an amount that grows with the particle count —
+ * roughly with its square, since the tension a link carries is the weight of
+ * everything below it. That was T-147, and on a real board it was a string
+ * that visibly jumped whenever a zoom re-seeded it.
+ *
+ * But a chain is a *tridiagonal* system: constraint `k` touches particles `k`
+ * and `k+1`, so it shares a variable only with its two neighbours. That has an
+ * exact O(N) solution, and `project` below takes it — one forward pass and one
+ * backward one, tension carried the whole length of the rope, for about what
+ * two relaxation sweeps used to cost. `ROPE_ITERATIONS` is now how many Newton
+ * steps that solve takes, and 2 is enough because the constraint is only
+ * mildly non-linear at a micro-step's worth of motion.
  *
  * ## Why there are micro-steps inside the fixed step
  *
@@ -295,46 +310,187 @@ function integrate(pos: Float64Array, prev: Float64Array, at: number, last: numb
 }
 
 /**
- * Project every link back to its rest length, alternating sweep direction so
- * both anchors get their pull carried the length of the rope.
+ * Put every link back on its rest length by solving the whole chain at once.
  *
- * A link with a fixed end gives that end's half of the correction to the other
- * one, which is what "infinite mass" means in a solver that only has
- * positions. Both ends fixed — a two-particle rope — never reaches here.
+ * ## Why this is not a relaxation sweep any more (T-147)
+ *
+ * It was, for four phases: two Gauss-Seidel passes, alternating direction so
+ * each anchor's pull was carried the length of the rope. That leaves a rope
+ * hanging *below* the pose `catenary.ts` predicts, because position-based
+ * dynamics holds a load by holding a violation — and the size of it turned out
+ * to scale with how many particles the rope is carrying, roughly with the
+ * square. The tension a link has to hold is the weight of everything below it,
+ * so it grows with the count; a sweep carries an anchor's pull two links, so
+ * on a hundred-particle rope the middle never hears about the ends within a
+ * micro-step at all. A part in four hundred at 41 particles, a part in
+ * seventy-four at 151, and visible on a real board as a string that jumped
+ * whenever the camera re-rastered and re-seeded it. `stretch.test.ts` is the
+ * measurement; D-23 is the hunt.
+ *
+ * Iterating harder fixes it — 24 passes instead of 2 — and costs twelve times
+ * the solve on exactly the ropes that are already the dearest. Three cheaper
+ * stiffenings were measured and every one of them bought this number by
+ * breaking one somebody had already chosen: a long-range attachment flattens
+ * plucks and the moved-pin walk, over-relaxation overshoots links so the rope
+ * comes out *shorter* than its rest length, and more micro-steps disturb the
+ * pluck and sleep constants tuned around them.
+ *
+ * ## A chain is a tridiagonal system, so solve it as one
+ *
+ * Constraint `k` is `|p(k+1) - p(k)| - L`. It touches two particles, so
+ * constraints `k` and `k+1` share exactly one and constraints further apart
+ * share none — which means the system matrix `A = J W J^T` has a diagonal, one
+ * band either side of it, and nothing else. That is a shape with an exact O(N)
+ * solution, the Thomas algorithm, and it costs about what two sweeps cost.
+ *
+ *     A[k][k]   = w(k) + w(k+1)
+ *     A[k][k+1] = -w(k+1) * (n(k) . n(k+1))
+ *     A lambda  = -C,   then  dp(i) = w(i) * (lambda(i-1) n(i-1) - lambda(i) n(i))
+ *
+ * So the anchors' pull reaches the middle of the rope in one forward and one
+ * backward pass rather than two links at a time. It is the same Lagrange
+ * system the relaxation was approximating; it is only that a chain is one of
+ * the few shapes where you can just *solve* it.
+ *
+ * `w` is the inverse mass, which is 1 for an interior particle and 0 for an
+ * endpoint — the same "infinite mass" the sweep expressed by giving a fixed
+ * end's share of a correction to the other end. The actual mass cancels: scale
+ * every `w` and `lambda` scales inversely, leaving `dp` where it was.
+ *
+ * ## Which is XPBD, arrived at from the other side
+ *
+ * `EPSILON` on the diagonal is exactly XPBD's `alpha / h^2`, and this routine
+ * is the XPBD system solved directly instead of by relaxation. XPBD's own
+ * update is what you get by doing one Gauss-Seidel step on this matrix, which
+ * is why adopting it alone changed nothing measurable: at zero compliance it is
+ * algebraically the sweep that was already here. The win was never the
+ * formulation, it was refusing to iterate on a system this well-shaped.
+ *
+ * The regularisation is not optional. A perfectly straight chain makes
+ * neighbouring constraint gradients parallel, the band terms reach the
+ * diagonal, and the matrix goes singular — a taut rope is exactly the pose
+ * where the solve would divide by nothing. A hair of compliance keeps it
+ * definite and is a rope that is very slightly stretchy, which is what a rope
+ * is.
  */
 function project(pos: Float64Array, at: number, last: number, link: number): void {
-  for (let iter = 0; iter < ROPE_ITERATIONS; iter++) {
-    if (iter % 2 === 0) {
-      for (let i = at; i < last; i += 2) relax(pos, i, at, last, link);
-    } else {
-      for (let i = last - 2; i >= at; i -= 2) relax(pos, i, at, last, link);
-    }
+  const count = (last - at) / 2 + 1;
+  const links = count - 1;
+  if (links < 1) return;
+  grow(links);
+
+  for (let pass = 0; pass < ROPE_ITERATIONS; pass++) {
+    if (!build(pos, at, links, link)) return;
+    thomas(links);
+    apply(pos, at, links);
   }
 }
 
-function relax(pos: Float64Array, i: number, at: number, last: number, link: number): void {
-  const j = i + 2;
-  const dx = pos[j]! - pos[i]!;
-  const dy = pos[j + 1]! - pos[i + 1]!;
-  const d = Math.hypot(dx, dy);
-  // Two particles exactly on top of each other have no direction to be pushed
-  // apart along. It takes a pathological drag to arrange and the next
-  // micro-step of gravity separates them, so leaving the link alone for one
-  // pass is cheaper and steadier than inventing an axis.
-  if (d === 0) return;
-
-  const scale = (d - link) / d;
-  const headFixed = i === at;
-  const tailFixed = j === last;
-  const wHead = headFixed ? 0 : tailFixed ? 1 : 0.5;
-  const wTail = tailFixed ? 0 : headFixed ? 1 : 0.5;
-
-  if (wHead !== 0) {
-    pos[i] = pos[i]! + dx * scale * wHead;
-    pos[i + 1] = pos[i + 1]! + dy * scale * wHead;
+/**
+ * The chain's normals, its violations, and the band of the matrix, for the
+ * positions as they stand right now.
+ *
+ * Returns false if any link has collapsed to a point: there is no direction to
+ * push along, the next micro-step of gravity separates them, and inventing an
+ * axis is worse than leaving the whole solve for one step. It takes a
+ * pathological drag to arrange at all.
+ */
+function build(pos: Float64Array, at: number, links: number, link: number): boolean {
+  for (let k = 0; k < links; k++) {
+    const i = at + k * 2;
+    const dx = pos[i + 2]! - pos[i]!;
+    const dy = pos[i + 3]! - pos[i + 1]!;
+    const d = Math.hypot(dx, dy);
+    if (d === 0) return false;
+    nx[k] = dx / d;
+    ny[k] = dy / d;
+    // The right-hand side is -C: how far this link is from its rest length,
+    // negated, because the correction has to cancel the violation.
+    rhs[k] = link - d;
   }
-  if (wTail !== 0) {
-    pos[j] = pos[j]! - dx * scale * wTail;
-    pos[j + 1] = pos[j + 1]! - dy * scale * wTail;
+
+  for (let k = 0; k < links; k++) {
+    // Inverse mass of the two particles this link joins. The first and last
+    // particle of the rope are pinned, so they take none of the correction.
+    const wHead = k === 0 ? 0 : 1;
+    const wTail = k === links - 1 ? 0 : 1;
+    diag[k] = wHead + wTail + EPSILON;
+    // Coupling to the next constraint, through the particle they share.
+    if (k < links - 1) band[k] = -wTail * (nx[k]! * nx[k + 1]! + ny[k]! * ny[k + 1]!);
   }
+  return true;
+}
+
+/**
+ * Thomas: forward elimination then back substitution, on a symmetric
+ * tridiagonal system. `scratch` carries the modified band, `mult` the modified
+ * right-hand side, and `lambda` comes back holding the multipliers.
+ */
+function thomas(links: number): void {
+  let denominator = diag[0]!;
+  scratch[0] = (band[0] ?? 0) / denominator;
+  mult[0] = rhs[0]! / denominator;
+  for (let k = 1; k < links; k++) {
+    const above = band[k - 1]!;
+    denominator = diag[k]! - above * scratch[k - 1]!;
+    scratch[k] = (band[k] ?? 0) / denominator;
+    mult[k] = (rhs[k]! - above * mult[k - 1]!) / denominator;
+  }
+  lambda[links - 1] = mult[links - 1]!;
+  for (let k = links - 2; k >= 0; k--) lambda[k] = mult[k]! - scratch[k]! * lambda[k + 1]!;
+}
+
+/**
+ * `dp(i) = w(i) * (lambda(i-1) n(i-1) - lambda(i) n(i))` — each particle takes
+ * the pull of the link behind it and the push of the one in front.
+ *
+ * Interior particles only. The endpoints are seated on their pins every
+ * micro-step and carry zero inverse mass, so their correction is zero by
+ * construction and writing it would only cost the multiply.
+ */
+function apply(pos: Float64Array, at: number, links: number): void {
+  for (let k = 1; k < links; k++) {
+    const i = at + k * 2;
+    const behind = lambda[k - 1]!;
+    const ahead = lambda[k]!;
+    pos[i] = pos[i]! + behind * nx[k - 1]! - ahead * nx[k]!;
+    pos[i + 1] = pos[i + 1]! + behind * ny[k - 1]! - ahead * ny[k]!;
+  }
+}
+
+/**
+ * A hair of compliance on the diagonal.
+ *
+ * Small enough that a rope's stretch stays far under the part in three hundred
+ * `stretch.test.ts` asks for, large enough that a taut chain — where
+ * neighbouring gradients line up and the band terms reach the diagonal — stays
+ * a matrix that can be solved rather than one that divides by nothing.
+ */
+const EPSILON = 1e-6;
+
+/**
+ * The solver's working set: one chain's worth, module-level and grown on
+ * demand, exactly like `mark` above and for the same reason — a rope is solved
+ * to completion before the next one starts, so one set serves the board and
+ * nothing allocates per rope per frame.
+ */
+let nx = new Float64Array(0);
+let ny = new Float64Array(0);
+let rhs = new Float64Array(0);
+let diag = new Float64Array(0);
+let band = new Float64Array(0);
+let scratch = new Float64Array(0);
+let mult = new Float64Array(0);
+let lambda = new Float64Array(0);
+
+function grow(links: number): void {
+  if (nx.length >= links) return;
+  nx = new Float64Array(links);
+  ny = new Float64Array(links);
+  rhs = new Float64Array(links);
+  diag = new Float64Array(links);
+  band = new Float64Array(links);
+  scratch = new Float64Array(links);
+  mult = new Float64Array(links);
+  lambda = new Float64Array(links);
 }

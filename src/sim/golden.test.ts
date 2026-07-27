@@ -221,30 +221,37 @@ describe("and it stops", () => {
    * > A board with 500 strings has, in normal use, between zero and four awake
    * > at any moment. — DESIGN section 5.3
    *
-   * Which is only true if a disturbed rope actually finishes. Five seconds is
-   * the bound because five seconds is what it measures, and the *shape* of the
+   * Which is only true if a disturbed rope actually finishes. Six seconds is
+   * the bound because six seconds is what it measures, and the *shape* of the
    * measurement is the interesting part: a 70-unit nudge and a 500-unit yank
-   * both settle in about 250 frames. So this is not the swing damping out —
-   * that is a 0.29 s half-life and would show up as a bound that grew with the
-   * log of the disturbance. It is the solver creeping the last fraction of a
-   * unit onto its own equilibrium, which is the same slow convergence D-17 is
-   * about, seen from the time axis instead of the distance one.
+   * both settle in about the same number of frames, so this is not a bound that
+   * grows with the size of the disturbance.
+   *
+   * What it *is* changed with T-147. It used to be the solver creeping the last
+   * fraction of a unit onto its own equilibrium — the same slow convergence
+   * D-17 was about, seen from the time axis instead of the distance one. Now
+   * that the chain is solved exactly there is no creep left to do, and what
+   * remains is the rope genuinely ringing: the old projection bled energy into
+   * stretching every step, which damped the swing for free and by accident, and
+   * an exact solve does not. So the number went *up* slightly, from about 250
+   * frames to about 305, while the pose it arrives at went from a part in
+   * seventy-four of the chord to a part in eight thousand.
    *
    * Worth knowing rather than worth fixing here: the rope looks settled long
    * before it is declared settled, so the cost is a few ropes reported awake,
    * not anything visible. T-109 has the idea for shortening it.
    */
-  it.each(CASES)("goes quiet inside five seconds, however hard it is hit — $name", (c) => {
+  it.each(CASES)("goes quiet inside six seconds, however hard it is hit — $name", (c) => {
     pin("p1", c.a[0], c.a[1]);
     pin("p2", c.b[0], c.b[1]);
     ropes.setString(scene, dirty, "s", ["p1", "p2"], [c.slack, c.slack]);
     movePin("p1", c.a[0] - 60, c.a[1] - 40);
-    expect(settle()).toBeLessThan(300);
+    expect(settle()).toBeLessThan(360);
 
     movePin("p1", c.a[0] - 400, c.a[1] - 300);
     settle();
     movePin("p1", c.a[0], c.a[1]);
-    expect(settle()).toBeLessThan(300);
+    expect(settle()).toBeLessThan(360);
   });
 
   /**

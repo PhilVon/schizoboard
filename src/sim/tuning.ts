@@ -133,14 +133,26 @@ export const ROPE_DAMPING = 0.98;
  * ones — under a tenth of a board unit per link, with the rope as a whole
  * hanging within one board unit of the analytic pose, which is invisible.
  * Doubling to 32 would quarter that, but a hundred awake ropes already cost
- * **5.8 ms a frame** here, and T-67 has to fit collision into the same budget.
- * Two passes rather than one because they alternate direction and a rope has
- * an anchor at each end (see `sim/verlet.ts`).
+ * **5.8 ms a frame** here.
  *
  * So this is the dial, in both directions: cost is linear in the product,
  * error falls with the square of the first number. The normal case — DESIGN
  * section 5.3's "between zero and four awake at any moment" — costs a quarter
  * of a millisecond, so the headroom that matters is all at the far end.
+ *
+ * ## What `ROPE_ITERATIONS` counts now (T-147)
+ *
+ * Newton steps on the chain's tridiagonal constraint system, not Gauss-Seidel
+ * passes over the links. The table above was measured against the relaxation
+ * that used to be here and the *shape* of its argument still holds — the
+ * substep count is the dial worth turning — but the residuals in it are long
+ * gone: a direct solve leaves the settled rope within a part in eight thousand
+ * of the analytic pose instead of a part in seventy-four, on the longest ropes
+ * a real board has. `stretch.test.ts` is the current measurement.
+ *
+ * Two rather than one because the distance constraint is non-linear — the link
+ * directions move as the solve corrects them — so the second step cleans up
+ * what the first one's linearisation left. A third changes nothing measurable.
  */
 export const ROPE_SUBSTEPS = 16;
 export const ROPE_ITERATIONS = 2;

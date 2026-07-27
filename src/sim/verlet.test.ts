@@ -18,6 +18,7 @@ import { describe, expect, it } from "vitest";
 import { sampleChain, solveCatenary, type Catenary } from "@/sim/catenary";
 import {
   ROPE_SLEEP_MOVE,
+  ROPE_SLEEP_STEPS,
   ROPE_SPACING,
   SIM_MAX_SUBSTEPS,
   SIM_STEP_MS,
@@ -65,10 +66,29 @@ function step(r: Rope, substeps: number, anchors?: [number, number, number, numb
   return stepRope(r.pos, r.prev, 0, r.count, r.link, ax, ay, bx, by, substeps);
 }
 
-/** Settle a rope and report how many substeps it took to go quiet. */
+/**
+ * Settle a rope and report how many substeps it took to go quiet — quiet by
+ * the same rule the sleep manager uses, which is `ROPE_SLEEP_STEPS` in a row
+ * and not one.
+ *
+ * It was one for four phases, and it was wrong the whole time in a way nothing
+ * could see: a single quiet substep also happens at the top and bottom of a
+ * swing, where the rope is momentarily still and about to move again. So this
+ * could stop the clock on a rope that had merely paused, and hand the
+ * assertions a pose it was only passing through.
+ *
+ * That went unnoticed because the old projection lost enough energy to
+ * stretching that a rope barely swung. Solving the chain exactly (T-147) took
+ * that accidental damping away, ropes now ring for a moment, and this stopped
+ * at frame 159 of a settle that finishes at 313 — reporting a sag of 75.2 for
+ * a rope that comes to rest at 73.84, which is the catenary's own answer to
+ * two decimal places.
+ */
 function settle(r: Rope, limit = 4000): number {
+  let quiet = 0;
   for (let i = 0; i < limit; i++) {
-    if (step(r, 1) < ROPE_SLEEP_MOVE) return i + 1;
+    quiet = step(r, 1) < ROPE_SLEEP_MOVE ? quiet + 1 : 0;
+    if (quiet >= ROPE_SLEEP_STEPS) return i + 1;
   }
   return limit;
 }

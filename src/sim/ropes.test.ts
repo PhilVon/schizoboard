@@ -46,6 +46,31 @@ function frame(n = 1): void {
   }
 }
 
+/**
+ * Exactly one fixed step, where `frame` is two of them at 60 Hz.
+ *
+ * For the plucks, which are the only assertions here about what the rope is
+ * doing *during* a disturbance rather than where it ends up. Both of them
+ * already meant one step — "the kick lands on `prev`, so it is one step that
+ * turns it into motion" — and got away with asking for a frame while the
+ * projection was soft enough that a wave took several to cross the rope.
+ *
+ * Solving the chain exactly (T-147) put the tension up to what the analysis
+ * says it should be, and a transverse wave travels at the root of tension, so
+ * the ringing is now quicker than the frame that was being used to sample it:
+ * one fixed step after a downward pluck the middle of the rope is two units
+ * below its rest pose, and one frame after it, it has already been through the
+ * bottom and is on its way back up. Sampling a faster oscillation at the old
+ * rate reads as the pluck having stopped working, which is what this is here
+ * to stop somebody concluding.
+ */
+function fixedStep(n = 1): void {
+  for (let i = 0; i < n; i++) {
+    ropes.step(scene, dirty, SIM_STEP_MS);
+    dirty.clear();
+  }
+}
+
 /** Run frames until nothing is awake, and report how many it took. */
 function untilAsleep(limit = 2000): number {
   for (let i = 0; i < limit; i++) {
@@ -293,11 +318,33 @@ describe("plucking", () => {
     const mid = Math.floor(rest.length / 2);
 
     ropes.pluck("s1", 100, 0);
-    // One frame, because that is how long the answer stays a direction: a rope
-    // this taut is through the middle and heading back up by the next one, and
-    // ringing is the point.
-    frame(1);
-    expect(points("s1")[mid]![1]).toBeGreaterThan(rest[mid]![1] + 1);
+    // One fixed step, because that is how long the answer stays a direction: a
+    // rope this taut is through the middle and heading back up by the next
+    // one, and ringing is the point. It was one *frame* until T-147 made the
+    // rope as stiff as the analysis says it is — see `fixedStep`.
+    fixedStep(1);
+    // Downward, which is the direction this test is named for and the thing
+    // that would be wrong if the perpendicular were picked the other way.
+    expect(points("s1")[mid]![1]).toBeGreaterThan(rest[mid]![1]);
+
+    // And it has to be a *visible* kick, not a numerical one. The threshold
+    // used to be a whole unit within this same step; solving the chain exactly
+    // (T-147) made the rope about four times stiffer, so the same impulse now
+    // buys a quarter of the displacement and buys it back faster. Peak swing
+    // on a 200-unit taut string went from about 21 units to about 5.
+    //
+    // So the assertion moved from "how far in one step" to "how far at all",
+    // which is the part a person actually sees, and it is a floor a long way
+    // under the 5 that is measured rather than a number fitted to it. If a
+    // stiffer solver ever takes the pluck below this, that is worth being told
+    // about rather than worth adjusting: T-148 is the open question of whether
+    // `PLUCK_SPEED` should be raised to put the old swing back.
+    let peak = 0;
+    for (let i = 0; i < 24; i++) {
+      fixedStep(1);
+      peak = Math.max(peak, Math.abs(points("s1")[mid]![1] - rest[mid]![1]));
+    }
+    expect(peak).toBeGreaterThan(3);
   });
 
   /**
@@ -317,14 +364,22 @@ describe("plucking", () => {
     const rest = points("s1");
 
     ropes.pluck("s1", 100, 0);
-    // The kick lands on `prev`, so it is one step that turns it into motion.
-    frame(1);
+    // The kick lands on `prev`, so it is one step that turns it into motion —
+    // one fixed step, literally, now that the ringing is quick enough to care
+    // about the difference. See `fixedStep`.
+    fixedStep(1);
     const moved = offsets("s1", rest);
     // Seven: PLUCK_REACH of 3 either side of the particle that was hit. A
     // literal rather than the constant, so that retuning the reach makes
     // somebody look at this number rather than making the test agree with
     // itself whatever it is set to.
-    expect(moved[6]!).toBeGreaterThan(moved[0]! * 0.7);
+    // 0.6 rather than the 0.7 this was written at. The number that matters is
+    // the one it is being told apart from — the comment above measured 50% with
+    // the reach turned off — and a crest at 66% is still unambiguously a bump
+    // rather than a spike. The few points it lost are T-147's: a stiffer chain
+    // passes the kink outward faster, so one step in, the shoulders of the
+    // crest have already begun to run away from its middle.
+    expect(moved[6]!).toBeGreaterThan(moved[0]! * 0.6);
   });
 
   /**

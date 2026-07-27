@@ -142,45 +142,15 @@ describe("a settled rope sits where a seeded one would, whatever it is carrying"
     { name: "a short span, undisturbed", built: 220, span: 220 },
     { name: "a short span, moved", built: 220, span: 300 },
     { name: "the longest span golden.test.ts covers", built: 400, span: 400 },
+    { name: "half as long again", built: 600, span: 600 },
+    { name: "a span the width of a board", built: 1000, span: 1000 },
+    { name: "the same, moved", built: 1000, span: 1020 },
     { name: "stretched to twice what it was seeded at", built: 500, span: 1020 },
+    { name: "shortened to two thirds of what it was seeded at", built: 1500, span: 1020 },
   ];
 
   it.each(CASES)("$name", (c) => {
     expect(gap(c)).toBeLessThan(BOUND);
-  });
-});
-
-/**
- * The rest of the table, which does **not** meet that bound, pinned at what it
- * actually does.
- *
- * This block is the unfixed half of T-147 and is meant to be deleted, not
- * maintained. It is two-sided on purpose: the upper bound catches the gap
- * getting worse, and the assertion that each case is still outside `BOUND`
- * means that whoever fixes the solver finds this failing and deletes it,
- * rather than leaving a test behind that quietly asserts the bug is correct.
- *
- * Four approaches were measured and rejected before it was left here (D-23):
- * XPBD at zero compliance is algebraically the projection already in
- * `verlet.ts`; a long-range attachment fixes the sag and flattens plucks and
- * the moved-pin walk; successive over-relaxation buys the sag by overshooting
- * links, which `golden.test.ts` catches as a rope that is shorter than its own
- * rest length; and more micro-steps perturb the pluck and the settle times
- * that are tuned around them. Each one trades this measurement against a
- * different one somebody already chose.
- */
-describe("the long ropes it does not hold yet — T-147, unfixed", () => {
-  const KNOWN = [
-    { name: "half as long again", built: 600, span: 600, ceiling: 0.0042 },
-    { name: "a span the width of a board", built: 1000, span: 1000, ceiling: 0.0068 },
-    { name: "the same, moved", built: 1000, span: 1020, ceiling: 0.0068 },
-    { name: "shortened to two thirds of what it was seeded at", built: 1500, span: 1020, ceiling: 0.0148 },
-  ];
-
-  it.each(KNOWN)("$name", (c) => {
-    const ratio = gap(c);
-    expect(ratio).toBeLessThan(c.ceiling);
-    expect(ratio).toBeGreaterThan(BOUND);
   });
 });
 
