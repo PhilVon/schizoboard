@@ -14,7 +14,7 @@ import { DirtySets } from "@/state/dirty";
 import { Scene } from "@/state/scene";
 import { Selection } from "@/state/selection";
 import { ToolMachine } from "@/state/tools/machine";
-import type { Tool, ToolContext, ToolInput } from "@/state/tools/tool";
+import type { PointerSample, Tool, ToolContext, ToolInput } from "@/state/tools/tool";
 
 class RecordingTool implements Tool {
   readonly id = "recording";
@@ -31,7 +31,12 @@ class RecordingTool implements Tool {
     this.seen.push(input);
     this.heldAtHandle.push([...ctx.held]);
   }
-  claimsWheel(): boolean {
+  /** Every sample it was asked about — `wheelClaimed` builds one out of the
+   *  hover and the held keys rather than out of an event. */
+  readonly askedWith: PointerSample[] = [];
+
+  claimsWheel(at: PointerSample): boolean {
+    this.askedWith.push(at);
     return this.wantsWheel;
   }
   tick(): void {
@@ -467,5 +472,70 @@ describe("offering a wheel notch to the tool", () => {
     expect(scroll(-100)).toBe(false);
     machine.flush(16);
     expect(kinds()).toEqual([]);
+  });
+});
+
+/**
+ * The same question without a notch, so that something can be *drawn* about the
+ * answer before the user spends a gesture finding it out (T-116). `app/main.ts`
+ * reads it once a frame and turns it into a cursor.
+ */
+describe("whether a wheel notch would be the tool's", () => {
+  it("is nobody's while the pointer is off the board", () => {
+    tool.wantsWheel = true;
+    expect(machine.wheelClaimed).toBe(false);
+    expect(tool.askedWith).toEqual([]);
+  });
+
+  it("asks the tool about the hover, and answers what it says", () => {
+    pointer("pointermove", { pointerId: 1, clientX: 40, clientY: 90 });
+    expect(machine.wheelClaimed).toBe(false);
+    tool.wantsWheel = true;
+    expect(machine.wheelClaimed).toBe(true);
+    expect(tool.askedWith.at(-1)).toEqual({
+      x: 40,
+      y: 90,
+      shift: false,
+      ctrl: false,
+      alt: false,
+    });
+  });
+
+  /**
+   * `Alt`+wheel is a different gesture from a bare one — "adjust the whole
+   * string" against one segment (DESIGN section 3.4) — so an affordance that
+   * ignored the modifiers would be pointing at the wrong one of the two.
+   */
+  it("carries the modifiers that are held, with no event to read them from", () => {
+    pointer("pointermove", { pointerId: 1, clientX: 40, clientY: 90 });
+    key("AltRight");
+    key("ControlLeft");
+    void machine.wheelClaimed;
+    expect(tool.askedWith.at(-1)).toMatchObject({ alt: true, ctrl: true, shift: false });
+  });
+
+  it("lets go of them again", () => {
+    pointer("pointermove", { pointerId: 1, clientX: 40, clientY: 90 });
+    key("AltLeft");
+    window.dispatchEvent(new KeyboardEvent("keyup", { code: "AltLeft" }));
+    void machine.wheelClaimed;
+    expect(tool.askedWith.at(-1)).toMatchObject({ alt: false });
+  });
+
+  /** The same truce `claimWheel` keeps: while the space bar is down the wheel
+   *  is the camera's, so nothing may say otherwise. */
+  it("is false while navigation owns the pointer", () => {
+    pointer("pointermove", { pointerId: 1, clientX: 40, clientY: 90 });
+    tool.wantsWheel = true;
+    suppressed = true;
+    expect(machine.wheelClaimed).toBe(false);
+  });
+
+  it("goes back to nobody's when the pointer leaves the board", () => {
+    pointer("pointermove", { pointerId: 1, clientX: 40, clientY: 90 });
+    tool.wantsWheel = true;
+    expect(machine.wheelClaimed).toBe(true);
+    pointer("pointerleave", { pointerId: 1 });
+    expect(machine.wheelClaimed).toBe(false);
   });
 });

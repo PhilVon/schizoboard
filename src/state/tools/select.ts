@@ -570,6 +570,19 @@ export class SelectTool implements Tool {
     // a drag — the gesture in progress is what the pointer is doing.
     if (at.ctrl || this.gesturing) return null;
 
+    /**
+     * No selected string and nothing latched: the notch is the camera's, and
+     * this says so without a hit test.
+     *
+     * Selection is what disambiguates the whole gesture — both branches below
+     * end in `selection.hasString` — so this is the same answer arrived at
+     * sooner, not a different rule. It earns its place because the question
+     * stopped being one-per-notch: `ToolMachine.wheelClaimed` asks it once a
+     * frame so the cursor can say which way the wheel will go, and an idle
+     * board with the pointer at rest on it must stay free.
+     */
+    if (ctx.selection.strings.size === 0 && this.slackRoll === null) return null;
+
     // A roll already under way keeps what it took hold of, even once the sag has
     // drooped out from under the cursor — which is the point (`SLACK_ROLL_IDLE_MS`).
     const latched = this.liveRoll(ctx);

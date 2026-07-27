@@ -126,7 +126,12 @@ function hitPin(sx: number, sy: number): string | null {
  * at and what the tool does with `t`, not the sag. The real one hit-tests the
  * particles, and `sim/ropes.test.ts` is where that is proved.
  */
+/** How many times it has been asked — the wheel's no-selection fast path is
+ *  about *not* asking, which is not observable from the answer. */
+let stringHits = 0;
+
 function hitString(bx: number, by: number, reach: number): StringHit | null {
+  stringHits++;
   let best: StringHit | null = null;
   let bestDistance = reach;
   for (const [id, run] of scene.strings) {
@@ -2066,6 +2071,28 @@ describe("slack controls", () => {
       span();
       expect(wheel(100, 0, -100)).toBe(false);
       expect(writes).toEqual([]);
+    });
+
+    /**
+     * And declines it without asking where the ropes are.
+     *
+     * Selection is what disambiguates the gesture, so an empty one is a
+     * complete answer on its own. That was merely tidy while the question was
+     * asked once per notch; it matters now that `ToolMachine.wheelClaimed` asks
+     * it every frame to decide the cursor, on a board whose resting state is
+     * nothing selected and the pointer sitting still.
+     */
+    it("declines without a hit test when no string is selected at all", () => {
+      span();
+      stringHits = 0;
+      expect(tool.claimsWheel(at(100, 0), ctx)).toBe(false);
+      expect(stringHits).toBe(0);
+
+      // And the moment there is a selection it does ask, so the fast path is a
+      // shortcut through the same rule rather than a second one.
+      selection.replaceStrings(["s"]);
+      expect(tool.claimsWheel(at(100, 0), ctx)).toBe(true);
+      expect(stringHits).toBeGreaterThan(0);
     });
 
     it("leaves the notch to the camera over bare cork", () => {

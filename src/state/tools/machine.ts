@@ -204,6 +204,48 @@ export class ToolMachine {
     return true;
   }
 
+  /**
+   * Would a notch arriving *now* be the tool's rather than the camera's?
+   *
+   * The same question `claimWheel` asks, minus the notch — so that something
+   * can be drawn about the answer before the user has to spend a gesture
+   * finding it out. The wheel is the one input the camera and the board both
+   * want, and until this the only way to learn which of them had it was to roll
+   * and see: a notch meant for a string's sag, landing on the camera instead,
+   * takes the board from 49% to 6% zoom and the recovery is `Ctrl`+`0`.
+   *
+   * Read once a frame by `app/main.ts`, which turns it into a cursor. Safe to
+   * ask that often because `claimsWheel` is pure by contract — it has to be,
+   * since the camera needs its answer inside the wheel listener — and because
+   * the tool that answers it (`state/tools/select.ts`) declines without a hit
+   * test when nothing is selected, which is the resting state of the board.
+   *
+   * Null hover is the pointer off the board entirely, which is nobody's notch.
+   */
+  get wheelClaimed(): boolean {
+    const at = this.hover;
+    if (at === null || this.suppressed()) return false;
+    return (
+      this.tool.claimsWheel?.(
+        {
+          x: at.x,
+          y: at.y,
+          // From the held set rather than from an event, because there is no
+          // event — this is a question about the state of the board between
+          // gestures, and `Alt`+wheel means something different from a bare one.
+          shift: this.modifier("Shift"),
+          ctrl: this.modifier("Control"),
+          alt: this.modifier("Alt"),
+        },
+        this.ctx,
+      ) === true
+    );
+  }
+
+  private modifier(name: "Shift" | "Control" | "Alt"): boolean {
+    return this.heldKeys.has(`${name}Left`) || this.heldKeys.has(`${name}Right`);
+  }
+
   /** INPUT phase. Drains the frame's input, then steps the tool once. */
   flush(dtMs: number): void {
     this.ended = this.pendingEnd;

@@ -789,12 +789,24 @@ async function boot(): Promise<void> {
   });
 
   /**
-   * The cursor, which is the only affordance a resize edge has.
+   * The cursor, which is the only affordance two of this board's gestures have.
    *
-   * Nothing is drawn for one — "notes, cards and scraps resize from their edges"
-   * and the edge is the handle — so without this the band is invisible, and a
-   * drag that started 4 px inside a note's edge and made it taller instead of
-   * moving it would read as the board misbehaving.
+   * Nothing is drawn for a resize edge — "notes, cards and scraps resize from
+   * their edges" and the edge is the handle — so without this the band is
+   * invisible, and a drag that started 4 px inside a note's edge and made it
+   * taller instead of moving it would read as the board misbehaving.
+   *
+   * The wheel is the same problem in a worse place. It zooms the camera unless
+   * a selected segment is under the cursor, in which case it adjusts that
+   * segment's sag (DESIGN section 3.4) — and until now nothing said which of
+   * the two the next notch would be, so the first one was an experiment. Losing
+   * that experiment is expensive: a notch meant for a string and taken by the
+   * camera goes from 49% to 6% zoom in one roll, and the way back is `Ctrl`+`0`.
+   *
+   * `row-resize` for it — a line with an arrow either side of it, which is what
+   * the gesture is: the string, and the sag going up or down. Deliberately not
+   * one of `handleCursor`'s four resize cursors or its `grab`, because those
+   * already mean "drag from here" on this board and this one means "roll here".
    *
    * A DOM write, so it belongs in phase 5 with the other ones, and it is written
    * only when the answer changes. `panReady` is the truce with `Navigation`,
@@ -814,7 +826,11 @@ async function boot(): Promise<void> {
     // it took hold of, and a cursor that reverted would read as a dropped grab.
     const handle =
       select.activeHandle ?? (frame && hover ? handleAt(frame, hover.x, hover.y) : null);
-    const want = frame && handle ? handleCursor(handle, frame.angle) : "";
+    // The handle first, because a handle is something you are already touching
+    // and the wheel is something you might do next — and the two overlap the
+    // moment a selected string crosses a selected note's edge.
+    const want =
+      frame && handle ? handleCursor(handle, frame.angle) : tools.wheelClaimed ? "row-resize" : "";
     if (want === writtenCursor) return;
     writtenCursor = want;
     root.style.cursor = want;
