@@ -29,9 +29,13 @@
  * canvas is sized to the overlap of the ink and the paper, and `paintStrokes`
  * clips to the paper as well (T-136). A stroke that runs off the side of a
  * photograph used to be drawn in full, hanging over the cork and travelling with
- * the paper, which reads as a mark stuck to the air. What happens to the part
- * that fell off — lost today, ink on whatever is underneath once board ink
- * exists — is T-137.
+ * the paper, which reads as a mark stuck to the air.
+ *
+ * The clip is now belt as well as braces: the marker breaks a stroke at the edge
+ * and gives the part past it to the surface underneath (T-137), so a record on
+ * this item should not reach outside this item's paper in the first place. It
+ * still can — a resize moves the edge under ink that was inside it when it was
+ * drawn — which is exactly the case the clip is here for.
  *
  * Being inside the root also means being inside the item's `rotate()` and its
  * carry `scale()`, which is DESIGN section 6.2's whole claim: the ink follows a

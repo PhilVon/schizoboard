@@ -14,6 +14,7 @@ import * as Y from "yjs";
 import { initialiseBoard, openBoardDoc, type BoardDoc } from "@/crdt/doc";
 import {
   commitStroke,
+  commitStrokes,
   createItems,
   deleteBoardStrokes,
   deleteItems,
@@ -259,6 +260,96 @@ describe("committing to bare cork", () => {
 
     undo.redo();
     expect(b.boardInk.get("1,1")!.size).toBe(1);
+  });
+});
+
+/**
+ * One gesture, several records, one undo entry (T-137).
+ *
+ * A line drawn off the side of a photograph and onto the cork is two marks in the
+ * document and one thing the hand did. The property that matters is the
+ * transaction: `Y.UndoManager` groups by it, so a second `mutate` would be a
+ * second Ctrl+Z — one that took back the half on the cork and left the half on
+ * the paper.
+ */
+describe("committing a gesture that crossed a surface", () => {
+  function around(cx: number, cy: number): InkSample[] {
+    return samples().map((s) => ({ x: s.x + cx, y: s.y + cy, pressure: s.pressure }));
+  }
+
+  it("writes every run in one transaction", () => {
+    const b = board();
+    const id = note(b);
+    let transactions = 0;
+    b.doc.on("afterTransaction", () => transactions++);
+
+    commitStrokes(b, [
+      { item: id, tool: "marker", color: "#000", size: 6, samples: samples() },
+      { item: null, tool: "marker", color: "#000", size: 6, samples: around(3000, 3000) },
+      { item: id, tool: "marker", color: "#000", size: 6, samples: samples() },
+    ]);
+
+    expect(transactions).toBe(1);
+    expect(strokeMap(b, id).size).toBe(2);
+    expect(b.boardInk.get("1,1")!.size).toBe(1);
+  });
+
+  it("undoes the whole gesture in one step", () => {
+    const b = board();
+    const id = note(b);
+    const undo = new UndoHistory(b);
+    commitStrokes(b, [
+      { item: id, tool: "marker", color: "#000", size: 6, samples: samples() },
+      { item: null, tool: "marker", color: "#000", size: 6, samples: around(3000, 3000) },
+    ]);
+    undo.boundary();
+
+    undo.undo();
+    // Both halves, not one: a Ctrl+Z that left the cork's piece behind would be
+    // undoing something nobody did.
+    expect(strokeMap(b, id).size).toBe(0);
+    expect(b.boardInk.has("1,1")).toBe(false);
+  });
+
+  it("says where each run landed, with the ones it refused simply absent", () => {
+    const b = board();
+    const id = note(b);
+    const written = commitStrokes(b, [
+      { item: "nobody", tool: "marker", color: "#000", size: 6, samples: samples() },
+      { item: id, tool: "marker", color: "#000", size: 6, samples: samples() },
+      { item: null, tool: "marker", color: "#000", size: 6, samples: around(3000, 3000) },
+    ]);
+
+    // Two of three, and each says which surface it is on — so a caller pairing
+    // results with inputs by position would name the wrong one, and does not
+    // have to.
+    expect(written).toHaveLength(2);
+    expect(written[0]).toMatchObject({ item: id, tile: null });
+    expect(written[1]).toMatchObject({ item: null, tile: "1,1" });
+  });
+
+  it("stacks two runs of one gesture on the same surface in the order drawn", () => {
+    const b = board();
+    const id = note(b);
+    const written = commitStrokes(b, [
+      { item: id, tool: "marker", color: "#000", size: 6, samples: samples() },
+      { item: null, tool: "marker", color: "#000", size: 6, samples: around(3000, 3000) },
+      { item: id, tool: "marker", color: "#000", size: 6, samples: samples() },
+    ]);
+
+    const map = strokeMap(b, id);
+    const first = readStroke(written[0]!.id, map.get(written[0]!.id)!)!;
+    const third = readStroke(written[2]!.id, map.get(written[2]!.id)!)!;
+    expect(third.z > first.z).toBe(true);
+  });
+
+  it("writes nothing at all for a gesture whose every run was empty", () => {
+    const b = board();
+    let transactions = 0;
+    b.doc.on("afterTransaction", () => transactions++);
+    expect(commitStrokes(b, [{ item: null, tool: "marker", color: "#000", size: 6, samples: [] }])).toEqual([]);
+    expect(transactions).toBe(0);
+    expect(b.boardInk.size).toBe(0);
   });
 });
 

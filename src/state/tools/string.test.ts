@@ -151,7 +151,7 @@ beforeEach(() => {
       movePins: () => {
         throw new Error("the string tool never carries a selection");
       },
-      commitStroke: () => {
+      commitStrokes: () => {
         throw new Error("the string tool draws no ink");
       },
       eraseStrokes: () => {

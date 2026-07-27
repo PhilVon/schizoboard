@@ -143,7 +143,7 @@ beforeEach(() => {
     deleteStrings: () => {},
     setStringStyle: () => {},
     movePins: () => {},
-    commitStroke: () => {},
+    commitStrokes: () => {},
     eraseStrokes: () => {},
     },
     hitTest: () => null,

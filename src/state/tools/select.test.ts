@@ -301,7 +301,7 @@ beforeEach(() => {
       movePins: (positions, phase) =>
         writes.push({ kind: "pins", phase, positions: new Map(positions) }),
       // Ink is the marker's (`state/tools/marker.ts`); select draws nothing.
-      commitStroke: () => {},
+      commitStrokes: () => {},
       eraseStrokes: () => {},
     },
   };

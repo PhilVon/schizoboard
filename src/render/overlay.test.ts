@@ -672,10 +672,16 @@ describe("the stroke in progress", () => {
     closePath(): void {}
   }
 
+  /** One run. The parameter is a list now, because a gesture that crosses off
+   *  its surface is several (T-137). */
   function wet(count: number, item: string | null = null): Parameters<Overlay["draw"]>[10] {
+    return count === 0 ? [] : [run(count, item)];
+  }
+
+  function run(count: number, item: string | null = null) {
     const samples = [];
     for (let i = 0; i < count; i++) samples.push({ x: i * 20, y: 0, pressure: 0.5 });
-    return { tool: "marker", color: "#1f1b17", size: 6, opacity: 1, item, samples };
+    return { tool: "marker" as const, color: "#1f1b17", size: 6, opacity: 1, item, samples };
   }
 
   function draw(count: number, item: string | null = null): void {

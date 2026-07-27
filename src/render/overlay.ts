@@ -46,6 +46,10 @@ import type { Scene } from "@/state/scene";
 import type { Selection } from "@/state/selection";
 
 /** Warm, like everything else on this board; matches the item outline. */
+/** No ink in flight — the same array every frame nobody is drawing, which is
+ *  almost all of them. */
+const EMPTY_WET: readonly WetStroke[] = Object.freeze([]);
+
 const MARQUEE_FILL = "rgba(255, 244, 214, 0.10)";
 const MARQUEE_STROKE = "rgba(255, 244, 214, 0.85)";
 
@@ -286,13 +290,17 @@ export class Overlay {
      * The stroke being drawn — DESIGN section 6.5's wet ink, on the canvas
      * section 6.2 names for it.
      *
-     * Board space or an item's, whichever the press fixed it to (`WetStroke.item`);
-     * the scene above is what resolves the difference, once per frame.
+     * A **list**, because a gesture that crosses off the surface it started on is
+     * several runs (T-137): the pieces already behind the hand plus the live one,
+     * each in the space its own `item` names, oldest first. The scene above is
+     * what resolves the difference, once per run per frame. A list of one is the
+     * common case and an empty one is the answer for every frame nobody is
+     * drawing.
      *
      * Last in the list because it is drawn last: ink goes *over* the chrome, since
      * it is a mark being made on the board rather than a thing said about it.
      */
-    wet: WetStroke | null = null,
+    wet: readonly WetStroke[] = EMPTY_WET,
   ): void {
     const ctx = this.ctx;
     if (!ctx) return;
@@ -301,7 +309,11 @@ export class Overlay {
     const wantsPending = pending !== null && pending.points.length >= 2;
     const wantsStrings = ropes !== null && selection.strings.size > 0;
     const wantsThreads = ropes !== null && hoveredPin !== null;
-    const wantsWet = wet !== null && wet.samples.length >= 2;
+    // One drawable run is enough to make the canvas stale. A run of a single
+    // sample is a press that has not moved, and `MarkerTool.runsInFlight`
+    // withholds it — but a one-sample run that arrives here after a crossing is
+    // the continuation of a mark and is drawn.
+    const wantsWet = wet.length > 0 && wet.some((run) => run.samples.length >= 2);
     const stale =
       wantsMarquee ||
       wantsPending ||
@@ -437,10 +449,14 @@ export class Overlay {
   }
 
   /**
-   * The stroke in progress. All of the drawing is `render/ink/wet.ts`'s; this is
+   * The gesture in progress. All of the drawing is `render/ink/wet.ts`'s; this is
    * the deferred clear, and the one scene read that module is not allowed to do
    * for itself — so that a frame whose only content was a stroke that turned out
    * to be a single sample still does not touch the canvas.
+   *
+   * Every run, in the order the hand made them (T-137), each against its own
+   * surface's frame. A run drawn on a photograph and a run drawn on the cork are
+   * two different conversions of the same gesture, resolved one after the other.
    *
    * The frame is resolved here, in phase 8, and not carried on the stroke from
    * phase 1. A whole frame happens in between: the binding lands a peer's drag of
@@ -454,10 +470,14 @@ export class Overlay {
     ctx: CanvasRenderingContext2D,
     camera: Camera,
     scene: Scene,
-    wet: WetStroke,
+    wet: readonly WetStroke[],
   ): boolean {
     if (!this.cleared) this.clear(ctx);
-    return this.wetInk.draw(ctx, camera, wet, this.inkFrame(scene, wet.item));
+    let drew = false;
+    for (const run of wet) {
+      if (this.wetInk.draw(ctx, camera, run, this.inkFrame(scene, run.item))) drew = true;
+    }
+    return drew;
   }
 
   /**

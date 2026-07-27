@@ -91,7 +91,7 @@ beforeEach(() => {
     deleteStrings: () => {},
     setStringStyle: () => {},
     movePins: () => {},
-    commitStroke: () => {},
+    commitStrokes: () => {},
     eraseStrokes: () => {},
       deletePins: () => {},
       // Kept beside `placed` rather than in it, so the placement assertions

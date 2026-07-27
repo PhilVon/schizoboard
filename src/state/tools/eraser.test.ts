@@ -112,7 +112,7 @@ beforeEach(() => {
       deleteStrings: () => {},
       setStringStyle: () => {},
       movePins: () => {},
-      commitStroke: () => {
+      commitStrokes: () => {
         throw new Error("the eraser draws no ink");
       },
       eraseStrokes: (surface, list) => erased.push({ surface, ids: list }),

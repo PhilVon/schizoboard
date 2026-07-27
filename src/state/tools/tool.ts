@@ -344,25 +344,29 @@ export interface BoardWriter {
    */
   movePins(positions: ReadonlyMap<string, Vec2>, phase: "live" | "final"): void;
   /**
-   * One finished stroke — the dry half of DESIGN section 6.5's wet/dry split.
+   * One finished gesture — the dry half of DESIGN section 6.5's wet/dry split.
    *
    * > Everything up to pen-up is local and ephemeral. The commit is a single
    * > `Y.Map` insertion. — DATA-MODEL section 6.2
    *
-   * The samples are in the space `stroke.item` names, which the press fixed and
-   * the tool has been converting into ever since (`state/tools/marker.ts`). They
-   * are handed over whole rather than a segment at a time for the same reason
-   * `createString` takes a whole run: one stroke is one thing the user did, and
-   * therefore one transaction and one undo entry.
+   * A **list**, because one gesture is not always one mark. A line drawn off the
+   * side of a photograph and onto the cork is broken at the edge and the pieces
+   * are glued to what they are actually over (T-137), so this arrives as one run
+   * per surface, in the order the hand made them, each in the frame its own
+   * `item` names. The common case is a list of one.
    *
-   * The caller keeps drawing the stroke on the overlay until [`Tool`]'s owner
-   * says the item's canvas has caught up — see `MarkerTool.dry`. A write that
-   * *lands* is not a mark that is *drawn*: the commit runs in phase 9 and the
-   * re-raster is a phase 6 the frame after, so dropping the wet copy on the
-   * strength of having queued the write leaves a frame with the mark on neither
-   * surface.
+   * Handed over whole rather than a run at a time for the same reason
+   * `createString` takes a whole run: it is one thing the user did, and therefore
+   * one transaction and one undo entry. Splitting it here would make Ctrl+Z take
+   * back the half on the cork and leave the half on the paper.
+   *
+   * The caller keeps drawing the runs on the overlay until [`Tool`]'s owner says
+   * their canvases have caught up — see `MarkerTool.dry`. A write that *lands* is
+   * not a mark that is *drawn*: the commit runs in phase 9 and the re-raster is a
+   * phase 6 the frame after, so dropping the wet copies on the strength of having
+   * queued the write leaves a frame with the mark on no surface at all.
    */
-  commitStroke(stroke: WetStroke): void;
+  commitStrokes(runs: readonly WetStroke[]): void;
   /**
    * Whole stroke records, gone.
    *

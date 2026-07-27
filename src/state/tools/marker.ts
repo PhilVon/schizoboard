@@ -34,9 +34,9 @@
  *
  * ## The release, and the frame that would otherwise be blank
  *
- * Pen-up hands the samples to `BoardWriter.commitStroke` and the stroke becomes a
- * record in the item's `strokes` map — DESIGN section 6.5's dry half, rastered
- * onto the item's own canvas by `render/ink/canvas.ts`.
+ * Pen-up hands the runs to `BoardWriter.commitStrokes` and each becomes a record
+ * on the surface it ended up on — DESIGN section 6.5's dry half, rastered by
+ * `render/ink/canvas.ts` or `render/ink/board.ts`.
  *
  * The two halves do not change over at the same instant, and the gap between them
  * is a whole frame wide. A tool's writes are *queued* to phase 9
@@ -46,9 +46,9 @@
  * on neither surface — a blink under every pen-up, worst on exactly the long
  * stroke that took the most care to draw.
  *
- * So the samples are kept after the commit, in [`drying`], and the overlay goes
- * on drawing them. What ends that is the owner calling [`dry`] once the item's
- * canvas has caught up — `app/main.ts` asks the item layer, rather than counting
+ * So the runs are kept after the commit, in [`drying`], and the overlay goes on
+ * drawing them. What ends that is the owner calling [`dry`] once every surface's
+ * canvas has caught up — `app/main.ts` asks the layers, rather than counting
  * frames, because the re-raster is budgeted and can be several frames late on a
  * board full of ink. Overlap costs nothing (the same mark, drawn twice, in the
  * same place); a gap is the visible bug.
@@ -56,25 +56,40 @@
  * A stroke on bare cork takes the same route through a different surface: it is
  * committed into a `boardInk` tile and rastered by `render/ink/board.ts`, and
  * the owner waits for that tile's canvas exactly as it waits for an item's
- * (T-61). Nothing in this file knows the difference — the space was decided at
- * pen-down and the writer takes it from there.
+ * (T-61). Nothing in this file knows the difference — it names a surface per run
+ * and the writer takes it from there.
  *
- * ## Which space, decided once
+ * ## Which space, asked every sample (T-137)
  *
  * > The stroke's coordinate space is fixed at pen-down: item-local if the press
  * > landed on a photograph, board if it landed on cork. `Ctrl` forces board
  * > space. — DESIGN section 3.9
  *
- * So the press does a hit test, and every sample after it is converted into
- * whatever that answered — see [`MarkerTool.item`]. Fixed, and not re-asked per
- * sample: a line drawn off the edge of a polaroid and onto the cork is one mark
- * on one surface, and a tool that re-tested would break it in half and glue the
- * halves to different things. It is also why the *press* is what matters and not
- * where the hand ends up.
+ * That was the rule until the cork could hold ink, and it was the right rule
+ * while it could not: a tool that re-tested would have broken a line at the edge
+ * of a photograph and thrown the outside half away, because there was nowhere for
+ * it to go. Now there is (T-61), and the honest answer is the one a real pen
+ * gives — **the mark stays where the hand put it, on whatever it was over**.
  *
- * `Ctrl` is the escape hatch for the case the hit test cannot see: a mark you
- * want on the cork *behind* a photograph, which is otherwise unreachable because
- * the photograph is what the cursor is over.
+ * So the hit test runs on every sample, and when the answer changes the run so
+ * far is finished and a new one starts in the new frame. One gesture becomes
+ * several records; the crossing sample belongs to *both* runs, so the two marks
+ * meet at the edge instead of leaving a gap the width of one hand-movement. All
+ * of them are written in one transaction, which is what keeps it one undo entry —
+ * a Ctrl+Z that took back the half on the cork and left the half on the
+ * photograph would be undoing something nobody did.
+ *
+ * The pieces stay glued to what they landed on for ever after, which is the whole
+ * of what section 3.9's rule was protecting: move the photograph and its half of
+ * the line goes with it, while the cork's half stays on the cork. That looks
+ * wrong for exactly one frame and then reads as obviously right — it is what
+ * would happen to a line drawn across a photograph lying on a real board.
+ *
+ * `Ctrl` at the press still forces board space **for the whole gesture** and
+ * there is no hand-over then. That is what it is for: a mark you want on the cork
+ * *behind* a photograph, which is otherwise unreachable because the photograph is
+ * what the cursor is over — and a Ctrl stroke that hopped onto the paper the
+ * moment it crossed one would be the opposite of the escape hatch.
  */
 
 import {
@@ -109,6 +124,10 @@ export interface MarkerToolOptions {
   onDone?: () => void;
 }
 
+/** The answer for a pen that is not drawing anything — the same array every
+ *  time, so a frame with no ink on it allocates nothing at all. */
+const EMPTY_RUNS: readonly WetStroke[] = Object.freeze([]);
+
 export class MarkerTool implements Tool {
   readonly id: string;
 
@@ -135,20 +154,35 @@ export class MarkerTool implements Tool {
    */
   private strokeInk = "";
   private strokeNib = 0;
-  /** In [`space`], oldest first. Empty means no stroke in progress. */
+  /** The live run, in [`space`], oldest first. Empty means no run in progress. */
   private samples: InkSample[] = [];
   /**
-   * The item this stroke is glued to, or null for board space. Decided by the
-   * press and then left alone — see the note at the top of the file.
+   * The surface the live run is glued to, or null for board space.
+   *
+   * Re-asked on every sample and changed at every edge the hand crosses (T-137),
+   * unless [`forced`] — which is `Ctrl` at the press, and means the cork for the
+   * whole gesture.
    */
   private space: string | null = null;
+  /** `Ctrl` at the press: board space, and no hand-over. Read only on the way
+   *  into [`add`], so letting go of `Ctrl` mid-line changes nothing. */
+  private forced = false;
   private drawing = false;
   /**
-   * A stroke that has been handed to the writer but whose ink is not on the
-   * item's canvas yet — see the note at the top of the file. Drawn by the
-   * overlay exactly like a live one, and cleared by [`dry`].
+   * The runs of this gesture that are already finished — every surface the hand
+   * has crossed off, oldest first, each in its own frame.
+   *
+   * Kept rather than committed as they end, so that pen-up is one write and
+   * therefore one undo entry. Empty for the overwhelmingly common stroke that
+   * never leaves the surface it started on.
    */
-  private drying: WetStroke | null = null;
+  private runs: WetStroke[] = [];
+  /**
+   * The runs handed to the writer whose ink is not on their canvases yet — see
+   * the note at the top of the file. Drawn by the overlay exactly like live
+   * ones, and cleared by [`dry`].
+   */
+  private drying: readonly WetStroke[] = EMPTY_RUNS;
   /** Reused: `itemLocal` allocates a point otherwise, and this runs once per
    *  sample and there are a dozen of those per frame at speed. */
   private readonly local: Point = { x: 0, y: 0 };
@@ -167,30 +201,41 @@ export class MarkerTool implements Tool {
   }
 
   /**
-   * The stroke to draw on the overlay: the one in progress, or the one still
-   * drying, or null when there is neither.
+   * Every run the overlay should draw: the finished pieces of the gesture in
+   * progress and the live one, or the drying pieces of the last one.
    *
-   * The live array rather than a copy. Copying it would allocate the whole stroke
+   * A list because one gesture is not always one mark (T-137), and it is the
+   * *whole* gesture: the moment the hand crosses an edge, the piece behind it
+   * stops growing but must go on being drawn, or the mark you have already made
+   * would vanish for the two or three frames until its record rasters. That flash
+   * would land mid-stroke, which is worse than the pen-up blink the drying slot
+   * exists to prevent.
+   *
+   * The live arrays rather than copies. Copying would allocate the whole stroke
    * every frame of every stroke, which on a long one is the largest allocation in
-   * the frame — and the renderer only reads it. That is the same bargain
+   * the frame — and the renderer only reads them. That is the same bargain
    * `sim/ropes.ts` makes when it hands out its `positions` buffer.
    *
-   * Two samples minimum: one point is a press that has not moved yet, and there
-   * is no evidence yet whether it is a dot or the start of a line. Drawing it now
-   * would put a blob under every click that turned out to be the start of a
-   * stroke. The release settles it — a click that stayed a click is committed as
-   * the dot it was, and arrives on the overlay drying rather than live.
+   * Two samples minimum for the live run, *unless* something has already been
+   * drawn this gesture. One point is a press that has not moved yet and there is
+   * no evidence whether it is a dot or the start of a line, so drawing it would
+   * put a blob under every click; but one point that is the first sample past an
+   * edge is the continuation of a mark that is plainly already there, and
+   * withholding it would open a gap at every crossing.
    *
-   * A drying stroke wins over a live one only because it cannot outlast the press
-   * that starts one: [`handle`]'s `down` drops it, so the two are never both
-   * here. A press that lands within a frame of the last release therefore costs
-   * the previous mark its overlap, and the worst that shows is the blink this
-   * whole arrangement exists to avoid — on the one gesture nobody makes by hand.
+   * The drying runs win over a live one only because they cannot outlast the
+   * press that starts one: [`handle`]'s `down` drops them, so the two are never
+   * both here.
    */
-  get wet(): WetStroke | null {
-    if (this.drying !== null) return this.drying;
-    if (this.samples.length < 2) return null;
-    return this.snapshot();
+  get runsInFlight(): readonly WetStroke[] {
+    if (!this.drawing) return this.drying;
+    if (this.samples.length >= 2 || this.runs.length > 0) {
+      // One array per frame of a stroke and nothing per sample. The common case
+      // — a stroke that never crossed anything — allocates a single-entry array,
+      // which is the price of not making every caller handle two shapes.
+      return this.samples.length === 0 ? this.runs : [...this.runs, this.snapshot()];
+    }
+    return EMPTY_RUNS;
   }
 
   /** Is a stroke being drawn right now? Read by `app/main.ts`, which suppresses
@@ -250,17 +295,20 @@ export class MarkerTool implements Tool {
     switch (input.kind) {
       case "down":
         // A fresh array rather than `length = 0`, because the renderer was
-        // handed the previous one and may still be holding it — see [`wet`].
+        // handed the previous one and may still be holding it — see
+        // [`runsInFlight`].
         this.samples = [];
-        // The previous stroke stops being drawn here whether or not its ink has
-        // landed. Its record is already written; all that is given up is the
+        this.runs = [];
+        // The previous gesture stops being drawn here whether or not its ink has
+        // landed. Its records are already written; all that is given up is the
         // overlap, and a stroke that shadowed the one now under the pointer
         // would be the worse bug of the two.
-        this.drying = null;
+        this.drying = EMPTY_RUNS;
         this.drawing = true;
         // Before the first sample, because the first sample is already converted
         // into it.
-        this.space = this.spaceAt(input.at, ctx);
+        this.forced = input.at.ctrl;
+        this.space = this.forced ? null : this.surfaceAt(input.at, ctx);
         // The pen, fixed for this stroke — see the note on [`strokeInk`].
         this.strokeInk = this.ink;
         this.strokeNib = this.nib;
@@ -311,41 +359,46 @@ export class MarkerTool implements Tool {
    *
    * A click commits too, and that is deliberate: a press and a release at one
    * point is two samples a hair apart, which `perfect-freehand` turns into a
-   * round dot. That is the promise [`wet`] makes when it refuses to draw a
-   * one-sample stroke — the blob is withheld until the gesture proves it was a
+   * round dot. That is the promise [`runsInFlight`] makes when it refuses to draw
+   * a one-sample stroke — the blob is withheld until the gesture proves it was a
    * click rather than the start of a line, not withheld forever.
    *
-   * Nothing else here asks whether the stroke is worth keeping. Whether it packed
-   * to any bytes at all is the document's judgement (`crdt/ops/ink.ts`), and it is
-   * the same call that decides a bare-cork stroke is not written yet — which is
+   * Every run of the gesture in one call, which is what makes it one undo entry
+   * (T-137). Nothing here asks whether a run is worth keeping: whether it packed
+   * to any bytes at all is the document's judgement (`crdt/ops/ink.ts`), which is
    * why [`dry`] is the owner's to call rather than something this file can work
    * out for itself.
    */
   private commit(ctx: ToolContext): void {
-    const stroke = this.samples.length === 0 ? null : this.snapshot();
+    const runs = this.samples.length === 0 ? this.runs : [...this.runs, this.snapshot()];
     this.samples = [];
+    this.runs = [];
     this.space = null;
     this.drawing = false;
-    if (stroke === null) return;
-    this.drying = stroke;
-    ctx.write.commitStroke(stroke);
+    if (runs.length === 0) return;
+    this.drying = runs;
+    ctx.write.commitStrokes(runs);
   }
 
   /**
-   * Stop drawing the committed stroke on the overlay — the ink is on the item's
-   * canvas now, or there is no ink coming.
+   * Stop drawing the committed runs on the overlay — the ink is on their
+   * canvases now, or there is no ink coming.
    *
    * Called by whoever owns the writer, because only that side can see either
-   * answer: the commit's own verdict on a stroke it refused, and the re-raster
-   * that phase 6 may not have got to yet. Safe to call at any time and twice —
-   * it clears a slot and touches nothing about a stroke in progress.
+   * answer: the commit's own verdict on a run it refused, and the re-rasters that
+   * phase 6 may not have got to yet. All or nothing rather than one run at a
+   * time: they are one mark, and half of it lingering on the overlay while the
+   * other half has landed would be a seam that brightens for a frame.
+   *
+   * Safe to call at any time and twice — it drops a list and touches nothing
+   * about a gesture in progress.
    */
   dry(): void {
-    this.drying = null;
+    this.drying = EMPTY_RUNS;
   }
 
-  /** The stroke as the overlay and the writer see it — see [`wet`] on why the
-   *  sample array is shared rather than copied. */
+  /** The live run as the overlay and the writer see it — see [`runsInFlight`] on
+   *  why the sample array is shared rather than copied. */
   private snapshot(): WetStroke {
     return {
       tool: this.tool,
@@ -358,21 +411,19 @@ export class MarkerTool implements Tool {
   }
 
   /**
-   * The space a press at this point starts a stroke in — the item under it, or
-   * null for the board.
+   * The surface under a board point — the item there, or null for the cork.
    *
-   * `ctrl` off the press's own sample rather than `ctx.held`, because this is
-   * asked exactly once and at the moment of the press: it is a property of the
-   * event, not a key that can be let go of halfway through the line.
+   * The hit test the select tool uses, so "what am I drawing on" and "what would
+   * I pick up" can never disagree about where a photograph's edge is.
    */
-  private spaceAt(at: PointerSample, ctx: ToolContext): string | null {
-    if (at.ctrl) return null;
+  private surfaceAt(at: PointerSample, ctx: ToolContext): string | null {
     const board = ctx.camera.screenToBoard(at.x, at.y);
     return ctx.hitTest(board.x, board.y);
   }
 
   /**
-   * One sample, converted out of screen pixels and into the stroke's space.
+   * One sample, converted out of screen pixels and into the run's space — and
+   * the edge, when it has just been crossed.
    *
    * Through the item's *rendered* pose when there is one, which is `itemLocal`'s
    * whole subject: an item hanging on a single pin is drawn at an angle and about
@@ -381,21 +432,68 @@ export class MarkerTool implements Tool {
    * the swing has taken the paper.
    */
   private add(at: PointerSample, ctx: ToolContext): void {
-    // A trail is a dozen samples handed over in one call, and the branch below
-    // can end the stroke partway down it. Without this the rest of the batch
-    // would land in a fresh, spaceless stroke nobody started.
+    // A trail is a dozen samples handed over in one call, and the branches below
+    // can end the gesture partway down it. Without this the rest of the batch
+    // would land in a fresh, spaceless run nobody started.
     if (!this.drawing) return;
     const board = ctx.camera.screenToBoard(at.x, at.y);
     const pressure = this.pressureOf(at);
+
+    // The hand has left the surface it was on (T-137). `Ctrl` at the press opts
+    // the whole gesture out — see the note at the top of the file.
+    if (!this.forced) {
+      const under = this.surfaceAt(at, ctx);
+      if (under !== this.space) {
+        // This sample first, still in the *old* frame, so the piece behind
+        // reaches the edge rather than stopping at the last sample inside it.
+        this.place(board.x, board.y, pressure, ctx);
+        if (!this.drawing) return;
+        this.handOver(under);
+      }
+    }
+    this.place(board.x, board.y, pressure, ctx);
+  }
+
+  /**
+   * Close the live run and start a new one on `next`, beginning at the sample
+   * that has just been laid down.
+   *
+   * The crossing point ends up in **both** runs, and that is why [`add`] lays it
+   * down twice — once either side of this call, from the same board coordinates,
+   * converted into a different frame each time. It cannot be copied across: the
+   * copy in the old run is in the old item's local units, and board space is the
+   * only currency both frames can be reached through.
+   *
+   * Without it the two marks would be a hand-movement apart — several units at
+   * speed, and a visible break in a line the hand drew unbroken. With it they
+   * meet, and the overlap is one nib width at the edge of a photograph, where one
+   * of the two is clipped away by the paper anyway.
+   *
+   * A run of one sample is kept rather than dropped. It is a dot at the edge, it
+   * is what the hand did, and `crdt/ops/ink.ts` is the thing that decides whether
+   * a run packed to anything worth writing.
+   */
+  private handOver(next: string | null): void {
+    if (this.samples.length > 0) this.runs.push(this.snapshot());
+    this.space = next;
+    // A fresh array, never a clear: the run just pushed is holding this one.
+    this.samples = [];
+  }
+
+  /**
+   * Convert one board point into the live run's frame and keep it.
+   *
+   * Ends the gesture when the paper has gone while the pointer was down — a peer
+   * deleted it, or an undo took it. There is no frame left to hold the samples
+   * already collected and no honest place to put this one, so the run goes with
+   * it. Runs already finished go too: they are one mark with it.
+   */
+  private place(bx: number, by: number, pressure: number, ctx: ToolContext): void {
     if (this.space === null) {
-      this.samples.push({ x: board.x, y: board.y, pressure });
+      this.samples.push({ x: bx, y: by, pressure });
       return;
     }
-    const local = itemLocal(ctx.scene, this.space, board.x, board.y, this.local);
-    // The paper went while the pointer was down — a peer deleted it, or an undo
-    // took it. There is no frame left to hold the samples already collected and
-    // no honest place to put this one, so the stroke goes with it. Nothing was
-    // written down, so this costs the mark and nothing else.
+    const local = itemLocal(ctx.scene, this.space, bx, by, this.local);
     if (local === null) {
       this.reset();
       return;
@@ -448,10 +546,13 @@ export class MarkerTool implements Tool {
     this.reset();
   }
 
-  /** The live stroke, forgotten. Deliberately not [`drying`] — see `cancel`. */
+  /** The gesture, forgotten — every run of it. Deliberately not [`drying`],
+   *  which belongs to the *previous* gesture — see `cancel`. */
   private reset(): void {
     this.samples = [];
+    this.runs = [];
     this.space = null;
+    this.forced = false;
     this.drawing = false;
   }
 }

@@ -145,12 +145,16 @@ Each string has a `layer`: `over` or `under`. Real boards have both — string y
 
 ### 2.4 Ink
 
-A stroke belongs to whatever it started on, decided at the moment the pen goes down and never changed:
+A stroke belongs to whatever it is over:
 
-- Started on an item → the stroke lives on that item, in **item-local coordinates**. It's drawn into the item's own canvas, inside the item's transform, so it rotates and moves with the item automatically. Draw a circle around a face and it stays around that face forever.
-- Started on the cork → the stroke lives on the board.
+- Over an item → that piece lives on that item, in **item-local coordinates**. It's drawn into the item's own canvas, inside the item's transform, so it rotates and moves with the item automatically. Draw a circle around a face and it stays around that face forever.
+- Over the cork → that piece lives on the board.
 
-That single rule makes "ink travels with the photo" free rather than a feature. Holding `Ctrl` as you start forces board space, which is how you draw an arrow across two photographs.
+That single rule makes "ink travels with the photo" free rather than a feature.
+
+**A line that runs off the paper is broken at the edge**, and each piece is glued to what it is actually over — one gesture, several stroke records, one undo entry. The crossing point belongs to both pieces so the marks meet rather than leaving a gap. It is what a real pen does on a real board: drag the photograph afterwards and its half of the line goes with it while the cork's half stays put.
+
+Holding `Ctrl` as you start forces board space **for the whole gesture** and there is no hand-over, which is how you draw an arrow across two photographs — or mark the cork behind one.
 
 Two pens plus erasers:
 
@@ -288,11 +292,11 @@ Undo: every string operation is standard and atomic, including the cascades.
 
 Colours live in a small palette per tool — marker in black, red, blue, green; highlighter in yellow, pink, green, blue. Size is `[` and `]`.
 
-The rule from §2.4 applies: **the stroke's coordinate space is fixed at pen-down.** Start on a photo, it's the photo's ink forever. Start on cork, it's the board's. `Ctrl` at pen-down forces board space.
+The rule from §2.4 applies: **a stroke belongs to whatever it is over.** Draw on a photo and it's the photo's ink; run off the edge and the part on the cork is the board's, as one gesture broken at the edge into several records and one undo entry. `Ctrl` at pen-down forces board space for the whole gesture and turns the hand-over off.
 
 Ink appears with essentially no perceptible latency, because the in-progress stroke is drawn on a dedicated overlay at screen resolution while the committed strokes sit undisturbed underneath (§6.5).
 
-Undo: one stroke, one entry. Erasing a stroke is one entry.
+Undo: one *gesture*, one entry — including the several records a stroke that crossed an edge becomes. Erasing a stroke is one entry.
 
 ### 3.6 Text
 

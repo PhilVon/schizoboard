@@ -64,29 +64,34 @@ export interface CommitStrokeInput {
   /** 0 to 1; the highlighter's translucency. Defaults to opaque. */
   opacity?: number;
   seed?: number;
-  /** In the space `item` names — `state/tools/marker.ts` decided which at
-   *  pen-down and has been converting into it ever since. */
+  /** In the space `item` names. One run of one gesture: the marker breaks a
+   *  stroke at every edge it crosses (T-137) and each piece arrives here in the
+   *  frame of the surface it ended up on. */
   samples: readonly InkSample[];
 }
 
-/** Where a committed stroke landed. */
+/**
+ * Where a committed stroke landed — exactly one of `item` and `tile` is set.
+ *
+ * Both are returned rather than recomputed by the caller. The tile because the
+ * packer is what measured the box the key comes from, and packing a second time
+ * to ask where something already is would be the largest allocation in the
+ * gesture; the item because a batch drops the runs it could not write, so the
+ * results do not line up with the inputs by position and a caller matching them
+ * up by index would name the wrong surface the moment one was refused.
+ *
+ * The caller that wants both is the wet/dry handoff, which has to know which
+ * canvases to wait for — see `app/main.ts`.
+ */
 export interface CommittedStroke {
   readonly id: string;
-  /**
-   * The tile it went into, or null when it went onto an item.
-   *
-   * Returned rather than recomputed by the caller because the packer is what
-   * measured the box the key comes from, and packing a second time to ask where
-   * something already is would be the largest allocation in the gesture. The one
-   * caller that wants it is the wet/dry handoff, which has to know which surface
-   * to wait for — see `app/main.ts`.
-   */
+  readonly item: string | null;
   readonly tile: string | null;
 }
 
 /**
- * Write one stroke. Returns where it landed, or null when there was nothing
- * worth keeping.
+ * Write one stroke — [`commitStrokes`] for the gesture that produced several.
+ * Returns where it landed, or null when there was nothing worth keeping.
  *
  * Null covers two cases: an item that has gone, and a gesture whose samples
  * packed to no bytes. The last is a click rather than a stroke, and
@@ -104,32 +109,68 @@ export function commitStroke(
   board: BoardDoc,
   input: CommitStrokeInput,
 ): CommittedStroke | null {
-  const packed = packStroke(input.samples);
-  if (packed.pts.length === 0) return null;
+  return commitStrokes(board, [input])[0] ?? null;
+}
 
-  const [x0, y0, x1, y1] = packed.bbox;
-  const tile = input.item === null ? inkTileKey((x0 + x1) / 2, (y0 + y1) / 2) : null;
-  const itemId = input.item;
+/**
+ * Several runs of one gesture, in one transaction.
+ *
+ * > one gesture, several stroke records in one undo entry — Q-37
+ *
+ * A stroke that crosses off the paper it started on is broken at the edge and the
+ * pieces are glued to what they are actually over (T-137). That is several
+ * records, and it must be **one** undo entry: the hand made one movement, and a
+ * Ctrl+Z that took back the half on the cork and left the half on the photograph
+ * would be undoing something nobody did.
+ *
+ * One `mutate` rather than one per run is the whole of how that is achieved —
+ * `Y.UndoManager` groups by transaction, so the entry is a property of this call
+ * and not of a timeout.
+ *
+ * Returns one entry per run that was actually written, in order. A run that
+ * packed to no bytes or whose item has gone is skipped rather than returned as a
+ * hole, so the list is shorter than the input exactly when something was
+ * dropped — and the caller (the wet/dry handoff) wants the ones that landed.
+ */
+export function commitStrokes(
+  board: BoardDoc,
+  inputs: readonly CommitStrokeInput[],
+): CommittedStroke[] {
+  // Packed outside the transaction. It is the expensive part — simplify,
+  // quantise, delta-encode — and it neither reads nor writes the document, so
+  // holding a transaction open across it would widen the one window in this
+  // application where a peer's update has to wait.
+  const packed = inputs.map((input) => ({ input, packed: packStroke(input.samples) }));
+  if (packed.every(({ packed: p }) => p.pts.length === 0)) return [];
 
   return mutate(board, Origin.INK_COMMIT, () => {
-    const map = itemId === null ? tileMap(board, tile!) : strokesOfItem(board, itemId);
-    if (map === null) return null;
+    const out: CommittedStroke[] = [];
+    for (const { input, packed: p } of packed) {
+      if (p.pts.length === 0) continue;
+      const [x0, y0, x1, y1] = p.bbox;
+      const tile = input.item === null ? inkTileKey((x0 + x1) / 2, (y0 + y1) / 2) : null;
+      const map = input.item === null ? tileMap(board, tile!) : strokesOfItem(board, input.item);
+      if (map === null) continue;
 
-    const id = freshId(map);
-    const stroke = new Y.Map<unknown>();
-    stroke.set("tool", input.tool);
-    stroke.set("color", input.color);
-    stroke.set("size", input.size);
-    stroke.set("opacity", input.opacity ?? 1);
-    stroke.set("seed", input.seed ?? newSeed());
-    // Above every stroke already in this item or this tile, not on the board.
-    // Ink stacks within the surface it is on, and two people annotating two
-    // photographs — or two corners of the cork — have no ordering to argue about.
-    stroke.set("z", keyAbove(topStroke(map)));
-    stroke.set("bbox", [...packed.bbox]);
-    stroke.set("pts", packed.pts);
-    map.set(id, stroke as YMap);
-    return { id, tile };
+      const id = freshId(map);
+      const stroke = new Y.Map<unknown>();
+      stroke.set("tool", input.tool);
+      stroke.set("color", input.color);
+      stroke.set("size", input.size);
+      stroke.set("opacity", input.opacity ?? 1);
+      stroke.set("seed", input.seed ?? newSeed());
+      // Above every stroke already in this item or this tile, not on the board.
+      // Ink stacks within the surface it is on, and two people annotating two
+      // photographs — or two corners of the cork — have no ordering to argue
+      // about. Two runs of the *same* gesture landing on the same surface stack
+      // in the order they were drawn, because this is re-read per run.
+      stroke.set("z", keyAbove(topStroke(map)));
+      stroke.set("bbox", [...p.bbox]);
+      stroke.set("pts", p.pts);
+      map.set(id, stroke as YMap);
+      out.push({ id, item: input.item, tile });
+    }
+    return out;
   });
 }
 

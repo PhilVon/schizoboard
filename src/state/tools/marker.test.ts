@@ -33,12 +33,23 @@ let done: number;
 /** Every stroke the tool handed to the writer, in order — the dry half of the
  *  release, which the tool only ever asks for. */
 let committed: WetStroke[];
+/** The same, kept as the calls rather than flattened — for the one test that is
+ *  about there being exactly one of them. */
+let commits: (readonly WetStroke[])[];
 let tool: MarkerTool;
 let ctx: ToolContext;
 let camera: Camera;
 let scene: Scene;
 /** What `ctx.hitTest` answers — the item the press lands on, or the bare cork. */
 let under: string | null;
+/**
+ * When set, `ctx.hitTest` answers by geometry instead of by [`under`].
+ *
+ * Which is what the app really does, and what a crossing test needs: T-137 asks
+ * the hit test on every sample, so a stroke can only run off a photograph if the
+ * answer depends on where the sample is.
+ */
+let byGeometry: boolean;
 
 function at(x: number, y: number, pressure?: number): PointerSample {
   return { x, y, shift: false, ctrl: false, alt: false, pressure };
@@ -65,8 +76,8 @@ function photo(id: string, x: number, y: number, rot = 0): void {
 /** Where a sample of the current stroke actually is on the cork — the inverse of
  *  what the tool did on the way in. */
 function boardAt(index: number): { x: number; y: number } {
-  const sample = tool.wet!.samples[index]!;
-  const item = tool.wet!.item;
+  const sample = live()!.samples[index]!;
+  const item = live()!.item;
   if (item === null) return { x: sample.x, y: sample.y };
   const slot = scene.slotOf(item)!;
   const angle = scene.rot[slot]! + scene.swing[slot]!;
@@ -112,23 +123,51 @@ function up(x: number, y: number): void {
   tool.handle({ kind: "up", at: at(x, y) }, ctx);
 }
 function samples(): ReadonlyArray<{ x: number; y: number; pressure: number }> {
-  return tool.wet?.samples ?? [];
+  return live()?.samples ?? [];
+}
+
+/**
+ * The run the overlay would draw last — the live one while a pointer is down,
+ * or the last drying one after a release.
+ *
+ * `runsInFlight` is a list because one gesture can cross onto several surfaces
+ * (T-137). Almost every test here is about a stroke that stays on one, so they
+ * ask for the last run and the list stays out of the way.
+ */
+function live(): WetStroke | null {
+  const runs = tool.runsInFlight;
+  return runs[runs.length - 1] ?? null;
+}
+
+/** Every run in flight, for the tests that are about the crossing itself. */
+function runs(): readonly WetStroke[] {
+  return tool.runsInFlight;
 }
 
 beforeEach(() => {
   done = 0;
   committed = [];
+  commits = [];
   camera = new Camera();
   camera.resize(1000, 800);
   scene = new Scene();
   under = null;
+  byGeometry = false;
   tool = new MarkerTool({ onDone: () => done++ });
   ctx = {
     scene,
     dirty: new DirtySets(),
     camera,
     selection: new Selection(),
-    hitTest: () => under,
+    hitTest: (bx, by) => {
+      if (!byGeometry) return under;
+      for (const id of scene.itemIds()) {
+        const pose = scene.poseOf(id);
+        if (!pose) continue;
+        if (Math.abs(bx - pose.x) <= pose.w / 2 && Math.abs(by - pose.y) <= pose.h / 2) return id;
+      }
+      return null;
+    },
     hitPin: () => null,
     hitString: () => null,
     pluck: () => {},
@@ -151,7 +190,10 @@ beforeEach(() => {
       deleteStrings: () => {},
       setStringStyle: () => {},
       movePins: () => {},
-      commitStroke: (stroke) => committed.push(stroke),
+      commitStrokes: (runs) => {
+        commits.push(runs);
+        committed.push(...runs);
+      },
       eraseStrokes: () => {},
     },
   };
@@ -189,7 +231,7 @@ describe("collecting a stroke", () => {
 
   it("ignores a move that arrives with no button down", () => {
     move([at(10, 10), at(20, 20)]);
-    expect(tool.wet).toBeNull();
+    expect(live()).toBeNull();
     expect(tool.stroking).toBe(false);
   });
 
@@ -222,7 +264,7 @@ describe("which space the stroke is in", () => {
     down(600, 500);
     move([at(620, 500)]);
 
-    expect(tool.wet!.item).toBeNull();
+    expect(live()!.item).toBeNull();
     const board = camera.screenToBoard(620, 500);
     expect(boardAt(1).x).toBeCloseTo(board.x, 6);
   });
@@ -233,7 +275,7 @@ describe("which space the stroke is in", () => {
     down(600, 500);
     move([at(620, 500)]);
 
-    expect(tool.wet!.item).toBe("p");
+    expect(live()!.item).toBe("p");
     // Stored local, but still under the cursor: the round trip back out through
     // the item's frame is the board point the hand was actually at.
     const board = camera.screenToBoard(620, 500);
@@ -241,7 +283,7 @@ describe("which space the stroke is in", () => {
     expect(boardAt(1).y).toBeCloseTo(board.y, 6);
     // And genuinely converted — a tool that stored board coordinates and merely
     // labelled them with an item id would pass the line above only by accident.
-    expect(tool.wet!.samples[1]!.x).not.toBeCloseTo(board.x, 1);
+    expect(live()!.samples[1]!.x).not.toBeCloseTo(board.x, 1);
   });
 
   it("stores the samples relative to a photograph that is turned", () => {
@@ -250,26 +292,31 @@ describe("which space the stroke is in", () => {
     down(500, 400);
     move([at(540, 430)]);
 
-    expect(tool.wet!.item).toBe("p");
+    expect(live()!.item).toBe("p");
     const board = camera.screenToBoard(540, 430);
     expect(boardAt(1).x).toBeCloseTo(board.x, 3);
     expect(boardAt(1).y).toBeCloseTo(board.y, 3);
     // Both axes genuinely turned. A conversion with the sine's sign flipped puts
     // the point back on the cork at the wrong end of the paper, and the round trip
     // through the same flipped frame would hide it.
-    expect(tool.wet!.samples[1]!.y).not.toBeCloseTo(board.y, 1);
+    expect(live()!.samples[1]!.y).not.toBeCloseTo(board.y, 1);
   });
 
-  it("is decided by the press and never revisited", () => {
+  /**
+   * The press decides where a stroke *starts*. Until T-137 it decided the whole
+   * thing — because there was nowhere for the part that ran off the paper to go.
+   * Now there is, and what a crossing does is its own suite at the bottom of this
+   * file; what is still true here is that the first run is the press's.
+   */
+  it("gives the first run to whatever the press landed on", () => {
     camera.setView(0, 0, 1);
-    // Down on the cork, then the hand crosses onto a photograph.
-    down(500, 400);
     photo("p", 0, 0);
+    down(500, 400);
     move([at(520, 400)]);
 
-    // One mark on one surface. Re-testing per sample would break the line in half
-    // and glue the halves to different things.
-    expect(tool.wet!.item).toBeNull();
+    expect(committed).toHaveLength(0);
+    expect(runs()).toHaveLength(1);
+    expect(runs()[0]!.item).toBe("p");
   });
 
   it("is the board's when Ctrl is held at the press, photograph or not", () => {
@@ -280,9 +327,9 @@ describe("which space the stroke is in", () => {
 
     // The escape hatch for a mark you want on the cork *behind* a photograph,
     // which the hit test cannot otherwise reach.
-    expect(tool.wet!.item).toBeNull();
+    expect(live()!.item).toBeNull();
     const board = camera.screenToBoard(520, 400);
-    expect(tool.wet!.samples[1]!.x).toBeCloseTo(board.x, 6);
+    expect(live()!.samples[1]!.x).toBeCloseTo(board.x, 6);
   });
 
   it("does not un-glue a stroke when Ctrl is let go of halfway down it", () => {
@@ -290,7 +337,7 @@ describe("which space the stroke is in", () => {
     photo("p", 0, 0);
     tool.handle({ kind: "down", at: { ...at(500, 400), ctrl: true } }, ctx);
     move([at(520, 400)]);
-    expect(tool.wet!.item).toBeNull();
+    expect(live()!.item).toBeNull();
   });
 });
 
@@ -310,13 +357,13 @@ describe("ink glued to a photograph that moves under it", () => {
     move([at(540, 400)]);
 
     const before = boardAt(1);
-    const local = { ...tool.wet!.samples[1]! };
+    const local = { ...live()!.samples[1]! };
     scene.setPose("p", { x: 250, y: -80 });
     const after = boardAt(1);
 
     expect(after.x - before.x).toBeCloseTo(250, 6);
     expect(after.y - before.y).toBeCloseTo(-80, 6);
-    expect(tool.wet!.samples[1]).toEqual(local);
+    expect(live()!.samples[1]).toEqual(local);
   });
 
   it("turns with the paper rather than staying flat on the cork", () => {
@@ -367,7 +414,7 @@ describe("ink glued to a photograph that moves under it", () => {
     under = null;
     move([at(560, 400), at(580, 400)]);
 
-    expect(tool.wet).toBeNull();
+    expect(live()).toBeNull();
     expect(tool.stroking).toBe(false);
   });
 
@@ -380,7 +427,7 @@ describe("ink glued to a photograph that moves under it", () => {
     // stroke ends partway down it.
     move([at(520, 400), at(540, 400), at(560, 400)]);
 
-    expect(tool.wet).toBeNull();
+    expect(live()).toBeNull();
   });
 });
 
@@ -410,13 +457,13 @@ describe("how hard the nib is pressed", () => {
     tool.handle({ kind: "down", at: mouse(0, 0, 0) }, ctx);
     expect(samples()).toEqual([]);
     move([mouse(2, 0, 8)]);
-    expect(tool.wet!.samples[0]!.pressure).toBe(1);
+    expect(live()!.samples[0]!.pressure).toBe(1);
   });
 
   it("does not carry one stroke's speed into the next", () => {
     tool.handle({ kind: "down", at: mouse(0, 0, 0) }, ctx);
     move([mouse(60, 0, 5), mouse(120, 0, 10)]);
-    const fast = tool.wet!.samples[2]!.pressure;
+    const fast = live()!.samples[2]!.pressure;
 
     tool.handle({ kind: "up", at: mouse(120, 0, 15) }, ctx);
     tool.handle({ kind: "down", at: mouse(500, 500, 100) }, ctx);
@@ -425,7 +472,7 @@ describe("how hard the nib is pressed", () => {
     // A stroke that inherited the last one's speed would start at whatever width
     // that one finished at.
     expect(fast).toBeLessThan(0.5);
-    expect(tool.wet!.samples[0]!.pressure).toBe(1);
+    expect(live()!.samples[0]!.pressure).toBe(1);
   });
 
   it("believes a pen, and does not measure it", () => {
@@ -464,19 +511,19 @@ describe("how hard the nib is pressed", () => {
 
 describe("what the overlay is offered", () => {
   it("is nothing until there are two samples to draw between", () => {
-    expect(tool.wet).toBeNull();
+    expect(live()).toBeNull();
     down(10, 10);
     // A press that has not moved is not yet evidence of a dot or of a line, and a
     // blob under every click would be the cost of guessing.
-    expect(tool.wet).toBeNull();
+    expect(live()).toBeNull();
     move([at(11, 10)]);
-    expect(tool.wet).not.toBeNull();
+    expect(live()).not.toBeNull();
   });
 
   it("carries the tool, the colour and the board-unit width", () => {
     down(0, 0);
     move([at(10, 0)]);
-    expect(tool.wet).toMatchObject({
+    expect(live()).toMatchObject({
       tool: "marker",
       color: DEFAULT_MARKER_COLOR,
       size: DEFAULT_INK_SIZE,
@@ -488,7 +535,7 @@ describe("what the overlay is offered", () => {
     highlighter.handle({ kind: "down", at: at(0, 0) }, ctx);
     highlighter.handle({ kind: "move", at: at(10, 0), trail: [at(10, 0)] }, ctx);
     expect(highlighter.id).toBe("highlighter");
-    expect(highlighter.wet).toMatchObject({ tool: "highlighter", color: "#c9a227", size: 20 });
+    expect(highlighter.runsInFlight[0]).toMatchObject({ tool: "highlighter", color: "#c9a227", size: 20 });
   });
 
   it("is a whole pen from a tool name, because a caller that has to remember will forget", () => {
@@ -498,7 +545,7 @@ describe("what the overlay is offered", () => {
 
     // A wide translucent yellow nib, and none of those three named at the call
     // site — `app/main.ts` says which pen it wants and nothing else.
-    expect(highlighter.wet).toMatchObject({
+    expect(highlighter.runsInFlight[0]).toMatchObject({
       color: DEFAULT_HIGHLIGHTER_COLOR,
       size: DEFAULT_HIGHLIGHTER_SIZE,
       opacity: DEFAULT_HIGHLIGHTER_OPACITY,
@@ -511,7 +558,7 @@ describe("what the overlay is offered", () => {
     move([at(10, 0)]);
     // > Marker | Opaque — DESIGN section 3.9. An opacity of anything but 1 here
     // > is a marker that is quietly a highlighter.
-    expect(tool.wet!.opacity).toBe(1);
+    expect(live()!.opacity).toBe(1);
   });
 });
 
@@ -559,7 +606,7 @@ describe("letting go", () => {
     // coincident samples as a round one.
     expect(committed).toHaveLength(1);
     expect(committed[0]!.samples).toHaveLength(2);
-    expect(tool.wet).toBe(committed[0]);
+    expect(live()).toBe(committed[0]);
   });
 
   it("commits nothing when the paper went while the pointer was down", () => {
@@ -575,7 +622,7 @@ describe("letting go", () => {
     // The samples have no frame left to be in, so there is nothing honest to
     // write. The release finds no stroke in progress and says so.
     expect(committed).toEqual([]);
-    expect(tool.wet).toBeNull();
+    expect(live()).toBeNull();
   });
 
   it("abandons the stroke on a lost pointer, and keeps the tool", () => {
@@ -583,7 +630,7 @@ describe("letting go", () => {
     move([at(10, 0)]);
     tool.handle({ kind: "cancel" }, ctx);
 
-    expect(tool.wet).toBeNull();
+    expect(live()).toBeNull();
     // A window that lost focus mid-stroke has not finished with the marker —
     // `state/tools/note.ts` makes the same argument.
     expect(done).toBe(0);
@@ -594,7 +641,7 @@ describe("letting go", () => {
     move([at(10, 0)]);
     tool.handle({ kind: "key", code: "Escape", shift: false, ctrl: false, alt: false }, ctx);
 
-    expect(tool.wet).toBeNull();
+    expect(live()).toBeNull();
     expect(done).toBe(1);
   });
 
@@ -622,7 +669,7 @@ describe("drying — the frame between the commit and the ink", () => {
     up(540, 400);
 
     // The same stroke that was handed to the writer, not a second copy of it.
-    expect(tool.wet).toBe(committed[0]);
+    expect(live()).toBe(committed[0]);
     // And not a gesture: nothing is captured, so no hover affordance is
     // suppressed and nothing else on the board thinks a pointer is down.
     expect(tool.stroking).toBe(false);
@@ -632,14 +679,14 @@ describe("drying — the frame between the commit and the ink", () => {
     down(0, 0);
     move([at(10, 0)]);
     up(20, 0);
-    expect(tool.wet).not.toBeNull();
+    expect(live()).not.toBeNull();
 
     tool.dry();
-    expect(tool.wet).toBeNull();
+    expect(live()).toBeNull();
     // Twice is not an error: the owner calls it both when a commit is refused
     // and when a re-raster completes, and those can be the same stroke.
     tool.dry();
-    expect(tool.wet).toBeNull();
+    expect(live()).toBeNull();
   });
 
   it("drops it on the next press, so it cannot shadow the live stroke", () => {
@@ -651,7 +698,7 @@ describe("drying — the frame between the commit and the ink", () => {
     move([at(510, 500)]);
 
     // The overlay draws one stroke, and it has to be the one under the pointer.
-    expect(tool.wet!.samples.map((s) => s.x)).toEqual([500, 510]);
+    expect(live()!.samples.map((s) => s.x)).toEqual([500, 510]);
   });
 
   it("keeps it through a lost pointer, which cannot un-write a record", () => {
@@ -663,7 +710,7 @@ describe("drying — the frame between the commit and the ink", () => {
     // Losing the window is a reason to forget a stroke that was never written.
     // This one is in the document, and it would appear on the item a frame later
     // whether or not the overlay stopped drawing it.
-    expect(tool.wet).toBe(committed[0]);
+    expect(live()).toBe(committed[0]);
   });
 
   it("hands the writer an array the next stroke cannot append to", () => {
@@ -685,16 +732,16 @@ describe("the stroke the renderer is handed", () => {
   it("is the live array, so a long stroke is not copied every frame", () => {
     down(0, 0);
     move([at(10, 0)]);
-    const first = tool.wet!.samples;
+    const first = live()!.samples;
     move([at(20, 0)]);
-    expect(tool.wet!.samples).toBe(first);
+    expect(live()!.samples).toBe(first);
     expect(first).toHaveLength(3);
   });
 
   it("is not the array the next stroke appends to", () => {
     down(0, 0);
     move([at(10, 0)]);
-    const held = tool.wet!.samples;
+    const held = live()!.samples;
     up(10, 0);
     const finished = held.length;
     down(500, 500);
@@ -706,7 +753,7 @@ describe("the stroke the renderer is handed", () => {
     // next stroke arriving in the middle of it is not.
     expect(held.map((s) => s.x)).toEqual([0, 10, 10]);
     expect(held).toHaveLength(finished);
-    expect(tool.wet!.samples).not.toBe(held);
+    expect(live()!.samples).not.toBe(held);
   });
 });
 
@@ -722,7 +769,7 @@ describe("loading the pen", () => {
     down(0, 0);
     move([at(10, 0)]);
 
-    expect(tool.wet).toMatchObject({ color: "#b8342a", size: 15 });
+    expect(live()).toMatchObject({ color: "#b8342a", size: 15 });
     expect(tool.color).toBe("#b8342a");
     expect(tool.size).toBe(15);
   });
@@ -770,5 +817,174 @@ describe("loading the pen", () => {
     expect(highlighter.kind).toBe("highlighter");
     expect(highlighter.color).toBe(DEFAULT_HIGHLIGHTER_COLOR);
     expect(highlighter.size).toBe(DEFAULT_HIGHLIGHTER_SIZE);
+  });
+});
+
+/**
+ * T-137, and Q-37's answer: a line that runs off the paper it started on is
+ * broken at the edge and each piece is glued to what it is actually over.
+ *
+ * The failures here are all quiet ones. Get the split wrong and the mark still
+ * looks right until the photograph moves; get the crossing sample wrong and there
+ * is a gap the width of one hand-movement, which at speed is several units and at
+ * a crawl is nothing at all — so the slow test stroke everybody tries first is the
+ * one that cannot detect it.
+ */
+describe("a stroke that crosses off its surface", () => {
+  /** A photograph spanning board 0..200 on both axes, so screen coordinates and
+   *  the edge are readable. Board and screen coincide at the default camera. */
+  function paper(id: string, cx = 100, cy = 100): void {
+    scene.putItem(
+      { id, type: "polaroid", z: "a0", seed: 1, assetId: null, createdBy: 1, createdAt: 0, text: "" },
+      { x: cx, y: cy, rot: 0, w: 200, h: 200 },
+    );
+    byGeometry = true;
+  }
+
+  it("commits one run per surface, in the order the hand made them", () => {
+    paper("p");
+    down(100, 100);
+    move([at(150, 100), at(250, 100)]);
+    up(300, 100);
+
+    expect(committed).toHaveLength(2);
+    expect(committed[0]!.item).toBe("p");
+    expect(committed[1]!.item).toBeNull();
+  });
+
+  /**
+   * The crossing point is in both runs, which is what makes the two marks meet.
+   * Compared in *board* space because that is the only frame both are expressed
+   * in — one is item-local and the other is not.
+   */
+  it("puts the crossing point in both runs, so they meet at the edge", () => {
+    paper("p");
+    down(100, 100);
+    move([at(150, 100), at(250, 100)]);
+    up(250, 100);
+
+    const first = committed[0]!;
+    const second = committed[1]!;
+    // The photograph's centre is (100, 100), so local + centre is board.
+    const endOfFirst = first.samples[first.samples.length - 1]!;
+    expect(endOfFirst.x + 100).toBeCloseTo(second.samples[0]!.x, 6);
+    expect(endOfFirst.y + 100).toBeCloseTo(second.samples[0]!.y, 6);
+  });
+
+  it("converts each run into its own frame and not the other's", () => {
+    paper("p");
+    down(100, 100);
+    move([at(150, 100), at(250, 100)]);
+    up(300, 100);
+
+    // Item-local: measured from the photograph's centre.
+    expect(committed[0]!.samples.map((s) => s.x)).toEqual([0, 50, 150]);
+    // Board: measured from the origin.
+    expect(committed[1]!.samples.map((s) => s.x)).toEqual([250, 300]);
+  });
+
+  it("crosses back on, and each crossing is another run", () => {
+    paper("p");
+    down(100, 100);
+    // Out over the cork and back onto the paper.
+    move([at(250, 100)]);
+    up(150, 100);
+
+    expect(committed.map((run) => run.item)).toEqual(["p", null, "p"]);
+  });
+
+  it("hands over between two photographs with no cork in between", () => {
+    paper("a", 100, 100);
+    paper("b", 300, 100);
+    down(100, 100);
+    move([at(250, 100)]);
+    up(300, 100);
+
+    expect(committed.map((run) => run.item)).toEqual(["a", "b"]);
+  });
+
+  /**
+   * `Ctrl` at the press is the escape hatch for the mark you want on the cork
+   * *behind* a photograph. A Ctrl stroke that hopped onto the paper the moment it
+   * crossed one would be the opposite of that.
+   */
+  it("never hands over when Ctrl forced the cork at the press", () => {
+    paper("p");
+    tool.handle({ kind: "down", at: { x: 300, y: 100, shift: false, ctrl: true, alt: false } }, ctx);
+    // Straight across the photograph and out the other side.
+    move([at(200, 100), at(100, 100), at(20, 100)]);
+    up(-50, 100);
+
+    expect(committed).toHaveLength(1);
+    expect(committed[0]!.item).toBeNull();
+    expect(committed[0]!.samples.map((s) => s.x)).toEqual([300, 200, 100, 20, -50]);
+  });
+
+  /** Ctrl is read at the press and never again — a key let go of halfway down a
+   *  line must not change what the line is stuck to. */
+  it("ignores Ctrl arriving partway through a stroke", () => {
+    paper("p");
+    down(100, 100);
+    tool.handle(
+      { kind: "move", at: { x: 150, y: 100, shift: false, ctrl: true, alt: false }, trail: [] },
+      ctx,
+    );
+    up(150, 100);
+
+    expect(committed).toHaveLength(1);
+    expect(committed[0]!.item).toBe("p");
+  });
+
+  /**
+   * The piece behind the hand has to go on being drawn. It has stopped growing
+   * but nothing has rastered it yet, so dropping it would make the part of the
+   * mark you had already drawn vanish for two or three frames — mid-stroke, which
+   * is worse than the pen-up blink the drying slot exists to prevent.
+   */
+  it("keeps drawing the runs already behind the hand", () => {
+    paper("p");
+    down(100, 100);
+    move([at(150, 100), at(250, 100), at(300, 100)]);
+
+    expect(runs()).toHaveLength(2);
+    expect(runs()[0]!.item).toBe("p");
+    expect(runs()[1]!.item).toBeNull();
+  });
+
+  /** One point that is the first sample past an edge is the continuation of a
+   *  mark that is plainly already there — withholding it opens a gap. */
+  it("draws the new run from its very first sample", () => {
+    paper("p");
+    down(100, 100);
+    move([at(150, 100), at(250, 100)]);
+
+    // The second run holds only the crossing point so far, and is drawn anyway.
+    expect(runs()).toHaveLength(2);
+    expect(runs()[1]!.samples).toHaveLength(1);
+  });
+
+  it("makes every run with the pen the press was holding", () => {
+    paper("p");
+    tool.load({ color: "#b8342a", size: 15 });
+    down(100, 100);
+    tool.load({ color: "#2a4d8f", size: 2 });
+    move([at(250, 100)]);
+    up(300, 100);
+
+    for (const run of committed) {
+      expect(run).toMatchObject({ color: "#b8342a", size: 15 });
+    }
+  });
+
+  /** One gesture, one write — which is what makes it one undo entry. Several
+   *  calls would be several transactions and several Ctrl+Zs. */
+  it("hands every run over in a single call", () => {
+    paper("p");
+    down(100, 100);
+    move([at(250, 100), at(150, 100)]);
+    up(300, 100);
+
+    expect(commits).toHaveLength(1);
+    expect(commits[0]).toHaveLength(4);
   });
 });

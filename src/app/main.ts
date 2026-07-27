@@ -13,7 +13,7 @@ import { Binding } from "@/crdt/binding";
 import { boardSeed, encodedSize, initialiseBoard, openBoardDoc, snapshot } from "@/crdt/doc";
 import * as ops from "@/crdt/ops";
 import {
-  commitStroke,
+  commitStrokes,
   createItems,
   createPin,
   createStringThrough,
@@ -38,7 +38,7 @@ import { Persistence } from "@/crdt/persistence";
 import { UndoHistory } from "@/crdt/undo";
 import { noteSizeFor } from "@/app/ingest";
 import { Paste } from "@/app/paste";
-import { DEFAULT_ERASER_SIZE } from "@/lib/ink";
+import { DEFAULT_ERASER_SIZE, type InkSurface } from "@/lib/ink";
 import { initPlatform } from "@/platform";
 import { variantFor } from "@/platform/types";
 import { Cork } from "@/render/cork";
@@ -388,26 +388,29 @@ async function boot(): Promise<void> {
      * The far end is [`drying`] below. What is settled here is only the case
      * where no ink is coming at all.
      */
-    commitStroke: (stroke) => {
+    commitStrokes: (runs) => {
       queued.push(() => {
-        const written = commitStroke(board, {
-          item: stroke.item,
-          tool: stroke.tool,
-          color: stroke.color,
-          size: stroke.size,
-          opacity: stroke.opacity,
-          samples: stroke.samples,
-        });
-        if (written !== null) {
-          // Which surface to wait for. The tile comes back from the op rather
-          // than being worked out here, because the op's packer is what measured
-          // the box the key is derived from.
-          drying = written.tile === null ? { item: stroke.item! } : { tile: written.tile };
-          return;
-        }
+        const written = commitStrokes(
+          board,
+          runs.map((run) => ({
+            item: run.item,
+            tool: run.tool,
+            color: run.color,
+            size: run.size,
+            opacity: run.opacity,
+            samples: run.samples,
+          })),
+        );
+        // Which surfaces to wait for, one per run that actually landed. Both
+        // halves come back from the op — the runs it refused are simply absent,
+        // so nothing here has to match results to inputs by position.
+        drying = written.map((one): InkSurface =>
+          one.tile === null ? { kind: "item", id: one.item! } : { kind: "tile", key: one.tile },
+        );
+        if (drying.length > 0) return;
         // Nothing was written: a click rather than a stroke, or paper that left
         // the board while the pointer was down. No re-raster is coming, so the
-        // overlay copy is all that is holding the mark up and it stops being
+        // overlay copies are all that is holding the mark up and they stop being
         // drawn now.
         drying = null;
         dried();
@@ -427,18 +430,20 @@ async function boot(): Promise<void> {
   };
 
   /**
-   * The surface a pen is still drawing on the overlay because its canvas has not
-   * caught up — the far end of `BoardWriter.commitStroke`, and the whole of what
-   * stops a pen-up from blinking.
+   * The surfaces a pen is still drawing on the overlay because their canvases
+   * have not caught up — the far end of `BoardWriter.commitStrokes`, and the
+   * whole of what stops a pen-up from blinking.
    *
-   * An item or a board-ink tile, because those are the two things a stroke can
-   * land on and they are rastered by different layers with different budgets. A
-   * plain string would collapse them and the wrong layer would be asked.
+   * A list, because one gesture can be several runs on several surfaces (T-137),
+   * and each is an item or a board-ink tile — the two things a stroke can land on,
+   * rastered by different layers with different budgets. A plain string would
+   * collapse them and the wrong layer would be asked.
    *
-   * One slot, not a queue: a press drops whatever that pen had drying (see
-   * `MarkerTool.wet`), so there is never a second one to hold.
+   * One list, not a queue of them: a press drops whatever that pen had drying
+   * (see `MarkerTool.runsInFlight`), so there is never a second gesture's worth to
+   * hold.
    */
-  let drying: { item: string; tile?: undefined } | { tile: string; item?: undefined } | null = null;
+  let drying: InkSurface[] | null = null;
   /**
    * Both pens, rather than the one that committed.
    *
@@ -1110,12 +1115,15 @@ async function boot(): Promise<void> {
      * (`InkCanvas.rub`). Every frame of the gesture rather than once, because a
      * re-raster for any other reason wipes the hole.
      *
-     * `smudge.wet` covers the drying stroke as well as the live one, which is
+     * `runsInFlight` covers the drying runs as well as the live one, which is
      * exactly right: the hole has to keep being drawn until the record that
-     * replaces it has reached the bitmap.
+     * replaces it has reached the bitmap. And it is a list because a rub that
+     * crosses off the paper is several runs like any other gesture (T-137) — the
+     * piece on the photograph takes ink off the photograph and the piece on the
+     * cork takes it off the cork, which is what you would expect of a rubber
+     * dragged over the edge of a sheet of paper.
      */
-    const rubbing = smudge.wet;
-    if (rubbing !== null) {
+    for (const rubbing of smudge.runsInFlight) {
       if (rubbing.item === null) boardInk.rub(rubbing.samples, rubbing.size);
       else items.rubInk(rubbing.item, rubbing.samples, rubbing.size);
     }
@@ -1124,15 +1132,18 @@ async function boot(): Promise<void> {
     // the frame that may stop drawing the wet copy of it, and neither an earlier
     // nor a later phase is both.
     //
-    // Asked of whichever layer owns the surface rather than counted in frames,
+    // Asked of whichever layer owns each surface rather than counted in frames,
     // because the answer is genuinely not a number of frames — see
     // `ItemLayer.awaitingInk`.
+    //
+    // *Every* surface, and the overlay copies all go together. Half a mark
+    // lingering while the other half has landed would be a seam that brightens
+    // for a frame, which is a worse artefact than the overlap it would save.
     const waiting =
-      drying === null
-        ? false
-        : drying.tile === undefined
-          ? items.awaitingInk(drying.item)
-          : boardInk.awaitingTile(drying.tile);
+      drying !== null &&
+      drying.some((surface) =>
+        surface.kind === "item" ? items.awaitingInk(surface.id) : boardInk.awaitingTile(surface.key),
+      );
     if (drying !== null && !waiting) {
       drying = null;
       dried();
@@ -1210,7 +1221,7 @@ async function boot(): Promise<void> {
       // above), and drawing it here as well would paint an opaque mark over the
       // hole it just made — the exact "visibly wrong" the erase tool spent a
       // task avoiding.
-      wetPen()?.wet ?? null,
+      wetPen()?.runsInFlight ?? [],
     );
     hud.update(frame.now);
   });
