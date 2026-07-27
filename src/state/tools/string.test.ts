@@ -154,6 +154,9 @@ beforeEach(() => {
       commitStroke: () => {
         throw new Error("the string tool draws no ink");
       },
+      eraseStrokes: () => {
+        throw new Error("the string tool erases no ink");
+      },
     },
   };
 });

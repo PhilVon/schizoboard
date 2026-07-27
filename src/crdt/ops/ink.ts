@@ -198,6 +198,32 @@ export function deleteStrokes(
   });
 }
 
+/**
+ * The same, for ink on the cork.
+ *
+ * Separate from `deleteStrokes` rather than a branch inside it, because the one
+ * thing this has to do that the item path does not is **take the tile with the
+ * last stroke in it**. A bucket exists only because somebody drew in it
+ * (`tileMap` is the only thing that creates one), and an empty one left behind
+ * is a mount candidate with nothing in it on every peer that loads the board.
+ *
+ * Both in one transaction, so undo brings the bucket and its contents back
+ * together and no peer ever observes a tile that is present and empty.
+ */
+export function deleteBoardStrokes(
+  board: BoardDoc,
+  tileKey: string,
+  strokeIds: readonly string[],
+): void {
+  if (strokeIds.length === 0) return;
+  mutate(board, Origin.LOCAL_USER, () => {
+    const tile = board.boardInk.get(tileKey);
+    if (!tile) return;
+    for (const id of strokeIds) tile.delete(id);
+    if (tile.size === 0) board.boardInk.delete(tileKey);
+  });
+}
+
 /** The highest `z` among the strokes already on one surface, or null for the
  *  first one. One item or one tile — never the board — see `commitStroke`. */
 function topStroke(strokes: Y.Map<YMap>): string | null {

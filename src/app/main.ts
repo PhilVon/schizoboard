@@ -17,8 +17,10 @@ import {
   createItems,
   createPin,
   createStringThrough,
+  deleteBoardStrokes,
   deleteItems,
   deletePins,
+  deleteStrokes,
   deleteStrings,
   insertPinIntoString,
   movePins,
@@ -57,6 +59,7 @@ import { Navigation } from "@/state/navigation";
 import { Scene } from "@/state/scene";
 import { Selection } from "@/state/selection";
 import { ToolMachine } from "@/state/tools/machine";
+import { EraserTool } from "@/state/tools/eraser";
 import { MarkerTool } from "@/state/tools/marker";
 import { NoteTool } from "@/state/tools/note";
 import { PinTool } from "@/state/tools/pin";
@@ -409,6 +412,17 @@ async function boot(): Promise<void> {
         dried();
       });
     },
+    /**
+     * The eraser's whole output. No re-raster to wait for and nothing drying —
+     * a record that has gone leaves the item's or the tile's canvas repainting
+     * from what is left, which the INK phase does anyway.
+     */
+    eraseStrokes: (surface, ids) => {
+      queued.push(() => {
+        if (surface.kind === "item") deleteStrokes(board, surface.id, ids);
+        else deleteBoardStrokes(board, surface.key, ids);
+      });
+    },
   };
 
   /**
@@ -518,6 +532,19 @@ async function boot(): Promise<void> {
     onDone: () => queued.push(() => tools.setTool(select)),
   });
   /**
+   * `E` — the rubber, and the one tool that draws nothing.
+   *
+   * Not a `MarkerTool` and not a variant of one: it makes no mark, has no colour
+   * and writes a delete rather than an insert (`state/tools/eraser.ts`). What it
+   * shares with the pens is the gesture — a held pointer, the coalesced trail,
+   * and a surface fixed at the press — and that is a shape, not a class.
+   *
+   * The `Shift+E` smudge is a mark and *is* the marker again; it is not built
+   * (T-62's second half) and is not bound, because a key that silently does
+   * nothing is worse than one that is not bound.
+   */
+  const eraser = new EraserTool({ onDone: () => queued.push(() => tools.setTool(select)) });
+  /**
    * The pen currently in hand, or null when the tool is not one.
    *
    * Asked by the three things that treat the two pens as one tool with a
@@ -561,9 +588,10 @@ async function boot(): Promise<void> {
   /**
    * Picking a tool (DESIGN section 3.9).
    *
-   * Six of the seven exist; `E` is its own task, and a key that silently does
-   * nothing is worse than one that is not bound, so it is not listed here until
-   * it has something to switch to.
+   * All seven now, `E` included. `Shift+E` is not here: the smudge is the other
+   * half of T-62 and a key that silently does nothing is worse than one that is
+   * not bound — and this listener refuses modified keys anyway, so it would need
+   * its own branch rather than a seventh rung.
    *
    * Bare keys only. `Ctrl+V` is paste and must not also change tool, and inside
    * a note an `n` is an `n`.
@@ -584,7 +612,9 @@ async function boot(): Promise<void> {
                 ? marker
                 : e.code === "KeyH"
                   ? highlighter
-                  : null;
+                  : e.code === "KeyE"
+                    ? eraser
+                    : null;
     if (!next) return;
     e.preventDefault();
     // Queued for the same reason `onDone` is: switching cancels the outgoing
@@ -595,9 +625,13 @@ async function boot(): Promise<void> {
   /**
    * > Size is `[` and `]`. — DESIGN section 3.9
    *
-   * Only while a pen is in hand, and silent otherwise: the two keys mean nothing
-   * to the select tool, and a board that quietly resized an invisible nib when
-   * they were pressed would be teaching the wrong thing.
+   * Only while something with a nib is in hand, and silent otherwise: the two
+   * keys mean nothing to the select tool, and a board that quietly resized an
+   * invisible nib when they were pressed would be teaching the wrong thing.
+   *
+   * The eraser has one too. It makes no mark, but its width is what decides how
+   * much of a sweep it takes, and a rubber you cannot make smaller is one you
+   * cannot aim at a mark next to a mark you want to keep.
    *
    * Not queued, unlike a tool change. Nothing about loading a pen touches the
    * scene or the document — it is the tool's own state, read at the next release
@@ -612,10 +646,10 @@ async function boot(): Promise<void> {
     if (isTextTarget(e.target)) return;
     const by = e.code === "BracketRight" ? 1 : e.code === "BracketLeft" ? -1 : 0;
     if (by === 0) return;
-    const pen = penInHand();
-    if (pen === null) return;
+    const nibbed = penInHand() ?? (tools.current === eraser ? eraser : null);
+    if (nibbed === null) return;
     e.preventDefault();
-    pen.step(by);
+    nibbed.step(by);
   });
 
   /**
@@ -931,7 +965,9 @@ async function boot(): Promise<void> {
     // string tracking the nib is a second cursor arguing with the mark, and both
     // of them promise a gesture that the marker is not going to make.
     const cursor =
-      navigation.panReady || marker.stroking || highlighter.stroking ? null : tools.cursor;
+      navigation.panReady || marker.stroking || highlighter.stroking || eraser.sweeping
+        ? null
+        : tools.cursor;
     if (!cursor) {
       hoveredPin = null;
       hoveredString = null;
@@ -1223,6 +1259,7 @@ async function boot(): Promise<void> {
     `Alt+click a pin removes it · Alt+drag pulls a new string out of one · ` +
     `drag the middle of a string to pull a new pin out of it, click it to select · ` +
     `right-click a string for its menu · M or H to draw, right-click for ink · ` +
+    `E rubs a stroke out, [ and ] size the nib, Ctrl at pen-down means the cork · ` +
     `drag to move · drag the handle or R+drag to rotate · drag a note's edge to resize · ` +
     `drag the cork to marquee · Delete removes · ` +
     `Ctrl+Z undoes · space+drag pans · Ctrl+0 fit · F frame · \` for the HUD`;

@@ -12,7 +12,13 @@ import { describe, expect, it } from "vitest";
 import * as Y from "yjs";
 
 import { initialiseBoard, openBoardDoc, type BoardDoc } from "@/crdt/doc";
-import { commitStroke, createItems, deleteItems, deleteStrokes } from "@/crdt/ops";
+import {
+  commitStroke,
+  createItems,
+  deleteBoardStrokes,
+  deleteItems,
+  deleteStrokes,
+} from "@/crdt/ops";
 import { Origin } from "@/crdt/origins";
 import { readStroke, type YMap } from "@/crdt/schema";
 import { UndoHistory } from "@/crdt/undo";
@@ -253,6 +259,53 @@ describe("committing to bare cork", () => {
 
     undo.redo();
     expect(b.boardInk.get("1,1")!.size).toBe(1);
+  });
+});
+
+describe("taking cork ink away", () => {
+  function around(cx: number, cy: number): InkSample[] {
+    return samples().map((s) => ({ x: s.x + cx, y: s.y + cy, pressure: s.pressure }));
+  }
+
+  it("removes the record and leaves the rest of the bucket", () => {
+    const b = board();
+    const first = commitStroke(b, { item: null, tool: "marker", color: "#000", size: 6, samples: around(3000, 3000) })!;
+    commitStroke(b, { item: null, tool: "marker", color: "#000", size: 6, samples: around(3100, 3100) });
+
+    deleteBoardStrokes(b, first.tile!, [first.id]);
+    expect(b.boardInk.get("1,1")!.size).toBe(1);
+    expect(b.boardInk.get("1,1")!.has(first.id)).toBe(false);
+  });
+
+  /**
+   * A bucket exists only because somebody drew in it, so the last stroke takes
+   * it. An empty tile left in the document is a mount candidate with nothing in
+   * it, on every peer that ever loads the board.
+   */
+  it("takes the tile with the last stroke in it", () => {
+    const b = board();
+    const only = commitStroke(b, { item: null, tool: "marker", color: "#000", size: 6, samples: around(3000, 3000) })!;
+    deleteBoardStrokes(b, only.tile!, [only.id]);
+    expect(b.boardInk.has("1,1")).toBe(false);
+  });
+
+  it("is one entry, so undo brings the bucket and its contents back together", () => {
+    const b = board();
+    const undo = new UndoHistory(b);
+    const only = commitStroke(b, { item: null, tool: "marker", color: "#000", size: 6, samples: around(3000, 3000) })!;
+    undo.boundary();
+    deleteBoardStrokes(b, only.tile!, [only.id]);
+    undo.boundary();
+    expect(b.boardInk.has("1,1")).toBe(false);
+
+    undo.undo();
+    expect(b.boardInk.get("1,1")!.size).toBe(1);
+  });
+
+  it("does nothing for a tile that is not there", () => {
+    const b = board();
+    expect(() => deleteBoardStrokes(b, "9,9", ["nobody"])).not.toThrow();
+    expect(b.boardInk.size).toBe(0);
   });
 });
 

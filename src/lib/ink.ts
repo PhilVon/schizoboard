@@ -49,6 +49,31 @@ export interface InkSample {
 export type InkTool = "marker" | "highlighter";
 
 /**
+ * The two things a stroke can be on: a piece of paper, or the cork.
+ *
+ * Named here because three parts of the application that may not import each
+ * other all have to say it — the eraser naming what it is rubbing out, the
+ * writer turning that into a document op, and the wet/dry handoff naming the
+ * canvas it is waiting for. A bare `string | null` would collapse them, and the
+ * two are not interchangeable: an item id is a nanoid and a tile key is `"3,-2"`,
+ * they live in different maps and they are drawn by different layers.
+ */
+export type InkSurface =
+  | { readonly kind: "item"; readonly id: string }
+  | { readonly kind: "tile"; readonly key: string };
+
+/**
+ * The rubber's own width, in board units.
+ *
+ * On [`INK_SIZES`] like every nib, and starting near the top of the ladder
+ * because a rubber is not a pen: the gesture is a sweep over something you want
+ * gone, not a line you are placing, and a fine-tipped eraser makes you aim at a
+ * mark you are trying to stop looking at. `[` and `]` walk it down for the times
+ * you do have to aim.
+ */
+export const DEFAULT_ERASER_SIZE = 22;
+
+/**
  * The nib width, in **board units** — 1 unit is 1 px at 100% zoom.
  *
  * Board rather than screen because ink is a mark *on* the paper: zoom in and it

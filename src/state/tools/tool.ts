@@ -17,7 +17,7 @@
  * — and it is the same reason `state/scene.ts` imports nothing from `crdt/`.
  */
 
-import type { WetStroke } from "@/lib/ink";
+import type { InkSurface, WetStroke } from "@/lib/ink";
 import type { Camera, Vec2 } from "@/state/camera";
 import type { DirtySets } from "@/state/dirty";
 import type { Scene } from "@/state/scene";
@@ -363,6 +363,20 @@ export interface BoardWriter {
    * surface.
    */
   commitStroke(stroke: WetStroke): void;
+  /**
+   * Whole stroke records, gone.
+   *
+   * > **Erasing deletes stroke records.** Ink is never rasterised and flattened;
+   * > that would destroy both undo and merge. — DATA-MODEL section 6.2
+   *
+   * One surface per call rather than a flat list of ids, because a stroke id is
+   * only unique within the map it is in — an item's `strokes` or a `boardInk`
+   * tile — and the two are different documents' worth of addressing. A sweep
+   * that crossed from a photograph onto the cork would be two calls, and the
+   * eraser does not make that sweep: it fixes the surface at the press, exactly
+   * as a pen fixes the space it draws in (DESIGN section 2.4).
+   */
+  eraseStrokes(surface: InkSurface, ids: readonly string[]): void;
 }
 
 /**

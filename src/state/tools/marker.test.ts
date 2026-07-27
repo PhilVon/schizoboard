@@ -152,6 +152,7 @@ beforeEach(() => {
       setStringStyle: () => {},
       movePins: () => {},
       commitStroke: (stroke) => committed.push(stroke),
+      eraseStrokes: () => {},
     },
   };
 });
