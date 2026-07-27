@@ -11,7 +11,14 @@
 
 import { beforeEach, describe, expect, it } from "vitest";
 
-import { DEFAULT_INK_SIZE, DEFAULT_MARKER_COLOR, type WetStroke } from "@/lib/ink";
+import {
+  DEFAULT_HIGHLIGHTER_COLOR,
+  DEFAULT_HIGHLIGHTER_OPACITY,
+  DEFAULT_HIGHLIGHTER_SIZE,
+  DEFAULT_INK_SIZE,
+  DEFAULT_MARKER_COLOR,
+  type WetStroke,
+} from "@/lib/ink";
 import { PRESSURE_NEUTRAL } from "@/lib/pressure";
 import { rotateOut } from "@/lib/rotate";
 import { Camera } from "@/state/camera";
@@ -480,6 +487,29 @@ describe("what the overlay is offered", () => {
     highlighter.handle({ kind: "move", at: at(10, 0), trail: [at(10, 0)] }, ctx);
     expect(highlighter.id).toBe("highlighter");
     expect(highlighter.wet).toMatchObject({ tool: "highlighter", color: "#c9a227", size: 20 });
+  });
+
+  it("is a whole pen from a tool name, because a caller that has to remember will forget", () => {
+    const highlighter = new MarkerTool({ tool: "highlighter" });
+    highlighter.handle({ kind: "down", at: at(0, 0) }, ctx);
+    highlighter.handle({ kind: "move", at: at(10, 0), trail: [at(10, 0)] }, ctx);
+
+    // A wide translucent yellow nib, and none of those three named at the call
+    // site — `app/main.ts` says which pen it wants and nothing else.
+    expect(highlighter.wet).toMatchObject({
+      color: DEFAULT_HIGHLIGHTER_COLOR,
+      size: DEFAULT_HIGHLIGHTER_SIZE,
+      opacity: DEFAULT_HIGHLIGHTER_OPACITY,
+    });
+    expect(DEFAULT_HIGHLIGHTER_SIZE).toBeGreaterThan(DEFAULT_INK_SIZE);
+  });
+
+  it("gives the marker no translucency at all", () => {
+    down(0, 0);
+    move([at(10, 0)]);
+    // > Marker | Opaque — DESIGN section 3.9. An opacity of anything but 1 here
+    // > is a marker that is quietly a highlighter.
+    expect(tool.wet!.opacity).toBe(1);
   });
 });
 

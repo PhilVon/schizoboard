@@ -387,6 +387,7 @@ async function boot(): Promise<void> {
           tool: stroke.tool,
           color: stroke.color,
           size: stroke.size,
+          opacity: stroke.opacity,
           samples: stroke.samples,
         });
         if (id !== null) {
@@ -398,20 +399,33 @@ async function boot(): Promise<void> {
         // the pointer was down. No re-raster is coming, so the overlay copy is
         // all that is holding the mark up and it stops being drawn now.
         drying = null;
-        marker.dry();
+        dried();
       });
     },
   };
 
   /**
-   * The item whose ink the marker is still drawing on the overlay because its
-   * canvas has not caught up — the far end of `BoardWriter.commitStroke`, and the
-   * whole of what stops a pen-up from blinking.
+   * The item whose ink a pen is still drawing on the overlay because its canvas
+   * has not caught up — the far end of `BoardWriter.commitStroke`, and the whole
+   * of what stops a pen-up from blinking.
    *
-   * One slot, not a queue: a press drops whatever was drying (see
+   * One slot, not a queue: a press drops whatever that pen had drying (see
    * `MarkerTool.wet`), so there is never a second one to hold.
    */
   let drying: string | null = null;
+  /**
+   * Both pens, rather than the one that committed.
+   *
+   * Only the current tool's stroke is ever drawn (see the OVERLAY phase), so the
+   * other pen's slot is invisible either way — and clearing it is what stops a
+   * stroke drawn with the marker, switched away from and switched back to, from
+   * being drawn a second time over ink that has long since landed. `dry` is
+   * idempotent, which is what makes asking both of them free.
+   */
+  const dried = (): void => {
+    marker.dry();
+    highlighter.dry();
+  };
 
   /**
    * Undo.
@@ -476,15 +490,22 @@ async function boot(): Promise<void> {
   /** `S`. The primary verb — DESIGN section 1.3, "the string is the product". */
   const stringTool = new StringTool({ onDone: () => queued.push(() => tools.setTool(select)) });
   /**
-   * `M`. Sticky, unlike the note and pin tools, and for the reason they are not:
+   * `M` and `H` — the two pens of DESIGN section 3.9.
+   *
+   * Both sticky, unlike the note and pin tools, and for the reason they are not:
    * those place one thing and a second click would place another by accident,
    * while nobody draws exactly one stroke. `Escape` or `V` hands the board back.
    *
-   * Nothing it draws is written down yet — see `state/tools/marker.ts`. The mark
-   * lives while the button is held and goes on release, which is the wet half of
-   * DESIGN section 6.5 and all of it there is until T-58.
+   * One class twice. The two differ in width, colour, opacity and compositing and
+   * in nothing else about the gesture — `state/tools/marker.ts` takes a tool name
+   * and reads the rest of it off `lib/ink.ts`, so the only thing said here is
+   * which pen this is.
    */
   const marker = new MarkerTool({ onDone: () => queued.push(() => tools.setTool(select)) });
+  const highlighter = new MarkerTool({
+    tool: "highlighter",
+    onDone: () => queued.push(() => tools.setTool(select)),
+  });
   /**
    * The three hit tests, named once. The tool machine is handed them, and so is
    * the hover in phase 4 — which asks the same questions between gestures that
@@ -519,9 +540,9 @@ async function boot(): Promise<void> {
   /**
    * Picking a tool (DESIGN section 3.9).
    *
-   * Five of the seven exist; `H` and `E` are each their own task, and a key that
-   * silently does nothing is worse than one that is not bound, so they are not
-   * listed here until they have something to switch to.
+   * Six of the seven exist; `E` is its own task, and a key that silently does
+   * nothing is worse than one that is not bound, so it is not listed here until
+   * it has something to switch to.
    *
    * Bare keys only. `Ctrl+V` is paste and must not also change tool, and inside
    * a note an `n` is an `n`.
@@ -540,7 +561,9 @@ async function boot(): Promise<void> {
               ? stringTool
               : e.code === "KeyM"
                 ? marker
-                : null;
+                : e.code === "KeyH"
+                  ? highlighter
+                  : null;
     if (!next) return;
     e.preventDefault();
     // Queued for the same reason `onDone` is: switching cancels the outgoing
@@ -830,7 +853,8 @@ async function boot(): Promise<void> {
     // Not while a stroke is being drawn, either. A lit pin or a highlighted
     // string tracking the nib is a second cursor arguing with the mark, and both
     // of them promise a gesture that the marker is not going to make.
-    const cursor = navigation.panReady || marker.stroking ? null : tools.cursor;
+    const cursor =
+      navigation.panReady || marker.stroking || highlighter.stroking ? null : tools.cursor;
     if (!cursor) {
       hoveredPin = null;
       hoveredString = null;
@@ -929,7 +953,7 @@ async function boot(): Promise<void> {
     // is genuinely not a number of frames — see `ItemLayer.awaitingInk`.
     if (drying !== null && !items.awaitingInk(drying)) {
       drying = null;
-      marker.dry();
+      dried();
     }
   });
 
@@ -995,11 +1019,15 @@ async function boot(): Promise<void> {
       // The same hover the pin layer uses for the eyelet ring, resolved once in
       // the layout phase and read by both.
       hoveredPin,
-      // The stroke being drawn, if the marker is the tool holding the board.
+      // The stroke being drawn, if a pen is the tool holding the board.
       // Asked of the tool rather than tracked here for the same reason
       // `pendingRun` is: the gesture owns its own transient, and nothing about it
       // is in the scene.
-      tools.current === marker ? marker.wet : null,
+      tools.current === marker
+        ? marker.wet
+        : tools.current === highlighter
+          ? highlighter.wet
+          : null,
     );
     hud.update(frame.now);
   });

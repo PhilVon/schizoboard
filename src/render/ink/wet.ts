@@ -139,14 +139,21 @@ export class WetInk {
     if (!traceOutline(outline, path)) return false;
 
     ctx.save();
+    ctx.globalAlpha = stroke.opacity;
     ctx.fillStyle = stroke.color;
     // A filled polygon, not a stroked line — the width is in the shape. Nothing
     // here sets `lineWidth`, and nothing should.
     //
-    // The highlighter's `multiply` compositing is deliberately not here: it needs
-    // each stroke drawn to its own buffer and composited once, or a stroke
-    // crossing itself darkens at the crossing (DESIGN section 2.4). That is a
-    // second surface and its own decision — T-60.
+    // `multiply` for a highlighter, the same as `render/ink/dry.ts`, so that the
+    // mark does not change shade at pen-up.
+    //
+    // Against an empty canvas the two composite operators agree, and most frames
+    // of most strokes that is what this is. Not all of them: wet ink is drawn
+    // last, over every piece of chrome `render/overlay.ts` has already put down,
+    // so a highlighter dragged across a selection outline blends with it here
+    // exactly as it will blend with the ink already on the item's canvas a frame
+    // later. The alpha above is the half that always matters.
+    ctx.globalCompositeOperation = stroke.tool === "highlighter" ? "multiply" : "source-over";
     ctx.fill(path);
     ctx.restore();
     return true;

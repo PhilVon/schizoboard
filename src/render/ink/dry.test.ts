@@ -26,6 +26,9 @@ interface Calls {
   alphas: number[];
   clears: number;
   transforms: number[][];
+  /** The composite operator each fill went down with — DESIGN 6.5's `multiply`
+   *  for the highlighter, and `source-over` for everything else. */
+  composites: string[];
   forbidden: string[];
 }
 
@@ -44,6 +47,7 @@ class StubPath {
 
 function stubContext(): CanvasRenderingContext2D {
   let alpha = 1;
+  let composite = "source-over";
   const ctx = {
     save: vi.fn(),
     restore: vi.fn(),
@@ -56,6 +60,7 @@ function stubContext(): CanvasRenderingContext2D {
     fill: () => {
       calls.fills++;
       calls.alphas.push(alpha);
+      calls.composites.push(composite);
     },
     stroke: () => {
       calls.forbidden.push("stroke");
@@ -71,6 +76,12 @@ function stubContext(): CanvasRenderingContext2D {
     },
     get globalAlpha() {
       return alpha;
+    },
+    set globalCompositeOperation(value: string) {
+      composite = value;
+    },
+    get globalCompositeOperation() {
+      return composite;
     },
   };
   return ctx as unknown as CanvasRenderingContext2D;
@@ -111,7 +122,16 @@ function isPow2(n: number): boolean {
 }
 
 beforeEach(() => {
-  calls = { points: [], fills: 0, fillStyles: [], alphas: [], clears: 0, transforms: [], forbidden: [] };
+  calls = {
+    points: [],
+    fills: 0,
+    fillStyles: [],
+    alphas: [],
+    clears: 0,
+    transforms: [],
+    composites: [],
+    forbidden: [],
+  };
   (globalThis as { Path2D?: unknown }).Path2D = StubPath;
   box = { minX: 0, minY: 0, maxX: 0, maxY: 0 };
 });
@@ -255,6 +275,50 @@ describe("painting", () => {
     // The clear still happened: a canvas whose last stroke was erased has to end
     // up blank rather than keeping the old mark.
     expect(calls.clears).toBe(1);
+  });
+
+  /**
+   * AC-23, and the whole of DESIGN section 6.5's warning: "each highlighter
+   * stroke composites as a unit so that a single stroke crossing itself doesn't
+   * darken at the crossing".
+   *
+   * The unit is the fill. One `multiply` fill of one outline polygon composites
+   * every pixel inside it exactly once, whatever the polygon does on its way
+   * round — so the assertion that matters is the *count*, and it is one no matter
+   * how many times the hand crossed its own line.
+   */
+  it("lays a highlighter down with multiply, and a marker over the top", () => {
+    const region = regionFor({ minX: -10, minY: -10, maxX: 80, maxY: 20 }, 1, null);
+    paintStrokes(
+      stubContext(),
+      [
+        stroke({ id: "a", tool: "highlighter", size: 20, opacity: 0.4, z: "a0" }),
+        stroke({ id: "b", z: "a1" }),
+      ],
+      region,
+    );
+
+    // Per stroke, and reset for the marker: a highlighter passed over first must
+    // not turn the ink drawn after it into a blend of the paper.
+    expect(calls.composites).toEqual(["multiply", "source-over"]);
+  });
+
+  it("fills a self-crossing highlighter stroke exactly once", () => {
+    // A loop: out, up, back across itself, and on. Every pixel of the crossing is
+    // inside the same outline as the rest, and one fill is what keeps it the same
+    // shade as the rest.
+    const loop = samples([
+      [0, 0],
+      [60, 0],
+      [60, -40],
+      [30, -40],
+      [30, 20],
+    ]);
+    const region = regionFor({ minX: -40, minY: -80, maxX: 100, maxY: 60 }, 1, null);
+    paintStrokes(stubContext(), [stroke({ tool: "highlighter", size: 20, samples: loop })], region);
+
+    expect(calls.fills).toBe(1);
+    expect(calls.composites).toEqual(["multiply"]);
   });
 
   it("treats a tool it has never heard of as a marker, so the stroke still shows", () => {

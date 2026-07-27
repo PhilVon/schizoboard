@@ -21,6 +21,10 @@ interface Calls {
   /** Anything that would make this a stroked line rather than a filled shape. */
   forbidden: string[];
   fillStyles: string[];
+  /** The alpha and the composite operator each fill went down with — the two
+   *  halves of the highlighter's translucency. */
+  alphas: number[];
+  composites: string[];
 }
 
 let calls: Calls;
@@ -38,11 +42,15 @@ class StubPath {
 }
 
 function stubContext(): CanvasRenderingContext2D {
+  let alpha = 1;
+  let composite = "source-over";
   const ctx = {
     save: vi.fn(),
     restore: vi.fn(),
     fill: () => {
       calls.fills++;
+      calls.alphas.push(alpha);
+      calls.composites.push(composite);
     },
     stroke: () => {
       calls.forbidden.push("stroke");
@@ -52,6 +60,18 @@ function stubContext(): CanvasRenderingContext2D {
     },
     set fillStyle(value: string) {
       calls.fillStyles.push(value);
+    },
+    set globalAlpha(value: number) {
+      alpha = value;
+    },
+    get globalAlpha() {
+      return alpha;
+    },
+    set globalCompositeOperation(value: string) {
+      composite = value;
+    },
+    get globalCompositeOperation() {
+      return composite;
     },
   };
   return ctx as unknown as CanvasRenderingContext2D;
@@ -65,7 +85,7 @@ function straight(count: number, step = 20): InkSample[] {
 }
 
 function stroke(samples: readonly InkSample[], size = 6): WetStroke {
-  return { tool: "highlighter", color: "#1f1b17", size, item: null, samples };
+  return { tool: "highlighter", color: "#1f1b17", size, opacity: 1, item: null, samples };
 }
 
 /** The same stroke, glued to a photograph — so the samples are that item's local
@@ -84,7 +104,7 @@ function spreadY(): number {
 }
 
 beforeEach(() => {
-  calls = { points: [], fills: 0, forbidden: [], fillStyles: [] };
+  calls = { points: [], fills: 0, forbidden: [], fillStyles: [], alphas: [], composites: [] };
   (globalThis as { Path2D?: unknown }).Path2D = StubPath;
   camera = new Camera();
   camera.resize(1000, 800);
@@ -104,6 +124,28 @@ describe("drawing the stroke in progress", () => {
   it("draws in the stroke's own colour", () => {
     ink.draw(stubContext(), camera, { ...stroke(straight(4)), color: "#c9a227" });
     expect(calls.fillStyles).toEqual(["#c9a227"]);
+  });
+
+  /**
+   * The wet mark has to be the mark that lands. A highlighter drawn opaque under
+   * the pointer and translucent a frame after the release is the same bug as ink
+   * that moves at pen-up — it is just a shade instead of a position, and it is
+   * only visible on the tool nobody tests first.
+   */
+  it("lays a highlighter down at its own opacity, with multiply", () => {
+    ink.draw(stubContext(), camera, { ...stroke(straight(4)), opacity: 0.4 });
+
+    expect(calls.alphas).toEqual([0.4]);
+    expect(calls.composites).toEqual(["multiply"]);
+  });
+
+  it("lays a marker down opaque, over whatever the overlay has already drawn", () => {
+    ink.draw(stubContext(), camera, { ...stroke(straight(4)), tool: "marker" });
+
+    // Wet ink is drawn over the selection chrome (`render/overlay.ts`), and an
+    // opaque mark has to cover it rather than blend with it.
+    expect(calls.alphas).toEqual([1]);
+    expect(calls.composites).toEqual(["source-over"]);
   });
 
   it("has nothing to draw from a press that has not moved", () => {

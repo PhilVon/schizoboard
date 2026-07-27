@@ -217,11 +217,25 @@ export function paintStrokes(
     ctx.save();
     ctx.globalAlpha = stroke.opacity;
     ctx.fillStyle = stroke.color;
-    // The highlighter's `multiply` and the eraser's `destination-out` both
-    // belong here, as a `globalCompositeOperation` per stroke — but multiply
-    // needs each stroke on its own buffer or one that crosses itself darkens at
-    // the crossing (DESIGN section 2.4), which is a second surface and its own
-    // decision. T-60 and T-62.
+    // > highlighter uses near-zero thinning, a flat cap and `multiply`
+    // > composition — DESIGN section 6.5
+    //
+    // One fill, and that is what makes a stroke composite "as a unit": a
+    // self-crossing stroke is a single outline polygon filled once under the
+    // non-zero winding rule, so the crossing is inside the same region as the
+    // rest of it and is composited exactly once. Drawing the outline in pieces —
+    // or filling it twice for any reason — is what would darken it, which is the
+    // failure DESIGN section 6.5 names and AC-23 tests.
+    //
+    // Against the strokes already on this canvas, not against the photograph
+    // underneath: the canvas element composites over the paper normally. So two
+    // *different* highlighter passes deepen where they cross, which is what a
+    // highlighter does, and one pass over a dark photograph tints rather than
+    // fogs only as far as its own alpha allows.
+    //
+    // The eraser's `destination-out` belongs here too, and does not exist yet —
+    // T-62.
+    ctx.globalCompositeOperation = toolOf(stroke) === "highlighter" ? "multiply" : "source-over";
     ctx.fill(path);
     ctx.restore();
     drew = true;

@@ -670,7 +670,7 @@ describe("the stroke in progress", () => {
   function wet(count: number, item: string | null = null): Parameters<Overlay["draw"]>[10] {
     const samples = [];
     for (let i = 0; i < count; i++) samples.push({ x: i * 20, y: 0, pressure: 0.5 });
-    return { tool: "marker", color: "#1f1b17", size: 6, item, samples };
+    return { tool: "marker", color: "#1f1b17", size: 6, opacity: 1, item, samples };
   }
 
   function draw(count: number, item: string | null = null): void {

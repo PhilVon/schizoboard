@@ -75,6 +75,37 @@ export const DEFAULT_INK_SIZE = 6;
 export const DEFAULT_MARKER_COLOR = "#1f1b17";
 
 /**
+ * > highlighter in yellow, pink, green, blue — DESIGN section 3.9
+ *
+ * The yellow, and it is a saturated one because it is about to be laid down at
+ * [`DEFAULT_HIGHLIGHTER_OPACITY`] and multiplied: a pale yellow chosen by eye at
+ * full strength disappears entirely once it is a translucent film over paper.
+ * Pick the pigment, not the result.
+ */
+export const DEFAULT_HIGHLIGHTER_COLOR = "#f2d024";
+
+/**
+ * The chisel tip, in board units — wide enough to cover a line of a note's text,
+ * which is 17 units tall.
+ *
+ * Nearly four times the marker's, and that ratio is the tools' whole visual
+ * difference at a glance: one is for writing on things and the other is for
+ * covering things that are already written.
+ */
+export const DEFAULT_HIGHLIGHTER_SIZE = 22;
+
+/**
+ * How much of the paper a highlighter pass leaves showing.
+ *
+ * Two passes over the same words should read as deliberate emphasis and a third
+ * should saturate — which puts a single pass somewhere around 0.4, since
+ * `multiply` compounds what is already there rather than replacing it. Lower and
+ * one pass is invisible on a photograph; higher and one pass is already opaque,
+ * at which point it is a marker in the wrong colour.
+ */
+export const DEFAULT_HIGHLIGHTER_OPACITY = 0.4;
+
+/**
  * A stroke that is still being drawn — "wet ink", in DESIGN section 6.5's terms.
  *
  * Declared here for the same reason `InkSample` is: the tool holding the pointer
@@ -102,6 +133,15 @@ export interface WetStroke {
   /** Board units — see [`DEFAULT_INK_SIZE`]. Also item-local units, because the
    *  two are the same scale. */
   readonly size: number;
+  /**
+   * 0 to 1 — the highlighter's translucency, and 1 for the marker.
+   *
+   * Carried on the wet stroke rather than being the renderer's business, so that
+   * the mark under the pointer is the mark that lands: the committed record has
+   * an `opacity` field (DATA-MODEL section 6.1) and the wet path and the dry path
+   * have to read the same number, or a highlighter changes shade at pen-up.
+   */
+  readonly opacity: number;
   /**
    * The item the samples are local to, or null for board space.
    *

@@ -77,6 +77,9 @@
  */
 
 import {
+  DEFAULT_HIGHLIGHTER_COLOR,
+  DEFAULT_HIGHLIGHTER_OPACITY,
+  DEFAULT_HIGHLIGHTER_SIZE,
   DEFAULT_INK_SIZE,
   DEFAULT_MARKER_COLOR,
   type InkSample,
@@ -95,6 +98,9 @@ export interface MarkerToolOptions {
   readonly color?: string;
   /** Board units. */
   readonly size?: number;
+  /** 0 to 1. Defaults to the tool's own — opaque for a marker, translucent for a
+   *  highlighter — so that constructing one takes a tool name and nothing else. */
+  readonly opacity?: number;
   /** `Escape`. The caller hands the board back to `select`; a tool has no idea
    *  what other tools exist — see `state/tools/note.ts`. */
   onDone?: () => void;
@@ -105,6 +111,18 @@ export class MarkerTool implements Tool {
 
   private readonly options: MarkerToolOptions;
   private readonly tool: InkTool;
+  /**
+   * The four fields every stroke of this tool carries, resolved once in the
+   * constructor rather than per stroke.
+   *
+   * Per tool and not per stroke because none of them can change mid-gesture:
+   * `[` and `]` and the colour palette (DESIGN section 3.9) pick a *pen*, and a
+   * pen picked halfway down a line would be a stroke with two widths in it that
+   * the document has no way to store.
+   */
+  private readonly color: string;
+  private readonly size: number;
+  private readonly opacity: number;
   /** In [`space`], oldest first. Empty means no stroke in progress. */
   private samples: InkSample[] = [];
   /**
@@ -130,6 +148,11 @@ export class MarkerTool implements Tool {
     this.options = options;
     this.tool = options.tool ?? "marker";
     this.id = this.tool;
+    const highlighter = this.tool === "highlighter";
+    this.color =
+      options.color ?? (highlighter ? DEFAULT_HIGHLIGHTER_COLOR : DEFAULT_MARKER_COLOR);
+    this.size = options.size ?? (highlighter ? DEFAULT_HIGHLIGHTER_SIZE : DEFAULT_INK_SIZE);
+    this.opacity = options.opacity ?? (highlighter ? DEFAULT_HIGHLIGHTER_OPACITY : 1);
   }
 
   /**
@@ -265,8 +288,9 @@ export class MarkerTool implements Tool {
   private snapshot(): WetStroke {
     return {
       tool: this.tool,
-      color: this.options.color ?? DEFAULT_MARKER_COLOR,
-      size: this.options.size ?? DEFAULT_INK_SIZE,
+      color: this.color,
+      size: this.size,
+      opacity: this.opacity,
       item: this.space,
       samples: this.samples,
     };
