@@ -29,6 +29,20 @@ export interface PointerSample {
   shift: boolean;
   ctrl: boolean;
   alt: boolean;
+  /**
+   * How hard, 0 to 1 — and only the ink tools have any use for it.
+   *
+   * Optional because the number is not always meaningful and pretending it is
+   * would be worse than leaving it out: a mouse reports exactly 0.5 for every
+   * sample it ever delivers, which is the trap DESIGN section 6.5 calls "a very
+   * common mistake" and produces dead, uniform lines. `pointer` below is what
+   * lets a tool tell a real reading from that constant, and branching on it is
+   * T-55.
+   */
+  pressure?: number;
+  /** `"mouse"`, `"pen"` or `"touch"` — the event's `pointerType`, carried for
+   *  the branch above. */
+  pointer?: string;
 }
 
 export type ToolInput =
@@ -45,7 +59,29 @@ export type ToolInput =
    * pointer-down and resolved at pointer-up.
    */
   | { kind: "down"; at: PointerSample; double?: boolean }
-  | { kind: "move"; at: PointerSample }
+  /**
+   * `at` is where the pointer is now. `trail` is every sample the OS actually
+   * delivered on the way there, oldest first, with `at` as its last entry.
+   *
+   * The two exist because the board's two kinds of gesture want opposite things
+   * from a move. Dragging a photograph wants the *position* — the samples before
+   * the last one are history, and `machine.ts` collapses several moves in one
+   * frame down to one for exactly that reason. Drawing wants the *path*, and
+   * every sample thrown away between two frames is a corner cut off the curve:
+   *
+   * > Input uses coalesced pointer events, which recover every sample the OS
+   * > delivered between frames — the difference between a smooth curve and a
+   * > visible polygon on a fast stroke. — DESIGN section 6.5
+   *
+   * A fast stroke on a 1000 Hz mouse is a dozen samples per frame. Reading only
+   * `at` turns that into one vertex every 16 ms, and at speed that is a
+   * measurable distance — which is AC-76 failing, and failing worse the faster
+   * the hand moves.
+   *
+   * So a collapse concatenates the trails rather than discarding them, and a tool
+   * picks whichever of the two fields matches what it is doing.
+   */
+  | { kind: "move"; at: PointerSample; trail?: readonly PointerSample[] }
   | { kind: "up"; at: PointerSample }
   /** Pointer capture lost — the OS took the gesture away, so revert it. */
   | { kind: "cancel" }

@@ -25,7 +25,9 @@
  */
 
 import { carryScale } from "@/lib/carry";
+import type { WetStroke } from "@/lib/ink";
 import { rotateOut } from "@/lib/rotate";
+import { WetInk } from "@/render/ink/wet";
 import { pinHitRadius } from "@/render/pins/dom";
 import { bodyWidth } from "@/render/ropes/paint";
 import type { Bounds, Camera, Vec2 } from "@/state/camera";
@@ -220,8 +222,13 @@ export class Overlay {
    *  changes with nothing else: moving the cursor from one pin to the next
    *  touches no camera, no selection and no item. */
   private hoveredPin: string | null = null;
+  /** Was there wet ink on the canvas last frame? The frame after a release has
+   *  to clear the mark, and a release changes nothing else on this canvas. */
+  private hadWet = false;
   /** Reset at the top of every `draw` â€” see [`Overlay.clear`]. */
   private cleared = false;
+  /** Holds the reused screen-space buffer, so it survives between frames. */
+  private readonly wetInk = new WetInk();
 
   constructor(canvas: HTMLCanvasElement) {
     this.canvas = canvas;
@@ -273,6 +280,14 @@ export class Overlay {
      * not this canvas turned out to need it.
      */
     hoveredPin: string | null = null,
+    /**
+     * The stroke being drawn, board space — DESIGN section 6.5's wet ink, on the
+     * canvas section 6.2 names for it.
+     *
+     * Last in the list because it is drawn last: ink goes *over* the chrome, since
+     * it is a mark being made on the board rather than a thing said about it.
+     */
+    wet: WetStroke | null = null,
   ): void {
     const ctx = this.ctx;
     if (!ctx) return;
@@ -281,9 +296,15 @@ export class Overlay {
     const wantsPending = pending !== null && pending.points.length >= 2;
     const wantsStrings = ropes !== null && selection.strings.size > 0;
     const wantsThreads = ropes !== null && hoveredPin !== null;
+    const wantsWet = wet !== null && wet.samples.length >= 2;
     const stale =
       wantsMarquee ||
       wantsPending ||
+      // Every frame of a stroke, and the frame after the last one — a stroke that
+      // grew by one sample is a different picture, and a release leaves a mark on
+      // the canvas that nothing else will clear.
+      wantsWet ||
+      this.hadWet ||
       stringHover !== null ||
       this.hadStringHover ||
       hoveredPin !== this.hoveredPin ||
@@ -308,6 +329,7 @@ export class Overlay {
     this.hadMarquee = wantsMarquee;
     this.hadPending = wantsPending;
     this.hadStringHover = stringHover !== null;
+    this.hadWet = wantsWet;
     this.hoveredPin = hoveredPin;
     this.highlighted = highlight;
     this.cameraVersion = camera.version;
@@ -343,6 +365,11 @@ export class Overlay {
     // Last, and over everything: it is the thing under the cursor, and a pin is
     // about to be born exactly where it sits.
     if (stringHover && this.drawStringHover(ctx, camera, stringHover)) drew = true;
+    // After even that. Wet ink is over every piece of chrome on this canvas
+    // because it is not chrome: it is a mark being made, and a selection outline
+    // painted on top of the line you are drawing would read as the line going
+    // *under* the photograph it is being drawn on.
+    if (wantsWet && this.drawWet(ctx, camera, wet)) drew = true;
     // Nothing to draw, but last frame there was â€” so the clear is the work.
     if (!drew && this.inked) this.clear(ctx);
     this.inked = drew;
@@ -402,6 +429,16 @@ export class Overlay {
     ctx.stroke();
     ctx.restore();
     return true;
+  }
+
+  /**
+   * The stroke in progress. All of the work is `render/ink/wet.ts`'s; this is the
+   * deferred clear and nothing else, so that a frame whose only content was a
+   * stroke that turned out to be a single sample still does not touch the canvas.
+   */
+  private drawWet(ctx: CanvasRenderingContext2D, camera: Camera, wet: WetStroke): boolean {
+    if (!this.cleared) this.clear(ctx);
+    return this.wetInk.draw(ctx, camera, wet);
   }
 
   /**

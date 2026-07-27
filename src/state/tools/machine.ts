@@ -74,7 +74,43 @@ export interface ToolMachineOptions {
 }
 
 function sample(e: PointerEvent | MouseEvent): PointerSample {
-  return { x: e.clientX, y: e.clientY, shift: e.shiftKey, ctrl: e.ctrlKey, alt: e.altKey };
+  const pointer = e as Partial<PointerEvent>;
+  return {
+    x: e.clientX,
+    y: e.clientY,
+    shift: e.shiftKey,
+    ctrl: e.ctrlKey,
+    alt: e.altKey,
+    // Only the ink tools read either, and both are absent on a plain MouseEvent
+    // — the wheel arrives as one — so neither is defaulted. A tool that needs a
+    // number has to decide what a missing one means, which is the point:
+    // `pressure` of 0.5 from a mouse and no pressure at all are different
+    // situations and must not arrive looking the same (see `PointerSample`).
+    pressure: pointer.pressure,
+    pointer: pointer.pointerType,
+  };
+}
+
+/**
+ * Every sample the OS delivered for this move, oldest first, ending at the
+ * event's own position.
+ *
+ * `getCoalescedEvents` is the whole of AC-76's input half. The browser fires one
+ * `pointermove` per frame and hides the rest inside it; a 1000 Hz mouse or a pen
+ * moving fast has a dozen in there, and they are the difference between a curve
+ * and a polygon (DESIGN section 6.5).
+ *
+ * Two fallbacks, both real rather than defensive. The method is absent outside
+ * Chromium-family engines, and it returns an *empty* list for a synthetic or
+ * untrusted event — which is every event a test dispatches, and would silently
+ * turn a stroke into nothing at all.
+ */
+function trailOf(e: PointerEvent): PointerSample[] {
+  const coalesced = e.getCoalescedEvents?.() ?? [];
+  if (coalesced.length === 0) return [sample(e)];
+  const trail: PointerSample[] = [];
+  for (const each of coalesced) trail.push(sample(each));
+  return trail;
 }
 
 /**
@@ -257,15 +293,24 @@ export class ToolMachine {
 
   /**
    * Several pointer moves can land in one frame and only the last one is a
-   * position — the ones before it are history the tool has no use for. Down
-   * and up are edges and are never collapsed.
+   * position — the ones before it are history *as a position*. Down and up are
+   * edges and are never collapsed.
+   *
+   * The samples themselves are not history, though, and the collapse keeps them:
+   * the merged input carries the concatenated trail, so a tool that wants the
+   * path the hand took gets every sample the OS gave us whether they arrived in
+   * one `pointermove` or five. Discarding them here is the same bug as not
+   * asking `getCoalescedEvents` in the first place — it just needs a busier
+   * frame to show up, which makes it the worse of the two.
    */
   private push(input: ToolInput): void {
     if (input.kind === "up" || input.kind === "cancel") this.pendingEnd = true;
     if (input.kind === "move") {
       const last = this.queue[this.queue.length - 1];
       if (last?.kind === "move") {
-        this.queue[this.queue.length - 1] = input;
+        const trail =
+          last.trail && input.trail ? [...last.trail, ...input.trail] : input.trail;
+        this.queue[this.queue.length - 1] = { kind: "move", at: input.at, trail };
         return;
       }
     }
@@ -344,11 +389,11 @@ export class ToolMachine {
     add(this.target, "pointermove", (e: PointerEvent) => {
       this.hover = { x: e.clientX, y: e.clientY };
       if (this.pointer !== e.pointerId) return;
-      // The last coalesced sample is the true current position; the OS may
-      // have delivered several between frames.
-      const samples = e.getCoalescedEvents?.() ?? [];
-      const latest = samples.length > 0 ? samples[samples.length - 1]! : e;
-      this.push({ kind: "move", at: sample(latest) });
+      // Every sample, not just the current position: the OS may have delivered
+      // several between frames, and a stroke needs all of them (see `trailOf`
+      // and the `move` case of `ToolInput`). The last one is the true position.
+      const trail = trailOf(e);
+      this.push({ kind: "move", at: trail[trail.length - 1]!, trail });
     });
 
     const end = (e: PointerEvent, cancelled: boolean): void => {

@@ -64,6 +64,40 @@ function pointer(type: string, init: Record<string, unknown>): void {
   (init["target"] as HTMLElement | undefined ?? root).dispatchEvent(event);
 }
 
+/**
+ * A move whose samples the browser hid inside it.
+ *
+ * happy-dom has no `getCoalescedEvents`, which is one of the two reasons
+ * `machine.ts` falls back to the event itself — so the method is stubbed on the
+ * event here rather than on the prototype, and the fallback stays testable by
+ * simply not calling this.
+ */
+function coalescedMove(
+  samples: ReadonlyArray<Record<string, unknown>>,
+  pointerId = 1,
+): void {
+  const inner = samples.map((init) => {
+    const e = new PointerEvent("pointermove", { ...init });
+    for (const k of ["clientX", "clientY"] as const) {
+      if (e[k] !== (init[k] ?? 0)) Object.defineProperty(e, k, { value: init[k] ?? 0 });
+    }
+    return e;
+  });
+  const last = samples[samples.length - 1] ?? {};
+  const event = new PointerEvent("pointermove", { bubbles: true, pointerId, ...last });
+  for (const k of ["clientX", "clientY"] as const) {
+    if (event[k] !== (last[k] ?? 0)) Object.defineProperty(event, k, { value: last[k] ?? 0 });
+  }
+  Object.defineProperty(event, "getCoalescedEvents", { value: () => inner });
+  root.dispatchEvent(event);
+}
+
+function trail(index: number): ReadonlyArray<PointerSample> {
+  const input = tool.seen[index]!;
+  if (input.kind !== "move") throw new Error(`input ${index} is a ${input.kind}, not a move`);
+  return input.trail ?? [];
+}
+
 function kinds(): string[] {
   return tool.seen.map((i) => i.kind);
 }
@@ -148,6 +182,64 @@ describe("ToolMachine", () => {
     expect(kinds()).toEqual(["down", "move", "up"]);
     const move = tool.seen[1]!;
     expect(move.kind === "move" && move.at.x).toBe(80);
+  });
+
+  /**
+   * The other half of that collapse, and the whole of AC-76's input side.
+   *
+   * The position collapses; the samples must not. A stroke is the path the hand
+   * took, and the samples the browser hid inside one `pointermove` are that path
+   * — throw them away and the hand is sampled at frame rate, which at speed is a
+   * visible polygon (DESIGN section 6.5).
+   */
+  it("keeps every coalesced sample, so a fast stroke is not sampled at frame rate", () => {
+    pointer("pointerdown", { button: 0, pointerId: 1, clientX: 0, clientY: 0 });
+    coalescedMove([
+      { clientX: 10, clientY: 1 },
+      { clientX: 20, clientY: 4 },
+      { clientX: 30, clientY: 9 },
+      { clientX: 40, clientY: 16 },
+    ]);
+    machine.flush(16);
+
+    expect(trail(1).map((s) => s.x)).toEqual([10, 20, 30, 40]);
+    // And the last of them is still the position, for every tool that only
+    // wants that.
+    const move = tool.seen[1]!;
+    expect(move.kind === "move" && move.at.x).toBe(40);
+  });
+
+  it("concatenates the trails when several moves collapse into one frame", () => {
+    pointer("pointerdown", { button: 0, pointerId: 1, clientX: 0, clientY: 0 });
+    coalescedMove([{ clientX: 10, clientY: 0 }, { clientX: 20, clientY: 0 }]);
+    coalescedMove([{ clientX: 30, clientY: 0 }, { clientX: 40, clientY: 0 }]);
+    coalescedMove([{ clientX: 50, clientY: 0 }, { clientX: 60, clientY: 0 }]);
+    machine.flush(16);
+
+    // One move, six samples. Collapsing to the last *event's* trail would keep
+    // two of the six, which is the same bug as not asking for them at all — it
+    // just needs a busier frame to show.
+    expect(kinds()).toEqual(["down", "move"]);
+    expect(trail(1).map((s) => s.x)).toEqual([10, 20, 30, 40, 50, 60]);
+  });
+
+  it("falls back to the event itself where the browser coalesces nothing", () => {
+    pointer("pointerdown", { button: 0, pointerId: 1, clientX: 0, clientY: 0 });
+    // No `getCoalescedEvents` at all — happy-dom, and every non-Chromium engine.
+    pointer("pointermove", { pointerId: 1, clientX: 33, clientY: 44 });
+    machine.flush(16);
+
+    expect(trail(1).map((s) => [s.x, s.y])).toEqual([[33, 44]]);
+  });
+
+  it("carries pressure and pointer type, and invents neither", () => {
+    pointer("pointerdown", { button: 0, pointerId: 1, clientX: 0, clientY: 0 });
+    coalescedMove([{ clientX: 5, clientY: 5, pressure: 0.75, pointerType: "pen" }]);
+    machine.flush(16);
+
+    const sample = trail(1)[0]!;
+    expect(sample.pressure).toBe(0.75);
+    expect(sample.pointer).toBe("pen");
   });
 
   it("ignores every button but the primary one — the rest belong to the camera", () => {

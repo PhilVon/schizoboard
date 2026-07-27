@@ -28,6 +28,8 @@ interface Calls {
    *  which is the width at each `strokeRect` — the two chrome families do not
    *  share a stroke call and must not share an assertion. */
   strokeWidths: number[];
+  /** Wet ink is the one thing on this canvas that is filled from a `Path2D`. */
+  fills: number;
 }
 
 let calls: Calls;
@@ -62,7 +64,9 @@ function stubCanvas(): HTMLCanvasElement {
     stroke: () => {
       calls.strokeWidths.push(ctx.lineWidth);
     },
-    fill: vi.fn(),
+    fill: () => {
+      calls.fills++;
+    },
     fillStyle: "",
     strokeStyle: "",
     lineWidth: 0,
@@ -105,6 +109,7 @@ beforeEach(() => {
     arcs: [],
     lines: [],
     strokeWidths: [],
+    fills: 0,
   };
   camera = new Camera();
   camera.resize(1000, 800);
@@ -647,5 +652,55 @@ describe("Overlay, hovering a pin lights its threads", () => {
     dirty.rope("s0");
     draw("hub");
     expect(calls.lines.length).toBeGreaterThan(drawn);
+  });
+});
+
+/**
+ * Wet ink — the stroke being drawn, on the canvas DESIGN section 6.2 names for
+ * it. `render/ink/wet.test.ts` covers what the fill looks like; what matters here
+ * is that this canvas notices a stroke at all, and notices when one has gone.
+ */
+describe("the stroke in progress", () => {
+  class StubPath {
+    moveTo(): void {}
+    quadraticCurveTo(): void {}
+    closePath(): void {}
+  }
+
+  function wet(count: number): Parameters<Overlay["draw"]>[10] {
+    const samples = [];
+    for (let i = 0; i < count; i++) samples.push({ x: i * 20, y: 0, pressure: 0.5 });
+    return { tool: "marker", color: "#1f1b17", size: 6, samples };
+  }
+
+  function draw(count: number): void {
+    overlay.draw(camera, scene, selection, null, dirty, null, null, null, null, null, wet(count));
+  }
+
+  beforeEach(() => {
+    (globalThis as { Path2D?: unknown }).Path2D = StubPath;
+  });
+
+  it("fills the stroke on every frame it grows", () => {
+    draw(4);
+    expect(calls.fills).toBe(1);
+    draw(5);
+    expect(calls.fills).toBe(2);
+  });
+
+  it("clears the mark on the frame after the release", () => {
+    draw(4);
+    const cleared = calls.clearRect;
+    // The release changes nothing else on this canvas, so without a flag of its
+    // own the mark would sit there until something unrelated happened to move.
+    frame();
+    expect(calls.clearRect).toBe(cleared + 1);
+    expect(calls.fills).toBe(1);
+  });
+
+  it("costs nothing for a press that has not moved yet", () => {
+    draw(1);
+    expect(calls.fills).toBe(0);
+    expect(calls.clearRect).toBe(0);
   });
 });
