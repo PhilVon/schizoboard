@@ -83,26 +83,36 @@ const SHADOW_ALPHA = 0.26;
  * > so the offset widens and the alpha drops. That single detail is what sells
  * > draping. — DESIGN section 4.6
  *
- * The offset is *derived*, not chosen: a string lying on a photograph is
- * exactly as far off the cork as the photograph is, and how far that is already
- * has an answer — the displacement `render/items/shadow.ts` bakes into the
- * item's own resting sprite. Picking a second number here would let the two
- * drift, and a string whose shadow disagreed with the shadow of the paper it is
- * lying on is the specific thing this effect cannot survive.
+ * The extra displacement is *derived*, not chosen: a string lying on a
+ * photograph is exactly as far off the cork as the photograph is, and how far
+ * that is already has an answer — the displacement `render/items/shadow.ts`
+ * bakes into the item's own resting sprite. Picking a second number here would
+ * let the two drift, and a string whose shadow disagreed with the shadow of the
+ * paper it is lying on is the specific thing this effect cannot survive.
  *
- * That number is in board units and this one is in screen pixels, which is the
- * same unit at 100% and is the trade the whole painter already makes (see the
- * note on constant widths above): the string keeps its lit-cylinder proportions
- * at every zoom rather than dissolving, and the lift keeps the proportion it
- * has at 100%.
+ * **And it is scaled by the zoom, which is the one place this painter's
+ * screen-space rule does not apply.** Everything else here is in screen pixels
+ * on purpose: a line width is about legibility, so it must not shrink. This is
+ * not — it is a *physical height*, the thickness of a sheet of paper, and the
+ * item's own shadow is displaced by that height in board units and therefore
+ * does shrink. Left in screen pixels the two disagree at every zoom but 100%:
+ * on a board at 50% the string's shadow sat over three times further from the
+ * string than the note's sat from the note, and read as the string floating
+ * well above the paper rather than lying on it. Seen immediately on a real
+ * board and invisible in every unit test.
  *
  * Wider and fainter follow from the same physics as the item's own `lift`
  * recipe — further from the surface is a softer, weaker shadow — and the alpha
  * is dropped by about the ratio that recipe uses.
  */
-const LIFT_OFFSET = SHADOW_OFFSET + RESTING_LIFT;
 const LIFT_WIDEN = 2.05;
 const LIFT_ALPHA = 0.17;
+
+/** How far the shadow of a lifted stretch sits from it, screen pixels, at a
+ *  given zoom — the string's own clearance plus the paper's thickness. */
+function liftOffset(zoom: number): number {
+  return SHADOW_OFFSET + RESTING_LIFT * zoom;
+}
 
 /**
  * The highlight rides the lit side, a fraction of the body's width — but never
@@ -247,11 +257,17 @@ const CULL_MARGIN = 64;
  * board of five hundred strings that are all on bare cork.
  *
  * `flat` and `lift` are `null` in exactly that case, and the shadow pass uses
- * `path` whole. When they are not, they partition the *links*: a link with a
- * lifted particle at either end goes to `lift`, a link with a flat particle at
- * either end goes to `flat`, and the link that spans the change goes to both —
- * which draws the two shadows overlapping for one particle spacing rather than
- * meeting at a hard step.
+ * `path` whole. When they are not, they **partition** the links: a link with a
+ * lifted particle at either end is lifted, and every other link is flat. Every
+ * link belongs to exactly one of them.
+ *
+ * The first version of this deliberately put the link that spans the change
+ * into *both*, on the reasoning that overlapping the two shadows for one
+ * particle spacing would soften the join. It does not — two translucent strokes
+ * over each other are simply darker than either, so every place a string
+ * climbed onto a photograph grew a short dark dash. Reported off a real board.
+ * The partition has a step in it, at one link's width, and a step is what a
+ * string going over an edge actually has.
  */
 interface RungPath {
   readonly rung: number;
@@ -269,23 +285,23 @@ interface MutableRungPath {
 }
 
 /**
- * Add to `path` every link of a `count`-particle polyline that `wants` either
- * end of, as runs of `lineTo` broken by `moveTo` wherever the run stops.
+ * Add to `path` every link of a `count`-particle polyline that `claims`, as
+ * runs of `lineTo` broken by `moveTo` wherever the run stops.
  *
- * `wants` is asked about *particles* and the link is claimed if either of its
- * two is wanted, which is what puts the link spanning a change into both of the
- * shadow's paths — see `RungPath`.
+ * `claims` is asked about a *link* — link `i` joins particles `i` and `i + 1` —
+ * so that two calls with complementary predicates partition the polyline
+ * exactly, with no link drawn twice and none left out.
  */
 function trace(
   path: Path2D,
   count: number,
-  wants: (i: number) => boolean,
+  claims: (link: number) => boolean,
   sx: (i: number) => number,
   sy: (i: number) => number,
 ): void {
   let open = false;
   for (let i = 0; i < count - 1; i++) {
-    if (!wants(i) && !wants(i + 1)) {
+    if (!claims(i)) {
       open = false;
       continue;
     }
@@ -344,6 +360,9 @@ export class RopeLayer {
    * one-element array: it takes a deliberately re-slacked segment to make two.
    */
   private readonly paths = new Map<string, RungPath[]>();
+  /** The zoom the lifted shadow's displacement is measured at — see
+   *  `liftOffset`, the one thing here that is not in screen pixels. */
+  private liftZoom = 1;
   /** Camera pose the cached paths were built at. */
   private cachedX = Number.NaN;
   private cachedY = Number.NaN;
@@ -389,6 +408,7 @@ export class RopeLayer {
     this.cachedX = camera.x;
     this.cachedY = camera.y;
     this.cachedZoom = camera.zoom;
+    this.liftZoom = camera.zoom;
 
     camera.visibleBounds(CULL_MARGIN, this.view);
     this.visible.length = 0;
@@ -464,8 +484,9 @@ export class RopeLayer {
     ctx.restore();
 
     if (batch.lifted) {
+      const offset = liftOffset(this.liftZoom);
       ctx.save();
-      ctx.translate(LIGHT_DX * LIFT_OFFSET, LIGHT_DY * LIFT_OFFSET);
+      ctx.translate(LIGHT_DX * offset, LIGHT_DY * offset);
       ctx.strokeStyle = `rgba(0, 0, 0, ${LIFT_ALPHA})`;
       ctx.lineWidth = batch.width * LIFT_WIDEN;
       ctx.stroke(batch.lift);
@@ -591,12 +612,14 @@ export class RopeLayer {
         part.flat = new Path2D();
         part.lift = new Path2D();
       }
-      // Two independent walks rather than one with a state machine. Each link
-      // is claimed by whichever paths want it, and the one spanning the change
-      // is claimed by both — `moveTo` only when the previous link was not
-      // claimed, which is what makes a run of links one subpath.
-      trace(part.flat, count, (i) => lifted[flagAt + i] !== 1, sx, sy);
-      trace(part.lift!, count, (i) => lifted[flagAt + i] === 1, sx, sy);
+      // Two walks with complementary predicates, so the links partition
+      // exactly: a link touching a lifted particle is lifted, everything else
+      // is flat, and nothing is drawn twice. `moveTo` only when the previous
+      // link was not claimed, which is what makes a run of links one subpath.
+      const raised = (link: number): boolean =>
+        lifted[flagAt + link] === 1 || lifted[flagAt + link + 1] === 1;
+      trace(part.flat, count, (link) => !raised(link), sx, sy);
+      trace(part.lift!, count, raised, sx, sy);
     });
 
     if (parts.length === 0) return null;

@@ -207,6 +207,63 @@ describe("the lift shadow", () => {
     );
   });
 
+  /**
+   * And it shrinks with the zoom, which nothing else in this painter does.
+   *
+   * A line width is about legibility and must not shrink; this is a physical
+   * height — the thickness of a sheet of paper — and the item's own shadow is
+   * displaced by that height in *board* units, so it does. Left in screen
+   * pixels the two disagree everywhere but 100%: at 50% the string's shadow sat
+   * three times further from the string than the note's from the note, and read
+   * as the string floating above the paper. Reported off a real board.
+   */
+  it("scales that lift with the zoom, so it agrees with the item's own shadow", () => {
+    const layer = new RopeLayer(stubCanvas(), "over");
+    string("s1", "p1", "p2");
+    draw(layer);
+    drapeOverItem();
+
+    const liftAt = (zoom: number): number => {
+      camera.zoom = zoom;
+      calls.strokes.length = 0;
+      draw(layer);
+      const [flat, lift] = calls.strokes;
+      return Math.hypot(lift!.tx, lift!.ty) - Math.hypot(flat!.tx, flat!.ty);
+    };
+
+    expect(liftAt(1)).toBeCloseTo(RESTING_LIFT, 6);
+    expect(liftAt(0.5)).toBeCloseTo(RESTING_LIFT / 2, 6);
+    expect(liftAt(2)).toBeCloseTo(RESTING_LIFT * 2, 6);
+  });
+
+  /**
+   * The two shadows partition the string; neither link is drawn by both.
+   *
+   * The first version put the link spanning the change into both paths, meaning
+   * to soften the join — but two translucent strokes over each other are just
+   * darker, so every place a string climbed onto a photograph grew a short dark
+   * dash. Reported off a real board.
+   */
+  it("never draws the flat and lifted shadows over each other", () => {
+    const layer = new RopeLayer(stubCanvas(), "over");
+    string("s1", "p1", "p2");
+    draw(layer);
+    drapeOverItem();
+
+    let links = 0;
+    ropes.visit("s1", (_at, count) => {
+      links += count - 1;
+    });
+    expect(links).toBeGreaterThan(4);
+
+    calls.lines.length = 0;
+    draw(layer);
+
+    // One walk for the body path, and one for the two shadow paths between
+    // them. Any link claimed twice shows up here as an extra `lineTo`.
+    expect(calls.lines).toHaveLength(links * 2);
+  });
+
   /** An `under` string passes behind items and is never flagged, so the layer
    *  that draws it never splits a shadow. */
   it("never appears on the under layer", () => {
