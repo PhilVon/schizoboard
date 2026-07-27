@@ -621,6 +621,7 @@ export class SelectTool implements Tool {
     ctx.selection.prune(
       (id) => ctx.scene.has(id),
       (id) => ctx.scene.strings.has(id),
+      (id) => ctx.scene.pins.has(id),
     );
 
     this.downX = this.lastX = this.prevTickX = at.x;

@@ -432,3 +432,103 @@ describe("Overlay, strings", () => {
     expect(calls.lines).toHaveLength(lines);
   });
 });
+
+/**
+ * Selected pins, which arrive only as part of a thread (DESIGN section 3.3).
+ *
+ * Two things are worth pinning down and both are countable: the ring is drawn
+ * where the pin actually is, and a still board holding a thread does not
+ * restroke — while a thread whose pins are moving does.
+ */
+describe("chrome for a selected pin", () => {
+  function putPin(id: string, parent: string | null, x: number, y: number): void {
+    scene.putPin({ id, parent, lx: x, ly: y, kind: "pushpin", color: "#c8352f", wx: x, wy: y });
+  }
+
+  it("rings each selected pin where the pin is", () => {
+    putPin("p", null, 0, 0);
+    putPin("q", null, 100, 0);
+    selection.replaceThread([], [], ["p"]);
+    frame();
+
+    // Two passes over one pin, dark under pale — so two arcs, same centre.
+    expect(calls.arcs.length).toBe(2);
+    const [x, y, r] = calls.arcs[0]!;
+    const at = camera.boardToScreen(0, 0);
+    expect(x).toBeCloseTo(at.x, 5);
+    expect(y).toBeCloseTo(at.y, 5);
+    expect(r).toBeGreaterThan(0);
+    expect(calls.arcs[1]!.slice(0, 2)).toEqual([x, y]);
+  });
+
+  it("rings every pin of a thread, and no others", () => {
+    for (let i = 0; i < 4; i++) putPin(`p${i}`, null, i * 50, 0);
+    selection.replaceThread([], [], ["p0", "p2"]);
+    frame();
+    expect(calls.arcs.length).toBe(4); // two pins, two passes
+    const centres = calls.arcs.map(([x]) => Math.round(x)).sort((a, b) => a - b);
+    const p0 = Math.round(camera.boardToScreen(0, 0).x);
+    const p2 = Math.round(camera.boardToScreen(100, 0).x);
+    expect(centres).toEqual([p0, p0, p2, p2]);
+  });
+
+  /** The whole point of the staleness gate: a thread sitting still is free. */
+  it("does not restroke a still board holding a thread", () => {
+    putPin("p", null, 0, 0);
+    selection.replaceThread([], [], ["p"]);
+    frame();
+    const drawn = calls.arcs.length;
+    frame();
+    frame();
+    expect(calls.arcs.length).toBe(drawn);
+  });
+
+  /**
+   * A free pin dragged across bare cork moves without any item moving, which is
+   * exactly what `dirty.pins` is for — and a gate that only watched
+   * `dirty.items` would leave the ring behind at the pin's old position.
+   */
+  it("redraws when a selected free pin moves", () => {
+    putPin("p", null, 0, 0);
+    selection.replaceThread([], [], ["p"]);
+    frame();
+    const drawn = calls.arcs.length;
+
+    scene.pins.get("p")!.wx = 200;
+    dirty.pin("p");
+    frame();
+    expect(calls.arcs.length).toBeGreaterThan(drawn);
+    expect(Math.round(calls.arcs[drawn]![0]!)).toBe(
+      Math.round(camera.boardToScreen(200, 0).x),
+    );
+  });
+
+  /** And a parented one rides the photograph it is pushed into, where the item
+   *  is what is dirty. */
+  it("redraws when the item a selected pin is pushed into moves", () => {
+    add("a", { x: 0, y: 0 });
+    putPin("p", "a", 0, 0);
+    selection.replaceThread([], [], ["p"]);
+    frame();
+    const drawn = calls.arcs.length;
+
+    scene.setPose("a", { x: 300 });
+    scene.layoutPins();
+    dirty.item("a");
+    frame();
+    expect(calls.arcs.length).toBeGreaterThan(drawn);
+  });
+
+  it("skips a pin a collaborator deleted before prune caught up", () => {
+    putPin("p", null, 0, 0);
+    selection.replaceThread([], [], ["p", "ghost"]);
+    frame();
+    expect(calls.arcs.length).toBe(2);
+  });
+
+  it("draws nothing at all for a selection of no kind", () => {
+    putPin("p", null, 0, 0);
+    frame();
+    expect(calls.arcs.length).toBe(0);
+  });
+});

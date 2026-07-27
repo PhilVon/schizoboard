@@ -21,15 +21,30 @@
  * undo entries so "undo takes me back to where I was" works (DESIGN section
  * 7.6) — but it is never written to the document.
  *
- * ## Two sets, not one
+ * ## Three sets, not one
  *
- * Items and strings are both selectable and they are kept apart. One set with
- * both kinds of id in it would be shorter to write and wrong at every point it
- * was read: `Delete` would hand a string to the item delete, `prune` would drop
- * it for not being an item, and the overlay would look up a slot it does not
- * have. They are reached by different gestures and every verb that follows —
- * delete, rotate, resize, slack, tuck — applies to one kind and not the other.
- * So each method below says which of the two it means.
+ * Items, strings and pins are all selectable and they are kept apart. One set
+ * with every kind of id in it would be shorter to write and wrong at every
+ * point it was read: `Delete` would hand a string to the item delete, `prune`
+ * would drop it for not being an item, and the overlay would look up a slot it
+ * does not have. They are reached by different gestures and most verbs that
+ * follow — delete, rotate, resize, slack, tuck — apply to one kind and not the
+ * others. So each method below says which of the three it means.
+ *
+ * ## Why pins joined them
+ *
+ * Nothing selects a pin on its own; the pin branch of a press deliberately
+ * leaves the selection where it found it. Pins are here for follow-the-thread
+ * (DESIGN section 3.3), which selects "the entire connected component of pins,
+ * strings and items" in one gesture — the one selection that is genuinely all
+ * three kinds at once, and the reason `replaceThread` exists alongside the two
+ * single-kind replacements.
+ *
+ * They earn their place by moving. DESIGN section 3.8: "free pins inside the
+ * selection have their board coordinates transformed as leaves of the same
+ * transform. Miss that and rotating a selection visibly shears the string web."
+ * A thread you can select and cannot move is the gesture failing at its stated
+ * purpose.
  */
 
 export class Selection {
@@ -38,6 +53,7 @@ export class Selection {
 
   private readonly ids = new Set<string>();
   private readonly stringIds = new Set<string>();
+  private readonly pinIds = new Set<string>();
 
   /** Items. A selected string is not one — see `strings`. */
   get size(): number {
@@ -64,6 +80,27 @@ export class Selection {
 
   hasString(id: string): boolean {
     return this.stringIds.has(id);
+  }
+
+  /** The selected pins, which are never also in `members` or `strings`. */
+  get pins(): ReadonlySet<string> {
+    return this.pinIds;
+  }
+
+  hasPin(id: string): boolean {
+    return this.pinIds.has(id);
+  }
+
+  /**
+   * True when nothing at all is selected — of any kind.
+   *
+   * `isEmpty` is deliberately not this: it means "no items", which is the
+   * question every item verb asks, and widening it would quietly change what
+   * `Delete` and the rotation handle do. This is the question the overlay asks,
+   * which is whether there is any chrome to draw.
+   */
+  get isBare(): boolean {
+    return this.ids.size === 0 && this.stringIds.size === 0 && this.pinIds.size === 0;
   }
 
   toArray(): string[] {
@@ -95,19 +132,10 @@ export class Selection {
    * being dragged across empty cork.
    */
   replace(next: Iterable<string>): void {
-    const set = next instanceof Set ? (next as ReadonlySet<string>) : new Set(next);
-    if (this.stringIds.size === 0 && set.size === this.ids.size) {
-      let same = true;
-      for (const id of set) {
-        if (!this.ids.has(id)) {
-          same = false;
-          break;
-        }
-      }
-      // Also the identity case: replacing the set with itself.
-      if (same) return;
-    }
+    const set = asSet(next);
+    if (this.stringIds.size === 0 && this.pinIds.size === 0 && same(this.ids, set)) return;
     this.stringIds.clear();
+    this.pinIds.clear();
     this.ids.clear();
     for (const id of set) this.ids.add(id);
     this.version++;
@@ -120,27 +148,57 @@ export class Selection {
    * > — DESIGN section 3.4
    */
   replaceStrings(next: Iterable<string>): void {
-    const set = next instanceof Set ? (next as ReadonlySet<string>) : new Set(next);
-    if (this.ids.size === 0 && set.size === this.stringIds.size) {
-      let same = true;
-      for (const id of set) {
-        if (!this.stringIds.has(id)) {
-          same = false;
-          break;
-        }
-      }
-      if (same) return;
-    }
+    const set = asSet(next);
+    if (this.ids.size === 0 && this.pinIds.size === 0 && same(this.stringIds, set)) return;
     this.ids.clear();
+    this.pinIds.clear();
     this.stringIds.clear();
     for (const id of set) this.stringIds.add(id);
     this.version++;
   }
 
-  clear(): void {
-    if (this.ids.size === 0 && this.stringIds.size === 0) return;
+  /**
+   * All three at once — follow the thread.
+   *
+   * > Double-click | Selects the entire connected component of pins, strings
+   * > and items — DESIGN section 3.3
+   *
+   * The one gesture that produces a selection of every kind at once, and the
+   * reason this is a method rather than three calls: three separate
+   * replacements would each wipe the previous one, and doing them in the right
+   * order to avoid that would leave the version counter bumped three times for
+   * one gesture — so the overlay would restroke twice for nothing and the
+   * transitional states would be briefly, wrongly, on screen.
+   */
+  replaceThread(
+    items: Iterable<string>,
+    strings: Iterable<string>,
+    pins: Iterable<string>,
+  ): void {
+    const nextItems = asSet(items);
+    const nextStrings = asSet(strings);
+    const nextPins = asSet(pins);
+    if (
+      same(this.ids, nextItems) &&
+      same(this.stringIds, nextStrings) &&
+      same(this.pinIds, nextPins)
+    ) {
+      return;
+    }
     this.ids.clear();
     this.stringIds.clear();
+    this.pinIds.clear();
+    for (const id of nextItems) this.ids.add(id);
+    for (const id of nextStrings) this.stringIds.add(id);
+    for (const id of nextPins) this.pinIds.add(id);
+    this.version++;
+  }
+
+  clear(): void {
+    if (this.isBare) return;
+    this.ids.clear();
+    this.stringIds.clear();
+    this.pinIds.clear();
     this.version++;
   }
 
@@ -156,11 +214,33 @@ export class Selection {
    * item id and asking the item question about it would prune every selected
    * string on the first press.
    */
-  prune(exists: (id: string) => boolean, stringExists?: (id: string) => boolean): void {
+  prune(
+    exists: (id: string) => boolean,
+    stringExists?: (id: string) => boolean,
+    pinExists?: (id: string) => boolean,
+  ): void {
     for (const id of this.ids) if (!exists(id)) this.remove(id);
-    if (!stringExists) return;
-    for (const id of this.stringIds) {
-      if (!stringExists(id) && this.stringIds.delete(id)) this.version++;
+    if (stringExists) {
+      for (const id of this.stringIds) {
+        if (!stringExists(id) && this.stringIds.delete(id)) this.version++;
+      }
+    }
+    if (!pinExists) return;
+    for (const id of this.pinIds) {
+      if (!pinExists(id) && this.pinIds.delete(id)) this.version++;
     }
   }
+}
+
+function asSet(next: Iterable<string>): ReadonlySet<string> {
+  return next instanceof Set ? (next as ReadonlySet<string>) : new Set(next);
+}
+
+/** Whether a set already holds exactly these ids, which is what every replace
+ *  asks before touching anything — a marquee dragged across empty cork asks it
+ *  sixty times a second and must answer "unchanged" without a version bump. */
+function same(current: ReadonlySet<string>, next: ReadonlySet<string>): boolean {
+  if (current.size !== next.size) return false;
+  for (const id of next) if (!current.has(id)) return false;
+  return true;
 }

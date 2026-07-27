@@ -131,3 +131,127 @@ describe("Selection, strings", () => {
     expect(selection.version).toBe(version + 1);
   });
 });
+
+/**
+ * Pins, which arrive only as part of a thread.
+ *
+ * > Double-click | Selects the entire connected component of pins, strings and
+ * > items — DESIGN section 3.3
+ *
+ * So the interesting behaviour is not any single-kind method; it is that a
+ * selection can be all three kinds at once, that one gesture producing it is
+ * one version bump, and that every other gesture still wipes it whole.
+ */
+describe("Selection, pins and threads", () => {
+  let selection: Selection;
+
+  beforeEach(() => {
+    selection = new Selection();
+  });
+
+  it("holds a pin without it becoming an item or a string", () => {
+    selection.replaceThread([], [], ["p"]);
+    expect([...selection.pins]).toEqual(["p"]);
+    expect(selection.hasPin("p")).toBe(true);
+    expect(selection.has("p")).toBe(false);
+    expect(selection.hasString("p")).toBe(false);
+    // Items only, which is what every item verb asks and must keep asking.
+    expect(selection.isEmpty).toBe(true);
+    expect(selection.isBare).toBe(false);
+  });
+
+  it("takes all three kinds in one gesture and one version bump", () => {
+    const start = selection.version;
+    selection.replaceThread(["a", "b"], ["s"], ["p", "q"]);
+    expect(selection.version).toBe(start + 1);
+    expect([...selection.members].sort()).toEqual(["a", "b"]);
+    expect([...selection.strings]).toEqual(["s"]);
+    expect([...selection.pins].sort()).toEqual(["p", "q"]);
+  });
+
+  /** Double-clicking the same pin twice is the same statement twice, and the
+   *  overlay must not restroke for it. */
+  it("is silent when the thread is the one already held", () => {
+    selection.replaceThread(["a"], ["s"], ["p"]);
+    const version = selection.version;
+    selection.replaceThread(["a"], ["s"], ["p"]);
+    expect(selection.version).toBe(version);
+  });
+
+  it("notices a thread that differs only in its pins", () => {
+    selection.replaceThread(["a"], ["s"], ["p"]);
+    const version = selection.version;
+    selection.replaceThread(["a"], ["s"], ["q"]);
+    expect(selection.version).toBe(version + 1);
+    expect([...selection.pins]).toEqual(["q"]);
+  });
+
+  /**
+   * The rule the three sets exist to keep: one selection, not three. Clicking a
+   * photograph after following a thread means the photograph, not the
+   * photograph *and* the thread you were looking at a moment ago.
+   */
+  it("is displaced whole by a plain click or a string click", () => {
+    selection.replaceThread(["a"], ["s"], ["p"]);
+    selection.replace(["b"]);
+    expect(selection.pins.size).toBe(0);
+    expect(selection.strings.size).toBe(0);
+
+    selection.replaceThread(["a"], ["s"], ["p"]);
+    selection.replaceStrings(["t"]);
+    expect(selection.pins.size).toBe(0);
+    expect(selection.members.size).toBe(0);
+  });
+
+  /**
+   * The early-out has to notice the other two sets, or a click on the one
+   * photograph a thread happened to contain would leave that thread's pins and
+   * strings selected and silently claim nothing changed.
+   */
+  it("does not mistake a matching item set for an unchanged selection", () => {
+    // No strings, deliberately: with one selected the old guard fell through
+    // to the slow path anyway and the pin clause was never reached. This is the
+    // shape that catches it — the items agree, and only the pins differ.
+    selection.replaceThread(["a"], [], ["p"]);
+    const version = selection.version;
+    selection.replace(["a"]);
+    expect(selection.version).toBe(version + 1);
+    expect(selection.pins.size).toBe(0);
+  });
+
+  /** The same hole on the other method. */
+  it("does not mistake a matching string set for an unchanged selection", () => {
+    selection.replaceThread([], ["s"], ["p"]);
+    const version = selection.version;
+    selection.replaceStrings(["s"]);
+    expect(selection.version).toBe(version + 1);
+    expect(selection.pins.size).toBe(0);
+  });
+
+  it("clears all three kinds", () => {
+    selection.replaceThread(["a"], ["s"], ["p"]);
+    selection.clear();
+    expect(selection.isBare).toBe(true);
+    expect(selection.pins.size).toBe(0);
+  });
+
+  it("prunes a pin by its own predicate, never by the other two", () => {
+    selection.replaceThread([], [], ["p", "q"]);
+    const version = selection.version;
+
+    selection.prune(
+      () => false,
+      () => false,
+    );
+    expect([...selection.pins].sort()).toEqual(["p", "q"]);
+    expect(selection.version).toBe(version);
+
+    selection.prune(
+      () => false,
+      () => false,
+      (id) => id !== "q",
+    );
+    expect([...selection.pins]).toEqual(["p"]);
+    expect(selection.version).toBe(version + 1);
+  });
+});

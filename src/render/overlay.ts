@@ -26,6 +26,7 @@
 
 import { carryScale } from "@/lib/carry";
 import { rotateOut } from "@/lib/rotate";
+import { pinHitRadius } from "@/render/pins/dom";
 import type { Bounds, Camera, Vec2 } from "@/state/camera";
 import type { DirtySets } from "@/state/dirty";
 import {
@@ -76,6 +77,27 @@ const CANDIDATE_UNDER = "rgba(34, 21, 10, 0.7)";
 const CANDIDATE_OVER = "rgba(255, 246, 222, 0.95)";
 const CANDIDATE_PAD = 5;
 const CANDIDATE_WIDTH = 2;
+
+/**
+ * A selected pin: a ring around the head.
+ *
+ * A ring rather than the box a selected item gets, because a pin is round and
+ * because the thing being marked is a *point* — the box would claim an area the
+ * pin does not occupy, and on a hub pin with six strings through it the area is
+ * exactly what is confusing.
+ *
+ * The pin layer is DOM and sits above this canvas, so the ring is drawn behind
+ * the head it rings and shows as a halo around it. That is the right way round:
+ * a ring painted over the head would hide the one part of a pin anybody looks
+ * at, and pins are small.
+ *
+ * Sized from `pinHitRadius`, so the chrome is exactly the target — what you can
+ * see you have hold of is what you can grab.
+ */
+const PIN_RING_PAD = 3;
+const PIN_RING_WIDTH = 2;
+const PIN_RING_UNDER = "rgba(34, 21, 10, 0.55)";
+const PIN_RING_OVER = "rgba(255, 244, 214, 0.95)";
 
 /**
  * The string run being drawn. The cotton red of a real string, so the run
@@ -245,7 +267,7 @@ export class Overlay {
       this.hadMarquee ||
       camera.version !== this.cameraVersion ||
       selection.version !== this.selectionVersion ||
-      this.selectedMoved(selection, dirty);
+      this.selectedMoved(selection, scene, dirty);
     this.hadMarquee = wantsMarquee;
     this.hadPending = wantsPending;
     this.hadStringHover = stringHover !== null;
@@ -265,6 +287,7 @@ export class Overlay {
     // than being washed out by it.
     let drew = wantsStrings && this.drawStrings(ctx, camera, scene, selection, ropes);
     if (this.drawSelection(ctx, camera, scene, selection)) drew = true;
+    if (this.drawPins(ctx, camera, scene, selection)) drew = true;
     // The rotation handle. `chromeFrame` is what decides that one item has one
     // and a group does not, and the select tool asks the same function where the
     // knob is â€” so what is drawn and what is grabbable cannot drift apart.
@@ -448,11 +471,80 @@ export class Overlay {
    * short one â€” one item under a drag, against a marquee that may hold every
    * photograph on the board.
    */
-  private selectedMoved(selection: Selection, dirty: DirtySets): boolean {
-    if (selection.isEmpty) return false;
+  private selectedMoved(selection: Selection, scene: Scene, dirty: DirtySets): boolean {
+    if (selection.isBare) return false;
     if (dirty.all) return true;
     for (const id of dirty.items) if (selection.has(id)) return true;
+    if (selection.pins.size === 0) return false;
+    // A free pin dragged across bare cork is its own dirt — it moves without
+    // any item moving, which is exactly what `dirty.pins` is for.
+    for (const id of dirty.pins) if (selection.hasPin(id)) return true;
+    // And a parented one rides the photograph it is pushed into, where the
+    // *item* is what is dirty. Asked from the item side, because `dirty.items`
+    // is the smaller set to walk and `pinsOf` is the index that makes it cheap.
+    for (const id of dirty.items) {
+      for (const pinId of scene.pinsOf(id)) if (selection.hasPin(pinId)) return true;
+    }
     return false;
+  }
+
+  /**
+   * Rings round the selected pins.
+   *
+   * Nothing selects a pin by itself — these arrive as part of a thread (DESIGN
+   * section 3.3), so this is usually a scattering of rings across a whole
+   * component rather than one.
+   *
+   * Two strokes, dark under pale, for the reason `drawCandidate` uses the same
+   * pair: a single ring has to be legible on cork, on a white polaroid border
+   * and on a black-and-white photograph, and no one colour is.
+   */
+  private drawPins(
+    ctx: CanvasRenderingContext2D,
+    camera: Camera,
+    scene: Scene,
+    selection: Selection,
+  ): boolean {
+    if (selection.pins.size === 0) return false;
+    const radius = pinHitRadius(camera.zoom) + PIN_RING_PAD;
+    let drew = false;
+
+    for (const id of selection.pins) {
+      const pin = scene.pins.get(id);
+      // A collaborator can delete a pin this selection still names; `prune`
+      // clears that up, but not before this frame draws.
+      if (pin === undefined) continue;
+      const at = camera.boardToScreen(pin.wx, pin.wy, this.a);
+      if (at.x + radius < 0 || at.x - radius > camera.width) continue;
+      if (at.y + radius < 0 || at.y - radius > camera.height) continue;
+
+      if (!drew) {
+        this.clear(ctx);
+        ctx.lineWidth = PIN_RING_WIDTH + 2;
+        ctx.strokeStyle = PIN_RING_UNDER;
+        drew = true;
+      }
+      ctx.beginPath();
+      ctx.arc(at.x, at.y, radius, 0, Math.PI * 2);
+      ctx.stroke();
+    }
+    if (!drew) return false;
+
+    // The pale pass second and over the whole set, so the two strokes are two
+    // state changes for the batch rather than two per pin.
+    ctx.lineWidth = PIN_RING_WIDTH;
+    ctx.strokeStyle = PIN_RING_OVER;
+    for (const id of selection.pins) {
+      const pin = scene.pins.get(id);
+      if (pin === undefined) continue;
+      const at = camera.boardToScreen(pin.wx, pin.wy, this.a);
+      if (at.x + radius < 0 || at.x - radius > camera.width) continue;
+      if (at.y + radius < 0 || at.y - radius > camera.height) continue;
+      ctx.beginPath();
+      ctx.arc(at.x, at.y, radius, 0, Math.PI * 2);
+      ctx.stroke();
+    }
+    return true;
   }
 
   /** True if it put anything on the canvas. */
