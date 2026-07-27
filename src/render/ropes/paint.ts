@@ -56,6 +56,7 @@
  */
 
 import { fibre } from "@/lib/material";
+import { presetSlack } from "@/lib/slack";
 import { LIGHT_DX, LIGHT_DY } from "@/render/items/shadow";
 import type { RopeSet } from "@/sim/ropes";
 import type { Camera } from "@/state/camera";
@@ -135,6 +136,56 @@ export function bodyWidth(thickness: number, material: string): number {
 const HALO_WIDEN = 2.1;
 
 /**
+ * > A taut string is very slightly thinner than a slack one.
+ * > — DESIGN section 4.6
+ *
+ * Which is a fact about **one gap**, not about a run: pull a pin out of the
+ * middle of a string and one side goes tight while the other keeps its drape,
+ * and a width averaged over the whole run would say neither.
+ *
+ * ## Rungs, not a curve
+ *
+ * The honest version is a continuous function of slack, and it would cost the
+ * batching: `strokeBatch` sets `lineWidth` once and strokes one `Path2D`, so a
+ * width that varies continuously is a stroke per segment and an idle board of
+ * 500 strings stops being a handful of calls. So the slack is quantised, and
+ * the batch key gains a rung.
+ *
+ * Four is enough because the effect is "very slightly" — the whole span here is
+ * fourteen percent, so the step between neighbouring rungs is a fraction of a
+ * pixel on a default string, and a continuous version would be indistinguishable
+ * from this one at any zoom the board is ever at.
+ *
+ * The boundaries are places the `1`-`9` presets actually stop, taken from the
+ * same geometric ladder rather than picked: pressing `1` lands on the thin rung
+ * and `9` on the thick one, and the useful middle — DATA-MODEL's 0.05 to 0.3,
+ * which is where `DEFAULT_SLACK` sits — is the rung that draws at exactly the
+ * width it always has. So no existing board changes appearance except where
+ * somebody has deliberately gone to an end of the ladder.
+ */
+const SLACK_RUNGS: readonly { readonly from: number; readonly scale: number }[] = [
+  { from: presetSlack(1), scale: 0.9 },
+  { from: presetSlack(3), scale: 0.95 },
+  { from: presetSlack(5), scale: 1 },
+  { from: presetSlack(8), scale: 1.04 },
+];
+
+/**
+ * Which rung a gap's slack falls on.
+ *
+ * Exported for `paint.test.ts`, which is the only thing that can check the
+ * boundaries line up with the presets — from inside the painter they are four
+ * numbers in an array.
+ */
+export function slackRung(slack: number): number {
+  let rung = 0;
+  for (let i = 1; i < SLACK_RUNGS.length; i++) {
+    if (slack >= SLACK_RUNGS[i]!.from) rung = i;
+  }
+  return rung;
+}
+
+/**
  * How far outside the viewport a string still counts as visible, in board
  * units. A string whose bounding box is just off-screen can still have a
  * *stroke* on screen once the shadow and half the line width are added, and a
@@ -152,7 +203,19 @@ const CULL_MARGIN = 64;
  * key and it costs nothing worth counting: material is three values and the
  * realistic board uses one of them, so the batch count is unchanged on every
  * board that exists and at worst triples on one that has gone out of its way.
+ *
+ * And on the slack rung, which is the fourth and the only one that is not a
+ * property of the whole string — see `SLACK_RUNGS`. Same argument for the cost:
+ * a run whose gaps are all at the default is one rung and therefore one batch,
+ * exactly as before, and a board that has been deliberately re-slacked segment
+ * by segment pays at most four.
  */
+/** The gaps of one string that share a slack rung, as one path. */
+interface RungPath {
+  readonly rung: number;
+  readonly path: Path2D;
+}
+
 interface Batch {
   path: Path2D;
   color: string;
@@ -162,6 +225,8 @@ interface Batch {
    *  rungs of the ladder and still want different highlights. */
   thickness: number;
   material: string;
+  /** Which `SLACK_RUNGS` step the gaps in this batch are on. */
+  rung: number;
   highlight: string;
   /** The body width the material actually draws at — thickness × weight, floored. */
   width: number;
@@ -177,7 +242,7 @@ export class RopeLayer {
   private readonly layer: string;
 
   /**
-   * One `Path2D` per string, in screen space.
+   * One `Path2D` per string per slack rung, in screen space.
    *
    * > Sleeping ropes keep a cached `Path2D`, so an idle board of 500 strings is
    * > a handful of path fills. — DESIGN section 6.4
@@ -186,8 +251,12 @@ export class RopeLayer {
    * cheap and a string is where the *walk* is: rebuilding one moving string's
    * path and re-assembling the batch from cached ones costs a few hundred
    * `addPath` calls, against ten thousand `lineTo`s to rebuild the board.
+   *
+   * Per rung within that, because the rung decides `lineWidth` and a run can
+   * hold gaps at more than one of them — see `SLACK_RUNGS`. Almost always a
+   * one-element array: it takes a deliberately re-slacked segment to make two.
    */
-  private readonly paths = new Map<string, Path2D>();
+  private readonly paths = new Map<string, RungPath[]>();
   /** Camera pose the cached paths were built at. */
   private cachedX = Number.NaN;
   private cachedY = Number.NaN;
@@ -242,9 +311,11 @@ export class RopeLayer {
     for (const id of this.visible) {
       const style = scene.strings.get(id);
       if (style === undefined || style.layer !== this.layer) continue;
-      const path = this.pathFor(id, ropes, camera);
-      if (path === null) continue;
-      this.batchFor(style.color, style.thickness, style.material).path.addPath(path);
+      const parts = this.pathsFor(id, ropes, camera);
+      if (parts === null) continue;
+      for (const part of parts) {
+        this.batchFor(style.color, style.thickness, style.material, part.rung).path.addPath(part.path);
+      }
     }
 
     if (this.batches.length === 0) {
@@ -327,23 +398,30 @@ export class RopeLayer {
     ctx.restore();
   }
 
-  private batchFor(color: string, thickness: number, material: string): Batch {
+  private batchFor(color: string, thickness: number, material: string, rung: number): Batch {
     for (const batch of this.batches) {
       if (
         batch.color === color &&
         batch.thickness === thickness &&
-        batch.material === material
+        batch.material === material &&
+        batch.rung === rung
       ) {
         return batch;
       }
     }
     const fib = fibre(material);
-    const width = bodyWidth(thickness, material);
+    // The rung rides on the *body* width and everything else follows from it,
+    // so a taut segment's highlight and shadow narrow with it rather than
+    // sitting proud of a string that has quietly got thinner. The floor is
+    // still `bodyWidth`'s, applied after: a thin rung must not push wire under
+    // the width the same argument already called illegible.
+    const width = Math.max(BODY_MIN, bodyWidth(thickness, material) * SLACK_RUNGS[rung]!.scale);
     const batch: Batch = {
       path: new Path2D(),
       color,
       thickness,
       material,
+      rung,
       highlight: lighten(color, Math.min(HIGHLIGHT_LIFT_MAX, HIGHLIGHT_LIFT * fib.sheen)),
       width,
       highlightWidth: Math.max(HIGHLIGHT_MIN, width * HIGHLIGHT_WIDTH * fib.gloss),
@@ -354,14 +432,17 @@ export class RopeLayer {
   }
 
   /**
-   * One string's polyline in screen space, cached.
+   * One string's polyline in screen space, cached — as one path per slack rung
+   * it uses, which for almost every string on almost every board is one.
    *
    * Each segment is its own subpath — a `moveTo` and then a run of `lineTo` —
    * so a multi-pin run draws as one continuous string and a segment whose pin
    * has gone missing simply leaves a gap rather than a straight line across
-   * the board to wherever the next one starts.
+   * the board to wherever the next one starts. Splitting by rung uses the same
+   * property from the other end: the subpaths of one run can be spread across
+   * several paths without the drawing changing, because they were never joined.
    */
-  private pathFor(id: string, ropes: RopeSet, camera: Camera): Path2D | null {
+  private pathsFor(id: string, ropes: RopeSet, camera: Camera): RungPath[] | null {
     const cached = this.paths.get(id);
     if (cached !== undefined) return cached;
 
@@ -369,21 +450,26 @@ export class RopeLayer {
     const zoom = camera.zoom;
     const camX = camera.x;
     const camY = camera.y;
-    const path = new Path2D();
-    let drew = false;
+    const parts: RungPath[] = [];
 
-    ropes.visit(id, (at, count) => {
+    ropes.visit(id, (at, count, _asleep, slack) => {
+      const rung = slackRung(slack);
+      let part = parts.find((p) => p.rung === rung);
+      if (part === undefined) {
+        part = { rung, path: new Path2D() };
+        parts.push(part);
+      }
+      const path = part.path;
       path.moveTo((pool[at]! - camX) * zoom, (pool[at + 1]! - camY) * zoom);
       for (let i = 1; i < count; i++) {
         const j = at + i * 2;
         path.lineTo((pool[j]! - camX) * zoom, (pool[j + 1]! - camY) * zoom);
       }
-      drew = true;
     });
 
-    if (!drew) return null;
-    this.paths.set(id, path);
-    return path;
+    if (parts.length === 0) return null;
+    this.paths.set(id, parts);
+    return parts;
   }
 
   /**

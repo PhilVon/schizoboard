@@ -540,13 +540,20 @@ export class RopeSet {
    * Every segment of a string, in run order. The renderer draws a string as
    * its segments end to end; `visit` exists so it can do that without this
    * module minting an array per string per frame.
+   *
+   * `slack` comes along because the painter draws a taut segment thinner than a
+   * slack one (DESIGN section 4.6) and that is a *per segment* number. It could
+   * be read off the scene instead — it is the same value, mirrored — but only
+   * by pairing this callback's arrival order with the run's node array, and the
+   * two disagree the moment a segment has no particles to draw. Here it is
+   * simply the field beside the ones already being handed over.
    */
   visit(
     id: string,
-    fn: (at: number, count: number, asleep: boolean) => void,
+    fn: (at: number, count: number, asleep: boolean, slack: number) => void,
   ): void {
     for (const segment of this.byString.get(id) ?? []) {
-      if (segment.count > 0) fn(segment.at, segment.count, segment.asleep);
+      if (segment.count > 0) fn(segment.at, segment.count, segment.asleep, segment.slack);
     }
   }
 

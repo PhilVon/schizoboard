@@ -10,7 +10,8 @@
 
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-import { lighten, RopeLayer } from "@/render/ropes/paint";
+import { DEFAULT_SLACK, MIN_SLACK, presetSlack } from "@/lib/slack";
+import { lighten, RopeLayer, slackRung } from "@/render/ropes/paint";
 import { LIGHT_DX, LIGHT_DY } from "@/render/items/shadow";
 import { RopeSet } from "@/sim/ropes";
 import { Camera } from "@/state/camera";
@@ -499,6 +500,135 @@ describe("culling", () => {
     draw(layer);
     // Two strings exist; one was walked.
     expect(calls.moves).toHaveLength(1);
+  });
+});
+
+/**
+ * > A taut string is very slightly thinner than a slack one.
+ * > — DESIGN section 4.6
+ *
+ * Which is a fact about one *gap*, so the interesting half of this is that a
+ * single run can be drawn at two widths — and the other interesting half is
+ * that doing so did not cost the batching.
+ */
+describe("a taut gap draws thinner than a slack one", () => {
+  /** A run of pins along y=0, with a slack per gap. */
+  function run(id: string, pins: readonly string[], slacks: readonly number[]): void {
+    for (let i = 0; i < pins.length; i++) pin(pins[i]!, i * 200, 0);
+    scene.putString({
+      id,
+      nodes: pins.map((p, i) => ({ nodeId: `${id}-n${i}`, pin: p, slackAfter: slacks[i] ?? 0.2 })),
+      color: "#a8322c",
+      thickness: 6,
+      material: "string",
+      layer: "over",
+      closed: false,
+    });
+    ropes.setString(scene, dirty, id, [...pins], [...slacks], false);
+  }
+
+  /** The body pass: no offset, drawn in the string's own colour. */
+  function bodyWidths(): number[] {
+    return calls.strokes.filter((s) => s.tx === 0 && s.ty === 0 && s.style === "#a8322c").map((s) => s.width);
+  }
+
+  /**
+   * The rungs are boundaries on the same geometric ladder the `1`-`9` presets
+   * walk, so pressing a preset lands squarely on one rather than a hair either
+   * side of it. That is the whole reason they are derived rather than chosen.
+   */
+  it("puts its boundaries where the presets stop", () => {
+    expect([1, 2].map((p) => slackRung(presetSlack(p)))).toEqual([0, 0]);
+    expect([3, 4].map((p) => slackRung(presetSlack(p)))).toEqual([1, 1]);
+    expect([5, 6, 7].map((p) => slackRung(presetSlack(p)))).toEqual([2, 2, 2]);
+    expect([8, 9].map((p) => slackRung(presetSlack(p)))).toEqual([3, 3]);
+  });
+
+  /** So no board that has not been deliberately re-slacked changes width. */
+  it("leaves an untouched string on the rung that draws at the width it always did", () => {
+    expect(slackRung(DEFAULT_SLACK)).toBe(2);
+
+    const layer = new RopeLayer(stubCanvas(), "over");
+    run("s", ["a", "b"], [DEFAULT_SLACK, DEFAULT_SLACK]);
+    draw(layer);
+    expect(bodyWidths()).toEqual([6]);
+  });
+
+  it("draws a taut run thinner than a draped one", () => {
+    const layer = new RopeLayer(stubCanvas(), "over");
+    run("taut", ["t0", "t1"], [MIN_SLACK, MIN_SLACK]);
+    run("draped", ["d0", "d1"], [presetSlack(9), presetSlack(9)]);
+    draw(layer);
+
+    const [taut, draped] = bodyWidths().sort((a, b) => a - b);
+    expect(taut).toBeLessThan(6);
+    expect(draped).toBeGreaterThan(6);
+    // "Very slightly" — the whole span, end to end, is under a fifth.
+    expect(draped / taut).toBeLessThan(1.2);
+  });
+
+  /**
+   * AC-242. Pull a pin out of the middle of a run and one side goes tight
+   * while the other keeps its drape; a width averaged over the string would
+   * say neither, and this is the case that catches it.
+   */
+  it("varies by segment, so one run can be two widths", () => {
+    const layer = new RopeLayer(stubCanvas(), "over");
+    run("mixed", ["m0", "m1", "m2"], [MIN_SLACK, presetSlack(9), 0]);
+    draw(layer);
+    const widths = bodyWidths().sort((a, b) => a - b);
+    expect(widths).toHaveLength(2);
+    expect(widths[0]).toBeLessThan(widths[1]!);
+  });
+
+  /**
+   * AC-243, which is the constraint the whole quantisation exists to satisfy:
+   * a run of five gaps that agree is one batch and therefore three strokes, not
+   * three per gap. Sleeping boards of five hundred strings are a handful of
+   * calls only for as long as that holds.
+   */
+  it("still batches — a run of five equal gaps is one stroke set", () => {
+    const layer = new RopeLayer(stubCanvas(), "over");
+    run("long", ["l0", "l1", "l2", "l3", "l4", "l5"], Array.from({ length: 6 }, () => DEFAULT_SLACK));
+    draw(layer);
+    expect(calls.strokes).toHaveLength(3);
+    // And it really did walk all five gaps into that one path.
+    expect(calls.moves).toHaveLength(5);
+  });
+
+  /** And a mixed run costs one stroke set per rung it uses, not per gap. */
+  it("costs a stroke set per rung, not per segment", () => {
+    const layer = new RopeLayer(stubCanvas(), "over");
+    run("mixed", ["m0", "m1", "m2", "m3", "m4"], [MIN_SLACK, MIN_SLACK, presetSlack(9), presetSlack(9), 0]);
+    draw(layer);
+    expect(calls.strokes).toHaveLength(6);
+    expect(calls.moves).toHaveLength(4);
+  });
+
+  /**
+   * The floor `bodyWidth` applies is still the last word: the thinnest rung of
+   * the thinnest material must not go under the width the same argument
+   * already called illegible.
+   */
+  it("will not let the thin rung push a wire under the floor", () => {
+    const layer = new RopeLayer(stubCanvas(), "over");
+    pin("w0", 0, 0);
+    pin("w1", 200, 0);
+    scene.putString({
+      id: "w",
+      nodes: [
+        { nodeId: "w-n0", pin: "w0", slackAfter: MIN_SLACK },
+        { nodeId: "w-n1", pin: "w1", slackAfter: MIN_SLACK },
+      ],
+      color: "#a8322c",
+      thickness: 2,
+      material: "wire",
+      layer: "over",
+      closed: false,
+    });
+    ropes.setString(scene, dirty, "w", ["w0", "w1"], [MIN_SLACK, MIN_SLACK], false);
+    draw(layer);
+    expect(bodyWidths()).toEqual([1.75]);
   });
 });
 
