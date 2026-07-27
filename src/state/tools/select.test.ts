@@ -18,6 +18,7 @@ import { DirtySets } from "@/state/dirty";
 import { Scene } from "@/state/scene";
 import { Selection } from "@/state/selection";
 import { MIN_RESIZE, LIVE_WRITE_MS, SelectTool } from "@/state/tools/select";
+import type { Vec2 } from "@/state/camera";
 import type {
   StringAnchor, PointerSample, StringHit, ToolContext, WritePose, WriteSize } from "@/state/tools/tool";
 
@@ -41,7 +42,8 @@ type Write =
   | { kind: "scaleNode"; stringId: string; nodeId: string; factor: number }
   | { kind: "stringSlack"; stringIds: string[]; slack: number }
   | { kind: "scaleString"; stringIds: string[]; factor: number }
-  | { kind: "layer"; stringIds: string[]; layer: "over" | "under" };
+  | { kind: "layer"; stringIds: string[]; layer: "over" | "under" }
+  | { kind: "pins"; phase: "live" | "final"; positions: Map<string, Vec2> };
 
 let scene: Scene;
 let dirty: DirtySets;
@@ -280,6 +282,9 @@ beforeEach(() => {
       // names one absolute layer for the whole selection.
       setStringLayer: (stringIds, layer) =>
         writes.push({ kind: "layer", stringIds: [...stringIds], layer }),
+      // The free pins a dragged or rotated thread carries with it (DESIGN 3.8).
+      movePins: (positions, phase) =>
+        writes.push({ kind: "pins", phase, positions: new Map(positions) }),
     },
   };
 });
@@ -2467,5 +2472,147 @@ describe("following the thread", () => {
     expect([...selection.pins]).toEqual(["alone"]);
     expect(selection.members.size).toBe(0);
     expect(selection.strings.size).toBe(0);
+  });
+});
+
+/**
+ * > Group rotation transports parented pins for free — they're in item-local
+ * > space — but free pins inside the selection have their board coordinates
+ * > transformed as leaves of the same transform. Miss that and rotating a
+ * > selection visibly shears the string web. — DESIGN section 3.8
+ *
+ * A thread you can select and cannot move is the gesture failing at its stated
+ * purpose, which section 3.8 gives as "grab an entire thread of an
+ * investigation and move it somewhere else".
+ */
+describe("a thread that is dragged carries its free pins", () => {
+  /** A photograph with a pin in it, a free pin out on the cork, and the string
+   *  between them — the smallest thing that is a thread. */
+  function thread(): void {
+    put("photo", 0, 0, 100, 100);
+    putPin("onPhoto", "photo", 0, 0);
+    putPin("free", null, 300, 0);
+    scene.putString({
+      id: "s",
+      nodes: [
+        { nodeId: "n0", pin: "onPhoto", slackAfter: 0.2 },
+        { nodeId: "n1", pin: "free", slackAfter: 0.2 },
+      ],
+      color: "#a8322c",
+      thickness: 3,
+      material: "string",
+      layer: "over",
+      closed: false,
+    });
+    selection.replaceThread(["photo"], ["s"], ["onPhoto", "free"]);
+  }
+
+  function lastPins(): Map<string, { x: number; y: number }> {
+    for (let i = writes.length - 1; i >= 0; i--) {
+      const w = writes[i]!;
+      if (w.kind === "pins") return w.positions;
+    }
+    throw new Error("no pin write");
+  }
+
+  it("moves a free pin by the same amount as the photograph", () => {
+    thread();
+    // On the paper, clear of the pin pushed into it — a press within the pin's
+    // grab radius is a pin drag, which is a different gesture entirely.
+    down(35, 35);
+    move(155, 75);
+    up(155, 75);
+
+    expect(scene.pins.get("free")).toMatchObject({ lx: 420, ly: 40, wx: 420, wy: 40 });
+    expect(lastPins().get("free")).toEqual({ x: 420, y: 40 });
+  });
+
+  /**
+   * The pin pushed into the photograph is stored in the photograph's frame and
+   * arrives for nothing. Putting it in the write as well would move it twice —
+   * once with its item and once on its own.
+   */
+  it("leaves the parented pin to travel with its item", () => {
+    thread();
+    // On the paper, clear of the pin pushed into it — a press within the pin's
+    // grab radius is a pin drag, which is a different gesture entirely.
+    down(35, 35);
+    move(155, 75);
+    up(155, 75);
+    expect(lastPins().has("onPhoto")).toBe(false);
+    expect(scene.pins.get("onPhoto")!.lx).toBe(0);
+  });
+
+  it("writes the pins and the poses in the same gesture", () => {
+    thread();
+    // On the paper, clear of the pin pushed into it — a press within the pin's
+    // grab radius is a pin drag, which is a different gesture entirely.
+    down(35, 35);
+    move(155, 75);
+    up(155, 75);
+    const kinds = writes.map((w) => w.kind);
+    expect(kinds).toContain("poses");
+    expect(kinds).toContain("pins");
+  });
+
+  /**
+   * The shear DESIGN section 3.8 names. A rotation that turned the photographs
+   * and left the free pins where they were would pull every string in the web
+   * out of shape.
+   */
+  it("turns a free pin about the same pivot as the items", () => {
+    thread();
+    // A second item, so the pivot is the pair's bounds rather than a sole pin.
+    put("other", 200, 0, 100, 100);
+    selection.replaceThread(["photo", "other"], ["s"], ["onPhoto", "free"]);
+
+    held.add("KeyR");
+    // The pivot is the pair's bounds centre, (100, 0). Out along +x first to
+    // anchor the angle, then round to +y — a quarter turn.
+    // Off the string's own line as well as clear of the pins: a press on the
+    // run between them pulls a loop out of it, which is the other gesture that
+    // starts on a photograph.
+    down(200, 30);
+    move(300, 0);
+    move(100, 200);
+    up(100, 200);
+
+    const free = scene.pins.get("free")!;
+    // (300, 0) turned a quarter turn clockwise about (100, 0) is (100, 200).
+    expect(free.lx).toBeCloseTo(100, 3);
+    expect(free.ly).toBeCloseTo(200, 3);
+    // And it kept its distance from the pivot, which is what "no shear" means.
+    expect(Math.hypot(free.lx - 100, free.ly - 0)).toBeCloseTo(200, 3);
+  });
+
+  /** > `Esc` mid-drag → the whole thing reverts — DESIGN section 3.4 */
+  it("puts a free pin back on cancel", () => {
+    thread();
+    down(35, 35);
+    move(155, 75);
+    expect(scene.pins.get("free")!.lx).toBe(420);
+
+    tool.handle({ kind: "cancel" }, ctx);
+    expect(scene.pins.get("free")).toMatchObject({ lx: 300, ly: 0, wx: 300, wy: 0 });
+  });
+
+  it("writes nothing for a thread whose pins did not move", () => {
+    thread();
+    down(35, 35);
+    up(35, 35);
+    expect(writes.every((w) => w.kind !== "pins")).toBe(true);
+  });
+
+  /**
+   * The pin's world position as well as its stored one, and not left to the
+   * LAYOUT phase: `sim/ropes.ts` reads pin world positions in phase 3, one
+   * phase *earlier* than `Scene.layoutPins` recomputes them. Setting only the
+   * stored pair leaves the whole web anchored a frame behind the thread.
+   */
+  it("moves the pin's world position too, so the string does not lag", () => {
+    thread();
+    down(35, 35);
+    move(95, 35);
+    expect(scene.pins.get("free")).toMatchObject({ wx: 360, wy: 0 });
   });
 });

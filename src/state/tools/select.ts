@@ -329,6 +329,26 @@ export class SelectTool implements Tool {
 
   /** Pose of every item the gesture picked up, at the moment it picked it up. */
   private readonly starts = new Map<string, ItemPose>();
+
+  /**
+   * The same, for the **free** pins the gesture picked up — board coordinates,
+   * which is what a free pin's stored position is.
+   *
+   * > Group rotation transports parented pins for free — they're in item-local
+   * > space — but free pins inside the selection have their board coordinates
+   * > transformed as leaves of the same transform. Miss that and rotating a
+   * > selection visibly shears the string web. — DESIGN section 3.8
+   *
+   * Which is why only the free ones are here. A parented pin is stored in its
+   * item's frame and arrives at the right place for nothing, and putting it in
+   * this map would move it *twice*.
+   *
+   * Empty for every gesture but one. Nothing else selects a pin: these arrive
+   * through follow-the-thread, which is the gesture DESIGN section 3.8 says
+   * exists so you can "grab an entire thread of an investigation and move it
+   * somewhere else".
+   */
+  private readonly pinStarts = new Map<string, Vec2>();
   /** The same ids, as a set, because phase 3 asks "is this one held?" of every
    *  item it is about to swing and a Map's keys are not a set. */
   private readonly holding = new Set<string>();
@@ -968,6 +988,7 @@ export class SelectTool implements Tool {
     // one item is off.
     this.pendingSelect = null;
     this.starts.clear();
+    this.pinStarts.clear();
     this.holding.clear();
     this.resizeId = null;
     for (const id of ctx.selection.members) {
@@ -976,6 +997,15 @@ export class SelectTool implements Tool {
       this.starts.set(id, pose);
       this.holding.add(id);
       this.animating.add(id);
+    }
+    // The free pins of a thread, which travel as leaves of whatever transform
+    // the items get (DESIGN section 3.8). A parented one is skipped because it
+    // is stored in its item's frame and comes along for nothing — and would
+    // otherwise be moved twice.
+    for (const id of ctx.selection.pins) {
+      const pin = ctx.scene.pins.get(id);
+      if (!pin || pin.parent !== null) continue;
+      this.pinStarts.set(id, { x: pin.lx, y: pin.ly });
     }
     if (this.starts.size === 0) {
       this.phase = "idle";
@@ -1224,6 +1254,24 @@ export class SelectTool implements Tool {
         });
         ctx.dirty.item(id);
       }
+      // The free pins turn about the same pivot by the same angle, and gain no
+      // rotation of their own — a pushpin has none. About the *items'* pivot
+      // deliberately, rather than one recomputed to include the pins: the
+      // rotation handle is drawn from `chromeFrame`, which is items only, and a
+      // pivot the handle does not sit on turns the selection about a point
+      // nobody pointed at.
+      for (const [id, start] of this.pinStarts) {
+        const turned = rotateOut(
+          start.x - this.pivotX,
+          start.y - this.pivotY,
+          this.pivotX,
+          this.pivotY,
+          cos,
+          sin,
+          this.probe,
+        );
+        this.movePin(ctx, id, turned.x, turned.y);
+      }
       return;
     }
 
@@ -1233,6 +1281,29 @@ export class SelectTool implements Tool {
       ctx.scene.setPose(id, { x: start.x + dx, y: start.y + dy });
       ctx.dirty.item(id);
     }
+    for (const [id, start] of this.pinStarts) {
+      this.movePin(ctx, id, start.x + dx, start.y + dy);
+    }
+  }
+
+  /**
+   * One free pin to a board point, in the mirror.
+   *
+   * `wx`/`wy` as well as `lx`/`ly`, and not left to the LAYOUT phase: a free
+   * pin's world position is only recomputed from its stored one by
+   * `Scene.layoutPin`, which runs in phase 4 — but `sim/ropes.ts` reads pin
+   * world positions in phase 3, a phase *earlier*. Setting only the stored pair
+   * would leave every string anchored to the pin's previous position for the
+   * frame, which on a dragged thread is the whole web trailing a frame behind.
+   */
+  private movePin(ctx: ToolContext, id: string, x: number, y: number): void {
+    const pin = ctx.scene.pins.get(id);
+    if (!pin) return;
+    pin.lx = x;
+    pin.ly = y;
+    pin.wx = x;
+    pin.wy = y;
+    ctx.dirty.pin(id);
   }
 
   /**
@@ -1541,11 +1612,21 @@ export class SelectTool implements Tool {
       // and the next observer event would drag the item straight back out.
       // Reverting a resize goes back through the resize op, because the pins it
       // moved on the way out have to come back with it.
+      // The thread's free pins revert the same way, and for the same reason —
+      // a resize never picks any up, because it only ever holds one item.
+      const pins = new Map<string, Vec2>();
+      if (!resizing) {
+        for (const [id, start] of this.pinStarts) {
+          this.movePin(ctx, id, start.x, start.y);
+          pins.set(id, { x: start.x, y: start.y });
+        }
+      }
       if (this.wroteLive) {
         if (resizing) {
           if (sizes.size > 0) ctx.write.setSizes(sizes, "final");
-        } else if (poses.size > 0) {
-          ctx.write.setPoses(poses, "final");
+        } else {
+          if (poses.size > 0) ctx.write.setPoses(poses, "final");
+          if (pins.size > 0) ctx.write.movePins(pins, "final");
         }
       }
       this.release();
@@ -1590,6 +1671,7 @@ export class SelectTool implements Tool {
    *  have eased back to nothing. */
   private release(): void {
     this.starts.clear();
+    this.pinStarts.clear();
     this.holding.clear();
     this.lastAngle = null;
     this.rotateApplied = 0;
@@ -1616,9 +1698,21 @@ export class SelectTool implements Tool {
       if (!force && pose.x === start.x && pose.y === start.y && pose.rot === start.rot) continue;
       poses.set(id, rotating ? { x: pose.x, y: pose.y, rot: pose.rot } : { x: pose.x, y: pose.y });
     }
-    if (poses.size === 0) return;
+    // The thread's free pins, by the same rule: only the ones that actually
+    // moved, unless a crash-safety write has already put an intermediate
+    // position in the document and the release has to have the last word.
+    const pins = new Map<string, Vec2>();
+    for (const [id, start] of this.pinStarts) {
+      const pin = ctx.scene.pins.get(id);
+      if (!pin) continue;
+      if (!force && pin.lx === start.x && pin.ly === start.y) continue;
+      pins.set(id, { x: pin.lx, y: pin.ly });
+    }
+
+    if (poses.size === 0 && pins.size === 0) return;
     if (phase === "live") this.wroteLive = true;
-    ctx.write.setPoses(poses, phase);
+    if (poses.size > 0) ctx.write.setPoses(poses, phase);
+    if (pins.size > 0) ctx.write.movePins(pins, phase);
   }
 
   /** The same two writes, for the gesture that changes the paper's size as well

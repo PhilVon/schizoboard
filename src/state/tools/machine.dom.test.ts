@@ -101,6 +101,7 @@ beforeEach(() => {
     setStringSlack: () => {},
     scaleStringSlack: () => {},
     setStringLayer: () => {},
+    movePins: () => {},
     },
     hitTest: () => null,
     hitPin: () => null,

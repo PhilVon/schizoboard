@@ -17,7 +17,7 @@
  * — and it is the same reason `state/scene.ts` imports nothing from `crdt/`.
  */
 
-import type { Camera } from "@/state/camera";
+import type { Camera, Vec2 } from "@/state/camera";
 import type { DirtySets } from "@/state/dirty";
 import type { Scene } from "@/state/scene";
 import type { Selection } from "@/state/selection";
@@ -248,6 +248,21 @@ export interface BoardWriter {
    * names it; see `SelectTool.onKey`.
    */
   setStringLayer(stringIds: readonly string[], layer: "over" | "under"): void;
+  /**
+   * Free pins carried by a group gesture — the leaves of DESIGN section 3.8's
+   * "free pins inside the selection have their board coordinates transformed as
+   * leaves of the same transform".
+   *
+   * Board coordinates, because that is what a free pin's stored position *is*.
+   * Parented pins are absent by construction: they are stored in their item's
+   * frame and travel with it for nothing, which is the whole reason the frame
+   * is the item's.
+   *
+   * Phased like `setPoses` and for the same reason — a long drag lands an
+   * intermediate write so a crash does not lose the gesture, and the release
+   * then writes the final position whether or not it changed.
+   */
+  movePins(positions: ReadonlyMap<string, Vec2>, phase: "live" | "final"): void;
 }
 
 /**

@@ -57,6 +57,7 @@ beforeEach(() => {
     setStringSlack: () => {},
     scaleStringSlack: () => {},
     setStringLayer: () => {},
+    movePins: () => {},
       createNote: (x, y) => created.push({ x, y }),
     },
   };

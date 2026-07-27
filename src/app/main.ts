@@ -19,6 +19,7 @@ import {
   deleteItems,
   deletePins,
   insertPinIntoString,
+  movePins,
   placePin,
   resizeItems,
   scaleNodeSlack,
@@ -329,6 +330,23 @@ async function boot(): Promise<void> {
     setStringLayer: (stringIds, layer) => {
       const snapshot = [...stringIds];
       queued.push(() => setStringStyle(board, snapshot, { layer }));
+    },
+    /**
+     * The free pins a dragged or rotated thread carries with it.
+     *
+     * Snapshotted, like every other queued write here: the tool hands over the
+     * positions it computed this frame and goes on moving the pins in the
+     * mirror, so a map read at flush time would be a frame ahead of the poses
+     * it is supposed to travel with.
+     *
+     * `lx`/`ly` rather than `x`/`y` at this boundary because that is what the
+     * document calls a pin's stored position — and for a free pin the two are
+     * the same numbers, which is exactly why only free pins are ever in here.
+     */
+    movePins: (positions) => {
+      const snapshot = new Map<string, { lx: number; ly: number }>();
+      for (const [id, at] of positions) snapshot.set(id, { lx: at.x, ly: at.y });
+      queued.push(() => movePins(board, snapshot));
     },
   };
 

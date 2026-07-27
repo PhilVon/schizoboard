@@ -141,6 +141,9 @@ beforeEach(() => {
       setStringLayer: () => {
         throw new Error("the string tool does not restyle an existing run");
       },
+      movePins: () => {
+        throw new Error("the string tool never carries a selection");
+      },
     },
   };
 });

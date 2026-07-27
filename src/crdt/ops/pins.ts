@@ -136,6 +136,34 @@ export function placePin(
   });
 }
 
+/**
+ * Move several pins within their current frames, in one transaction.
+ *
+ * The batch matters rather more than it looks. Dragging a thread moves its free
+ * pins alongside its photographs (DESIGN section 3.8), and a loop of `movePin`
+ * would be one transaction per pin: N undo entries for one gesture, N observer
+ * flushes, and — because the rope solver wakes off the mirror — a string whose
+ * two ends move on different frames, which is a visible twitch.
+ *
+ * Ownership is untouched, so this composes with nothing: a pin moved here is
+ * the pin it already was, on the item it was already on. Re-parenting is
+ * `placePin`, and it is a different gesture.
+ */
+export function movePins(
+  board: BoardDoc,
+  positions: ReadonlyMap<string, { lx: number; ly: number }>,
+): void {
+  mutate(board, Origin.LOCAL_USER, () => {
+    for (const [pinId, at] of positions) {
+      if (!Number.isFinite(at.lx) || !Number.isFinite(at.ly)) continue;
+      const pin = board.pins.get(pinId);
+      if (!pin) continue;
+      pin.set("lx", at.lx);
+      pin.set("ly", at.ly);
+    }
+  });
+}
+
 /** Move a pin within its current frame. Does not change ownership. */
 export function movePin(board: BoardDoc, pinId: string, lx: number, ly: number): void {
   if (!Number.isFinite(lx) || !Number.isFinite(ly)) return;
