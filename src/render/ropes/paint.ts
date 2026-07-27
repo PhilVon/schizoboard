@@ -55,6 +55,7 @@
  * grow the lifted shadow when draping lands (T-66).
  */
 
+import { fibre } from "@/lib/material";
 import { LIGHT_DX, LIGHT_DY } from "@/render/items/shadow";
 import type { RopeSet } from "@/sim/ropes";
 import type { Camera } from "@/state/camera";
@@ -90,6 +91,48 @@ const HIGHLIGHT_WIDTH = 0.38;
 const HIGHLIGHT_MIN = 1.25;
 /** How far toward white the body colour is pushed for the highlight. */
 const HIGHLIGHT_LIFT = 0.42;
+/**
+ * Ceiling on that lift once a material's `sheen` has multiplied it.
+ *
+ * Wire's whole character is a bright specular, and the number that gives it is
+ * comfortably over 1 — which would blend the body colour all the way to white
+ * and lose the difference between a red wire and a blue one. Metal reflects a
+ * lot of the light and still has a colour.
+ */
+const HIGHLIGHT_LIFT_MAX = 0.82;
+
+/**
+ * The floor on a body stroke, in screen pixels.
+ *
+ * `palette.ts` starts its thickness ladder at 2 rather than 1 because a 1 px
+ * body rasterises to a smear the eye reads as nothing, and notes that unlike
+ * the highlight it has "no floor to save it". A material weight is exactly the
+ * thing that can push it back under: wire at the thinnest rung is 1.6. So it
+ * gets a floor after all, at the bottom of what the same argument says is
+ * legible. A wire is meant to be the thinnest thing on the board — it is not
+ * meant to be an invisible one.
+ */
+const BODY_MIN = 1.75;
+
+/**
+ * How wide a string is actually drawn: what the user asked for, through what
+ * it is made of.
+ *
+ * Exported because the *chrome* has to agree with it. `render/overlay.ts` draws
+ * the selection halo as a fringe a couple of pixels either side of the string
+ * and the hover glow as a wash exactly the string's own width — both of which
+ * are questions about the drawn width and neither of which is the authored
+ * thickness once a material is involved. A yarn halo sized off the thickness
+ * would sit *inside* the strand and disappear, which is the selection quietly
+ * failing rather than looking wrong.
+ */
+export function bodyWidth(thickness: number, material: string): number {
+  return Math.max(BODY_MIN, thickness * fibre(material).weight);
+}
+
+/** How much wider than the body the fuzz halo is drawn. Wide enough to read as
+ *  a fringe of loose fibre and not as a second, blurrier string. */
+const HALO_WIDEN = 2.1;
 
 /**
  * How far outside the viewport a string still counts as visible, in board
@@ -100,11 +143,32 @@ const HIGHLIGHT_LIFT = 0.42;
  */
 const CULL_MARGIN = 64;
 
+/**
+ * One stroke set: everything that can be drawn in the same few `stroke()`
+ * calls.
+ *
+ * Keyed on colour, thickness *and* material, because all three change what the
+ * context is set to between passes. That is a third dimension on the batch
+ * key and it costs nothing worth counting: material is three values and the
+ * realistic board uses one of them, so the batch count is unchanged on every
+ * board that exists and at worst triples on one that has gone out of its way.
+ */
 interface Batch {
   path: Path2D;
   color: string;
+  /** The authored thickness and material — the batch *key*, alongside colour.
+   *  Keyed on the inputs rather than on the widths they resolve to, because
+   *  two different materials can land on the same body width off different
+   *  rungs of the ladder and still want different highlights. */
+  thickness: number;
+  material: string;
   highlight: string;
+  /** The body width the material actually draws at — thickness × weight, floored. */
   width: number;
+  /** Highlight width, already through the material's gloss and the floor. */
+  highlightWidth: number;
+  /** Alpha of the fuzz pass, or zero for a fibre that has none. */
+  halo: number;
 }
 
 export class RopeLayer {
@@ -180,7 +244,7 @@ export class RopeLayer {
       if (style === undefined || style.layer !== this.layer) continue;
       const path = this.pathFor(id, ropes, camera);
       if (path === null) continue;
-      this.batchFor(style.color, style.thickness).path.addPath(path);
+      this.batchFor(style.color, style.thickness, style.material).path.addPath(path);
     }
 
     if (this.batches.length === 0) {
@@ -227,29 +291,63 @@ export class RopeLayer {
     ctx.stroke(batch.path);
     ctx.restore();
 
+    /**
+     * 1a. Fuzz, for a fibre that has any — a wide, faint pass of the body
+     * colour, sitting exactly under the body rather than offset from it.
+     *
+     * This is the fourth stroke DESIGN section 4.6 does not list, and it is
+     * here because "yarn" has to be *visibly* yarn from across the board and
+     * three strokes of a lit cylinder is precisely what yarn is not. Loose
+     * fibre standing off the strand is a soft edge of the strand's own colour;
+     * one wide low-alpha stroke is what that looks like at any zoom the board
+     * is ever at, and it stays inside the batch — no per-string cost, and the
+     * whole thing costs nothing at all on a board with no yarn on it.
+     */
+    if (batch.halo > 0) {
+      ctx.save();
+      ctx.globalAlpha = batch.halo;
+      ctx.strokeStyle = batch.color;
+      ctx.lineWidth = batch.width * HALO_WIDEN;
+      ctx.stroke(batch.path);
+      ctx.restore();
+    }
+
     // 2. Body: the string's own colour, at its own width, in screen pixels.
     ctx.strokeStyle = batch.color;
     ctx.lineWidth = batch.width;
     ctx.stroke(batch.path);
 
-    // 3. Highlight: perpendicular to the light, toward the lit side.
+    // 3. Highlight: perpendicular to the light, toward the lit side. How bright
+    //    and how tight is the material's doing — see `lib/material.ts`.
     ctx.save();
     ctx.translate(-LIGHT_DY * HIGHLIGHT_OFFSET, LIGHT_DX * HIGHLIGHT_OFFSET);
     ctx.strokeStyle = batch.highlight;
-    ctx.lineWidth = Math.max(HIGHLIGHT_MIN, batch.width * HIGHLIGHT_WIDTH);
+    ctx.lineWidth = batch.highlightWidth;
     ctx.stroke(batch.path);
     ctx.restore();
   }
 
-  private batchFor(color: string, width: number): Batch {
+  private batchFor(color: string, thickness: number, material: string): Batch {
     for (const batch of this.batches) {
-      if (batch.color === color && batch.width === width) return batch;
+      if (
+        batch.color === color &&
+        batch.thickness === thickness &&
+        batch.material === material
+      ) {
+        return batch;
+      }
     }
+    const fib = fibre(material);
+    const width = bodyWidth(thickness, material);
     const batch: Batch = {
       path: new Path2D(),
       color,
-      highlight: lighten(color, HIGHLIGHT_LIFT),
+      thickness,
+      material,
+      highlight: lighten(color, Math.min(HIGHLIGHT_LIFT_MAX, HIGHLIGHT_LIFT * fib.sheen)),
       width,
+      highlightWidth: Math.max(HIGHLIGHT_MIN, width * HIGHLIGHT_WIDTH * fib.gloss),
+      halo: fib.halo,
     };
     this.batches.push(batch);
     return batch;

@@ -151,8 +151,90 @@ describe("editing a string", () => {
     expect(ropes.boundsOf(id, box)!.maxY).toBeGreaterThan(before + 20);
   });
 
+  /**
+   * AC-268, end to end and in pixels: one slack, three materials, three
+   * different bellies.
+   *
+   * Settled rather than seeded, because the sag that matters is the one the
+   * solver holds — the analytic pose is only where it starts from. All three
+   * are given the same 400 frames and the same everything else, so the only
+   * variable is the word in the document.
+   */
+  it("hangs wire tighter than string and yarn deeper, at one slack", () => {
+    const sagOf = (material: "string" | "yarn" | "wire"): number => {
+      const [a, b] = twoPins();
+      const id = createString(board, { pins: [a, b], slack: 0.3, material })!;
+      for (let i = 0; i < 400 && (i === 0 || ropes.awake > 0); i++) frame();
+      return ropes.boundsOf(id, { ...box })!.maxY;
+    };
+
+    const wire = sagOf("wire");
+    const plain = sagOf("string");
+    const yarn = sagOf("yarn");
+
+    expect(wire).toBeLessThan(plain);
+    expect(yarn).toBeGreaterThan(plain);
+    // And by enough to see. A difference of a board unit would satisfy the
+    // ordering above and would be a material nobody could tell apart from the
+    // next one, which is the way this feature fails quietly.
+    expect(plain - wire).toBeGreaterThan(10);
+    expect(yarn - plain).toBeGreaterThan(10);
+  });
+
+  /**
+   * AC-269, and the assertion is about *frames* rather than about a distance.
+   *
+   * "Without a jump the eye reads as a bug" is not a claim about how far the
+   * string ends up moving — it moves a long way, and it should. It is a claim
+   * that no single frame carries much of that distance. So this walks the whole
+   * transition, records the largest step any one frame took, and holds it
+   * against the total.
+   *
+   * Which is exactly the measurement that fails without `MATERIAL_EASE`: a
+   * position-based solver hands the rope its new rest length immediately, and
+   * the first frame took 87 of the 96 units on its own.
+   */
+  it("re-poses on a material change without jumping there", () => {
+    const [a, b] = twoPins();
+    const id = createString(board, { pins: [a, b], slack: 0.4 })!;
+    frame(3);
+    const before = ropes.boundsOf(id, { ...box })!.maxY;
+
+    setStringStyle(board, [id], { material: "wire" });
+    frame();
+    expect(ropes.awake).toBe(1);
+
+    let previous = before;
+    let biggest = 0;
+    let lowest = before;
+    for (let i = 0; i < 900 && ropes.awake > 0; i++) {
+      const now = ropes.boundsOf(id, { ...box })!.maxY;
+      biggest = Math.max(biggest, Math.abs(now - previous));
+      lowest = Math.min(lowest, now);
+      previous = now;
+      frame();
+    }
+
+    // It got where it was going: a wire is a great deal tighter than the 0.4
+    // slack this was authored at, and it is settled rather than still ringing.
+    expect(ropes.awake).toBe(0);
+    expect(before - ropes.boundsOf(id, box)!.maxY).toBeGreaterThan(20);
+
+    /**
+     * Against the excursion rather than against where it ended up, because the
+     * rope overshoots and comes back — it is a rope. The distance travelled is
+     * the honest denominator for "did any one frame carry too much of it".
+     *
+     * A sixth is the threshold and an eighth is what it measures, which is the
+     * margin `MATERIAL_EASE` was tuned to. Un-eased it is very nearly the whole
+     * move in one frame, so this fails loudly rather than by a hair if the ease
+     * is ever removed.
+     */
+    expect(biggest).toBeLessThan((before - lowest) / 6);
+  });
+
   /** Colour, thickness and tuck-behind change no geometry, so they must not
-   *  disturb a rope that has settled. */
+   *  disturb a rope that has settled. Material is the one restyle that does. */
   it("leaves a sleeping rope alone for a style change", () => {
     const [a, b] = twoPins();
     const id = createString(board, { pins: [a, b] })!;

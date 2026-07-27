@@ -60,6 +60,7 @@
 import * as Y from "yjs";
 
 import { freshId, mutate, type BoardDoc } from "@/crdt/doc";
+import { DEFAULT_STRING_MATERIAL } from "@/lib/material";
 import { DEFAULT_STRING_COLOR, DEFAULT_STRING_THICKNESS } from "@/lib/palette";
 import { DEFAULT_SLACK } from "@/lib/slack";
 import { newId } from "@/crdt/ids";
@@ -146,7 +147,9 @@ export function buildString(
   // together, the same arrangement `DEFAULT_SLACK` already has.
   map.set("color", input.color ?? DEFAULT_STRING_COLOR);
   map.set("thickness", Math.max(0.5, input.thickness ?? DEFAULT_STRING_THICKNESS));
-  map.set("material", input.material ?? "string");
+  // Plain string, written out for the same reason the colour is — see above.
+  // `lib/material.test.ts` holds this and the reader's fallback together.
+  map.set("material", input.material ?? DEFAULT_STRING_MATERIAL);
   map.set("layer", input.layer ?? "over");
   map.set("closed", input.closed ?? false);
   map.set("createdBy", input.createdBy ?? 0);

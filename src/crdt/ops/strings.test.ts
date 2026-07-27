@@ -38,6 +38,7 @@ import {
   stringsThroughPin,
 } from "@/crdt/ops/strings";
 import { MIN_SLACK, readString, type YMap } from "@/crdt/schema";
+import { DEFAULT_STRING_MATERIAL } from "@/lib/material";
 import { DEFAULT_STRING_COLOR, DEFAULT_STRING_THICKNESS } from "@/lib/palette";
 import { MIN_SLACK as LIB_MIN_SLACK } from "@/lib/slack";
 
@@ -207,6 +208,16 @@ describe("slack is a ratio, not a length (AC-66)", () => {
       DEFAULT_STRING_COLOR,
       DEFAULT_STRING_THICKNESS,
     ]);
+  });
+
+  /** And the third of them — `lib/material.ts`'s default against the reader's
+   *  own literal, the same two-literals-one-meaning arrangement. */
+  it("is born plain string, whichever literal answered", () => {
+    const id = createString(board, { pins: ["p1", "p2"] })!;
+    expect(readString(id, board.strings.get(id)!)!.material).toBe(DEFAULT_STRING_MATERIAL);
+
+    board.strings.get(id)!.delete("material");
+    expect(readString(id, board.strings.get(id)!)!.material).toBe(DEFAULT_STRING_MATERIAL);
   });
 
   /** A slack that fails every comparison would reach a rest length, a particle

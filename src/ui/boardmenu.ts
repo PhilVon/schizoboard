@@ -21,6 +21,7 @@
  * worth doing and is not worth blocking the first menu on.
  */
 
+import { STRING_MATERIALS } from "@/lib/material";
 import { STRING_COLORS, STRING_THICKNESSES } from "@/lib/palette";
 import type { Scene } from "@/state/scene";
 import type { BoardWriter } from "@/state/tools/tool";
@@ -67,6 +68,13 @@ export function stringMenuRows(
     run: () => write.setStringStyle(live, { thickness }),
   }));
 
+  const materials: MenuChoice[] = STRING_MATERIALS.map(({ id, label }) => ({
+    label,
+    fibre: id,
+    current: all((s) => scene.strings.get(s)?.material, id as string),
+    run: () => write.setStringStyle(live, { material: id }),
+  }));
+
   /**
    * > | Tuck behind | Context menu → *Tuck behind* | Flips `layer`; the string
    * > now runs behind items instead of over them — DESIGN section 3.4
@@ -84,16 +92,24 @@ export function stringMenuRows(
   return [
     /**
      * > | Restyle | Context menu | Colour (red is default - also blue, green,
-     * > yellow, black, white), thickness — DESIGN section 3.4
+     * > yellow, black, white), thickness, material (string / yarn / wire)
+     * > — DESIGN section 3.4
      *
      * The colours are `lib/palette.ts`, and the swatches are the *actual* hexes
      * the painter will use rather than a set of approximations chosen to look
      * right in a menu. That is the entire argument for swatches over the six
      * words DESIGN writes them as: which red the red is, is a question only the
      * cork can answer, and the menu is the place to answer it.
+     *
+     * Material last of the three, because it is the only one that moves the
+     * string: colour and weight redraw the same curve, and picking *Wire* has
+     * the rope visibly haul itself in (`lib/material.ts`). A row that changes
+     * the geometry sits below the two that do not, next to the rule and the two
+     * verbs, rather than in the middle of the pickers that only ever restyle.
      */
     { label: "Colour", choices: colors },
     { label: "Weight", choices: weights },
+    { label: "Material", choices: materials },
     {
       divided: true,
       label: allUnder ? "Bring in front" : "Tuck behind",

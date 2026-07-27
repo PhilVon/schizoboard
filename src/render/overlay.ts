@@ -27,6 +27,7 @@
 import { carryScale } from "@/lib/carry";
 import { rotateOut } from "@/lib/rotate";
 import { pinHitRadius } from "@/render/pins/dom";
+import { bodyWidth } from "@/render/ropes/paint";
 import type { Bounds, Camera, Vec2 } from "@/state/camera";
 import type { DirtySets } from "@/state/dirty";
 import {
@@ -451,13 +452,17 @@ export class Overlay {
       ctx.lineJoin = "round";
       // Screen pixels, like the string itself (`render/ropes/paint.ts`), so the
       // fringe either side of it is the same width at every zoom.
-      ctx.lineWidth = style.thickness + STRING_HALO_WIDEN;
+      // Off the *drawn* width, not the authored thickness: a yarn draws half
+      // again as wide as it is stored, and a fringe sized off the number in the
+      // document would be hidden under the strand — see [`bodyWidth`].
+      const drawn = bodyWidth(style.thickness, style.material);
+      ctx.lineWidth = drawn + STRING_HALO_WIDEN;
       ctx.strokeStyle = STRING_HALO;
       ctx.stroke();
       // And back out of the middle, so what is left is an outline rather than a
       // wash — see [`STRING_HALO`].
       ctx.globalCompositeOperation = "destination-out";
-      ctx.lineWidth = style.thickness + STRING_HALO_CLEAR;
+      ctx.lineWidth = drawn + STRING_HALO_CLEAR;
       ctx.stroke();
       ctx.restore();
       drew = true;
@@ -516,10 +521,10 @@ export class Overlay {
         ctx.lineJoin = "round";
         ctx.strokeStyle = THREAD_LIT;
       }
-      // The string's own width, so the wash stays inside the cotton — see
+      // The string's own drawn width, so the wash stays inside the cotton — see
       // [`THREAD_LIT`]. Set per string, because a hub pin can host strings of
-      // different thicknesses.
-      ctx.lineWidth = style.thickness;
+      // different thicknesses and of different materials.
+      ctx.lineWidth = bodyWidth(style.thickness, style.material);
       ctx.stroke();
       drew = true;
     }

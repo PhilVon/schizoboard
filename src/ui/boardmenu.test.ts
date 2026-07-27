@@ -11,6 +11,7 @@ import { beforeEach, describe, expect, it } from "vitest";
 
 import { Scene } from "@/state/scene";
 import type { BoardWriter, StringStyle } from "@/state/tools/tool";
+import { STRING_MATERIALS } from "@/lib/material";
 import { DEFAULT_STRING_COLOR, STRING_COLORS, STRING_THICKNESSES } from "@/lib/palette";
 import { stringMenuRows } from "@/ui/boardmenu";
 import type { MenuChoice, MenuEntry, MenuRow } from "@/ui/menu";
@@ -206,6 +207,55 @@ describe("the string context menu", () => {
       span("s", 0);
       scene.strings.get("s")!.color = "#ff00ff";
       expect(chips(stringMenuRows(scene, write, ["s"]), "Colour").filter((c) => c.current)).toEqual([]);
+    });
+
+    /** > material (string / yarn / wire) — DESIGN section 3.4 */
+    it("offers all three materials as fibre samples", () => {
+      span("s", 0);
+      const samples = chips(stringMenuRows(scene, write, ["s"]), "Material");
+      expect(samples.map((c) => c.label)).toEqual(STRING_MATERIALS.map((m) => m.label));
+      expect(samples.map((c) => c.fibre)).toEqual(["string", "yarn", "wire"]);
+      // A fibre chip, not a swatch or a bar — `ui/menu.ts` paints on exactly
+      // one of the three and would silently fall through to a bar.
+      expect(samples.every((c) => c.swatch === undefined && c.weight === undefined)).toBe(true);
+    });
+
+    it("writes only the material", () => {
+      span("s", 0);
+      chips(stringMenuRows(scene, write, ["s"]), "Material")[2]!.run();
+      expect(writes).toEqual([{ kind: "style", stringIds: ["s"], style: { material: "wire" } }]);
+    });
+
+    /** A new board is all plain string, so the first chip is the marked one
+     *  until somebody says otherwise. */
+    it("marks the material the strings already are", () => {
+      span("s", 0);
+      scene.strings.get("s")!.material = "yarn";
+      const samples = chips(stringMenuRows(scene, write, ["s"]), "Material");
+      expect(samples.filter((c) => c.current).map((c) => c.label)).toEqual(["Yarn"]);
+    });
+
+    it("marks no material when the selection disagrees", () => {
+      span("s0", 0);
+      span("s1", 300);
+      scene.strings.get("s0")!.material = "wire";
+      scene.strings.get("s1")!.material = "yarn";
+      expect(
+        chips(stringMenuRows(scene, write, ["s0", "s1"]), "Material").filter((c) => c.current),
+      ).toEqual([]);
+    });
+
+    /**
+     * The order of the three pickers, which is a claim rather than a
+     * convention: material is the one restyle that moves the string, so it
+     * sits below the two that only redraw it.
+     */
+    it("puts material last of the three pickers", () => {
+      span("s", 0);
+      const captions = stringMenuRows(scene, write, ["s"])
+        .filter((e) => "choices" in e)
+        .map((e) => e.label);
+      expect(captions).toEqual(["Colour", "Weight", "Material"]);
     });
   });
 

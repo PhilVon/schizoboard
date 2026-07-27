@@ -181,3 +181,43 @@ export const ROPE_SLEEP_STEPS = 12;
  */
 export const PLUCK_SPEED = 1600;
 export const PLUCK_REACH = 3;
+
+/**
+ * How fast a string turns into a different material, in sag-multiplier units
+ * per second.
+ *
+ * This constant exists because of what position-based dynamics *is*. The solver
+ * does not push a particle toward where it should be, it moves it there — so
+ * shortening a rope's rest length by two thirds and letting the constraint
+ * passes see it snaps the belly up in a single frame. Measured before this was
+ * here: 87 board units in one frame, on a rope that had been asleep. That is
+ * not a stiff string, it is a cut, and it is the exact failure AC-269 names.
+ *
+ * A slack change gets away without one only because the gesture behind it is a
+ * wheel, which arrives in small increments; picking *Wire* off a menu delivers
+ * the whole change at once and has to be paced by the simulation instead.
+ *
+ * The number is measured rather than chosen, because the rope's answer to a
+ * shrinking rest length is not linear in it — the belly comes up slowly and
+ * then all at once, so the *peak* frame is what matters and the average says
+ * nothing about it. Measuring the largest single-frame share of the whole
+ * excursion, across the five transitions that differ most:
+ *
+ * | rate | worst frame, as a share of the move | slowest transition |
+ * |---|---|---|
+ * | no ease | ~100% | one frame |
+ * | 4.6 | 22% | 0.25 s |
+ * | 2.6 | 17% | 0.44 s |
+ * | 1.8 | 12% | 0.64 s |
+ * | 1.2 | 14% | 0.96 s |
+ *
+ * 1.8 is the knee: below it the curve stops paying and the wait starts being
+ * one. So the worst frame of the worst transition carries an eighth of the
+ * move, string→wire takes about a third of a second, and only wire→yarn — the
+ * two far ends of `lib/material.ts`'s 0.35 to 1.5 — takes two thirds.
+ *
+ * Linear rather than exponential precisely because it *finishes*: an asymptote
+ * would leave the rope a hair off its material forever, awake and never
+ * sleeping, which is the one thing DESIGN section 5.3 will not have.
+ */
+export const MATERIAL_EASE = 1.8;

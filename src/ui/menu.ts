@@ -69,14 +69,27 @@ export interface MenuPicker {
   readonly divided?: boolean;
 }
 
-/** One chip. Exactly one of `swatch` and `weight` paints it; `label` is what it
- *  is called out loud either way, because a swatch has no text of its own. */
+/** One chip. Exactly one of `swatch`, `weight` and `fibre` paints it; `label` is
+ *  what it is called out loud in every case, because none of the three has any
+ *  text of its own. */
 export interface MenuChoice {
   readonly label: string;
   /** Painted as a filled square of this colour. */
   readonly swatch?: string;
   /** Painted as a horizontal bar this many pixels thick. */
   readonly weight?: number;
+  /**
+   * Painted as a short sample of that fibre — `lib/material.ts`'s three ids,
+   * each with its own look in the stylesheet.
+   *
+   * A sample rather than the three words, on the same argument the colour
+   * swatches make: the difference between string and yarn is a thing you
+   * recognise on sight and cannot reliably picture from a noun. Unlike the
+   * swatches it is a *drawing* of the material rather than the material itself,
+   * because the real one is three canvas strokes and a menu chip is a 16-pixel
+   * box of CSS — so the stylesheet exaggerates, which is what a sample is for.
+   */
+  readonly fibre?: string;
   /** Already what every target has. Marked, and still pickable — re-picking a
    *  value is a harmless way to say "yes, that one". */
   readonly current?: boolean;
@@ -219,6 +232,11 @@ export class ContextMenu {
       if (choice.swatch !== undefined) {
         mark.className = "menu-swatch";
         mark.style.background = choice.swatch;
+      } else if (choice.fibre !== undefined) {
+        // The whole look is in the stylesheet, keyed by the material's id, so
+        // that a fibre is described where the other textures on the board are
+        // and not as five inline style properties assembled here.
+        mark.className = `menu-fibre menu-fibre-${choice.fibre}`;
       } else {
         mark.className = "menu-bar";
         mark.style.height = `${choice.weight ?? 1}px`;

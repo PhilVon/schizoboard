@@ -45,8 +45,10 @@
  * out with the tab. D-4 is why that is what makes multiplayer string scale.
  */
 
+import { DEFAULT_STRING_MATERIAL, fibre, sagFor, sagWith } from "@/lib/material";
 import { sampleChain, solveCatenary } from "@/sim/catenary";
 import {
+  MATERIAL_EASE,
   PLUCK_REACH,
   PLUCK_SPEED,
   ROPE_SLEEP_MOVE,
@@ -100,6 +102,23 @@ interface Segment {
   readonly b: string;
   /** Slack ratio for this gap, from the node the segment starts at. */
   slack: number;
+  /**
+   * What the string is made of, which is the second half of how much it sags —
+   * `lib/material.ts`. Held per segment rather than per string because that is
+   * where `slack` is and the two are only ever read together; a string's
+   * segments always agree on it.
+   */
+  material: string;
+  /**
+   * The sag multiplier the solver is *currently* using, easing toward the one
+   * `material` asks for at `MATERIAL_EASE` per second.
+   *
+   * The two are equal except during a transition, and the transition is the
+   * whole of AC-269 — see the constant. Transient, like everything else in this
+   * file: a reload puts a string straight onto its material's number, because
+   * a board opening is not somebody changing their mind about wire.
+   */
+  sag: number;
   /** Offset into the particle pool, in coordinates rather than particles. */
   at: number;
   count: number;
@@ -170,8 +189,9 @@ export class RopeSet {
    * string the last entry is unused, and for a closed one it is the
    * wrap-around segment (DATA-MODEL section 5.2). The segments are built and
    * seeded at rest, so this is a *topology* change: `sync` calls it when the
-   * run of pins is genuinely different and handles a slack-only edit without
-   * coming here, because re-seeding is the wrong answer to that.
+   * run of pins is genuinely different and handles a slack-only or
+   * material-only edit without coming here, because re-seeding is the wrong
+   * answer to either.
    *
    * Fewer than two nodes is not an error, it is a string that has nothing to
    * draw yet; the document layer deletes it (DATA-MODEL section 5.3) and this
@@ -184,6 +204,7 @@ export class RopeSet {
     pins: readonly string[],
     slack: readonly number[],
     closed = false,
+    material: string = DEFAULT_STRING_MATERIAL,
   ): void {
     this.removeString(dirty, id);
     const spans = closed ? pins.length : pins.length - 1;
@@ -198,6 +219,10 @@ export class RopeSet {
         a,
         b,
         slack: Math.max(slack[i] ?? 0, 0),
+        material,
+        // A rope being built is a rope arriving, not one changing material, so
+        // it starts on its own number rather than easing onto it.
+        sag: fibre(material).sag,
         at: 0,
         count: 0,
         asleep: true,
@@ -294,8 +319,9 @@ export class RopeSet {
       scene.layoutPin(a);
       scene.layoutPin(b);
 
+      const easing = this.ease(segment, steps);
       const chord = Math.hypot(b.wx - a.wx, b.wy - a.wy);
-      const rest = chord * (1 + segment.slack);
+      const rest = chord * (1 + sagWith(segment.slack, segment.sag));
       const travelled = stepRope(
         this.pos,
         this.prev,
@@ -318,7 +344,12 @@ export class RopeSet {
 
       // > Sleep when the largest particle movement stays under about 0.05 px
       // > for 12 consecutive frames. — DESIGN section 5.3
-      segment.still = travelled < ROPE_SLEEP_MOVE ? segment.still + 1 : 0;
+      //
+      // Unless it is still becoming a different material. A rope near the end
+      // of a slow transition moves less per frame than the sleep threshold, and
+      // without this it would drop off part-way and freeze between two
+      // materials — a wire hanging like something that is not quite either.
+      segment.still = travelled < ROPE_SLEEP_MOVE && !easing ? segment.still + 1 : 0;
       if (segment.still >= ROPE_SLEEP_STEPS) segment.asleep = true;
     }
   }
@@ -345,6 +376,17 @@ export class RopeSet {
    * wheel tick would snap it through a series of rest poses instead. So an
    * unchanged run keeps its particles and just gets the new numbers and a
    * shove.
+   *
+   * **Material is the same kind of edit and takes the same route**, which is
+   * AC-269. It is not obvious: unlike a wheel tick, picking *Wire* off a menu
+   * is a single discrete event with no gesture around it, and re-seeding it
+   * would give the analytic rest pose immediately and correctly. It would also
+   * be a teleport — the rope would be in a different place on the next frame
+   * than it was on this one, with nothing in between, which is precisely the
+   * jump AC-269 forbids. Waking instead lets the solver haul the belly up over
+   * a few dozen substeps, and the string is seen to *tighten*. The same
+   * argument as the mid-string split in `lib/slack.ts`, and the same failure it
+   * is guarding against.
    */
   private sync(scene: Scene, dirty: DirtySets, id: string): void {
     const mirror = scene.strings.get(id);
@@ -364,10 +406,14 @@ export class RopeSet {
           owned[i]!.slack = slack;
           moved = true;
         }
+        if (owned[i]!.material !== mirror.material) {
+          owned[i]!.material = mirror.material;
+          moved = true;
+        }
       }
-      // Style-only edits — a colour, a thickness, a tuck-behind — change no
-      // geometry, so they wake nothing. The renderer is told by `dirty.strings`
-      // directly and reads the style off the mirror.
+      // The style edits that are only style — a colour, a thickness, a
+      // tuck-behind — change no geometry, so they wake nothing. The renderer is
+      // told by `dirty.strings` directly and reads them off the mirror.
       if (moved) for (const segment of owned) this.rouse(segment);
       return;
     }
@@ -379,6 +425,7 @@ export class RopeSet {
       mirror.nodes.map((node) => node.pin),
       mirror.nodes.map((node) => node.slackAfter),
       mirror.closed,
+      mirror.material,
     );
   }
 
@@ -664,6 +711,26 @@ export class RopeSet {
   }
 
   /**
+   * Walk a segment's sag multiplier toward the one its material asks for, and
+   * say whether it is still on the way.
+   *
+   * Linear and clamped, so it lands exactly rather than approaching — see
+   * `MATERIAL_EASE` for why that matters more than it sounds. Called only for
+   * awake segments, which is safe because the thing that changes `material` in
+   * the first place is `sync`, and `sync` wakes what it changed.
+   */
+  private ease(segment: Segment, steps: number): boolean {
+    const target = fibre(segment.material).sag;
+    if (segment.sag === target) return false;
+    const step = (MATERIAL_EASE * steps * SIM_STEP_MS) / 1000;
+    segment.sag =
+      segment.sag < target
+        ? Math.min(target, segment.sag + step)
+        : Math.max(target, segment.sag - step);
+    return segment.sag !== target;
+  }
+
+  /**
    * Put a segment at its analytic rest pose, asleep.
    *
    * The particle count comes from the rest length *as it is now*, and is then
@@ -685,8 +752,18 @@ export class RopeSet {
     scene.layoutPin(a);
     scene.layoutPin(b);
 
+    // A seed is a rest pose, so any transition in flight is over: an undo or a
+    // reload puts the rope on its material's own number rather than resuming an
+    // ease nobody is watching any more.
+    segment.sag = fibre(segment.material).sag;
     const chord = Math.hypot(b.wx - a.wx, b.wy - a.wy);
-    const cat = solveCatenary(a.wx, a.wy, b.wx, b.wy, chord * (1 + segment.slack));
+    const cat = solveCatenary(
+      a.wx,
+      a.wy,
+      b.wx,
+      b.wy,
+      chord * (1 + sagFor(segment.slack, segment.material)),
+    );
     const count = Math.max(2, Math.round(cat.length / ROPE_SPACING) + 1);
     if (count !== segment.count) {
       this.release(segment);

@@ -199,6 +199,34 @@ describe("the context menu", () => {
       ]);
     });
 
+    /**
+     * The three ways a chip can be painted, and that they are exclusive.
+     *
+     * A fibre falling through to the bar branch would draw three identical
+     * hairlines whose height came from an undefined `weight` — a Material row
+     * that renders, passes every other test, and says nothing at all.
+     */
+    it("paints a fibre as its own mark rather than as a bar", () => {
+      menu.openAt(10, 10, [
+        {
+          label: "Material",
+          choices: ["string", "yarn", "wire"].map((id) => ({
+            label: id,
+            fibre: id,
+            run: () => {},
+          })),
+        },
+      ]);
+      const marks = [...host.querySelectorAll<HTMLElement>(".menu-chip i")];
+      expect(marks.map((el) => el.className)).toEqual([
+        "menu-fibre menu-fibre-string",
+        "menu-fibre menu-fibre-yarn",
+        "menu-fibre menu-fibre-wire",
+      ]);
+      expect(host.querySelectorAll(".menu-bar")).toHaveLength(0);
+      expect(host.querySelectorAll(".menu-swatch")).toHaveLength(0);
+    });
+
     /** A swatch has no text of its own, so the name has to be somewhere a
      *  screen reader can reach it. */
     it("names each chip out loud, and says which one is on", () => {

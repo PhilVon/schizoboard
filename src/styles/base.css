@@ -332,6 +332,46 @@ body {
   background: #d6cbbd;
 }
 
+/*
+ * A sample of what a string is made of — `lib/material.ts`'s three.
+ *
+ * Sixteen pixels of a horizontal strand, and the job is not accuracy, it is
+ * being told apart at a glance in a strip of three. So each one leans on the
+ * single property that fibre actually differs by:
+ *
+ * - **string** is the reference: a plain lit strand, the same drawing the
+ *   painter makes with its three strokes.
+ * - **yarn** is fat and soft, with the highlight spread flat across it and a
+ *   blurred edge standing off the strand — the halo pass, in CSS.
+ * - **wire** is thin and hard, with a tight bright line down the top of it,
+ *   which is the only specular anywhere in this application.
+ *
+ * The vertical gradient is the cylinder in all three, because that is what the
+ * canvas does with its highlight offset and the chip should not disagree with
+ * the board about which way the light comes from.
+ */
+.menu-fibre {
+  width: 16px;
+  height: 6px;
+  border-radius: 3px;
+  background: linear-gradient(#e4dacb 0%, #cabca8 45%, #9e8f7c 100%);
+}
+
+.menu-fibre-yarn {
+  height: 9px;
+  border-radius: 5px;
+  background: linear-gradient(#ded3c2 0%, #c6b7a2 55%, #a1927e 100%);
+  /* Loose fibre, standing off the strand. The canvas draws this as a fourth
+   * wide low-alpha stroke; here it is the same idea as a soft outer glow. */
+  box-shadow: 0 0 3px 1.5px rgba(214, 203, 189, 0.35);
+}
+
+.menu-fibre-wire {
+  height: 3px;
+  border-radius: 1.5px;
+  background: linear-gradient(#f4efe6 0%, #cdc5b8 40%, #7d7466 100%);
+}
+
 /* --- phase-0 scaffolding, removed once items land (T-24) ------------------- */
 
 .hint {

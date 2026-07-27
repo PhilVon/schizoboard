@@ -213,6 +213,112 @@ describe("the highlight floor", () => {
   });
 });
 
+describe("what a string is made of", () => {
+  /**
+   * AC-268's second half — "yarn reads thicker and fuzzier". Thicker is the
+   * body width and fuzzier is a fourth stroke, and the fourth stroke is the
+   * one worth pinning down: it is the only place in this file that departs
+   * from DESIGN section 4.6's three, so it had better be there for yarn and
+   * absent for everything else.
+   */
+  it("gives yarn a fourth pass, wider than the body and under it", () => {
+    const layer = new RopeLayer(stubCanvas(), "over");
+    string("s1", "p1", "p2", { material: "yarn" });
+    draw(layer);
+
+    expect(calls.strokes).toHaveLength(4);
+    const [, halo, body] = calls.strokes;
+    // The body's own colour rather than a tint, at reduced alpha — stray fibre
+    // is the same wool, not a highlight on it.
+    expect(halo.style).toBe(body.style);
+    expect(halo.width).toBeGreaterThan(body.width);
+    // Not offset: it surrounds the strand rather than sitting to one side of
+    // it, which is what separates fuzz from a second shadow.
+    expect([halo.tx, halo.ty]).toEqual([0, 0]);
+  });
+
+  it("leaves string and wire on DESIGN 4.6's three", () => {
+    const layer = new RopeLayer(stubCanvas(), "over");
+    string("s1", "p1", "p2", { material: "wire" });
+    draw(layer);
+    expect(calls.strokes).toHaveLength(3);
+
+    calls.strokes.length = 0;
+    string("s2", "p1", "p2", { material: "string" });
+    draw(layer);
+    // Two strings now, both on three passes, and both in the same batch as
+    // each other only if they agree on everything — they do not, so six.
+    expect(calls.strokes).toHaveLength(6);
+  });
+
+  /** One thickness, three materials, three widths — with wire the thinnest
+   *  thing on the board and yarn the fattest. */
+  it("draws yarn wider than string and wire thinner, at one thickness", () => {
+    // One string, restyled — the same id each time, so each draw has exactly
+    // one thing on it and the passes below are unambiguously that thing's.
+    const widths = (material: string): number => {
+      calls.strokes.length = 0;
+      const layer = new RopeLayer(stubCanvas(), "over");
+      string("s1", "p1", "p2", { material, thickness: 4.5 });
+      draw(layer);
+      // The body is the pass at no offset drawn in the full body colour.
+      return calls.strokes.find((s) => s.tx === 0 && s.ty === 0 && s.style === "#a8322c")!.width;
+    };
+    expect(widths("wire")).toBeLessThan(widths("string"));
+    expect(widths("yarn")).toBeGreaterThan(widths("string"));
+  });
+
+  /**
+   * `palette.ts` floors its ladder at 2 px because a 1 px body rasterises to a
+   * smear, and notes it has no floor of its own to save it. A material weight
+   * is what can push it back under, so this is that floor being load-bearing
+   * rather than decorative: the thinnest rung in the thinnest material.
+   */
+  it("will not draw a wire thinner than the eye can resolve", () => {
+    const layer = new RopeLayer(stubCanvas(), "over");
+    string("s1", "p1", "p2", { material: "wire", thickness: 2 });
+    draw(layer);
+    expect(calls.strokes[1].width).toBeGreaterThanOrEqual(1.75);
+  });
+
+  /** Bright and tight for metal, dim and spread for wool — the two knobs have
+   *  to move in opposite directions or the pair are just two cottons. */
+  it("makes wire's highlight brighter and narrower than yarn's", () => {
+    const highlightOf = (material: string): { width: number; style: string } => {
+      calls.strokes.length = 0;
+      const layer = new RopeLayer(stubCanvas(), "over");
+      string("s1", "p1", "p2", { material, thickness: 4.5 });
+      draw(layer);
+      return calls.strokes[calls.strokes.length - 1];
+    };
+    const wire = highlightOf("wire");
+    const yarn = highlightOf("yarn");
+
+    expect(wire.width).toBeLessThan(yarn.width);
+    // "Brighter" as the lift toward white: a higher red channel on the same
+    // body colour is the whole of what more sheen means.
+    const red = (hex: string): number => Number.parseInt(hex.slice(1, 3), 16);
+    expect(red(wire.style)).toBeGreaterThan(red(yarn.style));
+    // And still a colour rather than white, or a red wire and a blue one would
+    // be the same wire — see HIGHLIGHT_LIFT_MAX.
+    expect(wire.style).not.toBe("#ffffff");
+  });
+
+  /**
+   * The batch key. Two materials can land on the same body width off different
+   * rungs of the ladder — yarn at 2 and plain string at 3 are both 3 px — and
+   * merging them would draw one of them with the other's highlight.
+   */
+  it("keeps two materials apart even when they draw the same width", () => {
+    const layer = new RopeLayer(stubCanvas(), "over");
+    string("s1", "p1", "p2", { material: "yarn", thickness: 2 });
+    string("s2", "p1", "p2", { material: "string", thickness: 3 });
+    draw(layer);
+    // Four for the yarn and three for the string. One batch would be three.
+    expect(calls.strokes).toHaveLength(7);
+  });
+});
+
 describe("line widths at every zoom (AC-70)", () => {
   /**
    * The whole argument for drawing in screen space. A board-space stroke would
