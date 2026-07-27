@@ -52,6 +52,44 @@ function boundsOfSamples(
   return [x0, y0, x1, y1];
 }
 
+/**
+ * Every stroke in one strokes map, unpacked.
+ *
+ * Shared by the item path and the tile path, which is the whole of what board
+ * ink cost the mirror: DATA-MODEL section 3 says the record is "identical in
+ * shape whether nested under an item or under a board-ink tile", and this is
+ * that sentence as a function. A second copy of it would be the place the two
+ * surfaces quietly started disagreeing about what a stroke is.
+ *
+ * The unpack happens here rather than in the renderer. It runs once per edit; in
+ * the renderer it would run again for every surface on every debounced zoom-end.
+ * See `SceneStroke`.
+ */
+function readStrokes(map: Y.Map<YMap>): SceneStroke[] {
+  const strokes: SceneStroke[] = [];
+  for (const [strokeId, record] of map) {
+    const fields = readStroke(strokeId, record);
+    // A stroke nobody can make sense of is skipped, not repaired — the same
+    // rule the rest of this file follows (DATA-MODEL section 8.1).
+    if (!fields) continue;
+    const samples = unpackStroke(fields.pts);
+    if (samples.length === 0) continue;
+    strokes.push({
+      id: strokeId,
+      tool: fields.tool,
+      color: fields.color,
+      size: fields.size,
+      opacity: fields.opacity,
+      seed: fields.seed,
+      z: fields.z,
+      // Measured, not the record's — see `SceneStroke`.
+      bbox: boundsOfSamples(samples),
+      samples,
+    });
+  }
+  return strokes;
+}
+
 export class Binding {
   private readonly board: BoardDoc;
   private readonly scene: Scene;
@@ -72,6 +110,7 @@ export class Binding {
     this.board.items.observeDeep(this.onItems);
     this.board.pins.observeDeep(this.onPins);
     this.board.strings.observeDeep(this.onStrings);
+    this.board.boardInk.observeDeep(this.onBoardInk);
   }
 
   stop(): void {
@@ -80,6 +119,7 @@ export class Binding {
     this.board.items.unobserveDeep(this.onItems);
     this.board.pins.unobserveDeep(this.onPins);
     this.board.strings.unobserveDeep(this.onStrings);
+    this.board.boardInk.unobserveDeep(this.onBoardInk);
   }
 
   /**
@@ -95,6 +135,7 @@ export class Binding {
     }
     for (const [id, map] of this.board.pins) this.syncPin(id, map);
     for (const [id, map] of this.board.strings) this.syncString(id, map);
+    for (const [key] of this.board.boardInk) this.syncTile(key);
     this.scene.layoutPins();
     this.dirty.everything();
   }
@@ -254,43 +295,33 @@ export class Binding {
    * only question worth asking, and asking it wholesale is what makes a removal
    * land without a second code path.
    *
-   * The unpack happens here rather than in the renderer. It runs once per edit;
-   * in the renderer it would run again for every item on every debounced
-   * zoom-end. See `SceneStroke`.
+   * An item with no strokes map at all — one written before the map existed, or
+   * one that has gone — reads as no ink, which is the same answer and needs no
+   * branch of its own past this line.
    */
   private syncStrokes(id: string): void {
     const item = this.board.items.get(id);
     const map = item?.get("strokes");
-    if (!(map instanceof Y.Map)) {
-      this.scene.putStrokes(id, []);
-      this.dirty.inkFor(id);
-      return;
-    }
-
-    const strokes: SceneStroke[] = [];
-    for (const [strokeId, record] of map as Y.Map<YMap>) {
-      const fields = readStroke(strokeId, record);
-      // A stroke nobody can make sense of is skipped, not repaired — the same
-      // rule the rest of this file follows (DATA-MODEL section 8.1).
-      if (!fields) continue;
-      const samples = unpackStroke(fields.pts);
-      if (samples.length === 0) continue;
-      strokes.push({
-        id: strokeId,
-        tool: fields.tool,
-        color: fields.color,
-        size: fields.size,
-        opacity: fields.opacity,
-        seed: fields.seed,
-        z: fields.z,
-        // Measured, not the record's — see `SceneStroke`.
-        bbox: boundsOfSamples(samples),
-        samples,
-      });
-    }
-
-    this.scene.putStrokes(id, strokes);
+    this.scene.putStrokes(id, map instanceof Y.Map ? readStrokes(map as Y.Map<YMap>) : []);
     this.dirty.inkFor(id);
+  }
+
+  /**
+   * Re-read one board-ink tile.
+   *
+   * The item path's twin, and identical for the same reason: a stroke is
+   * immutable once written, so "which strokes are in this bucket" is the only
+   * question, and asking it wholesale is what makes a removal land without a
+   * second code path.
+   *
+   * A tile that has gone — the undo of the first stroke drawn in a fresh cell —
+   * reads as no strokes, which is what `Scene.putBoardStrokes` turns into no
+   * tile. So the mirror never keeps an empty bucket alive.
+   */
+  private syncTile(key: string): void {
+    const map = this.board.boardInk.get(key);
+    this.scene.putBoardStrokes(key, map ? readStrokes(map) : []);
+    this.dirty.boardInkFor(key);
   }
 
   /**
@@ -325,6 +356,32 @@ export class Binding {
       if (typeof id !== "string") continue;
       const map = this.board.strings.get(id);
       if (map) this.syncString(id, map);
+    }
+  };
+
+  /**
+   * Any change anywhere inside `boardInk` re-reads the tile it happened in.
+   *
+   * `event.path[0]` is the tile key for everything nested — a stroke arriving, a
+   * stroke going, a field inside one — because `boardInk` is a map keyed by tile
+   * and nothing below it is addressed any other way. The top-level events are a
+   * tile map being created (the first stroke in a fresh cell) and deleted (the
+   * undo of it), and both want the same re-read.
+   *
+   * Which dirty set it raises is the load-bearing part, and it is `boardInk`
+   * rather than `ink`: the two are drawn by different layers, and handing a tile
+   * key to `render/items/dom.ts` would have it look up an item that does not
+   * exist and silently do nothing.
+   */
+  private readonly onBoardInk = (events: DeepEvent[]): void => {
+    for (const event of events) {
+      if (event.target === (this.board.boardInk as unknown as Y.AbstractType<unknown>)) {
+        for (const [key] of event.changes.keys) this.syncTile(key);
+        continue;
+      }
+      const key = event.path[0];
+      if (typeof key !== "string") continue;
+      this.syncTile(key);
     }
   };
 

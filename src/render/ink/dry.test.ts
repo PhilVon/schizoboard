@@ -455,4 +455,17 @@ describe("the edge of the paper", () => {
     // stay alive and blank.
     expect(clipToPaper({ ...ink }, paper(100, 100))).toBeNull();
   });
+
+  /**
+   * Board ink (T-61) has no edge to stop at. The tile it is filed under is a
+   * bucket rather than a frame — a stroke goes in by its bbox centre and may
+   * hang half its length outside — so a clip here would chop long marks on an
+   * invisible 2048-unit lattice.
+   */
+  it("does not clip at all when there is no paper", () => {
+    const region = regionFor({ minX: -10, minY: -10, maxX: 80, maxY: 20 }, 1, null);
+    expect(paintStrokes(stubContext(), [stroke()], region, null)).toBe(true);
+    expect(calls.clips).toHaveLength(0);
+    expect(calls.fills).toBe(1);
+  });
 });

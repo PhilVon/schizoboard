@@ -534,15 +534,15 @@ describe("letting go", () => {
     expect(tool.stroking).toBe(false);
   });
 
-  it("commits a stroke drawn on bare cork too, and lets the document refuse it", () => {
+  it("commits a stroke drawn on bare cork the same way, naming no item", () => {
     down(0, 0);
     move([at(10, 0)]);
     up(20, 0);
 
-    // The tool does not know that nothing renders board ink yet (T-61). Deciding
-    // an `item: null` stroke is not written is `crdt/ops/ink.ts`'s call, and a
-    // tool that second-guessed it would have to be found and changed again when
-    // the tiles land.
+    // The tool does not know which map the stroke lands in. `item: null` means
+    // board space and nothing more; turning that into a `boardInk` tile key is
+    // `crdt/ops/ink.ts`'s call (T-61), and a tool that second-guessed it would
+    // have to be found and changed again the next time the tiling did.
     expect(committed).toHaveLength(1);
     expect(committed[0]!.item).toBeNull();
   });

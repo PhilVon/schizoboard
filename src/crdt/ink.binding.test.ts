@@ -153,7 +153,7 @@ describe("ink going away", () => {
       color: "#000",
       size: 6,
       samples: samples(),
-    })!;
+    })!.id;
     commitStroke(board, { item: id, tool: "marker", color: "#000", size: 6, samples: samples(40, 500) });
     frame();
 
@@ -206,6 +206,101 @@ describe("undo", () => {
     expect(scene.has(id)).toBe(true);
     expect(ink(id)).toHaveLength(1);
     history.destroy();
+  });
+});
+
+/**
+ * The cork's half of the same chain (T-61):
+ *
+ *     crdt/ops/ink -> Y.Doc -> binding -> Scene.boardInkTile -> dirty.boardInk
+ *
+ * Its own describe rather than extra cases above, because the thing being
+ * checked is that the two halves are genuinely separate all the way through —
+ * different map, different scene bucket, different dirty set.
+ */
+describe("a stroke on bare cork reaching the mirror", () => {
+  /** Centred on `(cx, cy)`, so the tile is arithmetic rather than a guess. */
+  function cork(cx: number, cy: number): InkSample[] {
+    return samples().map((s) => ({ x: s.x + cx, y: s.y + cy, pressure: s.pressure }));
+  }
+
+  it("is a tile in the scene, and raises boardInk rather than ink", () => {
+    const written = commitStroke(board, {
+      item: null,
+      tool: "marker",
+      color: "#1f1b17",
+      size: 6,
+      samples: cork(3000, 3000),
+    })!;
+
+    const tile = scene.boardInkTile("1,1")!;
+    expect(tile.strokes).toHaveLength(1);
+    expect(tile.strokes[0]).toMatchObject({ id: written.id, tool: "marker", color: "#1f1b17" });
+    expect(dirty.boardInk.has("1,1")).toBe(true);
+    // The item set is untouched: a tile key handed to the item layer would look
+    // up an item that does not exist and silently draw nothing.
+    expect(dirty.ink.size).toBe(0);
+  });
+
+  /**
+   * The box is the tile's *ink*, not its cell. A stroke is filed by its centre,
+   * so it hangs over the cell edge — and the renderer both culls and sizes its
+   * canvas by this, so a box clamped to the lattice would clip the long strokes.
+   */
+  it("carries the box round its ink, which may reach outside the cell", () => {
+    // Centred just inside the corner of cell (1,1), so the run reaches back into
+    // cell (0,1).
+    commitStroke(board, { item: null, tool: "marker", color: "#000", size: 6, samples: cork(2060, 3000) });
+    const tile = scene.boardInkTile("1,1")!;
+    expect(tile.bbox[0]).toBeLessThan(2048);
+    expect(Math.abs(tile.bbox[0] - 1960)).toBeLessThanOrEqual(INK_EPSILON);
+  });
+
+  it("keeps two cells apart", () => {
+    commitStroke(board, { item: null, tool: "marker", color: "#000", size: 6, samples: cork(3000, 3000) });
+    commitStroke(board, { item: null, tool: "marker", color: "#000", size: 6, samples: cork(9000, 9000) });
+    expect([...scene.boardInkTiles()]).toHaveLength(2);
+    expect(scene.boardInkTile("1,1")!.strokes).toHaveLength(1);
+    expect(scene.boardInkTile("4,4")!.strokes).toHaveLength(1);
+  });
+
+  /** An empty bucket must not survive, or the renderer keeps a mount candidate
+   *  with a box of `Infinity` and nothing to draw. */
+  it("takes the tile away when undo removes its last stroke", () => {
+    const history = new UndoHistory(board);
+    commitStroke(board, { item: null, tool: "marker", color: "#000", size: 6, samples: cork(3000, 3000) });
+    history.boundary();
+    frame();
+
+    history.undo();
+    expect(scene.boardInkTile("1,1")).toBeUndefined();
+    expect([...scene.boardInkTiles()]).toHaveLength(0);
+    expect(dirty.boardInk.has("1,1")).toBe(true);
+
+    history.redo();
+    expect(scene.boardInkTile("1,1")!.strokes).toHaveLength(1);
+    history.destroy();
+  });
+
+  it("comes back on a whole-board resync", () => {
+    commitStroke(board, { item: null, tool: "marker", color: "#000", size: 6, samples: cork(3000, 3000) });
+    commitStroke(board, { item: null, tool: "marker", color: "#000", size: 6, samples: cork(3100, 3100) });
+    frame();
+
+    binding.resync();
+
+    expect(scene.boardInkTile("1,1")!.strokes).toHaveLength(2);
+  });
+
+  /** Ink on the cork is not clipped to any paper, so it is the one kind of ink
+   *  that can be the only content on a board. */
+  it("counts as content, so a board of nothing but writing frames it", () => {
+    expect(scene.contentBounds()).toBeNull();
+    commitStroke(board, { item: null, tool: "marker", color: "#000", size: 6, samples: cork(3000, 3000) });
+    const bounds = scene.contentBounds()!;
+    expect(bounds).not.toBeNull();
+    expect(bounds.minX).toBeGreaterThan(2800);
+    expect(bounds.maxX).toBeLessThan(3200);
   });
 });
 

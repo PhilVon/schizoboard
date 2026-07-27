@@ -125,6 +125,29 @@ export interface SceneStroke {
   samples: readonly InkSample[];
 }
 
+/**
+ * One 2048-unit bucket of ink on the bare cork, and the box round what is in it.
+ *
+ * The box is the tile's ink, **not** the tile's cell. A stroke is bucketed by
+ * its bounding-box centre (DATA-MODEL section 2), so it may hang up to half its
+ * own length outside the cell it is filed under, and a renderer that culled or
+ * sized a canvas by the cell would clip exactly the long strokes that are most
+ * visible. Most tiles hold far less than a cell's worth, which is the other half
+ * of it: sizing to the ink is what keeps a 2048-unit tile from asking for a
+ * 2048-pixel backing store to hold one word.
+ *
+ * Measured here so that culling costs one rectangle test per inked tile per
+ * camera move rather than a walk of every stroke on the board.
+ */
+export interface BoardInkTile {
+  readonly key: string;
+  /** In `z` order — the paint order the renderer walks. */
+  readonly strokes: readonly SceneStroke[];
+  /** `[x0, y0, x1, y1]` in board units, round every stroke in the tile,
+   *  unpadded by any nib. */
+  readonly bbox: readonly [number, number, number, number];
+}
+
 /** Pins are not hot enough to be worth a typed array; there are fewer of them
  *  and they move only when their item does. */
 export interface PinNode {
@@ -291,6 +314,18 @@ export class Scene {
    * "is there anything to raster here?" — should be a map miss.
    */
   private readonly strokes = new Map<string, SceneStroke[]>();
+
+  /**
+   * Ink on the bare cork, bucketed the way the document buckets it — one entry
+   * per 2048-unit tile that anybody has drawn in (DATA-MODEL section 2).
+   *
+   * A tile with no ink has no entry, exactly as an item with none does, and for
+   * the same reason: the renderer's cheapest question is a map miss. It is also
+   * what makes the entry count the mount candidate list — the board-ink layer
+   * walks these rather than walking a lattice, because a lattice has a cell
+   * everywhere and this has one only where somebody drew.
+   */
+  private readonly boardInk = new Map<string, BoardInkTile>();
 
   /**
    * The reverse of `PinNode.parent`: which pins hold each item.
@@ -532,6 +567,58 @@ export class Scene {
    *  most items the answer is no. */
   hasInk(itemId: string): boolean {
     return this.strokes.has(itemId);
+  }
+
+  /**
+   * Replace one board-ink tile wholesale — the cork's half of `putStrokes`, and
+   * wholesale for the same reason: a stroke is immutable once written, so the
+   * only question worth asking is which strokes the tile has now.
+   *
+   * An empty list removes the tile. That is the undo of the first stroke drawn
+   * in a fresh cell, and it has to leave nothing behind: an entry with an empty
+   * array would keep the tile in the mount candidate list forever, with a box of
+   * `Infinity` and nothing to draw.
+   */
+  putBoardStrokes(key: string, strokes: readonly SceneStroke[]): void {
+    if (strokes.length === 0) {
+      this.boardInk.delete(key);
+      return;
+    }
+    let minX = Infinity;
+    let minY = Infinity;
+    let maxX = -Infinity;
+    let maxY = -Infinity;
+    for (const stroke of strokes) {
+      const [x0, y0, x1, y1] = stroke.bbox;
+      if (x0 < minX) minX = x0;
+      if (y0 < minY) minY = y0;
+      if (x1 > maxX) maxX = x1;
+      if (y1 > maxY) maxY = y1;
+    }
+    this.boardInk.set(key, {
+      key,
+      strokes: [...strokes].sort(compareStrokes),
+      bbox: [minX, minY, maxX, maxY],
+    });
+  }
+
+  /** One tile, or undefined for a cell nobody has drawn in — which is almost
+   *  every cell on almost every board. */
+  boardInkTile(key: string): BoardInkTile | undefined {
+    return this.boardInk.get(key);
+  }
+
+  /**
+   * Every tile that has ink in it, in no particular order.
+   *
+   * The board-ink layer's whole culling input. There is no spatial index here
+   * and there should not be one: this is a handful of entries even on a board
+   * somebody has been drawing on all afternoon, and `render/cull.ts`'s grid
+   * exists because *items* are numerous and move, neither of which is true of a
+   * bucket of dried ink.
+   */
+  boardInkTiles(): IterableIterator<BoardInkTile> {
+    return this.boardInk.values();
   }
 
   // --- pins ---------------------------------------------------------------
@@ -803,19 +890,56 @@ export class Scene {
     return true;
   }
 
-  /** Bounds of everything on the board, for Ctrl+0. Null on an empty board. */
+  /**
+   * Bounds of everything on the board, for Ctrl+0. Null on an empty board.
+   *
+   * Board ink counts, and unlike an item's ink it can be the *only* thing that
+   * does: a mark on the cork is not clipped to any paper (T-136 clips only what
+   * is drawn on an item), so a board somebody has written on and put nothing on
+   * has content, and framing a default rectangle instead of the writing would
+   * open it looking empty.
+   */
   contentBounds(): Bounds | null {
     // Shares the item walk with `F`, so the two can never end up disagreeing
     // about how far an item extends.
     const out = this.boundsOfMany(this.slots.keys());
-    if (!out) return null;
+    if (!out) {
+      // Pins are deliberately not enough on their own. A pin is 12 units across
+      // and framing one would open the board at the zoom ceiling on a speck;
+      // ink is as big as it was drawn.
+      const inked = this.boardInkBounds();
+      return inked;
+    }
     for (const pin of this.pins.values()) {
       if (pin.wx < out.minX) out.minX = pin.wx;
       if (pin.wy < out.minY) out.minY = pin.wy;
       if (pin.wx > out.maxX) out.maxX = pin.wx;
       if (pin.wy > out.maxY) out.maxY = pin.wy;
     }
+    const inked = this.boardInkBounds();
+    if (inked) {
+      if (inked.minX < out.minX) out.minX = inked.minX;
+      if (inked.minY < out.minY) out.minY = inked.minY;
+      if (inked.maxX > out.maxX) out.maxX = inked.maxX;
+      if (inked.maxY > out.maxY) out.maxY = inked.maxY;
+    }
     return out;
+  }
+
+  /** The box round every board-ink tile, or null when nobody has drawn on the
+   *  cork. Each tile already carries the box round its own strokes. */
+  private boardInkBounds(): Bounds | null {
+    let found = false;
+    const out: Bounds = { minX: Infinity, minY: Infinity, maxX: -Infinity, maxY: -Infinity };
+    for (const tile of this.boardInk.values()) {
+      const [x0, y0, x1, y1] = tile.bbox;
+      if (x0 < out.minX) out.minX = x0;
+      if (y0 < out.minY) out.minY = y0;
+      if (x1 > out.maxX) out.maxX = x1;
+      if (y1 > out.maxY) out.maxY = y1;
+      found = true;
+    }
+    return found ? out : null;
   }
 
   /**
@@ -853,6 +977,7 @@ export class Scene {
     this.pins.clear();
     this.strings.clear();
     this.strokes.clear();
+    this.boardInk.clear();
     this.byParent.clear();
     this.byPin.clear();
     this.ids.fill(null);

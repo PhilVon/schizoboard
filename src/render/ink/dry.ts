@@ -188,7 +188,7 @@ export function paintStrokes(
   ctx: CanvasRenderingContext2D,
   strokes: readonly SceneStroke[],
   region: InkRegion,
-  paper: InkBox,
+  paper: InkBox | null,
 ): boolean {
   // Identity for the clear, because the transform below is in item-local units
   // and the backing store is in device pixels.
@@ -213,10 +213,19 @@ export function paintStrokes(
   // grow-only, so a canvas that was once bigger than the paper it belongs to
   // still covers cork after a resize, and the clip is what stops ink from being
   // drawn there.
+  //
+  // **Null is board ink**, and it is not a shortcut for "clip to something very
+  // large". The cork has no edge to stop at — that is the whole difference
+  // between the two surfaces — and a tile is a bucket rather than a frame, so a
+  // stroke filed under one cell and hanging over the next is drawn in full
+  // (DATA-MODEL section 2). A clip to the cell is exactly the bug that would
+  // chop long strokes on an invisible 2048-unit lattice.
   ctx.save();
-  ctx.beginPath();
-  ctx.rect(paper.minX, paper.minY, paper.maxX - paper.minX, paper.maxY - paper.minY);
-  ctx.clip();
+  if (paper !== null) {
+    ctx.beginPath();
+    ctx.rect(paper.minX, paper.minY, paper.maxX - paper.minX, paper.maxY - paper.minY);
+    ctx.clip();
+  }
 
   let drew = false;
   for (const stroke of strokes) {

@@ -1,5 +1,6 @@
 /**
- * One item's ink canvas — the element, its size, and its eviction.
+ * An ink canvas — the element, its size, and its eviction. One per inked item,
+ * and one per inked board tile.
  *
  * > Ink canvases are sized to the ink, not the item, and most items have none.
  * > Off-screen canvases are evicted — strokes are the truth and canvases are a
@@ -36,6 +37,18 @@
  * carry `scale()`, which is DESIGN section 6.2's whole claim: the ink follows a
  * move and a rotation with no maths at all, because the browser is already doing
  * that maths for the paper.
+ *
+ * ## The tile is the same object with no paper (T-61)
+ *
+ * Board ink hangs off `render/ink/board.ts` instead, one canvas per 2048-unit
+ * tile, inside the board-ink layer's camera transform rather than an item's
+ * node. Everything below is shared and only two things differ: the host, and
+ * that a tile passes `null` for the paper — the cork has no edge for a pen to
+ * stop at, and a tile is a bucket rather than a frame.
+ *
+ * That is why the machinery is [`InkCanvas`] and [`ItemInk`] is a shell over it
+ * holding the one thing the cork does not have: a `w`/`h` that a resize can
+ * change out from under the bitmap.
  */
 
 import {
@@ -56,21 +69,18 @@ import type { SceneStroke } from "@/state/scene";
  */
 const box: InkBox = { minX: 0, minY: 0, maxX: 0, maxY: 0 };
 
-export class ItemInk {
+export class InkCanvas {
   private readonly host: HTMLElement;
+  private readonly className: string;
   /** Created on first ink and never before — "most items have no ink and
    *  therefore no canvas at all". */
   private el: HTMLCanvasElement | null = null;
   private ctx: CanvasRenderingContext2D | null = null;
   private region: InkRegion | null = null;
-  /** The paper this canvas was last clipped to — its own, not shared, because
-   *  it outlives the call. */
-  private readonly paper: InkBox = { minX: 0, minY: 0, maxX: 0, maxY: 0 };
-  private boxW = 0;
-  private boxH = 0;
 
-  constructor(host: HTMLElement) {
+  constructor(host: HTMLElement, className: string) {
     this.host = host;
+    this.className = className;
   }
 
   /** Is there a bitmap right now? The dev HUD counts these, and it is the one
@@ -90,20 +100,17 @@ export class ItemInk {
    * or drop it.
    *
    * Dropping is the erase and the undo-of-a-commit case, and it has to be here
-   * rather than only in `release`: an item that stays mounted and loses its last
-   * stroke would otherwise keep showing it.
+   * rather than only in `release`: a surface that stays mounted and loses its
+   * last stroke would otherwise keep showing it.
+   *
+   * `paper` is the surface the pen stops at, or null for a surface with no edge
+   * — see the note at the top of the file and `paintStrokes`.
    */
-  update(strokes: readonly SceneStroke[], scale: number, w: number, h: number): void {
-    // Remembered so that a resize re-rasters: the clip below is a function of
-    // the item's size, and a note dragged wider has to give back the ink its old
-    // edge was hiding. `render/items/dom.ts` asks with [`staleBox`].
-    this.boxW = w;
-    this.boxH = h;
-    const paper = paperBox(w, h, this.paper);
+  update(strokes: readonly SceneStroke[], scale: number, paper: InkBox | null): void {
     const inked = strokes.length === 0 ? null : inkBounds(strokes, box);
     // The overlap, not the ink: the pen stops at the edge of the paper (T-136),
     // so anything past it is neither drawn nor worth a pixel of backing store.
-    const bounds = inked === null ? null : clipToPaper(inked, paper);
+    const bounds = inked === null || paper === null ? inked : clipToPaper(inked, paper);
     if (bounds === null) {
       this.release();
       return;
@@ -118,11 +125,12 @@ export class ItemInk {
       this.region = region;
       canvas.width = region.px;
       canvas.height = region.py;
-      // CSS box in item-local units, which are the units the item's node is
-      // laid out in. The margins place the region's top-left corner relative to
-      // the item's centre, which `.item-ink`'s `left: 50%; top: 50%` puts us at
-      // — so nothing here has to know how big the item is, and a resize never
-      // touches the ink.
+      // CSS box in the host's own units — item-local for an item, board units
+      // for a tile, and the two are the same scale. The margins place the
+      // region's top-left corner relative to wherever the stylesheet has put
+      // this canvas's origin: `.item-ink`'s `left: 50%; top: 50%` is the item's
+      // centre, `.board-ink`'s `left: 0; top: 0` is the board origin. So nothing
+      // here has to know how big the item is, and a resize never touches the ink.
       canvas.style.width = `${region.px / region.scale}px`;
       canvas.style.height = `${region.py / region.scale}px`;
       canvas.style.marginLeft = `${region.ox}px`;
@@ -135,18 +143,6 @@ export class ItemInk {
     if (this.ctx === null) this.ctx = canvas.getContext("2d");
     if (this.ctx === null) return;
     paintStrokes(this.ctx, strokes, region, paper);
-  }
-
-  /**
-   * Is the bitmap clipped to a size the item no longer is?
-   *
-   * Asked of every mounted, inked item that changed this frame, which is few:
-   * ink is rare and a change to an inked item is rarer. A drag answers false —
-   * it moves the paper without resizing it — which is what keeps the INK phase
-   * asleep while a photograph is being carried.
-   */
-  staleBox(w: number, h: number): boolean {
-    return this.el !== null && (w !== this.boxW || h !== this.boxH);
   }
 
   /**
@@ -176,7 +172,7 @@ export class ItemInk {
 
   private create(): HTMLCanvasElement {
     const canvas = document.createElement("canvas");
-    canvas.className = "item-ink";
+    canvas.className = this.className;
     // Last, so DOM order alone paints it over the photograph or the text. No
     // child of an item sets a `z-index`; only the item root does, for the
     // board's paint order.
@@ -184,5 +180,58 @@ export class ItemInk {
     this.el = canvas;
     this.ctx = null;
     return canvas;
+  }
+}
+
+/**
+ * One item's ink canvas: an [`InkCanvas`] plus the paper it is clipped to.
+ *
+ * The whole of what an item adds is a size that can change under the bitmap. A
+ * tile cannot be resized — the cork is not a thing you drag an edge of — so
+ * [`staleBox`] and the paper box live here rather than in the shared machinery.
+ */
+export class ItemInk {
+  private readonly canvas: InkCanvas;
+  /** The paper this canvas was last clipped to — its own, not shared, because
+   *  it outlives the call. */
+  private readonly paper: InkBox = { minX: 0, minY: 0, maxX: 0, maxY: 0 };
+  private boxW = 0;
+  private boxH = 0;
+
+  constructor(host: HTMLElement) {
+    this.canvas = new InkCanvas(host, "item-ink");
+  }
+
+  get live(): boolean {
+    return this.canvas.live;
+  }
+
+  get pixels(): number {
+    return this.canvas.pixels;
+  }
+
+  update(strokes: readonly SceneStroke[], scale: number, w: number, h: number): void {
+    // Remembered so that a resize re-rasters: the clip is a function of the
+    // item's size, and a note dragged wider has to give back the ink its old
+    // edge was hiding. `render/items/dom.ts` asks with [`staleBox`].
+    this.boxW = w;
+    this.boxH = h;
+    this.canvas.update(strokes, scale, paperBox(w, h, this.paper));
+  }
+
+  /**
+   * Is the bitmap clipped to a size the item no longer is?
+   *
+   * Asked of every mounted, inked item that changed this frame, which is few:
+   * ink is rare and a change to an inked item is rarer. A drag answers false —
+   * it moves the paper without resizing it — which is what keeps the INK phase
+   * asleep while a photograph is being carried.
+   */
+  staleBox(w: number, h: number): boolean {
+    return this.canvas.live && (w !== this.boxW || h !== this.boxH);
+  }
+
+  release(): void {
+    this.canvas.release();
   }
 }

@@ -54,8 +54,37 @@ body {
   isolation: isolate;
 }
 
-.layer-ropes-under {
+/*
+ * Board ink (T-61) — above the cork it is drawn on, below the string and the
+ * paper. A *point* like the world wrapper below, and for the same reason: it
+ * carries the camera transform and its tile canvases are placed inside it in
+ * board coordinates.
+ */
+.layer-board-ink {
   z-index: 1;
+  inset: auto;
+  top: 0;
+  left: 0;
+  width: 0;
+  height: 0;
+  overflow: visible;
+  transform-origin: 0 0;
+  pointer-events: none;
+}
+
+/*
+ * A tile's canvas, placed at the board origin and moved to its own region by the
+ * margins `render/ink/canvas.ts` writes — which is what makes board units and
+ * CSS pixels the same thing here.
+ */
+.board-ink {
+  position: absolute;
+  top: 0;
+  left: 0;
+}
+
+.layer-ropes-under {
+  z-index: 2;
   pointer-events: none;
 }
 
@@ -66,7 +95,7 @@ body {
  * direction, which is exactly right for a board with no edges.
  */
 .layer-world {
-  z-index: 2;
+  z-index: 3;
   inset: auto;
   top: 0;
   left: 0;
@@ -77,17 +106,17 @@ body {
 }
 
 .layer-ropes-over {
-  z-index: 3;
-  pointer-events: none;
-}
-
-.layer-overlay {
   z-index: 4;
   pointer-events: none;
 }
 
-.layer-pins {
+.layer-overlay {
   z-index: 5;
+  pointer-events: none;
+}
+
+.layer-pins {
+  z-index: 6;
   pointer-events: none;
 }
 
@@ -96,7 +125,7 @@ body {
 }
 
 .layer-ui {
-  z-index: 6;
+  z-index: 7;
   pointer-events: none;
 }
 

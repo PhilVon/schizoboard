@@ -526,12 +526,15 @@ The escalation path is real and pre-planned: if we exceed roughly 1500 simultane
 │    └── item nodes, each holding:             │    ONE camera transform lives here
 │         image · paper texture · ink canvas   │    all inside the item's rotation
 ├─────────────────────────────────────────────┤  ropes-under canvas
-└─────────────────────────────────────────────┘  Cork background
+├─────────────────────────────────────────────┤  Board ink (DOM) — tile canvases
+└─────────────────────────────────────────────┘  Cork background          same camera transform
 ```
 
 **Two rope canvases, not one.** Real boards have string running behind photographs that were pinned on top of it later, and a single overlay forces every string above or every string below. A per-string `layer` field plus one extra clear-and-draw buys that back, and it composes exactly with draping: `over` strings collide with items, `under` strings pass behind them and don't.
 
 **One camera transform.** The world wrapper carries a single `translate` + `scale`. Items position themselves inside it in board coordinates and never know about the camera. The rope and overlay canvases are full-viewport, in screen space, and apply the camera per-point at draw time.
+
+**Board ink is a second layer under the same camera.** A mark on the cork belongs below the string and below the paper, and a child of the world wrapper cannot be drawn below a sibling of it — so board ink gets its own transformed layer, carrying the same `translate` + `scale` written from the same numbers in the same statement. It is one camera at two depths of the stack, not two cameras. Its content is one canvas per 2048-unit `boardInk` tile, mounted and evicted by viewport like everything else that holds a bitmap.
 
 **Ink inside the item's transform** is the trick that makes annotation free: because each item's ink canvas is a child of the item's rotated node, ink follows the item through every move and rotation with no maths at all.
 

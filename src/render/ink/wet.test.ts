@@ -341,8 +341,9 @@ describe("the edge of the paper, while the pen is still down", () => {
 
   it("does not clip a board-space stroke, which has no paper to run off", () => {
     ink.draw(stubContext(), camera, stroke(straight(4)));
-    // Bare cork is not an item and has no edge. What happens to a cork stroke is
-    // T-61's question, not this one's.
+    // Bare cork is not an item and has no edge. The dry half agrees — a board-ink
+    // tile paints with no clip at all (T-61) — so the mark does not change shape
+    // at the moment it lands.
     expect(calls.clips).toBe(0);
     expect(calls.lines).toEqual([]);
   });

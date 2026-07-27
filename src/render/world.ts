@@ -4,6 +4,7 @@
  * docs/DESIGN.md section 6.2, bottom to top:
  *
  *   cork background            (DOM)
+ *   board ink                  (DOM)  <- camera transform, tile canvases (T-61)
  *   ropes-under canvas         (screen space)
  *   world wrapper              (DOM)  <- ONE camera transform lives here
  *     item nodes: image, paper texture, ink canvas, all inside the rotation
@@ -15,6 +16,16 @@
  * Items position themselves inside the wrapper in board coordinates and never
  * know about the camera. The canvases are full-viewport and apply the camera
  * per-point at draw time, which is what keeps line widths crisp at every zoom.
+ *
+ * ## Two transformed layers, not one
+ *
+ * DESIGN section 6.2's stack predates board ink and has no layer for it. The
+ * position is forced by what board ink *is* — a mark on the cork, so under the
+ * string and under the paper — and the stack has no way to put a child of the
+ * world wrapper below a sibling of it. So there is a second transformed layer,
+ * carrying the same camera and doing the same thing with `will-change`, sitting
+ * where its content belongs. It is not a second camera: `applyCamera` writes the
+ * one transform to both, in the same statement, from the same numbers.
  *
  * ## The will-change rule
  *
@@ -38,6 +49,8 @@ export type RasterizeListener = (scale: number) => void;
 
 export interface Layers {
   readonly cork: HTMLDivElement;
+  /** Board-ink tile canvases, in the camera transform — `render/ink/board.ts`. */
+  readonly boardInk: HTMLDivElement;
   readonly ropesUnder: HTMLCanvasElement;
   readonly world: HTMLDivElement;
   readonly ropesOver: HTMLCanvasElement;
@@ -73,6 +86,7 @@ export class World {
     this.host = host;
 
     const cork = div("layer layer-cork");
+    const boardInk = div("layer layer-board-ink");
     const ropesUnder = canvas("layer layer-ropes-under");
     const world = div("layer layer-world");
     const ropesOver = canvas("layer layer-ropes-over");
@@ -81,9 +95,10 @@ export class World {
     const ui = div("layer layer-ui");
 
     world.style.transformOrigin = "0 0";
+    boardInk.style.transformOrigin = "0 0";
 
-    host.append(cork, ropesUnder, world, ropesOver, overlay, pins, ui);
-    this.layers = { cork, ropesUnder, world, ropesOver, overlay, pins, ui };
+    host.append(cork, boardInk, ropesUnder, world, ropesOver, overlay, pins, ui);
+    this.layers = { cork, boardInk, ropesUnder, world, ropesOver, overlay, pins, ui };
   }
 
   /**
@@ -94,8 +109,12 @@ export class World {
     if (camera.version === this.writtenVersion) return false;
     this.writtenVersion = camera.version;
     const z = camera.zoom;
-    this.layers.world.style.transform =
-      `translate(${-camera.x * z}px, ${-camera.y * z}px) scale(${z})`;
+    const transform = `translate(${-camera.x * z}px, ${-camera.y * z}px) scale(${z})`;
+    this.layers.world.style.transform = transform;
+    // The same string, not the same numbers computed twice: the two layers are
+    // one camera seen at two depths of the stack, and a board-ink tile that
+    // disagreed with the items by a rounding error would slide under them.
+    this.layers.boardInk.style.transform = transform;
     return true;
   }
 
@@ -108,6 +127,9 @@ export class World {
     if (!this.gesturing) {
       this.gesturing = true;
       this.layers.world.style.willChange = "transform";
+      // Board ink is under a scale() too, so it goes blurry in exactly the same
+      // way and is promoted and demoted on exactly the same schedule.
+      this.layers.boardInk.style.willChange = "transform";
     }
     if (this.gestureTimer !== 0) clearTimeout(this.gestureTimer);
     this.gestureTimer = window.setTimeout(() => this.endGesture(scale), GESTURE_END_MS);
@@ -140,6 +162,7 @@ export class World {
     // Dropping will-change discards the cached layer, so the browser repaints
     // the world subtree at the scale it is actually being displayed at.
     this.layers.world.style.willChange = "";
+    this.layers.boardInk.style.willChange = "";
 
     const target = scale * devicePixelRatio;
     // Re-rastering for a hair of scale change is pure waste; a 1.25x swing is

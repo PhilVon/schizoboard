@@ -53,10 +53,11 @@
  * board full of ink. Overlap costs nothing (the same mark, drawn twice, in the
  * same place); a gap is the visible bug.
  *
- * A stroke on bare cork is the exception and it is discarded: `commitStroke`
- * deliberately refuses `item: null` while nothing renders board ink (T-61), so
- * for those the owner calls [`dry`] straight away and the mark disappears on
- * release. It is not being lost — it was never saved.
+ * A stroke on bare cork takes the same route through a different surface: it is
+ * committed into a `boardInk` tile and rastered by `render/ink/board.ts`, and
+ * the owner waits for that tile's canvas exactly as it waits for an item's
+ * (T-61). Nothing in this file knows the difference — the space was decided at
+ * pen-down and the writer takes it from there.
  *
  * ## Which space, decided once
  *

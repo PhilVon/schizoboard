@@ -40,6 +40,7 @@ import { initPlatform } from "@/platform";
 import { variantFor } from "@/platform/types";
 import { Cork } from "@/render/cork";
 import { Culler } from "@/render/cull";
+import { BoardInkLayer } from "@/render/ink/board";
 import { DomItemLayer } from "@/render/items/dom";
 import { FrameLoop } from "@/render/loop";
 import { Overlay, type PendingRun } from "@/render/overlay";
@@ -127,6 +128,9 @@ async function boot(): Promise<void> {
   const assetUrl = (sha256: string, screenPx: number): string =>
     showable.has(sha256) ? native.assetUrl(sha256, variantFor(screenPx)) : "";
   const items = new DomItemLayer(world.layers.world, assetUrl);
+  /** Ink on the bare cork — its own layer, under the string and under the paper
+   *  (T-61). Nothing else on this board draws below the items. */
+  const boardInk = new BoardInkLayer(world.layers.boardInk);
 
   /** Re-bind every item wearing this asset. A walk, on a once-per-photograph
    *  event. */
@@ -382,7 +386,7 @@ async function boot(): Promise<void> {
      */
     commitStroke: (stroke) => {
       queued.push(() => {
-        const id = commitStroke(board, {
+        const written = commitStroke(board, {
           item: stroke.item,
           tool: stroke.tool,
           color: stroke.color,
@@ -390,14 +394,17 @@ async function boot(): Promise<void> {
           opacity: stroke.opacity,
           samples: stroke.samples,
         });
-        if (id !== null) {
-          drying = stroke.item;
+        if (written !== null) {
+          // Which surface to wait for. The tile comes back from the op rather
+          // than being worked out here, because the op's packer is what measured
+          // the box the key is derived from.
+          drying = written.tile === null ? { item: stroke.item! } : { tile: written.tile };
           return;
         }
-        // Nothing was written: a click rather than a stroke, a bare-cork stroke
-        // that nothing renders yet (T-61), or paper that left the board while
-        // the pointer was down. No re-raster is coming, so the overlay copy is
-        // all that is holding the mark up and it stops being drawn now.
+        // Nothing was written: a click rather than a stroke, or paper that left
+        // the board while the pointer was down. No re-raster is coming, so the
+        // overlay copy is all that is holding the mark up and it stops being
+        // drawn now.
         drying = null;
         dried();
       });
@@ -405,14 +412,18 @@ async function boot(): Promise<void> {
   };
 
   /**
-   * The item whose ink a pen is still drawing on the overlay because its canvas
-   * has not caught up — the far end of `BoardWriter.commitStroke`, and the whole
-   * of what stops a pen-up from blinking.
+   * The surface a pen is still drawing on the overlay because its canvas has not
+   * caught up — the far end of `BoardWriter.commitStroke`, and the whole of what
+   * stops a pen-up from blinking.
+   *
+   * An item or a board-ink tile, because those are the two things a stroke can
+   * land on and they are rastered by different layers with different budgets. A
+   * plain string would collapse them and the wrong layer would be asked.
    *
    * One slot, not a queue: a press drops whatever that pen had drying (see
    * `MarkerTool.wet`), so there is never a second one to hold.
    */
-  let drying: string | null = null;
+  let drying: { item: string; tile?: undefined } | { tile: string; item?: undefined } | null = null;
   /**
    * Both pens, rather than the one that committed.
    *
@@ -764,8 +775,12 @@ async function boot(): Promise<void> {
       docBytes,
       items: scene.size,
       mounted: items.mounted,
-      inked: items.inked,
-      inkPixels: items.inkPixels,
+      // Board-ink tiles count as inked surfaces and their backing stores count
+      // as pixels. The HUD's ink numbers exist to make the memory risk (DESIGN
+      // section 9.5, risk 5) watchable, and a tile is the largest single bitmap
+      // on the board — leaving it out would be the one omission that matters.
+      inked: items.inked + boardInk.mounted,
+      inkPixels: items.inkPixels + boardInk.pixels,
     };
   };
 
@@ -781,6 +796,7 @@ async function boot(): Promise<void> {
    */
   world.onRasterize((scale) => {
     items.setRasterScale(scale);
+    boardInk.setRasterScale(scale);
     dirty.everything();
   });
 
@@ -1005,14 +1021,25 @@ async function boot(): Promise<void> {
    */
   loop.on("ink", () => {
     items.paintInk(scene, dirty);
+    // The cork's ink, in the same phase and for the same reason: it is a bitmap
+    // filled for the few tiles somebody drew in, not a transform written for
+    // everything that moved.
+    boardInk.paint(scene, dirty, camera);
     // The handoff, and it is after the raster and before the overlay on purpose:
-    // the frame that finally puts a committed stroke on its item's canvas is the
-    // frame that may stop drawing the wet copy of it, and neither an earlier nor
-    // a later phase is both.
+    // the frame that finally puts a committed stroke on its surface's canvas is
+    // the frame that may stop drawing the wet copy of it, and neither an earlier
+    // nor a later phase is both.
     //
-    // Asked of the item layer rather than counted in frames, because the answer
-    // is genuinely not a number of frames — see `ItemLayer.awaitingInk`.
-    if (drying !== null && !items.awaitingInk(drying)) {
+    // Asked of whichever layer owns the surface rather than counted in frames,
+    // because the answer is genuinely not a number of frames — see
+    // `ItemLayer.awaitingInk`.
+    const waiting =
+      drying === null
+        ? false
+        : drying.tile === undefined
+          ? items.awaitingInk(drying.item)
+          : boardInk.awaitingTile(drying.tile);
+    if (drying !== null && !waiting) {
       drying = null;
       dried();
     }

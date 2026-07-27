@@ -27,6 +27,17 @@ export class DirtySets {
   /** Items whose ink canvas needs re-rastering. */
   readonly ink = new Set<string>();
   /**
+   * Board-ink **tiles** whose canvas needs re-rastering.
+   *
+   * A separate set from `ink` rather than a shared one, even though a tile key
+   * (`"3,-2"`) and an item id (a nanoid) could never collide. The point is not
+   * collision: a consumer handed one set would have no way to tell which kind of
+   * surface it had been given, and the two are rendered by different layers in
+   * different parts of the stack. Sharing would buy one fewer field and cost
+   * every reader a parse.
+   */
+  readonly boardInk = new Set<string>();
+  /**
    * Strings whose *topology or style* changed — a run edited, a slack
    * adjusted, a colour picked, a string cut.
    *
@@ -67,6 +78,7 @@ export class DirtySets {
       this.items.size === 0 &&
       this.pins.size === 0 &&
       this.ink.size === 0 &&
+      this.boardInk.size === 0 &&
       this.strings.size === 0 &&
       this.ropes.size === 0
     );
@@ -82,6 +94,10 @@ export class DirtySets {
 
   inkFor(id: string): void {
     this.ink.add(id);
+  }
+
+  boardInkFor(tileKey: string): void {
+    this.boardInk.add(tileKey);
   }
 
   string(id: string): void {
@@ -103,6 +119,7 @@ export class DirtySets {
     this.items.clear();
     this.pins.clear();
     this.ink.clear();
+    this.boardInk.clear();
     this.strings.clear();
     this.ropes.clear();
     this.camera = false;

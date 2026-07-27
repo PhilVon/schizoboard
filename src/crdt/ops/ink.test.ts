@@ -138,13 +138,125 @@ describe("committing a stroke", () => {
   });
 });
 
-describe("what is not committed", () => {
-  it("refuses board space, because nothing renders it yet", () => {
+/**
+ * Ink on the bare cork (T-61) — the same record in a different map.
+ *
+ * The properties here are the ones DATA-MODEL section 2 states as rules: the
+ * tile key is the floor-divided *centre* of the stroke's own bounding box, the
+ * bucket is created by the first stroke that needs it, and `z` orders within a
+ * tile rather than across the board.
+ */
+describe("committing to bare cork", () => {
+  /** A short path centred on `(cx, cy)`, so the tile it lands in is arithmetic
+   *  rather than a guess. */
+  function around(cx: number, cy: number): InkSample[] {
+    return samples().map((s) => ({ x: s.x + cx, y: s.y + cy, pressure: s.pressure }));
+  }
+
+  function tile(b: BoardDoc, key: string): Y.Map<YMap> {
+    return b.boardInk.get(key)!;
+  }
+
+  it("files a stroke under the tile its bbox centre falls in", () => {
     const b = board();
-    // A write with no reader is the trap this file's header is about.
-    expect(commitStroke(b, { item: null, tool: "marker", color: "#000", size: 6, samples: samples() })).toBeNull();
+    // samples() spans x -100..95, so this one is centred near (3000, 3000):
+    // floor(3000 / 2048) is 1 on both axes.
+    const written = commitStroke(b, {
+      item: null,
+      tool: "marker",
+      color: "#000",
+      size: 6,
+      samples: around(3000, 3000),
+    })!;
+    expect(written.tile).toBe("1,1");
+    expect(tile(b, "1,1").size).toBe(1);
+    expect(tile(b, "1,1").has(written.id)).toBe(true);
+    // And it did not also land on any item.
+    expect(b.items.size).toBe(0);
   });
 
+  it("floors negative coordinates rather than truncating them", () => {
+    const b = board();
+    // -500 is inside the cell that runs from -2048 to 0, which is index -1.
+    // `Math.trunc` would call it 0 and put the ink a whole tile away.
+    const written = commitStroke(b, {
+      item: null,
+      tool: "marker",
+      color: "#000",
+      size: 6,
+      samples: around(-500, -500),
+    })!;
+    expect(written.tile).toBe("-1,-1");
+  });
+
+  it("puts two strokes in the same cell in one bucket, and orders them there", () => {
+    const b = board();
+    const first = commitStroke(b, { item: null, tool: "marker", color: "#000", size: 6, samples: around(3000, 3000) })!;
+    const second = commitStroke(b, { item: null, tool: "marker", color: "#000", size: 6, samples: around(3100, 3100) })!;
+    expect(second.tile).toBe(first.tile);
+    const map = tile(b, first.tile!);
+    expect(map.size).toBe(2);
+    expect(readStroke(second.id, map.get(second.id)!)!.z > readStroke(first.id, map.get(first.id)!)!.z).toBe(true);
+  });
+
+  /**
+   * Two tiles are independent buckets, which is the point of tiling: two people
+   * drawing in two corners of the board mint `z` keys that never have to be
+   * compared, so there is nothing for them to contend over.
+   */
+  it("starts a fresh tile at the bottom of its own stack", () => {
+    const b = board();
+    let nearTile = "";
+    let nearZ = "";
+    for (let i = 0; i < 3; i++) {
+      const w = commitStroke(b, { item: null, tool: "marker", color: "#000", size: 6, samples: around(3000, 3000) })!;
+      nearTile = w.tile!;
+      nearZ = readStroke(w.id, tile(b, w.tile!).get(w.id)!)!.z;
+    }
+    const far = commitStroke(b, { item: null, tool: "marker", color: "#000", size: 6, samples: around(9000, 9000) })!;
+    expect(far.tile).not.toBe(nearTile);
+    const farZ = readStroke(far.id, tile(b, far.tile!).get(far.id)!)!.z;
+    // Below the third stroke in the other tile, not above it: the scan that
+    // minted it never looked outside its own bucket.
+    expect(farZ < nearZ).toBe(true);
+  });
+
+  it("stores the samples in board coordinates, unshifted by the tile", () => {
+    const b = board();
+    const written = commitStroke(b, {
+      item: null,
+      tool: "marker",
+      color: "#000",
+      size: 6,
+      samples: around(3000, 3000),
+    })!;
+    const fields = readStroke(written.id, tile(b, "1,1").get(written.id)!)!;
+    const points = unpackStroke(fields.pts);
+    // A tile is a bucket, not a frame: nothing is relative to its corner. The
+    // tolerance is the packer's quantisation and nothing else.
+    expect(Math.abs(points[0]!.x - 2900)).toBeLessThanOrEqual(INK_EPSILON);
+    // Which is the other half of it: the box is past the tile's own corner.
+    expect(fields.bbox[0]).toBeGreaterThan(2048);
+  });
+
+  /** One insertion, one entry — the same claim the item path makes, and the
+   *  reason `boardInk` is one of the undo manager's roots. */
+  it("undoes as one entry, taking the tile with it", () => {
+    const b = board();
+    const undo = new UndoHistory(b);
+    commitStroke(b, { item: null, tool: "marker", color: "#000", size: 6, samples: around(3000, 3000) });
+    expect(b.boardInk.get("1,1")!.size).toBe(1);
+
+    undo.undo();
+    // The bucket goes too, because nothing else ever created it.
+    expect(b.boardInk.has("1,1")).toBe(false);
+
+    undo.redo();
+    expect(b.boardInk.get("1,1")!.size).toBe(1);
+  });
+});
+
+describe("what is not committed", () => {
   it("commits nothing for a gesture that produced no points", () => {
     const b = board();
     const id = note(b);
@@ -164,7 +276,7 @@ describe("taking ink away", () => {
   it("removes whole records rather than flattening anything", () => {
     const b = board();
     const id = note(b);
-    const first = commitStroke(b, { item: id, tool: "marker", color: "#000", size: 6, samples: samples() })!;
+    const first = commitStroke(b, { item: id, tool: "marker", color: "#000", size: 6, samples: samples() })!.id;
     commitStroke(b, { item: id, tool: "marker", color: "#000", size: 6, samples: samples() });
 
     deleteStrokes(b, id, [first]);
