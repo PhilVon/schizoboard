@@ -1,4 +1,4 @@
-/**
+﻿/**
  * The item swing — phase 3, and the thing that makes pin count feel like
  * something.
  *
@@ -150,6 +150,29 @@ export class Torsion {
   /** What `held` contained last step, so that letting go can be noticed at all
    *  — see the release loop in `applyHeld`. */
   private readonly wasHeld = new Set<string>();
+  /**
+   * Every item this module has already had a look at.
+   *
+   * The swing is a response to a *change*: you pinned it, you turned it, a
+   * collaborator turned it. An item arriving is not a change to anything — it
+   * has no previous pose to swing away from, and `scene.swing` for a freshly
+   * allocated slot is zero, which `consider` would otherwise read as "hanging
+   * at the wrong angle" and animate to plumb from.
+   *
+   * That reads as alive for one item and as a whip-crack for a hundred, which
+   * is what a whole board arriving over sync is (T-110): the load path avoids
+   * it because `binding.start()` resyncs and `dirty.all` takes the settle
+   * branch, but a document that turns up *after* the binding is running marks
+   * its items dirty one at a time and every one of them swings in together.
+   * Undoing a delete is the same shape a frame at a time — the item comes back
+   * with its pin in one entry, into a slot whose swing has been reset to zero.
+   *
+   * So first sight settles and everything after it considers. That is the same
+   * rule `dirty.all` states for a load, per item and without needing to know
+   * how many arrived at once — a count would want a threshold, and how many
+   * items make an arrival a load is a number nobody can name.
+   */
+  private readonly seen = new Set<string>();
   private accumulator = 0;
 
   /** How many items are mid-swing. The dev HUD's cheapest assertion that this
@@ -196,6 +219,7 @@ export class Torsion {
     this.swinging.clear();
     this.frozen.clear();
     this.wasHeld.clear();
+    this.seen.clear();
     this.accumulator = 0;
   }
 
@@ -301,6 +325,13 @@ export class Torsion {
     const slot = scene.slotOf(id);
     if (slot === undefined) {
       this.swinging.delete(id);
+      this.seen.delete(id);
+      return;
+    }
+    // Never simulated before, so there is nothing to swing away from — see
+    // `seen`. Put it where it hangs and let the next change animate it.
+    if (!this.seen.has(id)) {
+      this.settle(scene, dirty, id, held);
       return;
     }
     if (scene.pinCount(id) !== 1) {
@@ -330,6 +361,7 @@ export class Torsion {
     if (held.has(id)) return;
     const slot = scene.slotOf(id);
     if (slot === undefined) return;
+    this.seen.add(id);
     this.swinging.delete(id);
     const rest = scene.pinCount(id) === 1 ? this.restOf(scene, slot, id) : null;
     if (rest) this.write(scene, dirty, id, slot, rest.eq, rest);

@@ -1857,9 +1857,17 @@ describe("pulling a pin out of a string", () => {
  * document never held.
  */
 describe("moving a pin between items that hang", () => {
-  /** A 200-square on one pin at its top left, settled with no motion the way a
-   *  load is, which leaves it a long way from its authored rotation. */
-  function hang(id: string, x: number, y: number): void {
+  /**
+   * A 200-square on one pin at its top left, settled with no motion the way a
+   * load is, which leaves it a long way from its authored rotation.
+   *
+   * Returns the `Torsion` that settled it, because a test stepping phase 3
+   * again afterwards has to use *that* one: first sight settles rather than
+   * swings (T-110), so a fresh module would treat an item that has been on the
+   * board all along as one that had just arrived, and take the load branch in
+   * the middle of a gesture.
+   */
+  function hang(id: string, x: number, y: number): Torsion {
     put(id, x, y, 200, 200);
     scene.putPin({
       id: `${id}-hook`,
@@ -1872,8 +1880,10 @@ describe("moving a pin between items that hang", () => {
       wy: y - 60,
     });
     dirty.all = true;
-    new Torsion().step(scene, dirty, 16);
+    const sim = new Torsion();
+    sim.step(scene, dirty, 16);
     scene.layoutPins();
+    return sim;
   }
 
   function drawn(id: string): WritePose {
@@ -2007,7 +2017,7 @@ describe("moving a pin between items that hang", () => {
    * swinging.
    */
   it("settles the item for a pin moved within it, so the paper does not jump", () => {
-    hang("a", 0, 0);
+    const sim = hang("a", 0, 0);
     const before = drawn("a");
 
     down(-80, -60);
@@ -2021,7 +2031,7 @@ describe("moving a pin between items that hang", () => {
     // its equilibrium, which is the one thing that would hide a jump.
     dirty.clear();
     dirty.item("a");
-    new Torsion().step(scene, dirty, 0);
+    sim.step(scene, dirty, 0);
     const after = drawn("a");
     expect(after.x).toBeCloseTo(before.x, 3);
     expect(after.y).toBeCloseTo(before.y, 3);

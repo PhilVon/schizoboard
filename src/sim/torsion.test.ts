@@ -42,8 +42,24 @@ function frame(
 }
 
 /**
+ * Let the module see the item once, so that what happens next is a change to
+ * something already on the board.
+ *
+ * First sight settles rather than swings (T-110) — an arriving item has no
+ * previous pose to swing away from, and treating one as an event is what made
+ * a whole board coming in over sync swing itself into place. Every swing in
+ * the app is a *second* thing happening to an item that is already there: you
+ * pinned it, you turned it, a collaborator moved its pin. So a test that wants
+ * a swing has to arrive first, exactly as the app does.
+ */
+function arrive(id: string): void {
+  frame([id]);
+}
+
+/**
  * Run until nothing is moving. The first frame is unconditional: the item is
  * asleep until something dirties it, which is the whole point of the module.
+ * It doubles as `arrive` for an item the module has not met.
  *
  * `swing` is a `Float32Array`, so nothing read out of it is worth asserting
  * past about six decimal places â€” 0.35 comes back as 0.3499999940395355.
@@ -179,6 +195,7 @@ describe("swinging and settling", () => {
   it("overshoots the equilibrium and comes back, two or three times", () => {
     const slot = put("a", { rot: 0 });
     pin("p", "a", 0, -80);
+    arrive("a");
     const start = 0.6;
     scene.swing[slot] = start;
 
@@ -200,6 +217,7 @@ describe("swinging and settling", () => {
   it("is visibly finished in about two seconds, and asleep soon after", () => {
     const slot = put("a", { rot: 0 });
     pin("p", "a", 0, -80);
+    arrive("a");
     scene.swing[slot] = 0.6;
     frame(["a"]);
 
@@ -262,9 +280,73 @@ describe("swinging and settling", () => {
     expect(sim.awake).toBe(0);
   });
 
+  /**
+   * T-110. The load path is safe because `binding.start()` resyncs and takes
+   * the `dirty.all` branch above. A document that arrives *after* the binding
+   * is running — the sync path, T-68 onward — has no such moment: the binding
+   * marks each item dirty as it lands, one at a time, and the whole board
+   * swings itself into place. That is the whip-crack AC-62 rules out for
+   * ropes, one layer up.
+   */
+  it("places a board that arrives mid-session, one dirty item at a time", () => {
+    const ids = ["a", "b", "c"];
+    const slots = ids.map((id, i) => {
+      const slot = put(id, { rot: 0.35 + i * 0.1 });
+      pin(`pin-${id}`, id, 0, -80);
+      return slot;
+    });
+
+    // Deliberately not `dirty.everything()`: nothing on the sync path calls it.
+    frame(ids);
+
+    expect(sim.awake).toBe(0);
+    slots.forEach((slot, i) => {
+      expect(scene.swing[slot]).toBeCloseTo(-(0.35 + i * 0.1), 6);
+    });
+  });
+
+  /** The same shape a frame at a time: the item comes back with its pin in one
+   *  undo entry, into a slot whose swing has been reset to zero. */
+  it("places an item that comes back from an undo", () => {
+    put("a", { rot: 0.35 });
+    pin("p", "a", 0, -80);
+    settle("a");
+
+    scene.removeItem("a");
+    scene.removePin("p");
+    frame(["a"]);
+
+    const back = put("a", { rot: 0.35 });
+    pin("p", "a", 0, -80);
+    frame(["a"]);
+
+    expect(sim.awake).toBe(0);
+    expect(scene.swing[back]).toBeCloseTo(-0.35, 6);
+  });
+
+  /**
+   * And the gesture all of that must not cost: DESIGN section 5.5's "drop the
+   * item and it swings". Pinning something already on the board is a change to
+   * it, so it swings — first sight is the only thing that does not.
+   */
+  it("swings an item that gets its first pin while it is on the board", () => {
+    const slot = put("a", { rot: 0.5 });
+    arrive("a");
+    expect(sim.awake).toBe(0);
+    expect(scene.swing[slot]).toBe(0);
+
+    pin("p", "a", 0, -80);
+    frame(["a"]);
+    expect(sim.awake).toBe(1);
+
+    settle("a");
+    expect(scene.swing[slot]).toBeCloseTo(-0.5, 3);
+  });
+
   it("survives a frame gap without exploding", () => {
     const slot = put("a", { rot: 0 });
     pin("p", "a", 0, -80);
+    arrive("a");
     scene.swing[slot] = 0.6;
     // A backgrounded tab. The accumulator is capped at four substeps, so this
     // is a third of a second of catching up, not thirty.
@@ -290,12 +372,19 @@ describe("turning about the pin", () => {
   }
 
   it("leaves the pin exactly where it was, through the whole swing", () => {
-    put("a", { rot: 0.9 });
+    const slot = put("a", { rot: 0.9 });
     pin("p", "a", -70, -50);
     // Where the pin is before anything swings: the stored pose, which is what
     // every peer agrees about and what the cork is holding.
     const before = pinWorld();
 
+    // Arriving puts it at its equilibrium with the drift that keeps the pin
+    // still; the swing is the event after that.
+    arrive("a");
+    expect(pinWorld().x).toBeCloseTo(before.x, 3);
+    expect(pinWorld().y).toBeCloseTo(before.y, 3);
+
+    scene.swing[slot] = 0.9;
     frame(["a"]);
     expect(sim.awake).toBe(1);
     for (let i = 0; i < 40; i++) {
