@@ -565,3 +565,69 @@ describe("a photograph moving under a string", () => {
     expect(ropes.awake).toBe(0);
   });
 });
+
+/**
+ * T-145. Every one of these settles, and none of them did.
+ *
+ * Draping put a hard non-penetration constraint next to a hard distance
+ * constraint, and position-based projection puts energy in every step - it
+ * moves `pos` and not `prev`, so its correction becomes velocity on the next
+ * one. A contact that carried velocity through unchanged took none back out,
+ * so a rope pressed against an edge by its own tension churned there for good:
+ * never under `ROPE_SLEEP_MOVE`, never asleep, and a permanently awake rope is
+ * the one thing DESIGN section 5.3 will not have. `CONTACT_FRICTION` is the
+ * missing half of the contact model and has the measurements.
+ *
+ * The table below is the evidence, kept as a test rather than as a note. It was
+ * written to find how widespread the reported case was and the answer was **six
+ * of these ten**, so it is worth far more standing guard than it was as a
+ * one-off measurement. Any future change that lets a rope fail to settle in any
+ * of these arrangements fails here rather than on somebody's board.
+ */
+describe("an item planted between a string's two pins", () => {
+  /** Hang a span, settle it, then plant an item across it and settle again. */
+  function settleWithItem(
+    slack: number,
+    pose: { x: number; y: number; w: number; h: number; rot?: number },
+    rightPinY = 0,
+  ): number {
+    pin("p1", 0, 0);
+    pin("p2", 600, rightPinY);
+    ropes.setString(scene, dirty, "s1", ["p1", "p2"], [slack], false, "cotton", "over");
+    ropes.wake("s1");
+    settle();
+
+    scene.putItem(
+      { id: "note", type: "note", z: "a0", seed: 1, assetId: null, createdBy: 1, createdAt: 0, text: "" },
+      { rot: 0, ...pose },
+    );
+    dirty.item("note");
+
+    for (let f = 0; f < 2000; f++) {
+      frame();
+      if (ropes.awake === 0) return f;
+    }
+    return -1;
+  }
+
+  const arrangements: Array<[string, () => number]> = [
+    // The one Phil left the board in: the chord runs through the middle.
+    ["the chord runs through the middle", () => settleWithItem(0.2, { x: 300, y: 20, w: 380, h: 210 }, -60)],
+    ["a small item under a big sag", () => settleWithItem(0.35, { x: 300, y: 60, w: 200, h: 140 })],
+    ["a tall item", () => settleWithItem(0.2, { x: 300, y: 0, w: 120, h: 400 })],
+    ["a wide flat item", () => settleWithItem(0.15, { x: 300, y: 40, w: 500, h: 90 })],
+    ["a tilted item", () => settleWithItem(0.25, { x: 300, y: 30, w: 300, h: 200, rot: 0.6 }, -40)],
+    ["an item above the rope", () => settleWithItem(0.3, { x: 300, y: -150, w: 300, h: 200 })],
+    ["an item below a taut rope", () => settleWithItem(0.05, { x: 300, y: 200, w: 300, h: 200 })],
+    ["an item two thirds along", () => settleWithItem(0.25, { x: 420, y: 40, w: 260, h: 240 }, -30)],
+    ["an item bigger than the sag", () => settleWithItem(0.4, { x: 300, y: 0, w: 560, h: 320 })],
+    ["a clipped corner", () => settleWithItem(0.18, { x: 480, y: 90, w: 220, h: 180, rot: 0.3 })],
+  ];
+
+  for (const [name, run] of arrangements) {
+    it(`settles with ${name}`, () => {
+      const frames = run();
+      expect(frames, `${name}: still awake after 2000 frames`).toBeGreaterThanOrEqual(0);
+    });
+  }
+});

@@ -495,6 +495,8 @@ Because string physically lies *on top* of the items it crosses, there's no z-in
 
 `under` strings — string that a photograph was later pinned over — skip collision entirely and draw beneath the item layer.
 
+**A contact has friction.** String on paper does not slide freely, and the simulation said it did until it was measured. A contact carries the particle's velocity through unchanged so that the correction is not also an impulse — which avoids a bounce and removes no energy at all. Meanwhile position-based projection puts energy *in* on every step, so a rope pressed against an edge by its own tension churns there for good: never under the sleep threshold, never asleep. With an item planted between a string's two pins, **six of ten arrangements never settled**. Bleeding a slice of the speed off at each contact fixes all ten, and is what a real string on real paper does anyway.
+
 Collision is off for sleeping ropes, which is nearly all of them. Two consequences fall out of that and both are load-bearing:
 
 - **A rope wakes when an item near it moves**, or nothing happens at all — a photograph dragged under a settled string would pass straight through it. The waking test is the *swept* rectangle of the move, so taking a photograph away wakes the string that was resting on it.

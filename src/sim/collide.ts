@@ -45,7 +45,7 @@
  */
 
 import { CellGrid, type CellRange } from "@/lib/cellgrid";
-import { ROPE_SPACING } from "@/sim/tuning";
+import { CONTACT_FRICTION, ROPE_SPACING } from "@/sim/tuning";
 import type { DirtySets } from "@/state/dirty";
 import type { Bounds, Scene } from "@/state/scene";
 
@@ -458,14 +458,23 @@ export class Draper {
    * before it is integrated once, so applying it is wasted work that would also
    * make a pin *look* like it had moved to anything reading the particle back.
    *
-   * ## Why `prev` moves with `pos`
+   * ## Why `prev` moves with `pos`, and why that is not enough
    *
    * A Verlet particle's velocity *is* `pos - prev`, so moving `pos` alone and
    * leaving `prev` where it was hands the particle the whole correction as
    * speed — it is fired away from the photograph it just touched, and a rope
    * resting on one buzzes instead of resting. Moving both by the same vector
-   * carries the velocity through the contact unchanged: no bounce, no friction,
-   * and the rope's own damping bleeds off the rest.
+   * carries the velocity through the contact unchanged, which is the no-bounce
+   * half of a contact model.
+   *
+   * The other half is friction, and leaving it out is what let ropes run
+   * forever. Projection puts energy *in* every step — it moves `pos` and not
+   * `prev`, so the correction becomes velocity on the next one — and a
+   * frictionless contact takes none out, so a rope pressed against an edge by
+   * its own tension churns there for good and never sleeps. Six of ten
+   * geometries with an item between a string's two pins did exactly that. So
+   * the contact also bleeds speed: see `CONTACT_FRICTION`, which is where the
+   * measurement is.
    */
   resolve(pos: Float64Array, prev: Float64Array, at: number, count: number): void {
     const last = at + (count - 1) * 2;
@@ -506,8 +515,13 @@ export class Draper {
         const dy = cy + ex * sin + ey * cos - py;
         pos[i] = px + dx;
         pos[i + 1] = py + dy;
-        prev[i] = prev[i]! + dx;
-        prev[i + 1] = prev[i + 1]! + dy;
+        // `prev + dx` carries the velocity through the contact, so the
+        // correction is not also an impulse. The second term bleeds a slice of
+        // that velocity off, so the contact is not frictionless either — and
+        // since the correction shifts both by `dx`, what is left to bleed is
+        // simply the speed the particle arrived with.
+        prev[i] = prev[i]! + dx + (px - prev[i]!) * CONTACT_FRICTION;
+        prev[i + 1] = prev[i + 1]! + dy + (py - prev[i + 1]!) * CONTACT_FRICTION;
       }
     }
   }
