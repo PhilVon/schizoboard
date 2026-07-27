@@ -17,9 +17,9 @@ import * as Y from "yjs";
 
 import { freshId, mutate, type BoardDoc } from "@/crdt/doc";
 import { Origin } from "@/crdt/origins";
-import { boardToLocal, localToBoard, removePinsFromStrings } from "@/crdt/ops/cascade";
+import { boardToLocal, removePinsFromStrings } from "@/crdt/ops/cascade";
 import { writePoses, type Pose } from "@/crdt/ops/items";
-import { readItem, readPin, type PinKind, type YMap } from "@/crdt/schema";
+import { readItem, type PinKind, type YMap } from "@/crdt/schema";
 
 /** Board units in from the top edge, where a default pin goes. */
 export const DEFAULT_PIN_INSET = 16;
@@ -204,23 +204,11 @@ export function reparentPin(
 /**
  * Where a pin actually is, in board coordinates.
  *
- * A pin whose parent has vanished "renders as free-floating at its last known
- * board position, computed locally with no write" (DATA-MODEL section 8.1) —
- * so a missing parent resolves to the stored coordinates rather than to an
- * error. Invariant 5.
+ * Lives in `cascade.ts` now, because the slack merge needs it and a cascade may
+ * not import an op. Re-exported here, which is where everything that asks the
+ * question already looks.
  */
-export function pinWorldPosition(board: BoardDoc, pinId: string): { x: number; y: number } | null {
-  const pinMap = board.pins.get(pinId);
-  if (!pinMap) return null;
-  const pin = readPin(pinId, pinMap);
-  if (!pin) return null;
-  if (pin.parent === null) return { x: pin.lx, y: pin.ly };
-
-  const itemMap = board.items.get(pin.parent);
-  const item = itemMap ? readItem(pin.parent, itemMap) : null;
-  if (!item) return { x: pin.lx, y: pin.ly };
-  return localToBoard(pin.lx, pin.ly, item.x, item.y, item.rot);
-}
+export { pinWorldPosition } from "@/crdt/ops/cascade";
 
 /**
  * Delete pins, healing every string that ran through them, and settle any item

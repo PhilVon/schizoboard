@@ -470,6 +470,190 @@ describe("cascades", () => {
   });
 });
 
+/**
+ * > the neighbouring segments merge, with rest lengths summed and converted
+ * > back to a ratio against the new chord — DATA-MODEL section 5.3
+ *
+ * The inverse of a mid-string insertion's split. Without it the surviving node
+ * keeps only its own `slackAfter` and the other gap's length is thrown away, so
+ * pulling a pin out of a draped run hauls the whole thing tight — measured at
+ * up to 74 screen pixels of lift on a real board (T-131).
+ */
+describe("merging slack when a pin between two others goes", () => {
+  /** Free pins along y=0 at the given x, and a run through them. */
+  function runThrough(b: BoardDoc, xs: readonly number[], slacks: readonly number[], closed = false) {
+    const pins = xs.map((x) => createPin(b, { parent: null, lx: x, ly: 0 }));
+    const id = `run-${xs.join("-")}`;
+    b.doc.transact(() => {
+      const nodes = new Y.Array<Y.Map<unknown>>();
+      pins.forEach((pin, i) => {
+        const node = new Y.Map<unknown>();
+        node.set("nodeId", `n${i}`);
+        node.set("pin", pin);
+        node.set("slackAfter", slacks[i] ?? 0.2);
+        nodes.push([node]);
+      });
+      const s = new Y.Map<unknown>();
+      s.set("nodes", nodes);
+      s.set("closed", closed);
+      b.strings.set(id, s);
+    }, Origin.LOCAL_USER);
+    return { id, pins };
+  }
+
+  /** `slackAfter` of every surviving node, in run order. */
+  function slacks(b: BoardDoc, id: string): number[] {
+    const nodes = b.strings.get(id)!.get("nodes") as Y.Array<Y.Map<unknown>>;
+    return [...nodes].map((n) => n.get("slackAfter") as number);
+  }
+
+  /** What the run is actually made of: chord × (1 + slack), summed. */
+  function restLength(b: BoardDoc, id: string): number {
+    const nodes = b.strings.get(id)!.get("nodes") as Y.Array<Y.Map<unknown>>;
+    const closed = b.strings.get(id)!.get("closed") === true;
+    const at = [...nodes].map((n) => pinWorldPosition(b, n.get("pin") as string)!);
+    const gaps = closed ? at.length : at.length - 1;
+    let total = 0;
+    for (let i = 0; i < gaps; i++) {
+      const p = at[i]!;
+      const q = at[(i + 1) % at.length]!;
+      total += Math.hypot(q.x - p.x, q.y - p.y) * (1 + ([...nodes][i]!.get("slackAfter") as number));
+    }
+    return total;
+  }
+
+  it("sums the two rest lengths against the new chord", () => {
+    const b = board();
+    const { id, pins } = runThrough(b, [0, 50, 200], [0.2, 0.5]);
+    // 50 × 1.2 + 150 × 1.5 = 285, over a new chord of 200.
+    deletePins(b, [pins[1]!]);
+    expect(slacks(b, id)[0]).toBeCloseTo(285 / 200 - 1, 9);
+  });
+
+  /** The property the arithmetic exists for, stated directly: the string is
+   *  the same length after as before, so its sag cannot jump. */
+  it("conserves the run's total length", () => {
+    const b = board();
+    const { id, pins } = runThrough(b, [0, 50, 200], [0.2, 0.5]);
+    const before = restLength(b, id);
+    deletePins(b, [pins[1]!]);
+    expect(restLength(b, id)).toBeCloseTo(before, 6);
+  });
+
+  /**
+   * A node at either *end* of an open run takes its gap with it: that length of
+   * string went with the pin, and the run simply stops one stop sooner.
+   */
+  it("leaves the survivors alone when the node was on the end", () => {
+    const b = board();
+    const { id, pins } = runThrough(b, [0, 50, 200], [0.2, 0.5]);
+    deletePins(b, [pins[0]!]);
+    // Both survivors keep the numbers they had — the last node's `slackAfter`
+    // is the trailing one an open run never uses.
+    expect(slacks(b, id)).toEqual([0.5, 0.2]);
+  });
+
+  /** A closed run has no ends, so its first node is a middle one too. */
+  it("wraps on a closed run, where every node is a middle node", () => {
+    const b = board();
+    const { id, pins } = runThrough(b, [0, 100, 300], [0.2, 0.5, 0.4], true);
+    const before = restLength(b, id);
+    deletePins(b, [pins[0]!]);
+    // The gap that ended at the deleted node was the one from node 2, so node 2
+    // is the survivor that inherits.
+    expect(restLength(b, id)).toBeCloseTo(before, 6);
+    expect(slacks(b, id)[1]).not.toBe(0.4);
+  });
+
+  it("folds three gaps into one when two adjacent nodes go together", () => {
+    const b = board();
+    const { id, pins } = runThrough(b, [0, 50, 120, 400], [0.2, 0.5, 0.3]);
+    const before = restLength(b, id);
+    deletePins(b, [pins[1]!, pins[2]!]);
+    expect(slacks(b, id)).toHaveLength(2);
+    expect(restLength(b, id)).toBeCloseTo(before, 6);
+  });
+
+  /** AC-283. An item deleted takes its pins with it, and that is the cascade
+   *  most likely to run over a run somebody was not looking at. */
+  it("merges when the pin goes as part of its item's cascade", () => {
+    const b = board();
+    const left = createPin(b, { parent: null, lx: 0, ly: 0 });
+    const right = createPin(b, { parent: null, lx: 200, ly: 0 });
+    const middle = polaroid(b, 50, 0);
+    const id = "cascaded";
+    b.doc.transact(() => {
+      const nodes = new Y.Array<Y.Map<unknown>>();
+      [
+        [left, 0.2],
+        [middle.pinId!, 0.5],
+        [right, 0.2],
+      ].forEach(([pin, slack], i) => {
+        const node = new Y.Map<unknown>();
+        node.set("nodeId", `n${i}`);
+        node.set("pin", pin);
+        node.set("slackAfter", slack);
+        nodes.push([node]);
+      });
+      const s = new Y.Map<unknown>();
+      s.set("nodes", nodes);
+      b.strings.set(id, s);
+    }, Origin.LOCAL_USER);
+
+    const before = restLength(b, id);
+    deleteItems(b, [middle.itemId]);
+    expect(b.pins.has(middle.pinId!)).toBe(false);
+    expect(restLength(b, id)).toBeCloseTo(before, 6);
+  });
+
+  /**
+   * The chord is measured where a *parented* pin actually is, which is its
+   * item's pose applied to its local coordinates — not the local numbers
+   * themselves. Reading those raw would measure a chord in the wrong frame and
+   * write a slack off by however far the item is from the origin.
+   */
+  it("measures the chord in board space, through the item's pose", () => {
+    const b = board();
+    const anchor = polaroid(b, 1000, 0);
+    const where = pinWorldPosition(b, anchor.pinId!)!;
+    const left = createPin(b, { parent: null, lx: where.x - 200, ly: where.y });
+    const right = createPin(b, { parent: null, lx: where.x + 200, ly: where.y });
+    const id = "framed";
+    b.doc.transact(() => {
+      const nodes = new Y.Array<Y.Map<unknown>>();
+      [
+        [left, 0.2],
+        [anchor.pinId!, 0.2],
+        [right, 0.2],
+      ].forEach(([pin, slack], i) => {
+        const node = new Y.Map<unknown>();
+        node.set("nodeId", `n${i}`);
+        node.set("pin", pin);
+        node.set("slackAfter", slack);
+        nodes.push([node]);
+      });
+      const s = new Y.Map<unknown>();
+      s.set("nodes", nodes);
+      b.strings.set(id, s);
+    }, Origin.LOCAL_USER);
+
+    deletePins(b, [anchor.pinId!]);
+    // Two 200-unit gaps at 0.2 merged over a 400-unit chord is still 0.2 —
+    // which it only is if both chords were measured where the pins really are.
+    expect(slacks(b, id)[0]).toBeCloseTo(0.2, 9);
+  });
+
+  /** A pin that has gone missing takes its chord with it, and a slack guessed
+   *  from half a run would be worse than the one already written down. */
+  it("leaves the slack alone when a neighbouring pin cannot be placed", () => {
+    const b = board();
+    const { id, pins } = runThrough(b, [0, 50, 200], [0.2, 0.5]);
+    b.doc.transact(() => b.pins.delete(pins[2]!), Origin.JANITOR);
+    deletePins(b, [pins[1]!]);
+    expect(slacks(b, id)[0]).toBe(0.2);
+  });
+});
+
 describe("z-order ops", () => {
   it("raises a selection without scrambling its internal order", () => {
     const b = board();
