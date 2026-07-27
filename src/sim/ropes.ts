@@ -854,11 +854,14 @@ export class RopeSet {
       box.minY = segment.minY;
       box.maxX = segment.maxX;
       box.maxY = segment.maxY;
+      const last = segment.at + (segment.count - 1) * 2;
       const found = this.draper.prepare(
         scene,
         box,
-        anchorSlot(scene, segment.a),
-        anchorSlot(scene, segment.b),
+        this.pos[segment.at]!,
+        this.pos[segment.at + 1]!,
+        this.pos[last]!,
+        this.pos[last + 1]!,
         this.lift,
         segment.at / 2,
       );
@@ -897,14 +900,10 @@ export class RopeSet {
       box.maxX = Math.max(segment.maxX, ax, bx);
       box.maxY = Math.max(segment.maxY, ay, by);
 
-      const found = this.draper.prepare(
-        scene,
-        box,
-        anchorSlot(scene, segment.a),
-        anchorSlot(scene, segment.b),
-        this.lift,
-        segment.at / 2,
-      );
+      // Where the ends are *going*, not where they were: the endpoints are
+      // walked onto these over the step, so an item that will be holding one of
+      // them by the end of it must not be an obstacle to it during it.
+      const found = this.draper.prepare(scene, box, ax, ay, bx, by, this.lift, segment.at / 2);
       if (found > 0) {
         segment.touching = true;
         return this.draper;
@@ -1071,19 +1070,6 @@ export class RopeSet {
     reusable.push(segment.at);
     segment.count = 0;
   }
-}
-
-/**
- * The item slot a pin is stuck into, or −1 for one in the bare cork.
- *
- * What `Draper.prepare` needs to know so a string does not drape over the
- * photograph it is tied to — the reasoning is there, because that is where the
- * consequence is.
- */
-function anchorSlot(scene: Scene, pinId: string): number {
-  const parent = scene.pins.get(pinId)?.parent;
-  if (parent === null || parent === undefined) return -1;
-  return scene.slotOf(parent) ?? -1;
 }
 
 /**

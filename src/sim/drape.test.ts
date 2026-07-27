@@ -415,6 +415,68 @@ describe("which part of a string is lying on something", () => {
 });
 
 /**
+ * T-141, reported off a real board: a string whose pin ended up under a note
+ * never slept and moved erratically, and its middle segment draped awkwardly.
+ *
+ * One cause for all three. An endpoint is infinite mass — seated on its pin
+ * every micro-step and never integrated — so a pin *inside* a silhouette is an
+ * endpoint that cannot be pushed out of it. Pushing its neighbours out anyway
+ * is a fight nobody wins: sixteen times a fixed step the particle beside the
+ * pin is shoved to the paper's edge and the link projection drags it back
+ * toward the pin in the middle.
+ *
+ * The exclusion used to be about parentage, which is only a proxy for this — a
+ * parented pin is always inside its item, so it worked for every string pinned
+ * to a photograph and missed the free pin somebody drops a note on top of.
+ */
+describe("a string with a pin under an item", () => {
+  /** A three-pin run whose middle pin is free and in the cork, with a note
+   *  later placed centred on it. */
+  function runWithPinAt(x: number, y: number): void {
+    pin("p1", LEFT, 0);
+    pin("mid", x, y);
+    pin("p2", RIGHT, 0);
+    ropes.setString(scene, dirty, "s1", ["p1", "mid", "p2"], [SLACK, SLACK], false, "cotton", "over");
+    ropes.wake("s1");
+    settle();
+    item("note", { x, y });
+    dirty.item("note");
+  }
+
+  it("settles instead of fighting an anchor it can never push out", () => {
+    runWithPinAt(200, 160);
+
+    let frames = 0;
+    for (; frames < 2000; frames++) {
+      frame();
+      if (ropes.awake === 0) break;
+    }
+    expect(ropes.awake, `still awake after ${frames} frames`).toBe(0);
+  });
+
+  /**
+   * The shape half of the same report. Left to fight, the rope came to rest
+   * running the long way round the outside of the paper and then jumping
+   * straight to a pin in the middle of it.
+   */
+  it("hangs to its pin rather than routing around the outside of the note", () => {
+    runWithPinAt(200, 160);
+    const pose = settle();
+
+    // The note spans y 60..260. A rope that went round the outside pooled along
+    // the bottom edge; one that hangs to its pin never goes below it by much.
+    for (const [, y] of pose) expect(y).toBeLessThan(260 - 20);
+  });
+
+  /** And it is still lying on the note, which is what the shadow says. */
+  it("is still marked as lying on the note", () => {
+    runWithPinAt(200, 160);
+    settle();
+    expect(lifts("s1").some(Boolean)).toBe(true);
+  });
+});
+
+/**
  * T-140. `seed` lays the analytic catenary and a catenary has never heard of a
  * photograph, so a board whose string was resting on one comes back with the
  * string *through* it — and asleep, so it stays that way.

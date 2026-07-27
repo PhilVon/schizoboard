@@ -377,8 +377,7 @@ export class Draper {
    * are — zero meaning the solver should not be handed this at all.
    *
    * `box` is where the rope is now; `QUERY_MARGIN` covers where it is about to
-   * be. `skipA` and `skipB` are the slots of the items the segment's two end
-   * pins are parented to, or −1 for a pin in the bare cork.
+   * be. `ax, ay` and `bx, by` are where the segment's two end pins are.
    *
    * `lift` and `liftAt` are where to record which of this rope's particles end
    * up lying on something — one byte per particle, `liftAt` being the index of
@@ -386,26 +385,40 @@ export class Draper {
    * produce here, because "is this particle on a photograph" is the test the
    * push-out is already doing.
    *
-   * ## Why a string never drapes over the item it is pinned to
+   * ## Why an item holding one of this rope's ends is not an obstacle to it
    *
-   * A parented pin's world position is derived from its item's pose, so the pin
-   * is *inside* that item's silhouette — always, by construction. Pushing the
-   * particles next to it out would kink the string hard around the photograph's
-   * edge the instant it leaves its own pin, on very nearly every string on the
-   * board, because pinning string to photographs is what the application is for.
+   * An endpoint is infinite mass: the solver seats it on its pin every
+   * micro-step and never integrates it (`sim/verlet.ts`). So if that pin is
+   * *inside* a silhouette, the endpoint cannot be pushed out of it — and
+   * pushing its neighbours out anyway is a fight nobody wins. Sixteen times a
+   * fixed step the particle next to the pin is shoved to the paper's edge, and
+   * the link projection drags it straight back toward the pin in the middle.
+   * The rope never falls under `ROPE_SLEEP_MOVE`, so it never sleeps, and it
+   * settles into a shape that runs the long way round the outside of the paper
+   * before jumping to a pin in the middle of it. Both were seen on a real
+   * board.
    *
-   * So the item a segment is tied to is not an obstacle to that segment. It is
-   * still something the string is *lying on*, so it stays a candidate and keeps
-   * its lift; only the push-out is skipped. The price is a long string that sags
-   * back across its own photograph and cuts through it, which takes a
+   * The condition is therefore geometric and not about parentage. Parentage was
+   * the first version of this rule and it is only a proxy: a parented pin is
+   * always inside its item, which is why the proxy worked for every string that
+   * is pinned to a photograph — but a *free* pin that somebody later puts a
+   * note on top of is inside an item it is not a child of, and that is the case
+   * that thrashed.
+   *
+   * The item stays a candidate rather than being dropped, because the string is
+   * genuinely lying on it and that is what the lift shadow is about. Only the
+   * push-out is skipped. The price is a long string that sags back across the
+   * same photograph its end is pinned to and cuts through it, which takes a
    * deliberately slack run to arrange and is a great deal less visible than a
    * kink at every pin.
    */
   prepare(
     scene: Scene,
     box: Bounds,
-    skipA: number,
-    skipB: number,
+    ax: number,
+    ay: number,
+    bx: number,
+    by: number,
     lift: Uint8Array,
     liftAt: number,
   ): number {
@@ -444,7 +457,7 @@ export class Draper {
       this.minY[n] = this.cy[n]! - ry;
       this.maxX[n] = this.cx[n]! + rx;
       this.maxY[n] = this.cy[n]! + ry;
-      this.skip[n] = slot === skipA || slot === skipB ? 1 : 0;
+      this.skip[n] = this.holds(n, ax, ay) || this.holds(n, bx, by) ? 1 : 0;
       // Overwritten in place so the dedupe scan above reads what was kept
       // rather than what the index happened to return.
       this.slots[n] = slot;
@@ -557,6 +570,24 @@ export class Draper {
         prev[i + 1] = prev[i + 1]! + dy;
       }
     }
+  }
+
+  /**
+   * Is candidate `c` holding this point inside itself?
+   *
+   * Grown by `LIFT_SKIN`, so a pin sitting exactly on a photograph's edge —
+   * which is where a pin pushed through a corner sits — gives the same answer
+   * two frames running instead of flipping the item between obstacle and not.
+   */
+  private holds(c: number, x: number, y: number): boolean {
+    const ox = x - this.cx[c]!;
+    const oy = y - this.cy[c]!;
+    const cos = this.cos[c]!;
+    const sin = this.sin[c]!;
+    return (
+      Math.abs(ox * cos + oy * sin) <= this.hw[c]! + LIFT_SKIN &&
+      Math.abs(oy * cos - ox * sin) <= this.hh[c]! + LIFT_SKIN
+    );
   }
 
   /**
