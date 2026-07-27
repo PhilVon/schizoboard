@@ -24,11 +24,33 @@
 import * as Y from "yjs";
 
 import type { BoardDoc } from "@/crdt/doc";
-import { readItem, readPin, readString, type YMap } from "@/crdt/schema";
+import { readItem, readPin, readStroke, readString, type YMap } from "@/crdt/schema";
+import type { InkSample } from "@/lib/ink";
+import { unpackStroke } from "@/lib/strokepack";
 import type { DirtySets } from "@/state/dirty";
-import type { Scene } from "@/state/scene";
+import type { Scene, SceneStroke } from "@/state/scene";
 
 type DeepEvent = Y.YEvent<Y.AbstractType<unknown>>;
+
+/**
+ * The box round a stroke's points, measured here rather than read out of the
+ * record — see `SceneStroke.bbox` for why the stored one is not trusted.
+ */
+function boundsOfSamples(
+  samples: readonly InkSample[],
+): readonly [number, number, number, number] {
+  let x0 = Infinity;
+  let y0 = Infinity;
+  let x1 = -Infinity;
+  let y1 = -Infinity;
+  for (const p of samples) {
+    if (p.x < x0) x0 = p.x;
+    if (p.y < y0) y0 = p.y;
+    if (p.x > x1) x1 = p.x;
+    if (p.y > y1) y1 = p.y;
+  }
+  return [x0, y0, x1, y1];
+}
 
 export class Binding {
   private readonly board: BoardDoc;
@@ -67,7 +89,10 @@ export class Binding {
    */
   resync(): void {
     this.scene.clear();
-    for (const [id, map] of this.board.items) this.syncItem(id, map);
+    for (const [id, map] of this.board.items) {
+      this.syncItem(id, map);
+      this.syncStrokes(id);
+    }
     for (const [id, map] of this.board.pins) this.syncPin(id, map);
     for (const [id, map] of this.board.strings) this.syncString(id, map);
     this.scene.layoutPins();
@@ -178,19 +203,95 @@ export class Binding {
             // left dangling here is rendered free-floating, not cleaned up.
           } else {
             const map = this.board.items.get(id);
-            if (map) this.syncItem(id, map);
+            if (map) {
+              this.syncItem(id, map);
+              // An item arriving already has its ink — a paste, a peer's create,
+              // and the undo of a delete, which is the case that matters: the
+              // strokes come back inside the item's map in the same entry, and
+              // nothing below this line would otherwise notice.
+              this.syncStrokes(id);
+            }
           }
         }
         continue;
       }
 
-      // Anything nested: the item's own map, its text, its style, its strokes.
       const id = event.path[0];
       if (typeof id !== "string") continue;
+      /**
+       * Ink is the one nested thing under an item that does not go through
+       * `syncItem`, and the split is load-bearing rather than tidy.
+       *
+       * `syncItem` re-reads the whole entity, which is the right rule for the
+       * item's own fields and its text — see the note at the top of this file.
+       * Applied to ink it would decode every stroke on the item on every event
+       * that touched it, and the event that touches an item most is a drag: an
+       * annotated photograph moved across the board would unpack all of its ink
+       * sixty times a second for a change to `x` and `y`.
+       *
+       * The other half is which dirty set it raises. A change to an item's ink
+       * cannot move the item, so it must not raise `dirty.item` — `render/cull.ts`
+       * says so in as many words ("ink and rope dirt cannot move an item, so
+       * they cannot change the answer"), and raising it would re-cull and
+       * re-write a transform for a stroke.
+       */
+      if (event.path[1] === "strokes") {
+        this.syncStrokes(id);
+        continue;
+      }
+      // Anything else nested: the item's own map, its text, its style.
       const map = this.board.items.get(id);
       if (map) this.syncItem(id, map);
     }
   };
+
+  /**
+   * Re-read one item's ink.
+   *
+   * The whole collection, not the one stroke that changed: a stroke is
+   * immutable once written (DATA-MODEL section 6.2 — the only edits are adding
+   * and removing whole records), so "which strokes does this item have" is the
+   * only question worth asking, and asking it wholesale is what makes a removal
+   * land without a second code path.
+   *
+   * The unpack happens here rather than in the renderer. It runs once per edit;
+   * in the renderer it would run again for every item on every debounced
+   * zoom-end. See `SceneStroke`.
+   */
+  private syncStrokes(id: string): void {
+    const item = this.board.items.get(id);
+    const map = item?.get("strokes");
+    if (!(map instanceof Y.Map)) {
+      this.scene.putStrokes(id, []);
+      this.dirty.inkFor(id);
+      return;
+    }
+
+    const strokes: SceneStroke[] = [];
+    for (const [strokeId, record] of map as Y.Map<YMap>) {
+      const fields = readStroke(strokeId, record);
+      // A stroke nobody can make sense of is skipped, not repaired — the same
+      // rule the rest of this file follows (DATA-MODEL section 8.1).
+      if (!fields) continue;
+      const samples = unpackStroke(fields.pts);
+      if (samples.length === 0) continue;
+      strokes.push({
+        id: strokeId,
+        tool: fields.tool,
+        color: fields.color,
+        size: fields.size,
+        opacity: fields.opacity,
+        seed: fields.seed,
+        z: fields.z,
+        // Measured, not the record's — see `SceneStroke`.
+        bbox: boundsOfSamples(samples),
+        samples,
+      });
+    }
+
+    this.scene.putStrokes(id, strokes);
+    this.dirty.inkFor(id);
+  }
 
   /**
    * Any change anywhere inside `strings` re-reads the string it happened in.

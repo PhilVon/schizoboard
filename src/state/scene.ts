@@ -30,6 +30,7 @@
  * hand. If that ever stops being true the change is this file and nothing else.
  */
 
+import type { InkSample } from "@/lib/ink";
 import { rotateOut, type Point } from "@/lib/rotate";
 
 const INITIAL_CAPACITY = 256;
@@ -40,6 +41,28 @@ const scratch: Point = { x: 0, y: 0 };
 /** Handed back by `pinsOf` and `stringsThrough` when the index has no entry, so
  *  a caller never has to distinguish "none" from "not indexed". */
 const EMPTY_IDS: ReadonlySet<string> = new Set<string>();
+
+/** The same, for `strokesOf` — and it is the common case, because most items
+ *  have no ink at all (DESIGN section 6.5). */
+const EMPTY_STROKES: readonly SceneStroke[] = Object.freeze([]);
+
+/**
+ * Paint order within one item's ink: `z`, then the id.
+ *
+ * The same tie-break `crdt/zindex.ts`'s `compareOrder` ends on, written out here
+ * rather than imported for the reason the file header gives — the scene imports
+ * nothing from `crdt/`, and `render/items/dom.ts` re-states the same comparator
+ * for items for the same reason. Two peers can mint the same `z` for a stroke by
+ * drawing on the same photograph at the same moment; the id then decides, and it
+ * decides identically on both (invariant 9).
+ *
+ * There is no `createdBy` leg because a stroke does not carry one. The id is
+ * already unique and already agreed, which is all the tie-break needs.
+ */
+function compareStrokes(a: SceneStroke, b: SceneStroke): number {
+  if (a.z !== b.z) return a.z < b.z ? -1 : 1;
+  return a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
+}
 
 /** Cold fields — read when a view is built or rebuilt, not per frame. */
 export interface ItemCold {
@@ -61,6 +84,45 @@ export interface ItemPose {
   rot: number;
   w: number;
   h: number;
+}
+
+/**
+ * A committed stroke, as everything downstream of the document sees it.
+ *
+ * `tool` is a plain `string` rather than the union in `crdt/schema.ts`, like
+ * `PinNode.kind` and `StringNodes.material` and for the reason stated there: a
+ * type imported across the one-way boundary is a dependency imported across it.
+ *
+ * ## The samples are already unpacked
+ *
+ * The document holds a packed `Uint8Array` (DATA-MODEL section 6.1) and this
+ * holds the points. That is the one real decision in this type, and it is about
+ * where the varint decode runs: the renderer re-rasters an item's ink on every
+ * debounced zoom-end, so unpacking there would redo the decode for the whole
+ * board's ink on each one. Unpacking in the binding runs it once per stroke per
+ * edit, which is as few times as it can be run.
+ *
+ * ## And the box is measured, not copied
+ *
+ * `bbox` is measured off these samples rather than taken from the record. The
+ * stored one exists so that a board-ink tile can cull without unpacking, and it
+ * is a number a peer wrote; this side has already paid for the unpack and has no
+ * reason to trust it. A box one unit too small is a stroke clipped at the edge
+ * of its own canvas — the kind of wrong that nobody finds by looking, because
+ * the stroke is still there and still nearly right.
+ */
+export interface SceneStroke {
+  id: string;
+  tool: string;
+  color: string;
+  /** Board units, which are item-local units too. */
+  size: number;
+  opacity: number;
+  seed: number;
+  z: string;
+  /** `[x0, y0, x1, y1]`, round the points, in the item's local frame. */
+  bbox: readonly [number, number, number, number];
+  samples: readonly InkSample[];
 }
 
 /** Pins are not hot enough to be worth a typed array; there are fewer of them
@@ -215,6 +277,20 @@ export class Scene {
    * have, and for the same reason.
    */
   readonly strings = new Map<string, StringNodes>();
+
+  /**
+   * An item's committed ink, kept in `z` order — the paint order the renderer
+   * walks.
+   *
+   * Keyed by item id and not indexed in reverse, which is the one way this
+   * differs from `pins` and `strings`: a stroke is already *inside* its item in
+   * the document, so the owner is the key rather than a field to invert.
+   *
+   * An item with no ink has no entry at all rather than an empty array. Most
+   * items have none (DESIGN section 6.5), and the renderer's cheapest question —
+   * "is there anything to raster here?" — should be a map miss.
+   */
+  private readonly strokes = new Map<string, SceneStroke[]>();
 
   /**
    * The reverse of `PinNode.parent`: which pins hold each item.
@@ -389,6 +465,13 @@ export class Scene {
   removeItem(id: string): boolean {
     const slot = this.slots.get(id);
     if (slot === undefined) return false;
+    // Ink goes with the item, which is the opposite of what happens to its pins
+    // — and the asymmetry is the document's, not a choice made here. A pin is
+    // top-level and outlives its item (`Shift`+`Delete`); a stroke is nested
+    // inside the item's map and cannot outlive it. Nothing has to remember the
+    // strokes for undo either: an item that comes back brings its ink with it
+    // through the observer, in the same entry.
+    this.strokes.delete(id);
     this.slots.delete(id);
     this.ids[slot] = null;
     this.coldBySlot[slot] = null;
@@ -410,6 +493,45 @@ export class Scene {
       w: this.w[slot]!,
       h: this.h[slot]!,
     };
+  }
+
+  // --- ink ------------------------------------------------------------------
+
+  /**
+   * Replace an item's ink wholesale.
+   *
+   * A whole list rather than one stroke at a time, because that is what the
+   * binding has: any change inside an item's strokes map re-reads the map (the
+   * "re-read the whole entity" rule `crdt/binding.ts` states), and a stroke is
+   * immutable once written — there is no such thing as editing one, only adding
+   * and removing (DATA-MODEL section 6.2, "erasing deletes stroke records").
+   *
+   * Sorted here rather than trusted, so the renderer can walk the array and be
+   * painting in the document's own order.
+   */
+  putStrokes(itemId: string, strokes: readonly SceneStroke[]): void {
+    if (strokes.length === 0) {
+      this.strokes.delete(itemId);
+      return;
+    }
+    const sorted = [...strokes].sort(compareStrokes);
+    this.strokes.set(itemId, sorted);
+  }
+
+  /**
+   * An item's ink, in paint order. Empty — and always the *same* empty array —
+   * for an item with none, so a caller iterates without asking first.
+   *
+   * Live, like `pinsOf`. Read it and let it go; do not keep it across a frame.
+   */
+  strokesOf(itemId: string): readonly SceneStroke[] {
+    return this.strokes.get(itemId) ?? EMPTY_STROKES;
+  }
+
+  /** Is there anything to raster? The renderer's cheapest question, and for
+   *  most items the answer is no. */
+  hasInk(itemId: string): boolean {
+    return this.strokes.has(itemId);
   }
 
   // --- pins ---------------------------------------------------------------
@@ -727,6 +849,7 @@ export class Scene {
     this.slots.clear();
     this.pins.clear();
     this.strings.clear();
+    this.strokes.clear();
     this.byParent.clear();
     this.byPin.clear();
     this.ids.fill(null);
