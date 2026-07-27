@@ -14,15 +14,18 @@
  * the first, so the numbers asserted on are the simulation's own rather than
  * constants copied out of a run that happened to look right.
  *
- * ## Why every test wakes the rope by hand
+ * ## Sleep is half the feature
  *
  * A rope that is asleep is not stepped, so it does not collide either — and a
  * rope on a board where nothing has happened is always asleep. Putting a
- * photograph under a settled string therefore changes nothing at all until
- * something wakes the string, and nothing yet does: waking on a *disturbed
- * item* is T-139. Until it lands, `ropes.wake` stands in for it here, and these
- * tests are about where an awake rope comes to rest rather than about what
- * wakes it.
+ * photograph under a settled string has to *wake* it or nothing happens at all,
+ * which is T-139 and the last group below. The tests that are about resting
+ * rather than about waking let the arriving photograph do the waking, because
+ * that is what happens on a real board.
+ *
+ * The one place `ropes.wake` is still called by hand is the free-hanging
+ * baseline, where there is no photograph to do it and the point is to settle
+ * the rope through the same solver the draped runs go through.
  */
 
 import { beforeEach, describe, expect, it } from "vitest";
@@ -130,6 +133,22 @@ function photoWithTopAt(top: number, id = "photo"): void {
   item(id, { x: (LEFT + RIGHT) / 2, y: top + PHOTO_H / 2 });
 }
 
+/**
+ * A string hung across the span and left to settle, with the board's items
+ * indexed — which is the state every one of these tests starts a photograph
+ * arriving into.
+ *
+ * Settling first is not ceremony. A photograph landing on the very first frame
+ * a board is stepped lands while the item index is still being built from
+ * scratch, and a rebuild reports no *movement* because on the frame a board
+ * loads there has not been any. So the first frame is spent being a board.
+ */
+function settledSpan(id = "s1", layer = "over"): void {
+  span(id, layer);
+  ropes.wake(id);
+  settle(id);
+}
+
 describe("a rope crossing a photograph", () => {
   /** AC-81. */
   it("rests on its top edge instead of cutting through", () => {
@@ -137,9 +156,8 @@ describe("a rope crossing a photograph", () => {
     // Top edge halfway down the free sag, so the rope wants to be well inside
     // the paper and cannot be.
     const top = free / 2;
-    span();
+    settledSpan();
     photoWithTopAt(top);
-    ropes.wake("s1");
     const pose = settle();
 
     // Across the middle of the paper, the rope is *on* the top edge — not
@@ -154,9 +172,8 @@ describe("a rope crossing a photograph", () => {
   it("puts no part of itself inside the paper", () => {
     const free = freeSag();
     const top = free / 2;
-    span();
+    settledSpan();
     photoWithTopAt(top);
-    ropes.wake("s1");
 
     for (const [x, y] of settle()) {
       const inside =
@@ -173,9 +190,8 @@ describe("a rope crossing a photograph", () => {
   it("still hangs either side of what it is resting on", () => {
     const free = freeSag();
     const top = free / 2;
-    span();
+    settledSpan();
     photoWithTopAt(top);
-    ropes.wake("s1");
     const pose = settle();
 
     const beyond = pose.filter(([x]) => x < PHOTO_LEFT || x > PHOTO_RIGHT).map(([, y]) => y);
@@ -188,20 +204,20 @@ describe("a rope crossing a photograph", () => {
    */
   it("passes straight through it when the string is tucked behind", () => {
     const free = freeSag();
-    span("s1", "under");
+    settledSpan("s1", "under");
     photoWithTopAt(free / 2);
     ropes.wake("s1");
-    expect(lowest(settle())).toBeCloseTo(free, 1);
+    expect(Math.abs(lowest(settle()) - free)).toBeLessThan(SLOP);
   });
 
   /** A rope with nothing near it must hang exactly where it always did — the
    *  guard against draping quietly changing every string on the board. */
   it("hangs where it always did when there is nothing in the way", () => {
     const free = freeSag();
-    span();
+    settledSpan();
     item("elsewhere", { x: 3000, y: 3000 });
     ropes.wake("s1");
-    expect(lowest(settle())).toBeCloseTo(free, 1);
+    expect(Math.abs(lowest(settle()) - free)).toBeLessThan(SLOP);
   });
 
   /**
@@ -212,11 +228,10 @@ describe("a rope crossing a photograph", () => {
   it("rests on the edge of a photograph that has been turned", () => {
     const free = freeSag();
     const top = free / 2;
-    span();
+    settledSpan();
     // A quarter turn: 240 x 200 becomes 200 wide by 240 tall, so the paper now
     // reaches from 100 to 300 rather than from 80 to 320.
     item("photo", { x: (LEFT + RIGHT) / 2, y: top + PHOTO_W / 2, rot: Math.PI / 2 });
-    ropes.wake("s1");
     const pose = settle();
 
     const middle = pose.filter(([x]) => x > 120 && x < 280);
@@ -235,9 +250,8 @@ describe("a rope crossing a photograph", () => {
    */
   it("goes to sleep resting on it", () => {
     const free = freeSag();
-    span();
+    settledSpan();
     photoWithTopAt(free / 2);
-    ropes.wake("s1");
 
     let frames = 0;
     for (; frames < 3000; frames++) {
@@ -286,5 +300,104 @@ describe("the photograph a string is pinned to", () => {
     const middle = pose.filter(([x]) => x > PHOTO_LEFT + 20 && x < PHOTO_RIGHT - 20);
     expect(middle.length).toBeGreaterThan(4);
     for (const [, y] of middle) expect(y).toBeCloseTo(top, 1);
+  });
+});
+
+/**
+ * T-139. Everything above is about where an awake rope comes to rest, and a
+ * rope on a board where nothing has happened is not awake — so all of it is
+ * dead code unless a moving photograph is an event the simulation hears about.
+ *
+ * The pin index cannot answer this. It turns *a pin moved* into the one or two
+ * segments tied to it, and the photograph somebody is dragging across a string
+ * is, in the ordinary case, nothing to do with that string's pins at all.
+ */
+describe("a photograph moving under a string", () => {
+  /** Where the photograph is parked when it is meant to be out of the way. */
+  const AWAY = 3000;
+
+  function photoParkedAway(): void {
+    item("photo", { x: AWAY, y: AWAY });
+    settle();
+  }
+
+  function dragPhotoTo(x: number, y: number): void {
+    scene.setPose("photo", { x, y });
+    dirty.item("photo");
+  }
+
+  it("wakes the string, so the string ends up resting on it", () => {
+    const free = freeSag();
+    const top = free / 2;
+    settledSpan();
+    photoParkedAway();
+    expect(ropes.awake).toBe(0);
+
+    dragPhotoTo((LEFT + RIGHT) / 2, top + PHOTO_H / 2);
+    const pose = settle();
+
+    const middle = pose.filter(([x]) => x > PHOTO_LEFT + 20 && x < PHOTO_RIGHT - 20);
+    expect(middle.length).toBeGreaterThan(4);
+    for (const [, y] of middle) expect(y).toBeCloseTo(top, 1);
+  });
+
+  /**
+   * The other direction, and the one a "wake what the item now overlaps" rule
+   * would get wrong: by the time the drag is over, the photograph is nowhere
+   * near the string it was holding up. It is the *swept* rectangle that has to
+   * wake it.
+   */
+  it("lets the string fall back to its own sag when it is taken away", () => {
+    const free = freeSag();
+    const top = free / 2;
+    settledSpan();
+    photoParkedAway();
+    dragPhotoTo((LEFT + RIGHT) / 2, top + PHOTO_H / 2);
+    settle();
+    expect(lowest(points("s1"))).toBeLessThan(free - 5);
+
+    dragPhotoTo(AWAY, AWAY);
+    expect(Math.abs(lowest(settle()) - free)).toBeLessThan(SLOP);
+  });
+
+  it("wakes the string when the photograph it is resting on is deleted", () => {
+    const free = freeSag();
+    settledSpan();
+    photoParkedAway();
+    dragPhotoTo((LEFT + RIGHT) / 2, free / 2 + PHOTO_H / 2);
+    settle();
+
+    scene.removeItem("photo");
+    dirty.item("photo");
+    expect(Math.abs(lowest(settle()) - free)).toBeLessThan(SLOP);
+  });
+
+  /** AC: a frame in which no item moved wakes nothing. This is the whole of
+   *  why five hundred sleeping strings cost nothing (DESIGN section 5.3). */
+  it("wakes nothing on a frame where no item moved", () => {
+    const free = freeSag();
+    settledSpan();
+    photoParkedAway();
+    dragPhotoTo((LEFT + RIGHT) / 2, free / 2 + PHOTO_H / 2);
+    settle();
+    expect(ropes.awake).toBe(0);
+
+    ropes.step(scene, dirty, FRAME);
+    expect(ropes.awake).toBe(0);
+    // Not stepped, not marked dirty, not even asked — AC-65's standard.
+    expect(dirty.ropes.size).toBe(0);
+  });
+
+  /** An `under` string passes behind items, so an item moving over it is not
+   *  news. Waking it would be a rope stepped for nothing, every frame of every
+   *  drag, on the layer that exists precisely so string can be ignored. */
+  it("does not wake a string that is tucked behind", () => {
+    const free = freeSag();
+    settledSpan("s1", "under");
+    photoParkedAway();
+    dragPhotoTo((LEFT + RIGHT) / 2, free / 2 + PHOTO_H / 2);
+
+    ropes.step(scene, dirty, FRAME);
+    expect(ropes.awake).toBe(0);
   });
 });

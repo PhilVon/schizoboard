@@ -314,6 +314,12 @@ export class RopeSet {
       for (const id of dirty.strings) this.sync(scene, dirty, id);
     }
 
+    // Where the items are, for the awake `over` ropes that are about to ask,
+    // and which stretches of board moved, for the sleeping ones that are about
+    // to be woken by it. Once for the frame rather than once per rope, and free
+    // on a frame where nothing moved.
+    this.draper.update(scene, dirty);
+
     if (dirty.all) {
       // A load or an undo is a state restore rather than an event. Every rope
       // goes back to its analytic rest pose, asleep — which is AC-62, and the
@@ -326,11 +332,6 @@ export class RopeSet {
 
     const steps = this.clock.advance(dtMs);
     if (steps === 0) return;
-
-    // Where the items are, for the awake `over` ropes that are about to ask.
-    // Once for the frame rather than once per rope, and free on a frame where
-    // nothing moved.
-    this.draper.update(scene, dirty);
 
     for (const segment of this.segments) {
       if (segment.asleep) continue;
@@ -723,6 +724,41 @@ export class RopeSet {
     for (const pinId of dirty.pins) this.rousePin(scene, dirty, pinId);
     for (const itemId of dirty.items) {
       for (const pinId of scene.pinsOf(itemId)) this.rousePin(scene, dirty, pinId);
+    }
+    this.wakeUnderItems();
+  }
+
+  /**
+   * Wake the `over` ropes that an item moved through this frame.
+   *
+   * Draping only happens while a rope is being stepped, and a rope that has
+   * settled is asleep — so without this, putting a photograph under a string
+   * changes nothing at all, and taking one away leaves the string draped on
+   * thin air. The pin index above cannot answer it: the photograph somebody is
+   * dragging across a string is usually nothing to do with that string's pins.
+   *
+   * Against every segment rather than through an index, which is the one linear
+   * walk left in this file. It is bounded by what *moved*: a frame in which no
+   * item changed does nothing, and a drag is a handful of rectangles against a
+   * few hundred stored boxes — a few thousand floating-point comparisons on a
+   * frame that is already stepping ropes. An index over rope bounds would be a
+   * second structure to keep honest for a cost that does not show up.
+   */
+  private wakeUnderItems(): void {
+    const quads = this.draper.index.disturbed;
+    if (quads.length === 0) return;
+    for (const segment of this.segments) {
+      if (!segment.asleep || !segment.over || segment.count === 0) continue;
+      for (let q = 0; q < quads.length; q += 4) {
+        // A particle spacing of margin, so a photograph slid up to a string
+        // wakes it just before it touches rather than just after.
+        if (segment.maxX < quads[q]! - ROPE_SPACING) continue;
+        if (segment.minX > quads[q + 2]! + ROPE_SPACING) continue;
+        if (segment.maxY < quads[q + 1]! - ROPE_SPACING) continue;
+        if (segment.minY > quads[q + 3]! + ROPE_SPACING) continue;
+        this.rouse(segment);
+        break;
+      }
     }
   }
 

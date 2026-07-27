@@ -77,6 +77,32 @@ export class ItemIndex {
   private readonly cells: CellRange = { cx0: 0, cy0: 0, cx1: 0, cy1: 0 };
 
   /**
+   * The stretches of board that items moved through this frame, as flat
+   * quads — `minX, minY, maxX, maxY`, four numbers per rectangle.
+   *
+   * This is what wakes a rope that is resting on a photograph somebody has
+   * picked up. It has to be the *swept* rectangle rather than either end of the
+   * move: a rope resting on a photograph overlaps where the photograph was, and
+   * a rope about to be landed on overlaps where it is going, and a drag fast
+   * enough to clear its own width in a frame would otherwise wake neither.
+   *
+   * Emptied and refilled every `update`, and read in the same frame by
+   * `sim/ropes.ts`. Flat numbers rather than objects because a multi-select drag
+   * fills it once per item per frame.
+   */
+  readonly disturbed: number[] = [];
+
+  /** The box each slot was last indexed at, four numbers per slot, and which
+   *  slots have one. Half of the swept rectangle above. */
+  private prevBox = new Float64Array(0);
+  private hasPrev = new Uint8Array(0);
+  /** The id each slot was indexed under, and the way back. A deleted item is
+   *  gone from the scene by the time this hears about it, so its slot can only
+   *  be found through a record this kept itself. */
+  private indexedId: (string | null)[] = [];
+  private readonly slotOfIndexed = new Map<string, number>();
+
+  /**
    * Whether the grid has ever been filled.
    *
    * The same guard the culler carries, against the same shape of bug: an index
@@ -95,24 +121,96 @@ export class ItemIndex {
    * queries this, and the items are still, so nothing re-indexes it.
    */
   update(scene: Scene, dirty: DirtySets): void {
+    this.disturbed.length = 0;
+
     if (dirty.all || !this.built) {
+      // A load, an undo, a document swap. Every rope is re-seeded at rest and
+      // asleep on this frame anyway (`sim/ropes.ts`), so there is nothing to
+      // wake and no swept rectangle worth reporting.
       this.rebuild(scene);
       return;
     }
+
     for (const id of dirty.items) {
       const slot = scene.slotOf(id);
-      // No slot means the item was deleted this frame. Its entries stay until
-      // something inherits the slot; see `lib/cellgrid.ts`.
-      if (slot === undefined) continue;
-      this.grid.place(slot, scene.boundsAt(slot, 0, this.box));
+      if (slot === undefined) {
+        // Deleted this frame. Its bucket entries stay until something inherits
+        // the slot (`lib/cellgrid.ts`), but where it *was* still has to wake
+        // whatever was resting on it.
+        const gone = this.slotOfIndexed.get(id);
+        if (gone !== undefined) {
+          if (this.indexedId[gone] === id) this.sweep(gone, null);
+          this.slotOfIndexed.delete(id);
+        }
+        continue;
+      }
+      const box = scene.boundsAt(slot, 0, this.box);
+      this.sweep(slot, box);
+      this.grid.place(slot, box);
+      this.remember(id, slot, box);
     }
+  }
+
+  /** Report where a slot has been and where it now is, as one rectangle. */
+  private sweep(slot: number, box: Bounds | null): void {
+    let minX = box === null ? Infinity : box.minX;
+    let minY = box === null ? Infinity : box.minY;
+    let maxX = box === null ? -Infinity : box.maxX;
+    let maxY = box === null ? -Infinity : box.maxY;
+    if (this.hasPrev[slot] === 1) {
+      const at = slot * 4;
+      if (this.prevBox[at]! < minX) minX = this.prevBox[at]!;
+      if (this.prevBox[at + 1]! < minY) minY = this.prevBox[at + 1]!;
+      if (this.prevBox[at + 2]! > maxX) maxX = this.prevBox[at + 2]!;
+      if (this.prevBox[at + 3]! > maxY) maxY = this.prevBox[at + 3]!;
+    }
+    // An item that arrived this frame with nothing recorded and no box is
+    // nothing at all — there is no such call, but a NaN quad here would wake
+    // every rope on the board rather than none.
+    if (minX > maxX) return;
+    this.disturbed.push(minX, minY, maxX, maxY);
+  }
+
+  private remember(id: string, slot: number, box: Bounds): void {
+    if (slot * 4 + 4 > this.prevBox.length) this.grow(slot + 1);
+    const previous = this.indexedId[slot];
+    // The slot changed hands. The old occupant is gone, and leaving it in the
+    // map would mean a later item of the same id reading somebody else's box.
+    if (previous !== null && previous !== undefined && previous !== id) {
+      this.slotOfIndexed.delete(previous);
+    }
+    this.indexedId[slot] = id;
+    this.slotOfIndexed.set(id, slot);
+    const at = slot * 4;
+    this.prevBox[at] = box.minX;
+    this.prevBox[at + 1] = box.minY;
+    this.prevBox[at + 2] = box.maxX;
+    this.prevBox[at + 3] = box.maxY;
+    this.hasPrev[slot] = 1;
+  }
+
+  private grow(slots: number): void {
+    let next = Math.max(64, this.hasPrev.length);
+    while (next < slots) next *= 2;
+    const boxes = new Float64Array(next * 4);
+    boxes.set(this.prevBox);
+    this.prevBox = boxes;
+    const has = new Uint8Array(next);
+    has.set(this.hasPrev);
+    this.hasPrev = has;
   }
 
   private rebuild(scene: Scene): void {
     this.grid.clear();
+    this.hasPrev.fill(0);
+    this.indexedId.length = 0;
+    this.slotOfIndexed.clear();
     for (let slot = 0; slot < scene.slotLimit; slot++) {
-      if (scene.idAt(slot) === null) continue;
-      this.grid.place(slot, scene.boundsAt(slot, 0, this.box));
+      const id = scene.idAt(slot);
+      if (id === null) continue;
+      const box = scene.boundsAt(slot, 0, this.box);
+      this.grid.place(slot, box);
+      this.remember(id, slot, box);
     }
     this.built = true;
   }
@@ -170,6 +268,10 @@ export class ItemIndex {
   clear(): void {
     this.grid.clear();
     this.built = false;
+    this.hasPrev.fill(0);
+    this.indexedId.length = 0;
+    this.slotOfIndexed.clear();
+    this.disturbed.length = 0;
   }
 }
 
