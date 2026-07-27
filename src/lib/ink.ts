@@ -21,9 +21,11 @@
  * deciding is `lib/pressure.ts`: a pen's own reading, and for every other device
  * one derived from how fast the hand was moving.
  *
- * The coordinate space is the producer's: screen pixels for a stroke being drawn,
- * item-local units for one being re-rastered. The geometry is identical either
- * way; only the width has to be told which (`render/ink/geometry.ts`).
+ * The coordinate space is the stroke's, and [`WetStroke.item`] is what names it:
+ * item-local for a stroke glued to a photograph, board for one on bare cork. The
+ * two are the same scale — an item's local frame is a rotation and a translation
+ * with no zoom in it — so a width in board units means the same thing in either,
+ * and the geometry is identical either way.
  */
 export interface InkSample {
   readonly x: number;
@@ -81,18 +83,42 @@ export const DEFAULT_MARKER_COLOR = "#1f1b17";
  * transient in the same way — nothing about it is in the document, nothing about
  * it survives the release, and a peer sees it only over awareness if at all.
  *
- * `samples` are in **board** space rather than screen, which is a deliberate
- * departure from the wet overlay being a screen-resolution surface. A stroke can
- * outlive a camera move: the wheel still zooms while a pointer is down, and
- * points stored in screen pixels would slide off the cork as it did. Board
- * coordinates converted at draw time is what every other canvas on this board
- * does (`render/ropes/paint.ts`) and it is right here for the same reason.
+ * `samples` are never screen pixels, which is a deliberate departure from the wet
+ * overlay being a screen-resolution surface. A stroke can outlive a camera move:
+ * the wheel still zooms while a pointer is down, and points stored in screen
+ * pixels would slide off the cork as it did. World coordinates converted at draw
+ * time is what every other canvas on this board does (`render/ropes/paint.ts`)
+ * and it is right here for the same reason.
+ *
+ * Which world, though, is [`item`] — and that is fixed at pen-down and never
+ * revisited:
+ *
+ * > The stroke's coordinate space is fixed at pen-down: item-local if the press
+ * > landed on a photograph, board if it landed on cork. — DESIGN section 3.9
  */
 export interface WetStroke {
   readonly tool: InkTool;
   readonly color: string;
-  /** Board units — see [`DEFAULT_INK_SIZE`]. */
+  /** Board units — see [`DEFAULT_INK_SIZE`]. Also item-local units, because the
+   *  two are the same scale. */
   readonly size: number;
-  /** Board space, oldest first. */
+  /**
+   * The item the samples are local to, or null for board space.
+   *
+   * Decided at pen-down and then held, which is the whole of the rule. Held
+   * because the alternative — asking on each sample what is under the cursor —
+   * would change space in the middle of a line the moment it crossed an edge,
+   * and a stroke drawn off the side of a polaroid would break in half and glue
+   * its two halves to different things.
+   *
+   * Naming the item rather than carrying its transform, because the transform is
+   * a function of where the item is *this frame*: it can be moved, and swing on
+   * its pin, while the pointer is still down. Resolving the id at draw time is
+   * what makes the ink stay on the paper through all of that (AC-22), and
+   * baking the pose in at pen-down is exactly the bug that would look like ink
+   * sliding off a photograph as it swings.
+   */
+  readonly item: string | null;
+  /** The space [`item`] names, oldest first. */
   readonly samples: readonly InkSample[];
 }

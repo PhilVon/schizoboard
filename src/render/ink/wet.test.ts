@@ -11,7 +11,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { InkSample, WetStroke } from "@/lib/ink";
-import { WetInk } from "@/render/ink/wet";
+import { type ItemFrame, WetInk } from "@/render/ink/wet";
 import { Camera } from "@/state/camera";
 
 interface Calls {
@@ -65,7 +65,17 @@ function straight(count: number, step = 20): InkSample[] {
 }
 
 function stroke(samples: readonly InkSample[], size = 6): WetStroke {
-  return { tool: "highlighter", color: "#1f1b17", size, samples };
+  return { tool: "highlighter", color: "#1f1b17", size, item: null, samples };
+}
+
+/** The same stroke, glued to a photograph — so the samples are that item's local
+ *  coordinates and the frame is where it is drawn this frame. */
+function glued(samples: readonly InkSample[]): WetStroke {
+  return { ...stroke(samples), item: "p" };
+}
+
+function frame(cx: number, cy: number, angle = 0): ItemFrame {
+  return { cx, cy, cos: Math.cos(angle), sin: Math.sin(angle) };
 }
 
 function spreadY(): number {
@@ -132,6 +142,60 @@ describe("where the stroke ends up on screen", () => {
     // front of the board rather than a mark on it. Getting the two the wrong way
     // round is invisible at 100% and wrong everywhere else.
     expect(spreadY()).toBeGreaterThan(atActualSize * 2.5);
+  });
+});
+
+/**
+ * AC-22 and AC-78, at the renderer's end of it. The tool stores a glued stroke in
+ * the item's own coordinates (`state/tools/marker.ts`); this is the hop back out,
+ * and it happens every frame precisely so that the paper moving takes the ink
+ * with it.
+ */
+describe("a stroke glued to a photograph", () => {
+  it("is drawn through the frame it is handed, not against the origin", () => {
+    ink.draw(stubContext(), camera, stroke(straight(4)));
+    const atOrigin = calls.points.map((p) => p[0]);
+
+    calls.points = [];
+    ink.draw(stubContext(), camera, glued(straight(4)), frame(600, 0));
+
+    // The same local samples, a photograph 600 units to the right.
+    expect(Math.min(...calls.points.map((p) => p[0]))).toBeGreaterThan(
+      Math.min(...atOrigin) + 500,
+    );
+  });
+
+  it("moves with the paper although not one sample changed", () => {
+    const samples = straight(4);
+    ink.draw(stubContext(), camera, glued(samples), frame(0, 0));
+    const before = Math.min(...calls.points.map((p) => p[0]));
+
+    calls.points = [];
+    ink.draw(stubContext(), camera, glued(samples), frame(300, 0));
+
+    // Which is the whole of the acceptance criterion: a photograph dragged out
+    // from under a wet stroke takes the mark with it.
+    expect(Math.min(...calls.points.map((p) => p[0]))).toBeCloseTo(before + 300, 0);
+  });
+
+  it("turns with the paper", () => {
+    const samples = straight(4);
+    // A horizontal stroke on a photograph stood on its end is a vertical one.
+    ink.draw(stubContext(), camera, glued(samples), frame(0, 0, Math.PI / 2));
+
+    const xs = calls.points.map((p) => p[0]);
+    const ys = calls.points.map((p) => p[1]);
+    expect(Math.max(...ys) - Math.min(...ys)).toBeGreaterThan(
+      Math.max(...xs) - Math.min(...xs),
+    );
+  });
+
+  it("is not drawn at all when the paper has left the board", () => {
+    // Null frame with an item named: the photograph went while the pen was down.
+    // An identity transform would put the mark at the board origin, which is a
+    // stroke appearing somewhere nobody drew.
+    expect(ink.draw(stubContext(), camera, glued(straight(4)), null)).toBe(false);
+    expect(calls.fills).toBe(0);
   });
 });
 

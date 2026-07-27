@@ -6,8 +6,9 @@
  * > (mouse) | — DESIGN section 3.9
  *
  * Hold the button and move, and the mark follows the hand. The whole of that is
- * one array: the samples the pointer delivered, in board coordinates, from the
- * press to now. `render/ink/wet.ts` turns it into a shape and
+ * one array: the samples the pointer delivered, from the press to now, converted
+ * out of screen pixels into whatever space the press fixed the stroke to (below).
+ * `render/ink/wet.ts` turns it into a shape and
  * `render/ink/geometry.ts` decides what shape — this file only collects.
  *
  * ## It keeps every sample, and that is the point of it
@@ -43,14 +44,22 @@
  * The consequence worth stating plainly, because it looks like a bug otherwise:
  * let go and the mark disappears. It is not being lost — it was never saved.
  *
- * ## Board space, for now
+ * ## Which space, decided once
  *
- * Every sample is converted to board coordinates. The real rule is stricter —
- * "the stroke's coordinate space is fixed at pen-down", item-local if the press
- * landed on a photograph, board if it landed on cork, with `Ctrl` forcing board
- * (DESIGN section 3.9) — and that is T-56. Board space is the half of it that
- * needs no item to exist, and it is also what a wet stroke has to be regardless:
- * see `WetStroke.samples` for why these are not screen pixels.
+ * > The stroke's coordinate space is fixed at pen-down: item-local if the press
+ * > landed on a photograph, board if it landed on cork. `Ctrl` forces board
+ * > space. — DESIGN section 3.9
+ *
+ * So the press does a hit test, and every sample after it is converted into
+ * whatever that answered — see [`MarkerTool.item`]. Fixed, and not re-asked per
+ * sample: a line drawn off the edge of a polaroid and onto the cork is one mark
+ * on one surface, and a tool that re-tested would break it in half and glue the
+ * halves to different things. It is also why the *press* is what matters and not
+ * where the hand ends up.
+ *
+ * `Ctrl` is the escape hatch for the case the hit test cannot see: a mark you
+ * want on the cork *behind* a photograph, which is otherwise unreachable because
+ * the photograph is what the cursor is over.
  */
 
 import {
@@ -61,6 +70,8 @@ import {
   type WetStroke,
 } from "@/lib/ink";
 import { reportsRealPressure, VelocityPressure } from "@/lib/pressure";
+import type { Point } from "@/lib/rotate";
+import { itemLocal } from "@/state/tools/frame";
 import type { PointerSample, Tool, ToolContext, ToolInput } from "@/state/tools/tool";
 
 export interface MarkerToolOptions {
@@ -80,9 +91,17 @@ export class MarkerTool implements Tool {
 
   private readonly options: MarkerToolOptions;
   private readonly tool: InkTool;
-  /** Board space, oldest first. Empty means no stroke in progress. */
+  /** In [`space`], oldest first. Empty means no stroke in progress. */
   private samples: InkSample[] = [];
+  /**
+   * The item this stroke is glued to, or null for board space. Decided by the
+   * press and then left alone — see the note at the top of the file.
+   */
+  private space: string | null = null;
   private drawing = false;
+  /** Reused: `itemLocal` allocates a point otherwise, and this runs once per
+   *  sample and there are a dozen of those per frame at speed. */
+  private readonly local: Point = { x: 0, y: 0 };
   /** For the devices that do not measure pressure, which is most of them. Reset
    *  per stroke, not per tool — see [`VelocityPressure`]. */
   private readonly velocity = new VelocityPressure();
@@ -114,6 +133,7 @@ export class MarkerTool implements Tool {
       tool: this.tool,
       color: this.options.color ?? DEFAULT_MARKER_COLOR,
       size: this.options.size ?? DEFAULT_INK_SIZE,
+      item: this.space,
       samples: this.samples,
     };
   }
@@ -131,8 +151,11 @@ export class MarkerTool implements Tool {
         // handed the previous one and may still be holding it — see [`wet`].
         this.samples = [];
         this.drawing = true;
-        // Before the first sample, so this stroke starts from rest rather than
-        // from wherever the last one's hand was going.
+        // Before the first sample, because the first sample is already converted
+        // into it.
+        this.space = this.spaceAt(input.at, ctx);
+        // Also before the first sample, so this stroke starts from rest rather
+        // than from wherever the last one's hand was going.
         this.velocity.reset();
         this.add(input.at, ctx);
         return;
@@ -165,9 +188,50 @@ export class MarkerTool implements Tool {
     }
   }
 
-  private add(at: PointerSample, ctx: ToolContext): void {
+  /**
+   * The space a press at this point starts a stroke in — the item under it, or
+   * null for the board.
+   *
+   * `ctrl` off the press's own sample rather than `ctx.held`, because this is
+   * asked exactly once and at the moment of the press: it is a property of the
+   * event, not a key that can be let go of halfway through the line.
+   */
+  private spaceAt(at: PointerSample, ctx: ToolContext): string | null {
+    if (at.ctrl) return null;
     const board = ctx.camera.screenToBoard(at.x, at.y);
-    this.samples.push({ x: board.x, y: board.y, pressure: this.pressureOf(at) });
+    return ctx.hitTest(board.x, board.y);
+  }
+
+  /**
+   * One sample, converted out of screen pixels and into the stroke's space.
+   *
+   * Through the item's *rendered* pose when there is one, which is `itemLocal`'s
+   * whole subject: an item hanging on a single pin is drawn at an angle and about
+   * a centre that are transient and are in nobody's document, and converting
+   * through the stored pose instead would land the ink as far from the cursor as
+   * the swing has taken the paper.
+   */
+  private add(at: PointerSample, ctx: ToolContext): void {
+    // A trail is a dozen samples handed over in one call, and the branch below
+    // can end the stroke partway down it. Without this the rest of the batch
+    // would land in a fresh, spaceless stroke nobody started.
+    if (!this.drawing) return;
+    const board = ctx.camera.screenToBoard(at.x, at.y);
+    const pressure = this.pressureOf(at);
+    if (this.space === null) {
+      this.samples.push({ x: board.x, y: board.y, pressure });
+      return;
+    }
+    const local = itemLocal(ctx.scene, this.space, board.x, board.y, this.local);
+    // The paper went while the pointer was down — a peer deleted it, or an undo
+    // took it. There is no frame left to hold the samples already collected and
+    // no honest place to put this one, so the stroke goes with it. Nothing was
+    // written down, so this costs the mark and nothing else.
+    if (local === null) {
+      this.reset();
+      return;
+    }
+    this.samples.push({ x: local.x, y: local.y, pressure });
   }
 
   /**
@@ -213,6 +277,7 @@ export class MarkerTool implements Tool {
 
   private reset(): void {
     this.samples = [];
+    this.space = null;
     this.drawing = false;
   }
 }

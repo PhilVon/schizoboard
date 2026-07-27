@@ -667,14 +667,26 @@ describe("the stroke in progress", () => {
     closePath(): void {}
   }
 
-  function wet(count: number): Parameters<Overlay["draw"]>[10] {
+  function wet(count: number, item: string | null = null): Parameters<Overlay["draw"]>[10] {
     const samples = [];
     for (let i = 0; i < count; i++) samples.push({ x: i * 20, y: 0, pressure: 0.5 });
-    return { tool: "marker", color: "#1f1b17", size: 6, samples };
+    return { tool: "marker", color: "#1f1b17", size: 6, item, samples };
   }
 
-  function draw(count: number): void {
-    overlay.draw(camera, scene, selection, null, dirty, null, null, null, null, null, wet(count));
+  function draw(count: number, item: string | null = null): void {
+    overlay.draw(
+      camera,
+      scene,
+      selection,
+      null,
+      dirty,
+      null,
+      null,
+      null,
+      null,
+      null,
+      wet(count, item),
+    );
   }
 
   beforeEach(() => {
@@ -702,5 +714,18 @@ describe("the stroke in progress", () => {
     draw(1);
     expect(calls.fills).toBe(0);
     expect(calls.clearRect).toBe(0);
+  });
+
+  it("resolves the item a glued stroke names, so the ink can be placed", () => {
+    add("p", { x: 400, y: 0 });
+    draw(4, "p");
+    expect(calls.fills).toBe(1);
+  });
+
+  it("draws nothing when the paper the stroke is glued to has gone", () => {
+    // A peer's delete with the pen still down. There is no frame to put the
+    // samples in, and the origin is not a reasonable guess at one.
+    draw(4, "gone");
+    expect(calls.fills).toBe(0);
   });
 });

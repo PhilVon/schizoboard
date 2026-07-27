@@ -11,12 +11,19 @@
  * section 6.2. Everything on that canvas belongs to a gesture and none of it is
  * in the document, which is exactly what a stroke before pen-up is.
  *
- * ## Screen space, from board coordinates
+ * ## Screen space, from wherever the samples are
  *
- * The samples arrive in board units and are converted here, per point, per frame
+ * The samples arrive in world units and are converted here, per point, per frame
  * — the same arrangement `render/ropes/paint.ts` uses and for one of the same
  * reasons: the stroke has to stay on the cork if the camera moves under it, and
  * the wheel still zooms while a pointer is down.
+ *
+ * A stroke glued to a photograph (`WetStroke.item`) has one more hop in front of
+ * that, out of the item's frame and into board space, and the caller supplies the
+ * frame because only it can read the scene. Resolved *this* frame, every frame,
+ * which is what AC-22 is: drag the photograph or let it swing on its pin with the
+ * pen still down, and the mark goes with the paper instead of hanging in the air
+ * where it was drawn.
  *
  * The width does *not* follow that precedent. A rope's `lineWidth` is a fixed
  * number of screen pixels at every zoom, because a string is an object in front
@@ -34,6 +41,7 @@
  */
 
 import type { WetStroke } from "@/lib/ink";
+import { rotateOut, type Point } from "@/lib/rotate";
 import { outlineStroke, strokeOptions, traceOutline } from "@/render/ink/geometry";
 import type { Camera, Vec2 } from "@/state/camera";
 
@@ -45,15 +53,39 @@ interface ScreenSample {
   pressure: number;
 }
 
+/**
+ * Where the item a stroke is glued to is drawn, this frame — its rendered
+ * centre and the cosine and sine of its rendered angle.
+ *
+ * Trig hoisted out because the conversion runs over every sample of the stroke
+ * on every frame of it, and a long stroke is thousands of points: two calls to
+ * `Math.cos`, not two thousand. Same bargain, and the same sign convention, as
+ * `lib/rotate.ts` — which is the only place that convention is written down.
+ */
+export interface ItemFrame {
+  cx: number;
+  cy: number;
+  cos: number;
+  sin: number;
+}
+
 export class WetInk {
   /** Screen-space samples, reused across frames — see the note above. Only the
    *  first `count` entries of a draw are meaningful. */
   private readonly buffer: ScreenSample[] = [];
   /** Reused, because `boardToScreen` allocates otherwise. */
   private readonly at: Vec2 = { x: 0, y: 0 };
+  /** Likewise, for the item-local hop in front of it. */
+  private readonly board: Point = { x: 0, y: 0 };
 
   /**
    * Fill the stroke onto a context already in CSS-pixel coordinates.
+   *
+   * `frame` is where the item named by `stroke.item` is drawn this frame, and is
+   * required exactly when there is one. Null with a glued stroke means the paper
+   * has left the board mid-gesture, and there is then nowhere for the ink to be:
+   * it is not drawn, rather than being drawn at the origin, which is where an
+   * identity transform would put it.
    *
    * Returns false when there was nothing to draw, so the overlay can decide
    * whether the canvas ended up with anything on it — the same contract every
@@ -65,13 +97,24 @@ export class WetInk {
    * commit to an end cap that then moves as each new sample lands — a tip that
    * shivers ahead of the cursor.
    */
-  draw(ctx: CanvasRenderingContext2D, camera: Camera, stroke: WetStroke): boolean {
+  draw(
+    ctx: CanvasRenderingContext2D,
+    camera: Camera,
+    stroke: WetStroke,
+    frame: ItemFrame | null = null,
+  ): boolean {
     const samples = stroke.samples;
     if (samples.length < 2) return false;
+    if (stroke.item !== null && frame === null) return false;
 
     for (let i = 0; i < samples.length; i++) {
       const sample = samples[i]!;
-      camera.boardToScreen(sample.x, sample.y, this.at);
+      if (frame && stroke.item !== null) {
+        rotateOut(sample.x, sample.y, frame.cx, frame.cy, frame.cos, frame.sin, this.board);
+        camera.boardToScreen(this.board.x, this.board.y, this.at);
+      } else {
+        camera.boardToScreen(sample.x, sample.y, this.at);
+      }
       const slot = this.buffer[i];
       if (slot) {
         slot.x = this.at.x;

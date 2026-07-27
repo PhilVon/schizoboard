@@ -27,7 +27,7 @@
 import { carryScale } from "@/lib/carry";
 import type { WetStroke } from "@/lib/ink";
 import { rotateOut } from "@/lib/rotate";
-import { WetInk } from "@/render/ink/wet";
+import { type ItemFrame, WetInk } from "@/render/ink/wet";
 import { pinHitRadius } from "@/render/pins/dom";
 import { bodyWidth } from "@/render/ropes/paint";
 import type { Bounds, Camera, Vec2 } from "@/state/camera";
@@ -229,6 +229,8 @@ export class Overlay {
   private cleared = false;
   /** Holds the reused screen-space buffer, so it survives between frames. */
   private readonly wetInk = new WetInk();
+  /** Refilled every frame a glued stroke is drawn — see [`Overlay.inkFrame`]. */
+  private readonly ink: ItemFrame = { cx: 0, cy: 0, cos: 1, sin: 0 };
 
   constructor(canvas: HTMLCanvasElement) {
     this.canvas = canvas;
@@ -281,8 +283,11 @@ export class Overlay {
      */
     hoveredPin: string | null = null,
     /**
-     * The stroke being drawn, board space — DESIGN section 6.5's wet ink, on the
-     * canvas section 6.2 names for it.
+     * The stroke being drawn — DESIGN section 6.5's wet ink, on the canvas
+     * section 6.2 names for it.
+     *
+     * Board space or an item's, whichever the press fixed it to (`WetStroke.item`);
+     * the scene above is what resolves the difference, once per frame.
      *
      * Last in the list because it is drawn last: ink goes *over* the chrome, since
      * it is a mark being made on the board rather than a thing said about it.
@@ -369,7 +374,7 @@ export class Overlay {
     // because it is not chrome: it is a mark being made, and a selection outline
     // painted on top of the line you are drawing would read as the line going
     // *under* the photograph it is being drawn on.
-    if (wantsWet && this.drawWet(ctx, camera, wet)) drew = true;
+    if (wantsWet && this.drawWet(ctx, camera, scene, wet)) drew = true;
     // Nothing to draw, but last frame there was â€” so the clear is the work.
     if (!drew && this.inked) this.clear(ctx);
     this.inked = drew;
@@ -432,13 +437,54 @@ export class Overlay {
   }
 
   /**
-   * The stroke in progress. All of the work is `render/ink/wet.ts`'s; this is the
-   * deferred clear and nothing else, so that a frame whose only content was a
-   * stroke that turned out to be a single sample still does not touch the canvas.
+   * The stroke in progress. All of the drawing is `render/ink/wet.ts`'s; this is
+   * the deferred clear, and the one scene read that module is not allowed to do
+   * for itself — so that a frame whose only content was a stroke that turned out
+   * to be a single sample still does not touch the canvas.
+   *
+   * The frame is resolved here, in phase 8, and not carried on the stroke from
+   * phase 1. A whole frame happens in between: the binding lands a peer's drag of
+   * the very photograph being drawn on, and `sim/torsion.ts` steps its swing. Ink
+   * placed against a pose fetched in the INPUT phase would trail the paper by
+   * exactly one frame for the whole of a stroke, and would do it worst on the
+   * gesture — drawing on something that is still swinging — where it is most
+   * obvious.
    */
-  private drawWet(ctx: CanvasRenderingContext2D, camera: Camera, wet: WetStroke): boolean {
+  private drawWet(
+    ctx: CanvasRenderingContext2D,
+    camera: Camera,
+    scene: Scene,
+    wet: WetStroke,
+  ): boolean {
     if (!this.cleared) this.clear(ctx);
-    return this.wetInk.draw(ctx, camera, wet);
+    return this.wetInk.draw(ctx, camera, wet, this.inkFrame(scene, wet.item));
+  }
+
+  /**
+   * Where the item a stroke is glued to is drawn — null for a board-space stroke,
+   * and also for an item that is no longer on the board, which a peer's delete
+   * can do with the pen still down.
+   *
+   * Exactly the frame `state/tools/frame.ts`'s `itemLocal` converted *into* when
+   * the samples were taken, and that is the property to preserve: the two are
+   * inverses, and the ink lands under the cursor only for as long as they agree.
+   * Which is why the 2% a carried item is drawn at (`lib/carry.ts`) is
+   * deliberately absent here — `itemLocal` does not apply it either, and a
+   * renderer that did would put the mark 2% off the cursor rather than 2% off the
+   * paper. The window where that could show at all is the fraction of a second a
+   * just-dropped item takes to settle back to full size, since a pointer drawing
+   * ink is not a pointer dragging paper.
+   */
+  private inkFrame(scene: Scene, itemId: string | null): ItemFrame | null {
+    if (itemId === null) return null;
+    const slot = scene.slotOf(itemId);
+    if (slot === undefined) return null;
+    const angle = scene.rot[slot]! + scene.swing[slot]!;
+    this.ink.cx = scene.renderX(slot);
+    this.ink.cy = scene.renderY(slot);
+    this.ink.cos = Math.cos(angle);
+    this.ink.sin = Math.sin(angle);
+    return this.ink;
   }
 
   /**

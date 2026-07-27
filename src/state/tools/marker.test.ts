@@ -13,6 +13,7 @@ import { beforeEach, describe, expect, it } from "vitest";
 
 import { DEFAULT_INK_SIZE, DEFAULT_MARKER_COLOR } from "@/lib/ink";
 import { PRESSURE_NEUTRAL } from "@/lib/pressure";
+import { rotateOut } from "@/lib/rotate";
 import { Camera } from "@/state/camera";
 import { DirtySets } from "@/state/dirty";
 import { Scene } from "@/state/scene";
@@ -24,9 +25,48 @@ let done: number;
 let tool: MarkerTool;
 let ctx: ToolContext;
 let camera: Camera;
+let scene: Scene;
+/** What `ctx.hitTest` answers — the item the press lands on, or the bare cork. */
+let under: string | null;
 
 function at(x: number, y: number, pressure?: number): PointerSample {
   return { x, y, shift: false, ctrl: false, alt: false, pressure };
+}
+
+/** A photograph to draw on, at a pose the test chooses. */
+function photo(id: string, x: number, y: number, rot = 0): void {
+  scene.putItem(
+    {
+      id,
+      type: "polaroid",
+      z: "a0",
+      seed: 1,
+      assetId: null,
+      createdBy: 1,
+      createdAt: 0,
+      text: "",
+    },
+    { x, y, rot, w: 200, h: 200 },
+  );
+  under = id;
+}
+
+/** Where a sample of the current stroke actually is on the cork — the inverse of
+ *  what the tool did on the way in. */
+function boardAt(index: number): { x: number; y: number } {
+  const sample = tool.wet!.samples[index]!;
+  const item = tool.wet!.item;
+  if (item === null) return { x: sample.x, y: sample.y };
+  const slot = scene.slotOf(item)!;
+  const angle = scene.rot[slot]! + scene.swing[slot]!;
+  return rotateOut(
+    sample.x,
+    sample.y,
+    scene.renderX(slot),
+    scene.renderY(slot),
+    Math.cos(angle),
+    Math.sin(angle),
+  );
 }
 
 /** A sample from a real pen: a pressure reading, and a `pointerType` that says
@@ -68,13 +108,15 @@ beforeEach(() => {
   done = 0;
   camera = new Camera();
   camera.resize(1000, 800);
+  scene = new Scene();
+  under = null;
   tool = new MarkerTool({ onDone: () => done++ });
   ctx = {
-    scene: new Scene(),
+    scene,
     dirty: new DirtySets(),
     camera,
     selection: new Selection(),
-    hitTest: () => null,
+    hitTest: () => under,
     hitPin: () => null,
     hitString: () => null,
     pluck: () => {},
@@ -145,6 +187,186 @@ describe("collecting a stroke", () => {
     move([at(510, 500)]);
 
     expect(samples().map((s) => s.x)).toEqual([500, 510]);
+  });
+});
+
+/**
+ * T-56 and AC-78.
+ *
+ * > The stroke's coordinate space is fixed at pen-down: item-local if the press
+ * > landed on a photograph, board if it landed on cork. `Ctrl` forces board
+ * > space. — DESIGN section 3.9
+ *
+ * Two halves, and each fails invisibly on its own. Get the space wrong and the
+ * mark still appears exactly where you drew it — until the photograph moves,
+ * which is the next thing that happens and no longer part of the gesture. Get the
+ * *fixing* wrong and a line that crosses an edge is silently cut in half.
+ */
+describe("which space the stroke is in", () => {
+  it("is the board's when the press lands on bare cork", () => {
+    camera.setView(0, 0, 1);
+    down(600, 500);
+    move([at(620, 500)]);
+
+    expect(tool.wet!.item).toBeNull();
+    const board = camera.screenToBoard(620, 500);
+    expect(boardAt(1).x).toBeCloseTo(board.x, 6);
+  });
+
+  it("is the photograph's when the press lands on one", () => {
+    camera.setView(0, 0, 1);
+    photo("p", 300, 200);
+    down(600, 500);
+    move([at(620, 500)]);
+
+    expect(tool.wet!.item).toBe("p");
+    // Stored local, but still under the cursor: the round trip back out through
+    // the item's frame is the board point the hand was actually at.
+    const board = camera.screenToBoard(620, 500);
+    expect(boardAt(1).x).toBeCloseTo(board.x, 6);
+    expect(boardAt(1).y).toBeCloseTo(board.y, 6);
+    // And genuinely converted — a tool that stored board coordinates and merely
+    // labelled them with an item id would pass the line above only by accident.
+    expect(tool.wet!.samples[1]!.x).not.toBeCloseTo(board.x, 1);
+  });
+
+  it("stores the samples relative to a photograph that is turned", () => {
+    camera.setView(0, 0, 1);
+    photo("p", 0, 0, Math.PI / 3);
+    down(500, 400);
+    move([at(540, 430)]);
+
+    expect(tool.wet!.item).toBe("p");
+    const board = camera.screenToBoard(540, 430);
+    expect(boardAt(1).x).toBeCloseTo(board.x, 3);
+    expect(boardAt(1).y).toBeCloseTo(board.y, 3);
+    // Both axes genuinely turned. A conversion with the sine's sign flipped puts
+    // the point back on the cork at the wrong end of the paper, and the round trip
+    // through the same flipped frame would hide it.
+    expect(tool.wet!.samples[1]!.y).not.toBeCloseTo(board.y, 1);
+  });
+
+  it("is decided by the press and never revisited", () => {
+    camera.setView(0, 0, 1);
+    // Down on the cork, then the hand crosses onto a photograph.
+    down(500, 400);
+    photo("p", 0, 0);
+    move([at(520, 400)]);
+
+    // One mark on one surface. Re-testing per sample would break the line in half
+    // and glue the halves to different things.
+    expect(tool.wet!.item).toBeNull();
+  });
+
+  it("is the board's when Ctrl is held at the press, photograph or not", () => {
+    camera.setView(0, 0, 1);
+    photo("p", 0, 0);
+    tool.handle({ kind: "down", at: { ...at(500, 400), ctrl: true } }, ctx);
+    move([at(520, 400)]);
+
+    // The escape hatch for a mark you want on the cork *behind* a photograph,
+    // which the hit test cannot otherwise reach.
+    expect(tool.wet!.item).toBeNull();
+    const board = camera.screenToBoard(520, 400);
+    expect(tool.wet!.samples[1]!.x).toBeCloseTo(board.x, 6);
+  });
+
+  it("does not un-glue a stroke when Ctrl is let go of halfway down it", () => {
+    camera.setView(0, 0, 1);
+    photo("p", 0, 0);
+    tool.handle({ kind: "down", at: { ...at(500, 400), ctrl: true } }, ctx);
+    move([at(520, 400)]);
+    expect(tool.wet!.item).toBeNull();
+  });
+});
+
+/**
+ * AC-78 itself: "Ink started on a photo stays glued to it through move and
+ * rotation."
+ *
+ * The samples never change. That *is* the mechanism — they are in the paper's
+ * own frame, so the paper moving moves them for nothing, and the assertion worth
+ * making is the one about where they end up on the cork.
+ */
+describe("ink glued to a photograph that moves under it", () => {
+  it("travels with the paper, without a sample being rewritten", () => {
+    camera.setView(0, 0, 1);
+    photo("p", 0, 0);
+    down(500, 400);
+    move([at(540, 400)]);
+
+    const before = boardAt(1);
+    const local = { ...tool.wet!.samples[1]! };
+    scene.setPose("p", { x: 250, y: -80 });
+    const after = boardAt(1);
+
+    expect(after.x - before.x).toBeCloseTo(250, 6);
+    expect(after.y - before.y).toBeCloseTo(-80, 6);
+    expect(tool.wet!.samples[1]).toEqual(local);
+  });
+
+  it("turns with the paper rather than staying flat on the cork", () => {
+    camera.setView(0, 0, 1);
+    photo("p", 0, 0);
+    down(500, 400);
+    // A sample well off the item's centre, so a rotation has something to move.
+    move([at(560, 400)]);
+
+    const before = boardAt(1);
+    scene.setPose("p", { rot: Math.PI / 2 });
+    const after = boardAt(1);
+
+    // A quarter turn clockwise about the origin — y-down, so `(x, y)` goes to
+    // `(-y, x)` (`lib/rotate.ts`). To three places, because the scene holds a
+    // rotation as a `Float32Array` and `Math.PI / 2` does not survive that whole.
+    expect(after.x).toBeCloseTo(-before.y, 3);
+    expect(after.y).toBeCloseTo(before.x, 3);
+  });
+
+  it("swings with a photograph hanging from its pin", () => {
+    camera.setView(0, 0, 1);
+    photo("p", 0, 0);
+    down(500, 400);
+    move([at(560, 400)]);
+    const before = boardAt(1);
+
+    // The transient half of the rendered pose, which is in nobody's document and
+    // is exactly what `itemLocal` exists to account for (`state/tools/frame.ts`).
+    const slot = scene.slotOf("p")!;
+    scene.swing[slot] = 0.4;
+    const after = boardAt(1);
+
+    expect(after.x).not.toBeCloseTo(before.x, 3);
+  });
+
+  it("goes when the paper it was drawn on goes", () => {
+    camera.setView(0, 0, 1);
+    photo("p", 0, 0);
+    down(500, 400);
+    move([at(540, 400)]);
+
+    // A peer's delete, or an undo, with the pen still down. Nothing was written,
+    // so this costs the mark and nothing else — but the samples already collected
+    // have no frame left to be in, and drawing them against the origin would be
+    // worse than not drawing them.
+    scene.removeItem("p");
+    under = null;
+    move([at(560, 400), at(580, 400)]);
+
+    expect(tool.wet).toBeNull();
+    expect(tool.stroking).toBe(false);
+  });
+
+  it("does not restart a spaceless stroke from the rest of the same trail", () => {
+    camera.setView(0, 0, 1);
+    photo("p", 0, 0);
+    down(500, 400);
+    scene.removeItem("p");
+    // One call carrying a dozen samples is what the machine delivers, and the
+    // stroke ends partway down it.
+    move([at(520, 400), at(540, 400), at(560, 400)]);
+
+    expect(tool.wet).toBeNull();
   });
 });
 
