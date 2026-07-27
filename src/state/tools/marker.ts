@@ -32,17 +32,31 @@
  * hand was moving, and the interval between two samples is the only place that
  * number can come from — see [`MarkerTool.pressureOf`] and `lib/pressure.ts`.
  *
- * ## Nothing is written down yet
+ * ## The release, and the frame that would otherwise be blank
  *
- * The stroke lives while the pointer is down and is gone on release. That is not
- * a placeholder standing in for a commit: it is honestly the *wet* half of DESIGN
- * section 6.5's wet/dry split, and the dry half is a different job — a stroke
- * record is a packed `Uint8Array` (DATA-MODEL section 6.1), so committing one
- * needs the packing (T-59) and the per-item canvas to raster it into (T-57).
- * T-58 joins the two.
+ * Pen-up hands the samples to `BoardWriter.commitStroke` and the stroke becomes a
+ * record in the item's `strokes` map — DESIGN section 6.5's dry half, rastered
+ * onto the item's own canvas by `render/ink/canvas.ts`.
  *
- * The consequence worth stating plainly, because it looks like a bug otherwise:
- * let go and the mark disappears. It is not being lost — it was never saved.
+ * The two halves do not change over at the same instant, and the gap between them
+ * is a whole frame wide. A tool's writes are *queued* to phase 9
+ * (ARCHITECTURE section 3), the binding raises the ink dirty flag in response,
+ * and phase 6 of the frame after that is what actually fills the bitmap. So a
+ * release that forgot the stroke there and then would leave a frame with the mark
+ * on neither surface — a blink under every pen-up, worst on exactly the long
+ * stroke that took the most care to draw.
+ *
+ * So the samples are kept after the commit, in [`drying`], and the overlay goes
+ * on drawing them. What ends that is the owner calling [`dry`] once the item's
+ * canvas has caught up — `app/main.ts` asks the item layer, rather than counting
+ * frames, because the re-raster is budgeted and can be several frames late on a
+ * board full of ink. Overlap costs nothing (the same mark, drawn twice, in the
+ * same place); a gap is the visible bug.
+ *
+ * A stroke on bare cork is the exception and it is discarded: `commitStroke`
+ * deliberately refuses `item: null` while nothing renders board ink (T-61), so
+ * for those the owner calls [`dry`] straight away and the mark disappears on
+ * release. It is not being lost — it was never saved.
  *
  * ## Which space, decided once
  *
@@ -99,6 +113,12 @@ export class MarkerTool implements Tool {
    */
   private space: string | null = null;
   private drawing = false;
+  /**
+   * A stroke that has been handed to the writer but whose ink is not on the
+   * item's canvas yet — see the note at the top of the file. Drawn by the
+   * overlay exactly like a live one, and cleared by [`dry`].
+   */
+  private drying: WetStroke | null = null;
   /** Reused: `itemLocal` allocates a point otherwise, and this runs once per
    *  sample and there are a dozen of those per frame at speed. */
   private readonly local: Point = { x: 0, y: 0 };
@@ -113,8 +133,8 @@ export class MarkerTool implements Tool {
   }
 
   /**
-   * The stroke in progress, for the OVERLAY phase, or null when nothing is being
-   * drawn.
+   * The stroke to draw on the overlay: the one in progress, or the one still
+   * drying, or null when there is neither.
    *
    * The live array rather than a copy. Copying it would allocate the whole stroke
    * every frame of every stroke, which on a long one is the largest allocation in
@@ -122,20 +142,21 @@ export class MarkerTool implements Tool {
    * `sim/ropes.ts` makes when it hands out its `positions` buffer.
    *
    * Two samples minimum: one point is a press that has not moved yet, and there
-   * is no evidence yet whether it is a dot or the start of a line. A dot is worth
-   * drawing and will be, once a release can produce one (T-58) — drawing it now
+   * is no evidence yet whether it is a dot or the start of a line. Drawing it now
    * would put a blob under every click that turned out to be the start of a
-   * stroke.
+   * stroke. The release settles it — a click that stayed a click is committed as
+   * the dot it was, and arrives on the overlay drying rather than live.
+   *
+   * A drying stroke wins over a live one only because it cannot outlast the press
+   * that starts one: [`handle`]'s `down` drops it, so the two are never both
+   * here. A press that lands within a frame of the last release therefore costs
+   * the previous mark its overlap, and the worst that shows is the blink this
+   * whole arrangement exists to avoid — on the one gesture nobody makes by hand.
    */
   get wet(): WetStroke | null {
+    if (this.drying !== null) return this.drying;
     if (this.samples.length < 2) return null;
-    return {
-      tool: this.tool,
-      color: this.options.color ?? DEFAULT_MARKER_COLOR,
-      size: this.options.size ?? DEFAULT_INK_SIZE,
-      item: this.space,
-      samples: this.samples,
-    };
+    return this.snapshot();
   }
 
   /** Is a stroke being drawn right now? Read by `app/main.ts`, which suppresses
@@ -150,6 +171,11 @@ export class MarkerTool implements Tool {
         // A fresh array rather than `length = 0`, because the renderer was
         // handed the previous one and may still be holding it — see [`wet`].
         this.samples = [];
+        // The previous stroke stops being drawn here whether or not its ink has
+        // landed. Its record is already written; all that is given up is the
+        // overlap, and a stroke that shadowed the one now under the pointer
+        // would be the worse bug of the two.
+        this.drying = null;
         this.drawing = true;
         // Before the first sample, because the first sample is already converted
         // into it.
@@ -170,9 +196,7 @@ export class MarkerTool implements Tool {
       case "up":
         if (!this.drawing) return;
         this.add(input.at, ctx);
-        // Nothing to commit to yet, so the release is a discard. See the note at
-        // the top of the file: the mark disappearing is not a lost write.
-        this.reset();
+        this.commit(ctx);
         return;
       case "cancel":
         this.cancel(ctx);
@@ -186,6 +210,66 @@ export class MarkerTool implements Tool {
       default:
         return;
     }
+  }
+
+  /**
+   * The release: hand the samples over, and keep drawing them until told the ink
+   * has landed.
+   *
+   * The gesture is over here whatever happens next, so the live state is cleared
+   * first and unconditionally — a stroke that failed to be worth committing must
+   * not leave the tool believing a pointer is still down.
+   *
+   * `snapshot` before `samples = []`, and a fresh array rather than a clear, for
+   * the reason `down` gives: the array handed over is the one the writer will
+   * pack and the overlay is still drawing from, and the next stroke may not push
+   * its own samples into it.
+   *
+   * A click commits too, and that is deliberate: a press and a release at one
+   * point is two samples a hair apart, which `perfect-freehand` turns into a
+   * round dot. That is the promise [`wet`] makes when it refuses to draw a
+   * one-sample stroke — the blob is withheld until the gesture proves it was a
+   * click rather than the start of a line, not withheld forever.
+   *
+   * Nothing else here asks whether the stroke is worth keeping. Whether it packed
+   * to any bytes at all is the document's judgement (`crdt/ops/ink.ts`), and it is
+   * the same call that decides a bare-cork stroke is not written yet — which is
+   * why [`dry`] is the owner's to call rather than something this file can work
+   * out for itself.
+   */
+  private commit(ctx: ToolContext): void {
+    const stroke = this.samples.length === 0 ? null : this.snapshot();
+    this.samples = [];
+    this.space = null;
+    this.drawing = false;
+    if (stroke === null) return;
+    this.drying = stroke;
+    ctx.write.commitStroke(stroke);
+  }
+
+  /**
+   * Stop drawing the committed stroke on the overlay — the ink is on the item's
+   * canvas now, or there is no ink coming.
+   *
+   * Called by whoever owns the writer, because only that side can see either
+   * answer: the commit's own verdict on a stroke it refused, and the re-raster
+   * that phase 6 may not have got to yet. Safe to call at any time and twice —
+   * it clears a slot and touches nothing about a stroke in progress.
+   */
+  dry(): void {
+    this.drying = null;
+  }
+
+  /** The stroke as the overlay and the writer see it — see [`wet`] on why the
+   *  sample array is shared rather than copied. */
+  private snapshot(): WetStroke {
+    return {
+      tool: this.tool,
+      color: this.options.color ?? DEFAULT_MARKER_COLOR,
+      size: this.options.size ?? DEFAULT_INK_SIZE,
+      item: this.space,
+      samples: this.samples,
+    };
   }
 
   /**
@@ -270,11 +354,16 @@ export class MarkerTool implements Tool {
    * gives: a window that lost focus mid-stroke has not finished with the marker,
    * and coming back to find the board in the select tool is worse than coming
    * back to the tool you chose.
+   *
+   * A stroke that is *drying* is not abandoned with it. That one is in the
+   * document, and losing the pointer is no reason to stop drawing it a frame
+   * before its ink appears.
    */
   cancel(_ctx: ToolContext): void {
     this.reset();
   }
 
+  /** The live stroke, forgotten. Deliberately not [`drying`] — see `cancel`. */
   private reset(): void {
     this.samples = [];
     this.space = null;

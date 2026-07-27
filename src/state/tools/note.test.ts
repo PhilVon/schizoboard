@@ -61,6 +61,7 @@ beforeEach(() => {
     deleteStrings: () => {},
     setStringStyle: () => {},
     movePins: () => {},
+    commitStroke: () => {},
       createNote: (x, y) => created.push({ x, y }),
     },
   };

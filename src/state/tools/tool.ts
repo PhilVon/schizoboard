@@ -17,6 +17,7 @@
  * — and it is the same reason `state/scene.ts` imports nothing from `crdt/`.
  */
 
+import type { WetStroke } from "@/lib/ink";
 import type { Camera, Vec2 } from "@/state/camera";
 import type { DirtySets } from "@/state/dirty";
 import type { Scene } from "@/state/scene";
@@ -342,6 +343,26 @@ export interface BoardWriter {
    * then writes the final position whether or not it changed.
    */
   movePins(positions: ReadonlyMap<string, Vec2>, phase: "live" | "final"): void;
+  /**
+   * One finished stroke — the dry half of DESIGN section 6.5's wet/dry split.
+   *
+   * > Everything up to pen-up is local and ephemeral. The commit is a single
+   * > `Y.Map` insertion. — DATA-MODEL section 6.2
+   *
+   * The samples are in the space `stroke.item` names, which the press fixed and
+   * the tool has been converting into ever since (`state/tools/marker.ts`). They
+   * are handed over whole rather than a segment at a time for the same reason
+   * `createString` takes a whole run: one stroke is one thing the user did, and
+   * therefore one transaction and one undo entry.
+   *
+   * The caller keeps drawing the stroke on the overlay until [`Tool`]'s owner
+   * says the item's canvas has caught up — see `MarkerTool.dry`. A write that
+   * *lands* is not a mark that is *drawn*: the commit runs in phase 9 and the
+   * re-raster is a phase 6 the frame after, so dropping the wet copy on the
+   * strength of having queued the write leaves a frame with the mark on neither
+   * surface.
+   */
+  commitStroke(stroke: WetStroke): void;
 }
 
 /**

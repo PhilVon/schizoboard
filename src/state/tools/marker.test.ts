@@ -11,7 +11,7 @@
 
 import { beforeEach, describe, expect, it } from "vitest";
 
-import { DEFAULT_INK_SIZE, DEFAULT_MARKER_COLOR } from "@/lib/ink";
+import { DEFAULT_INK_SIZE, DEFAULT_MARKER_COLOR, type WetStroke } from "@/lib/ink";
 import { PRESSURE_NEUTRAL } from "@/lib/pressure";
 import { rotateOut } from "@/lib/rotate";
 import { Camera } from "@/state/camera";
@@ -22,6 +22,9 @@ import { MarkerTool } from "@/state/tools/marker";
 import type { PointerSample, ToolContext } from "@/state/tools/tool";
 
 let done: number;
+/** Every stroke the tool handed to the writer, in order — the dry half of the
+ *  release, which the tool only ever asks for. */
+let committed: WetStroke[];
 let tool: MarkerTool;
 let ctx: ToolContext;
 let camera: Camera;
@@ -106,6 +109,7 @@ function samples(): ReadonlyArray<{ x: number; y: number; pressure: number }> {
 
 beforeEach(() => {
   done = 0;
+  committed = [];
   camera = new Camera();
   camera.resize(1000, 800);
   scene = new Scene();
@@ -139,6 +143,7 @@ beforeEach(() => {
       deleteStrings: () => {},
       setStringStyle: () => {},
       movePins: () => {},
+      commitStroke: (stroke) => committed.push(stroke),
     },
   };
 });
@@ -479,23 +484,65 @@ describe("what the overlay is offered", () => {
 });
 
 describe("letting go", () => {
-  it("takes the mark with it, because nothing was ever written down", () => {
-    down(0, 0);
-    move([at(10, 0), at(20, 0)]);
-    up(30, 0);
+  it("hands the whole stroke to the writer, once", () => {
+    camera.setView(0, 0, 1);
+    photo("p", 0, 0);
+    down(500, 400);
+    move([at(510, 400), at(520, 400)]);
+    up(530, 400);
 
-    // Not a lost write — a wet stroke is never in the document. The commit needs
-    // the packing (T-59) and a canvas to raster into (T-57); T-58 joins them.
-    expect(tool.wet).toBeNull();
+    expect(committed).toHaveLength(1);
+    expect(committed[0]).toMatchObject({
+      tool: "marker",
+      color: DEFAULT_MARKER_COLOR,
+      size: DEFAULT_INK_SIZE,
+      item: "p",
+    });
+    // The release's own position is part of the mark: four samples, not three.
+    expect(committed[0]!.samples).toHaveLength(4);
     expect(tool.stroking).toBe(false);
   });
 
-  it("keeps the release's own position while it is still a stroke", () => {
+  it("commits a stroke drawn on bare cork too, and lets the document refuse it", () => {
     down(0, 0);
     move([at(10, 0)]);
-    // The last sample is part of the mark; it is the discard that follows, not
-    // the release itself, that ends it.
-    up(99, 0);
+    up(20, 0);
+
+    // The tool does not know that nothing renders board ink yet (T-61). Deciding
+    // an `item: null` stroke is not written is `crdt/ops/ink.ts`'s call, and a
+    // tool that second-guessed it would have to be found and changed again when
+    // the tiles land.
+    expect(committed).toHaveLength(1);
+    expect(committed[0]!.item).toBeNull();
+  });
+
+  it("commits a click as the dot it is", () => {
+    photo("p", 0, 0);
+    down(500, 400);
+    up(500, 400);
+
+    // The overlay withholds a one-sample stroke because a press that has not
+    // moved is not yet evidence of anything. The release is the evidence, and a
+    // dot is a mark somebody meant to make — `perfect-freehand` renders these two
+    // coincident samples as a round one.
+    expect(committed).toHaveLength(1);
+    expect(committed[0]!.samples).toHaveLength(2);
+    expect(tool.wet).toBe(committed[0]);
+  });
+
+  it("commits nothing when the paper went while the pointer was down", () => {
+    camera.setView(0, 0, 1);
+    photo("p", 0, 0);
+    down(500, 400);
+    move([at(520, 400)]);
+    scene.removeItem("p");
+    under = null;
+    move([at(540, 400)]);
+    up(560, 400);
+
+    // The samples have no frame left to be in, so there is nothing honest to
+    // write. The release finds no stroke in progress and says so.
+    expect(committed).toEqual([]);
     expect(tool.wet).toBeNull();
   });
 
@@ -522,6 +569,83 @@ describe("letting go", () => {
   it("stays in the marker for every other key — nobody draws one stroke", () => {
     tool.handle({ kind: "key", code: "Enter", shift: false, ctrl: false, alt: false }, ctx);
     expect(done).toBe(0);
+  });
+});
+
+/**
+ * T-58's other half, and the reason the commit is not the end of the gesture.
+ *
+ * The write lands in phase 9 and the item's canvas is filled in phase 6 of a
+ * later frame, so a release that stopped drawing the stroke there and then would
+ * leave it on neither surface for a frame — a blink under every pen-up. The tool
+ * goes on offering the committed stroke to the overlay until its owner says the
+ * ink has landed.
+ */
+describe("drying — the frame between the commit and the ink", () => {
+  it("goes on offering the stroke to the overlay after the release", () => {
+    camera.setView(0, 0, 1);
+    photo("p", 0, 0);
+    down(500, 400);
+    move([at(520, 400)]);
+    up(540, 400);
+
+    // The same stroke that was handed to the writer, not a second copy of it.
+    expect(tool.wet).toBe(committed[0]);
+    // And not a gesture: nothing is captured, so no hover affordance is
+    // suppressed and nothing else on the board thinks a pointer is down.
+    expect(tool.stroking).toBe(false);
+  });
+
+  it("stops when the owner says the ink has landed", () => {
+    down(0, 0);
+    move([at(10, 0)]);
+    up(20, 0);
+    expect(tool.wet).not.toBeNull();
+
+    tool.dry();
+    expect(tool.wet).toBeNull();
+    // Twice is not an error: the owner calls it both when a commit is refused
+    // and when a re-raster completes, and those can be the same stroke.
+    tool.dry();
+    expect(tool.wet).toBeNull();
+  });
+
+  it("drops it on the next press, so it cannot shadow the live stroke", () => {
+    down(0, 0);
+    move([at(10, 0)]);
+    up(20, 0);
+
+    down(500, 500);
+    move([at(510, 500)]);
+
+    // The overlay draws one stroke, and it has to be the one under the pointer.
+    expect(tool.wet!.samples.map((s) => s.x)).toEqual([500, 510]);
+  });
+
+  it("keeps it through a lost pointer, which cannot un-write a record", () => {
+    down(0, 0);
+    move([at(10, 0)]);
+    up(20, 0);
+    tool.handle({ kind: "cancel" }, ctx);
+
+    // Losing the window is a reason to forget a stroke that was never written.
+    // This one is in the document, and it would appear on the item a frame later
+    // whether or not the overlay stopped drawing it.
+    expect(tool.wet).toBe(committed[0]);
+  });
+
+  it("hands the writer an array the next stroke cannot append to", () => {
+    down(0, 0);
+    move([at(10, 0)]);
+    up(20, 0);
+    const held = committed[0]!.samples;
+
+    down(500, 500);
+    move([at(510, 500)]);
+
+    // The write is queued to phase 9 and packs the array it was given. A press
+    // in between must not have pushed its own samples into it.
+    expect(held.map((s) => s.x)).toEqual([0, 10, 20]);
   });
 });
 

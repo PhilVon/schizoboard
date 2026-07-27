@@ -659,6 +659,68 @@ describe("ink", () => {
     expect(layer.inked).toBe(0);
   });
 
+  /**
+   * The wet/dry handoff's signal (T-58). The marker goes on drawing a committed
+   * stroke on the overlay until this says the bitmap has caught up, so an answer
+   * that is wrong in the true direction leaves the mark drawn twice for a frame
+   * and one that is wrong in the false direction is the blink the whole
+   * arrangement exists to avoid.
+   */
+  describe("awaitingInk", () => {
+    it("is true from the commit until the raster, and false after it", () => {
+      add("a");
+      layer.sync(scene, dirty, null);
+      expect(layer.awaitingInk("a")).toBe(false);
+
+      drawOn("a");
+      // Queued but not painted: dirty.ink alone is not an answer, because the
+      // budget below can leave it queued for frames.
+      expect(layer.awaitingInk("a")).toBe(false);
+      layer.paintInk(scene, dirty);
+      expect(layer.awaitingInk("a")).toBe(false);
+    });
+
+    it("stays true for an item the budget did not reach this frame", () => {
+      for (const id of ["a", "b", "c", "d", "e"]) {
+        add(id);
+        drawOn(id);
+      }
+      layer.sync(scene, dirty, null);
+      layer.paintInk(scene, dirty);
+
+      // Three of the five were painted; the other two are still waiting, and a
+      // handoff counting frames instead would have dropped their overlay copies
+      // a frame before their ink appeared.
+      const waiting = ["a", "b", "c", "d", "e"].filter((id) => layer.awaitingInk(id));
+      expect(waiting).toHaveLength(2);
+
+      // Phase 9 clears the dirty sets; the two left over survive in this layer's
+      // own queue, which is the whole reason it has one.
+      dirty.clear();
+      layer.paintInk(scene, dirty);
+      expect(["a", "b", "c", "d", "e"].some((id) => layer.awaitingInk(id))).toBe(false);
+    });
+
+    it("is false for a queued item the viewport has since taken away", () => {
+      for (const id of ["a", "b", "c", "d", "e"]) {
+        add(id);
+        drawOn(id);
+      }
+      layer.sync(scene, dirty, null);
+      layer.paintInk(scene, dirty);
+      dirty.clear();
+
+      const left = ["a", "b", "c", "d", "e"].find((id) => layer.awaitingInk(id))!;
+      // The item is culled while its re-raster is still queued — which is the
+      // one way an id in the queue stops having a node. Nothing is going to
+      // appear where it was, so nothing is worth waiting for and the marker's
+      // overlay copy stops now rather than hanging on the board forever.
+      for (const id of ["a", "b", "c", "d", "e"]) dirty.item(id);
+      layer.sync(scene, dirty, new Set(["a", "b", "c", "d", "e"].filter((id) => id !== left)));
+      expect(layer.awaitingInk(left)).toBe(false);
+    });
+  });
+
   it("frees every backing store on teardown", () => {
     add("a");
     drawOn("a");

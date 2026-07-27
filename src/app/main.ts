@@ -13,6 +13,7 @@ import { Binding } from "@/crdt/binding";
 import { boardSeed, encodedSize, initialiseBoard, openBoardDoc, snapshot } from "@/crdt/doc";
 import * as ops from "@/crdt/ops";
 import {
+  commitStroke,
   createItems,
   createPin,
   createStringThrough,
@@ -366,7 +367,51 @@ async function boot(): Promise<void> {
       for (const [id, at] of positions) snapshot.set(id, { lx: at.x, ly: at.y });
       queued.push(() => movePins(board, snapshot));
     },
+    /**
+     * One finished stroke, and the near end of the wet/dry handoff.
+     *
+     * Not copied, which is the one write on this interface that is not. Every
+     * other one snapshots because the tool goes on mutating what it handed over;
+     * the marker instead swaps in a fresh array the moment a stroke ends
+     * (`state/tools/marker.ts`), so the samples here are already dead to it — and
+     * a stroke is the largest thing any gesture hands over, in the one gesture on
+     * this board with a latency budget.
+     *
+     * The far end is [`drying`] below. What is settled here is only the case
+     * where no ink is coming at all.
+     */
+    commitStroke: (stroke) => {
+      queued.push(() => {
+        const id = commitStroke(board, {
+          item: stroke.item,
+          tool: stroke.tool,
+          color: stroke.color,
+          size: stroke.size,
+          samples: stroke.samples,
+        });
+        if (id !== null) {
+          drying = stroke.item;
+          return;
+        }
+        // Nothing was written: a click rather than a stroke, a bare-cork stroke
+        // that nothing renders yet (T-61), or paper that left the board while
+        // the pointer was down. No re-raster is coming, so the overlay copy is
+        // all that is holding the mark up and it stops being drawn now.
+        drying = null;
+        marker.dry();
+      });
+    },
   };
+
+  /**
+   * The item whose ink the marker is still drawing on the overlay because its
+   * canvas has not caught up — the far end of `BoardWriter.commitStroke`, and the
+   * whole of what stops a pen-up from blinking.
+   *
+   * One slot, not a queue: a press drops whatever was drying (see
+   * `MarkerTool.wet`), so there is never a second one to hold.
+   */
+  let drying: string | null = null;
 
   /**
    * Undo.
@@ -875,6 +920,17 @@ async function boot(): Promise<void> {
    */
   loop.on("ink", () => {
     items.paintInk(scene, dirty);
+    // The handoff, and it is after the raster and before the overlay on purpose:
+    // the frame that finally puts a committed stroke on its item's canvas is the
+    // frame that may stop drawing the wet copy of it, and neither an earlier nor
+    // a later phase is both.
+    //
+    // Asked of the item layer rather than counted in frames, because the answer
+    // is genuinely not a number of frames — see `ItemLayer.awaitingInk`.
+    if (drying !== null && !items.awaitingInk(drying)) {
+      drying = null;
+      marker.dry();
+    }
   });
 
   /**

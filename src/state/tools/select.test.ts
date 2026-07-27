@@ -300,6 +300,8 @@ beforeEach(() => {
       // The free pins a dragged or rotated thread carries with it (DESIGN 3.8).
       movePins: (positions, phase) =>
         writes.push({ kind: "pins", phase, positions: new Map(positions) }),
+      // Ink is the marker's (`state/tools/marker.ts`); select draws nothing.
+      commitStroke: () => {},
     },
   };
 });

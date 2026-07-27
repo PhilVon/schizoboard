@@ -461,6 +461,23 @@ export class DomItemLayer implements ItemLayer {
     return n;
   }
 
+  /**
+   * Is this item's canvas still behind its strokes?
+   *
+   * Asked by the wet/dry handoff (T-58): the marker keeps drawing a committed
+   * stroke on the overlay until the bitmap it was committed into has caught up,
+   * and this is the only place that knows. Frame-counting would be the obvious
+   * alternative and it is wrong in both directions — [`paintInk`]'s budget can
+   * put the re-raster several frames out on a board full of ink, and an item that
+   * is not mounted has no re-raster coming at all.
+   *
+   * False for an unmounted item for exactly that reason. Nothing is going to
+   * appear where it is, so nothing is worth waiting for.
+   */
+  awaitingInk(id: string): boolean {
+    return this.inkPending.has(id) && this.views.has(id);
+  }
+
   get inkPixels(): number {
     let n = 0;
     for (const view of this.views.values()) n += view.ink.pixels;
