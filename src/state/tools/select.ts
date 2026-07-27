@@ -60,7 +60,13 @@ import {
 } from "@/state/handles";
 import type { ItemPose } from "@/state/scene";
 import { threadFrom } from "@/state/thread";
-import { anchorAt, anchorParent, drawnPose, settleOnPin, stringAt } from "@/state/tools/frame";
+import {
+  anchorAt,
+  anchorParent,
+  settleOnPin,
+  settleOnUnpin,
+  stringAt,
+} from "@/state/tools/frame";
 import { PinDrag } from "@/state/tools/pindrag";
 import type {
   PointerSample,
@@ -199,20 +205,6 @@ function approach(current: number, target: number, dt: number, tau: number): num
 }
 
 /**
- * The pose to write for an item about to lose the pin it hangs from, or an
- * empty map when nothing is about to.
- *
- * An item on one pin is drawn at `rot + swing` about a centre shifted by
- * `drift`, and neither transient is in the document. Take the pin out and both
- * stop existing, so the paper snaps back to an authored rotation that has been
- * invisible ever since it started hanging — which is what T-107 was. Writing
- * the pose it was drawn at, in the same transaction that removes the pin,
- * leaves the paper exactly where it looks.
- *
- * Only the *last* pin. Going from two to one starts it hanging, which is a
- * swing rather than a jump; three to two changes nothing at all.
- */
-/**
  * The preset a key code names, or null if it names none.
  *
  * By `code` rather than `key`, like every other binding on the board: `Digit1`
@@ -225,15 +217,6 @@ function approach(current: number, target: number, dt: number, tau: number): num
 function presetFor(code: string): number | null {
   const digit = /^(?:Digit|Numpad)([1-9])$/.exec(code);
   return digit === null ? null : Number(digit[1]);
-}
-
-function settleOnUnpin(ctx: ToolContext, pinId: string): ReadonlyMap<string, WritePose> {
-  const settle = new Map<string, WritePose>();
-  const parent = ctx.scene.pins.get(pinId)?.parent ?? null;
-  if (parent === null || ctx.scene.pinCount(parent) !== 1) return settle;
-  const pose = drawnPose(ctx.scene, parent);
-  if (pose) settle.set(parent, pose);
-  return settle;
 }
 
 export class SelectTool implements Tool {
@@ -830,7 +813,7 @@ export class SelectTool implements Tool {
         }
       } else {
         // "Strings through it heal", which the op does in the same transaction.
-        ctx.write.deletePins([from], settleOnUnpin(ctx, from));
+        ctx.write.deletePins([from], settleOnUnpin(ctx.scene, [from]));
       }
       this.phase = "idle";
       ctx.dirty.camera = true;

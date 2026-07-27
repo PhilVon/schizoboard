@@ -61,9 +61,9 @@ import { stringAt } from "@/state/tools/frame";
 import { SelectTool } from "@/state/tools/select";
 import { StringTool } from "@/state/tools/string";
 import type { BoardWriter, WritePose } from "@/state/tools/tool";
-import { stringMenuRows } from "@/ui/boardmenu";
+import { itemMenuRows, pinMenuRows, stringMenuRows } from "@/ui/boardmenu";
 import { Hud, type HudStats } from "@/ui/hud";
-import { ContextMenu } from "@/ui/menu";
+import { ContextMenu, type MenuEntry } from "@/ui/menu";
 
 async function boot(): Promise<void> {
   const native = await initPlatform();
@@ -491,15 +491,24 @@ async function boot(): Promise<void> {
   });
 
   /**
-   * The context menu (DESIGN section 3.4).
+   * The context menu (DESIGN sections 3.2, 3.3 and 3.4).
    *
    * Ambient, like navigation and undo: a right-click means the same thing in
    * every tool, so it is not the tool machine's. The rows themselves are
    * `ui/boardmenu.ts`, which is a pure function of ids — this is only the part
-   * that has to happen here, which is the hit test. `stringAt` is the *same*
-   * function the press and the hover highlight go through, so the menu cannot
-   * offer a string a left-click would not have grabbed: a tucked one under a
-   * photograph is not right-clickable through the photograph either.
+   * that has to happen here, which is the hit test.
+   *
+   * ## Which of the three menus opens
+   *
+   * A pin, then a string, then an item, then bare cork — the same order a
+   * left-click resolves in, because it is the order the things are physically
+   * stacked in. `hitPin` first and in screen space, since a pin's grab radius
+   * has a floor in pixels and is what `anchorAt` asks first too. `stringAt` for
+   * the middle one, which is the *same* function the press and the hover
+   * highlight go through, so the menu cannot offer a string a left-click would
+   * not have grabbed: a string tucked under a photograph is not right-clickable
+   * through the photograph either — and it is the item's menu that opens there,
+   * which is the honest answer to a right-click on a photograph.
    *
    * `preventDefault` is duplicated with `Navigation`'s blanket one, which stops
    * the webview menu everywhere on the board including where this opens
@@ -512,7 +521,20 @@ async function boot(): Promise<void> {
     // A right-click on the menu itself, or on the HUD. Chrome takes its own.
     if (isChromeTarget(e.target)) return;
 
-    const hit = stringAt(scene, camera, hitItem, hitPin, hitString, e.clientX, e.clientY);
+    /**
+     * Open, and queue the selection those rows were computed against.
+     *
+     * Queued to phase 9 with every other consequence of an input, so the halo
+     * and the menu appear on the same frame rather than a frame apart. A
+     * `select` of `undefined` means the target was already selected and the
+     * selection is what the rows act on, so there is nothing to move.
+     */
+    const open = (rows: readonly MenuEntry[], select?: () => void): void => {
+      if (rows.length === 0) return;
+      if (select) queued.push(select);
+      menu.openAt(e.clientX, e.clientY, rows);
+    };
+
     /**
      * Right-clicking something already selected acts on the whole selection;
      * right-clicking something else acts on that one thing and takes the
@@ -524,15 +546,54 @@ async function boot(): Promise<void> {
      * only thing on the board that says what a verb will hit, would be pointing
      * at it rather than at the string under the cursor.
      */
-    const held = hit !== null && selection.hasString(hit.string);
-    const targets = hit === null || held ? [...selection.strings] : [hit.string];
-    const rows = stringMenuRows(scene, writer, targets);
-    if (rows.length === 0) return;
+    const pinId = hitPin(e.clientX, e.clientY);
+    if (pinId !== null) {
+      const held = selection.hasPin(pinId);
+      open(
+        pinMenuRows(scene, writer, held ? [...selection.pins] : [pinId]),
+        held ? undefined : () => selection.replaceThread([], [], [pinId]),
+      );
+      return;
+    }
 
-    // Queued to phase 9 with every other consequence of an input, so the halo
-    // and the menu appear on the same frame rather than a frame apart.
-    if (hit !== null && !held) queued.push(() => selection.replaceStrings([hit.string]));
-    menu.openAt(e.clientX, e.clientY, rows);
+    const hit = stringAt(scene, camera, hitItem, hitPin, hitString, e.clientX, e.clientY);
+    if (hit !== null) {
+      const held = selection.hasString(hit.string);
+      open(
+        stringMenuRows(scene, writer, held ? [...selection.strings] : [hit.string]),
+        held ? undefined : () => selection.replaceStrings([hit.string]),
+      );
+      return;
+    }
+
+    const board = camera.screenToBoard(e.clientX, e.clientY);
+    const itemId = hitItem(board.x, board.y);
+    if (itemId !== null) {
+      const held = selection.has(itemId);
+      open(
+        itemMenuRows(
+          scene,
+          writer,
+          itemId,
+          held ? selection.toArray() : [itemId],
+          board.x,
+          board.y,
+        ),
+        held ? undefined : () => selection.replace([itemId]),
+      );
+      return;
+    }
+
+    /**
+     * Bare cork — the one case with nothing under the cursor to name, so the
+     * menu is about the string selection as it stands and moves nothing.
+     *
+     * Kept because a right-click *near* a string is a right-click that missed
+     * by a few pixels, and a menu that vanished for it would be worse than one
+     * that offers the string you are plainly pointing at. Nothing opens when
+     * nothing is selected, which is the empty cork case.
+     */
+    open(stringMenuRows(scene, writer, [...selection.strings]));
   });
 
   const paste = new Paste({

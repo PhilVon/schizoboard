@@ -151,6 +151,39 @@ export function settleOnPin(
   return settle;
 }
 
+/**
+ * The mirror of `settleOnPin`: the poses to write for items about to *lose* a
+ * pin — empty when none of them was hanging by it.
+ *
+ * Same argument, run backwards. An item on its last pin is drawn at `rot +
+ * swing` about a centre shifted by `drift`, and when the pin goes so do both
+ * transients — so the paper snaps back to an authored rotation that has been
+ * invisible for as long as it has been hanging. Writing the drawn pose in the
+ * same transaction as the removal is what leaves it where it looks. Q-11
+ * settled that this is the one physics-derived rotation the document is allowed
+ * to hold, because a user action causes it rather than the simulation ticking.
+ *
+ * `pinCount(parent) !== 1` is the whole test, and it is enough even when
+ * several pins go at once: an item losing its only pin was hanging, and an item
+ * losing two of two was rigid and had no transient to lose. Counted **before**
+ * the write, like `settleOnPin` — every caller is holding an unwritten
+ * intention.
+ */
+export function settleOnUnpin(
+  scene: Scene,
+  pins: Iterable<string>,
+): ReadonlyMap<string, WritePose> {
+  const settle = new Map<string, WritePose>();
+  for (const pinId of pins) {
+    const parent = scene.pins.get(pinId)?.parent ?? null;
+    if (parent === null || settle.has(parent)) continue;
+    if (scene.pinCount(parent) !== 1) continue;
+    const pose = drawnPose(scene, parent);
+    if (pose) settle.set(parent, pose);
+  }
+  return settle;
+}
+
 /** The item an anchor will push a new pin into, or null — an anchor naming a
  *  pin that already exists changes nobody's count. */
 export function anchorParent(anchor: StringAnchor): string | null {

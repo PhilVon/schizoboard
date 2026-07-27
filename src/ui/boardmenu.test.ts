@@ -9,17 +9,22 @@
 
 import { beforeEach, describe, expect, it } from "vitest";
 
-import { Scene } from "@/state/scene";
-import type { BoardWriter, StringStyle } from "@/state/tools/tool";
+import { Scene, type ItemPose } from "@/state/scene";
+import type { BoardWriter, StringStyle, WritePose } from "@/state/tools/tool";
 import { STRING_MATERIALS } from "@/lib/material";
 import { DEFAULT_STRING_COLOR, STRING_COLORS, STRING_THICKNESSES } from "@/lib/palette";
-import { stringMenuRows } from "@/ui/boardmenu";
+import { itemMenuRows, pinMenuRows, stringMenuRows } from "@/ui/boardmenu";
 import type { MenuChoice, MenuEntry, MenuRow } from "@/ui/menu";
+
+type Settle = [string, WritePose][];
 
 type Write =
   | { kind: "layer"; stringIds: string[]; layer: "over" | "under" }
   | { kind: "style"; stringIds: string[]; style: StringStyle }
-  | { kind: "delete"; stringIds: string[] };
+  | { kind: "delete"; stringIds: string[] }
+  | { kind: "deleteItems"; ids: string[]; keepPins: boolean }
+  | { kind: "createPin"; parent: string | null; lx: number; ly: number; settle: Settle }
+  | { kind: "deletePins"; ids: string[]; settle: Settle };
 
 let scene: Scene;
 let writes: Write[];
@@ -56,6 +61,19 @@ function span(id: string, y: number, layer = "over"): void {
   });
 }
 
+/** An item at a pose. 100x100 at the origin unless told otherwise. */
+function put(id: string, pose: Partial<ItemPose> = {}): void {
+  scene.putItem(
+    { id, type: "polaroid", z: "a0", seed: 1, assetId: null, createdBy: 1, createdAt: 0, text: "" },
+    { x: 0, y: 0, rot: 0, w: 100, h: 100, ...pose },
+  );
+}
+
+/** A pin in an item, or in the bare cork when `parent` is null. */
+function pin(id: string, parent: string | null, lx = 0, ly = 0): void {
+  scene.putPin({ id, parent, lx, ly, kind: "pushpin", color: "#c8352c", wx: lx, wy: ly });
+}
+
 /** The verb rows, which is everything that is not a picker. */
 function verbs(entries: readonly MenuEntry[]): MenuRow[] {
   return entries.filter((e): e is MenuRow => !("choices" in e));
@@ -80,15 +98,23 @@ function chips(entries: readonly MenuEntry[], label: string): readonly MenuChoic
 beforeEach(() => {
   scene = new Scene();
   writes = [];
-  const partial: Pick<BoardWriter, "setStringLayer" | "setStringStyle" | "deleteStrings"> = {
+  const partial: Pick<
+    BoardWriter,
+    "setStringLayer" | "setStringStyle" | "deleteStrings" | "deleteItems" | "createPin" | "deletePins"
+  > = {
     setStringLayer: (stringIds, layer) =>
       writes.push({ kind: "layer", stringIds: [...stringIds], layer }),
     setStringStyle: (stringIds, style) =>
       writes.push({ kind: "style", stringIds: [...stringIds], style: { ...style } }),
     deleteStrings: (stringIds) => writes.push({ kind: "delete", stringIds: [...stringIds] }),
+    deleteItems: (ids, keepPins) => writes.push({ kind: "deleteItems", ids: [...ids], keepPins }),
+    createPin: (parent, lx, ly, settle) =>
+      writes.push({ kind: "createPin", parent, lx, ly, settle: [...(settle ?? [])] }),
+    deletePins: (ids, settle) =>
+      writes.push({ kind: "deletePins", ids: [...ids], settle: [...(settle ?? [])] }),
   };
-  // The rows only ever reach these two. Everything else on the interface is a
-  // write no menu offers, and stubbing fourteen of them would say otherwise.
+  // The rows only ever reach these five. Everything else on the interface is a
+  // write no menu offers, and stubbing eleven of them would say otherwise.
   write = partial as BoardWriter;
 });
 
@@ -281,5 +307,173 @@ describe("the string context menu", () => {
       expect(verbs(rows)[1]!.danger).toBe(true);
       expect(verbs(rows)[1]!.divided).toBe(true);
     });
+  });
+});
+
+describe("the item context menu", () => {
+  it("offers nothing when the item is no longer on the board", () => {
+    expect(itemMenuRows(scene, write, "gone", ["gone"], 0, 0)).toEqual([]);
+  });
+
+  describe("add pin", () => {
+    /** > | Add without switching tools | Item context menu -> *Add pin* | Pin at
+     *  > the click point - DESIGN section 3.2 */
+    it("pushes a pin into the clicked item, at the click point in its own frame", () => {
+      put("i", { x: 100, y: 50 });
+      pick(itemMenuRows(scene, write, "i", ["i"], 130, 90), "Add pin");
+      expect(writes).toEqual([{ kind: "createPin", parent: "i", lx: 30, ly: 40, settle: [] }]);
+    });
+
+    /**
+     * The conversion goes through the pose the item is *drawn* at, which for a
+     * hanging one is neither its stored centre nor its stored angle. Aiming at
+     * the top-left corner of a photograph swung a quarter turn has to put the
+     * pin in that corner of the paper, not in the corner the document says it
+     * would have if it were not hanging.
+     */
+    it("converts through the rendered pose, so a swinging item takes the pin where it looks", () => {
+      put("i");
+      const slot = scene.slotOf("i")!;
+      scene.swing[slot] = Math.PI / 2;
+      scene.driftX[slot] = 200;
+
+      pick(itemMenuRows(scene, write, "i", ["i"], 200, 40), "Add pin");
+      const [written] = writes as [Extract<Write, { kind: "createPin" }>];
+      // A quarter turn: the point 40 above the drawn centre is 40 to the *left*
+      // of it in the item's own frame.
+      expect(written.lx).toBeCloseTo(40);
+      expect(written.ly).toBeCloseTo(0);
+    });
+
+    /**
+     * One pin hangs and two are rigid (DESIGN section 5.5), so the second pin
+     * is the one that ends the swing - and `sim/torsion.ts` ends it by zeroing
+     * transients the document has never held. The pose the item was drawn at,
+     * written in the same transaction, is what stops the paper (and the pin
+     * just placed in it) jumping.
+     */
+    it("settles an item that was hanging by its one pin", () => {
+      put("i");
+      pin("p", "i");
+      const slot = scene.slotOf("i")!;
+      scene.swing[slot] = 0.3;
+      scene.driftX[slot] = 7;
+      scene.driftY[slot] = -4;
+
+      pick(itemMenuRows(scene, write, "i", ["i"], 0, 0), "Add pin");
+      const [written] = writes as [Extract<Write, { kind: "createPin" }>];
+      // The angle comes back through a `Float32Array`, so it is the rotation
+      // that was set to within a float's worth of it and not to the bit.
+      expect(written.settle).toEqual([["i", { x: 7, y: -4, rot: expect.closeTo(0.3) }]]);
+    });
+
+    it("settles nothing for an item that was already rigid", () => {
+      put("i");
+      pin("p0", "i");
+      pin("p1", "i", 10);
+      pick(itemMenuRows(scene, write, "i", ["i"], 0, 0), "Add pin");
+      expect((writes[0] as Extract<Write, { kind: "createPin" }>).settle).toEqual([]);
+    });
+
+    /**
+     * The one row here that is about the *clicked* item rather than the
+     * targets: a pin goes somewhere, and a menu opened over four selected
+     * photographs still only has one cursor.
+     */
+    it("pins only the item under the cursor, however many are selected", () => {
+      put("i0", { x: 100 });
+      put("i1", { x: 400 });
+      pick(itemMenuRows(scene, write, "i1", ["i0", "i1"], 400, 0), "Add pin");
+      expect(writes).toEqual([{ kind: "createPin", parent: "i1", lx: 0, ly: 0, settle: [] }]);
+    });
+
+    /** A peer deleted the item under the cursor between the press and the menu.
+     *  The verbs against the rest of the selection survive; the row that needs
+     *  a place to put a pin does not. */
+    it("is dropped when the clicked item is gone but the selection is not", () => {
+      put("i0");
+      const rows = itemMenuRows(scene, write, "gone", ["i0", "gone"], 0, 0);
+      expect(verbs(rows).map((r) => r.label)).toEqual(["Delete"]);
+      expect(verbs(rows)[0]!.divided).toBe(false);
+    });
+  });
+
+  describe("delete", () => {
+    /** > `Delete` | Removes the item and its pins; strings through those pins
+     *  > heal - DESIGN section 3.8 */
+    it("deletes the item, and does not keep its pins", () => {
+      put("i");
+      pick(itemMenuRows(scene, write, "i", ["i"], 0, 0), "Delete");
+      expect(writes).toEqual([{ kind: "deleteItems", ids: ["i"], keepPins: false }]);
+    });
+
+    it("counts them in the label, and is drawn as destructive", () => {
+      put("i0");
+      put("i1", { x: 300 });
+      const rows = itemMenuRows(scene, write, "i0", ["i0", "i1"], 0, 0);
+      expect(verbs(rows)[1]!.label).toBe("Delete 2 items");
+      expect(verbs(rows)[1]!.danger).toBe(true);
+      expect(verbs(rows)[1]!.divided).toBe(true);
+    });
+
+    it("drops ids the scene no longer has", () => {
+      put("i");
+      pick(itemMenuRows(scene, write, "i", ["i", "vanished"], 0, 0), "Delete");
+      expect(writes).toEqual([{ kind: "deleteItems", ids: ["i"], keepPins: false }]);
+    });
+  });
+});
+
+describe("the pin context menu", () => {
+  it("offers nothing when the pin is no longer on the board", () => {
+    expect(pinMenuRows(scene, write, ["gone"])).toEqual([]);
+  });
+
+  /** > | Remove | `Alt`+click, or context menu | Strings through it heal
+   *  > - DESIGN section 3.3 */
+  it("removes the pin", () => {
+    pin("p", null);
+    const rows = pinMenuRows(scene, write, ["p"]);
+    expect(verbs(rows).map((r) => r.label)).toEqual(["Remove"]);
+    expect(verbs(rows)[0]!.danger).toBe(true);
+    pick(rows, "Remove");
+    expect(writes).toEqual([{ kind: "deletePins", ids: ["p"], settle: [] }]);
+  });
+
+  it("counts them in the label, and drops ids the scene no longer has", () => {
+    pin("p0", null);
+    pin("p1", null, 40);
+    expect(verbs(pinMenuRows(scene, write, ["p0", "p1"]))[0]!.label).toBe("Remove 2 pins");
+    pick(pinMenuRows(scene, write, ["p0", "vanished"]), "Remove");
+    expect(writes).toEqual([{ kind: "deletePins", ids: ["p0"], settle: [] }]);
+  });
+
+  /**
+   * The mirror of the settle above, and the one that T-107 was: an item hanging
+   * by the pin about to go is drawn at an angle the document has never held, so
+   * without this the paper snaps back to its authored rotation the instant the
+   * pin leaves.
+   */
+  it("settles an item that was hanging by the pin being removed", () => {
+    put("i");
+    pin("p", "i");
+    const slot = scene.slotOf("i")!;
+    scene.swing[slot] = -0.2;
+    scene.driftY[slot] = 12;
+
+    pick(pinMenuRows(scene, write, ["p"]), "Remove");
+    expect(writes).toEqual([
+      { kind: "deletePins", ids: ["p"], settle: [["i", { x: 0, y: 12, rot: expect.closeTo(-0.2) }]] },
+    ]);
+  });
+
+  /** Two of two going at once is a rigid item becoming a free one, which has no
+   *  transient to lose - so the count of one is the whole test even here. */
+  it("settles nothing when a rigid item loses both its pins", () => {
+    put("i");
+    pin("p0", "i");
+    pin("p1", "i", 10);
+    pick(pinMenuRows(scene, write, ["p0", "p1"]), "Remove");
+    expect((writes[0] as Extract<Write, { kind: "deletePins" }>).settle).toEqual([]);
   });
 });
