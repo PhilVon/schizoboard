@@ -12,6 +12,7 @@
  * still the front door — import from `@/crdt/ops`.
  */
 
+export * from "@/crdt/ops/ink";
 export * from "@/crdt/ops/items";
 export * from "@/crdt/ops/load";
 export * from "@/crdt/ops/pins";

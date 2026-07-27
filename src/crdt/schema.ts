@@ -37,9 +37,12 @@ export type StrokeTool = "marker" | "highlighter" | "erase";
 
 const ITEM_TYPES: ReadonlySet<string> = new Set(["polaroid", "note", "scrap", "card"]);
 const PIN_KINDS: ReadonlySet<string> = new Set(["pushpin", "thumbtack", "nail"]);
+const STROKE_TOOLS: ReadonlySet<string> = new Set(["marker", "highlighter", "erase"]);
 
 /** Invariant 6 — merging never produces an item with zero or negative size. */
 export const MIN_ITEM_SIZE = 1;
+/** The same clamp for a nib: a stroke of zero width is one nobody can erase. */
+export const MIN_STROKE_SIZE = 0.25;
 /** Invariant 2 — slack is strictly greater than zero, clamped to a minimum. */
 export const MIN_SLACK = 0.01;
 
@@ -101,6 +104,34 @@ export interface StringFields {
   closed: boolean;
   createdBy: number;
   createdAt: number;
+}
+
+/**
+ * One committed stroke — DATA-MODEL section 6, and the same shape whether it is
+ * nested under an item or under a board-ink tile.
+ *
+ * `pts` is the packed input points and nothing else: "store input points, never
+ * the generated outline" (section 6.1), because the outline cannot be re-tuned
+ * when the taper and thinning numbers in `render/ink/geometry.ts` are revisited.
+ * `lib/strokepack.ts` is the codec at both ends.
+ *
+ * `bbox` is in the stroke's own space and is stored so that a tile can cull and
+ * hit-test without unpacking. It is the box round the *points*, not round the
+ * paint — a nib has width, and padding it is the reader's job because only the
+ * reader knows whether it is asking about the path or the ink.
+ */
+export interface StrokeFields {
+  id: string;
+  tool: StrokeTool;
+  color: string;
+  /** Board units, which are item-local units too — the same scale. */
+  size: number;
+  /** 0 to 1. */
+  opacity: number;
+  seed: number;
+  z: string;
+  bbox: readonly [number, number, number, number];
+  pts: Uint8Array;
 }
 
 export interface AssetFields {
@@ -232,6 +263,48 @@ export function readString(id: string, map: YMap): StringFields | null {
     createdBy: num(map.get("createdBy"), 0),
     createdAt: num(map.get("createdAt"), 0),
   };
+}
+
+/**
+ * Null for a stroke with no points, which is the one field that cannot be
+ * defaulted into something drawable — everything else clamps or falls back.
+ *
+ * `z` is required for the same reason it is on an item: without an ordering the
+ * stroke has no defined place in the stack, and inventing one here would put it
+ * somewhere different on every peer.
+ *
+ * `bbox` is *not* trusted. A malformed one is replaced with a degenerate box and
+ * the renderer measures its own from the unpacked points (`state/scene.ts`);
+ * invariant 7 says the box contains the points, and a peer that broke it must
+ * not be able to clip our raster.
+ */
+export function readStroke(id: string, map: YMap): StrokeFields | null {
+  const pts = map.get("pts");
+  if (!(pts instanceof Uint8Array) || pts.length === 0) return null;
+  const z = map.get("z");
+  if (typeof z !== "string" || z.length === 0) return null;
+  const tool = str(map.get("tool"), "marker");
+
+  return {
+    id,
+    tool: (STROKE_TOOLS.has(tool) ? tool : "marker") as StrokeTool,
+    color: str(map.get("color"), "#1f1b17"),
+    // Clamped, not rejected, for `readItem`'s reason: a stroke with a nonsense
+    // width should still be erasable rather than invisible.
+    size: Math.max(MIN_STROKE_SIZE, num(map.get("size"), MIN_STROKE_SIZE)),
+    opacity: Math.min(1, Math.max(0, num(map.get("opacity"), 1))),
+    seed: num(map.get("seed"), 0) >>> 0,
+    z,
+    bbox: readBbox(map.get("bbox")),
+    pts,
+  };
+}
+
+function readBbox(value: unknown): readonly [number, number, number, number] {
+  if (!Array.isArray(value) || value.length !== 4) return [0, 0, 0, 0];
+  const box = value as number[];
+  for (const n of box) if (typeof n !== "number" || !Number.isFinite(n)) return [0, 0, 0, 0];
+  return [box[0]!, box[1]!, box[2]!, box[3]!];
 }
 
 export function readAsset(sha256: string, map: YMap): AssetFields | null {
