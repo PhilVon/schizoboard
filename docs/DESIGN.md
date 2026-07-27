@@ -578,6 +578,8 @@ Each item has its own canvas, sized to the item's **ink bounding box** rather th
 
 Stroke geometry comes from `perfect-freehand`, which turns an input polyline into an *outline polygon* that gets filled — not a stroked line. Marker uses meaningful thinning and an opaque fill; highlighter uses near-zero thinning, a flat cap and `multiply` composition. Crucially, each highlighter stroke composites as a unit so that a single stroke crossing itself doesn't darken at the crossing.
 
+The unit is the **record**, not the gesture, and after §2.4's hand-over those are not always the same thing: a highlighter that runs off a photograph, comes back onto it, and then crosses the part it drew first will deepen where the two pieces overlap, because they are two records and two fills. Measured at roughly 11/255 against 4/255 for an uncrossed stroke. It is left as it is — after a hand-over the pieces genuinely are separate strokes, the case needs three coincidences at once, and the alternatives are worse: merging the pieces would draw a straight segment across the surface they crossed, and compositing the whole gesture to one buffer is impossible when the pieces are on different canvases by construction.
+
 Input uses coalesced pointer events, which recover every sample the OS delivered between frames — the difference between a smooth curve and a visible polygon on a fast stroke. Pressure branches on pointer type: a real pen reports real pressure, while a mouse always reports exactly 0.5, so mouse and touch use velocity-derived simulated pressure instead. Getting this wrong produces dead, uniform lines and is a very common mistake.
 
 **Input points are stored, never the generated outline.** The outline is ten times the data and can't be re-tuned later.
