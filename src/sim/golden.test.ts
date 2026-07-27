@@ -222,10 +222,13 @@ describe("and it stops", () => {
    * > at any moment. — DESIGN section 5.3
    *
    * Which is only true if a disturbed rope actually finishes. Six seconds is
-   * the bound because six seconds is what it measures, and the *shape* of the
-   * measurement is the interesting part: a 70-unit nudge and a 500-unit yank
-   * both settle in about the same number of frames, so this is not a bound that
-   * grows with the size of the disturbance.
+   * the bound because six seconds is what it measures. The *shape* of the
+   * measurement used to be the interesting part — a 70-unit nudge and a
+   * 500-unit yank settling in about the same number of frames — and it is not
+   * true any more: D-25 measures 231 frames against 289 on the same rope. A
+   * settle time that grows with the disturbance is what a damped oscillation
+   * looks like, and it is the tell that the tail is now ringing rather than
+   * convergence.
    *
    * What it *is* changed with T-147. It used to be the solver creeping the last
    * fraction of a unit onto its own equilibrium — the same slow convergence
@@ -237,9 +240,11 @@ describe("and it stops", () => {
    * frames to about 305, while the pose it arrives at went from a part in
    * seventy-four of the chord to a part in eight thousand.
    *
-   * Worth knowing rather than worth fixing here: the rope looks settled long
-   * before it is declared settled, so the cost is a few ropes reported awake,
-   * not anything visible. T-109 has the idea for shortening it.
+   * And it is not worth shortening. D-25 tracked every particle's distance
+   * from the pose the rope ends at: only 7 to 23 frames separate "never again
+   * more than half a unit out" from "declared asleep", against a
+   * `ROPE_SLEEP_STEPS` floor of 12. There is no dead tail left to cut, which
+   * is what closed T-109.
    */
   it.each(CASES)("goes quiet inside six seconds, however hard it is hit — $name", (c) => {
     pin("p1", c.a[0], c.a[1]);
