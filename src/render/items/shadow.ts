@@ -53,6 +53,16 @@ const RECIPES: Record<Elevation, Recipe> = {
 };
 
 /**
+ * How far an item lying on the cork is off it, board units.
+ *
+ * Exported because a string draped over a photograph is lifted by the thickness
+ * of that photograph, and `render/ropes/paint.ts` has to displace its shadow by
+ * the same amount or the two disagree — a string whose shadow says it is
+ * further off the cork than the paper it is lying on.
+ */
+export const RESTING_LIFT = RECIPES.rest.offset;
+
+/**
  * Never black. "Shadow colour is never black. It's a desaturated warm brown
  * drawn from the cork, at low alpha." (DESIGN section 4.1)
  */

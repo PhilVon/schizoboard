@@ -132,6 +132,10 @@ interface Segment {
    * segment of one always agrees about it.
    */
   over: boolean;
+  /** Whether the last step handed this segment any silhouettes — which is to
+   *  say, whether its lift flags might be set and so need clearing when they
+   *  stop being. */
+  touching: boolean;
   /** Offset into the particle pool, in coordinates rather than particles. */
   at: number;
   count: number;
@@ -184,6 +188,16 @@ export class RopeSet {
 
   private pos = new Float64Array(INITIAL_POOL);
   private prev = new Float64Array(INITIAL_POOL);
+  /**
+   * Which particles are lying on an item — one byte each, so indexed at half
+   * `at` rather than at it.
+   *
+   * The renderer's input for the lift shadow (T-66): where a string is held off
+   * the cork by the thickness of the photograph under it, its shadow widens and
+   * fades. Produced by the collision pass because "is this particle on a
+   * photograph" is the test that pass is already doing.
+   */
+  private lift = new Uint8Array(INITIAL_POOL / 2);
   private top = 0;
   /** Freed ranges, keyed by particle count — ropes are re-made at the same
    *  sizes over and over, so exact-fit reuse keeps the pool from creeping. */
@@ -244,6 +258,7 @@ export class RopeSet {
         // it starts on its own number rather than easing onto it.
         sag: fibre(material).sag,
         over: layer !== "under",
+        touching: false,
         at: 0,
         count: 0,
         asleep: true,
@@ -293,6 +308,7 @@ export class RopeSet {
     this.free.clear();
     this.top = 0;
     this.clock.reset();
+    this.lift.fill(0);
     this.draper.clear();
   }
 
@@ -578,6 +594,18 @@ export class RopeSet {
   }
 
   /**
+   * Which particles are lying on an item, one byte each — so particle `i` of a
+   * segment reported by `visit` is at `at / 2 + i`, not at `at + i * 2`.
+   *
+   * Handed out live like `positions`, and for the same reason: the painter
+   * walks it beside the positions to decide where the shadow lifts, and must
+   * not pay for a copy per rope per frame.
+   */
+  get lifted(): Uint8Array {
+    return this.lift;
+  }
+
+  /**
    * Every segment of a string, in run order. The renderer draws a string as
    * its segments end to end; `visit` exists so it can do that without this
    * module minting an array per string per frame.
@@ -815,21 +843,35 @@ export class RopeSet {
     bx: number,
     by: number,
   ): Draper | null {
-    if (!segment.over || segment.count < 3) return null;
+    if (segment.over && segment.count >= 3) {
+      const box = this.reach;
+      box.minX = Math.min(segment.minX, ax, bx);
+      box.minY = Math.min(segment.minY, ay, by);
+      box.maxX = Math.max(segment.maxX, ax, bx);
+      box.maxY = Math.max(segment.maxY, ay, by);
 
-    const box = this.reach;
-    box.minX = Math.min(segment.minX, ax, bx);
-    box.minY = Math.min(segment.minY, ay, by);
-    box.maxX = Math.max(segment.maxX, ax, bx);
-    box.maxY = Math.max(segment.maxY, ay, by);
+      const found = this.draper.prepare(
+        scene,
+        box,
+        anchorSlot(scene, segment.a),
+        anchorSlot(scene, segment.b),
+        this.lift,
+        segment.at / 2,
+      );
+      if (found > 0) {
+        segment.touching = true;
+        return this.draper;
+      }
+    }
 
-    const found = this.draper.prepare(
-      scene,
-      box,
-      anchorSlot(scene, segment.a),
-      anchorSlot(scene, segment.b),
-    );
-    return found > 0 ? this.draper : null;
+    // Nothing near it any more. `resolve` is what clears the lift flags, and it
+    // is not going to be called — so the last frame that had a photograph under
+    // this rope would otherwise leave its shadow lifted forever.
+    if (segment.touching) {
+      this.lift.fill(0, segment.at / 2, segment.at / 2 + segment.count);
+      segment.touching = false;
+    }
+    return null;
   }
 
   /**
@@ -897,6 +939,11 @@ export class RopeSet {
     // Seeded, therefore at rest: no velocity, and asleep on the frame it is
     // created. This is AC-62 — "a board opens perfectly still".
     this.prev.set(this.pos.subarray(segment.at, segment.at + count * 2), segment.at);
+    // The analytic pose knows nothing about what is in the way, so nothing is
+    // being rested on until a step says otherwise. Left set, a re-seeded rope
+    // would keep the lifted shadow of wherever it used to hang.
+    this.lift.fill(0, segment.at / 2, segment.at / 2 + count);
+    segment.touching = false;
     segment.ax = a.wx;
     segment.ay = a.wy;
     segment.bx = b.wx;
@@ -958,6 +1005,9 @@ export class RopeSet {
       prev.set(this.prev);
       this.pos = pos;
       this.prev = prev;
+      const lift = new Uint8Array(size / 2);
+      lift.set(this.lift);
+      this.lift = lift;
     }
     const at = this.top;
     this.top += need;

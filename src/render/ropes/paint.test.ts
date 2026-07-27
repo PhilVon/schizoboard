@@ -12,7 +12,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { DEFAULT_SLACK, MIN_SLACK, presetSlack } from "@/lib/slack";
 import { lighten, RopeLayer, slackRung } from "@/render/ropes/paint";
-import { LIGHT_DX, LIGHT_DY } from "@/render/items/shadow";
+import { LIGHT_DX, LIGHT_DY, RESTING_LIFT } from "@/render/items/shadow";
 import { RopeSet } from "@/sim/ropes";
 import { Camera } from "@/state/camera";
 import { DirtySets } from "@/state/dirty";
@@ -131,6 +131,99 @@ beforeEach(() => {
   pin("p1", 0, 0);
   pin("p2", 200, 0);
 });
+
+/**
+ * T-66 — the lift shadow.
+ *
+ * > Where the string crosses over an item it's physically lifted off the cork,
+ * > so the offset widens and the alpha drops. That single detail is what sells
+ * > draping. — DESIGN section 4.6
+ *
+ * The sim decides *where* (`sim/collide.ts` flags the particles); what is
+ * checked here is that the painter turns those flags into a second, further,
+ * fainter shadow pass and leaves everything else alone.
+ */
+describe("the lift shadow", () => {
+  /** Put a photograph under the string and let the rope settle onto it, which
+   *  is what sets the flags the painter reads. */
+  function drapeOverItem(): void {
+    scene.putItem(
+      { id: "photo", type: "polaroid", z: "a0", seed: 1, assetId: null, createdBy: 1, createdAt: 0, text: "" },
+      { x: 100, y: 60, rot: 0, w: 200, h: 100 },
+    );
+    dirty.item("photo");
+    ropes.wake("s1");
+    for (let i = 0; i < 400 && ropes.awake > 0; i++) {
+      ropes.step(scene, dirty, 1000 / 60);
+      dirty.clear();
+    }
+    dirty.rope("s1");
+  }
+
+  it("adds a fourth pass, further down-light and fainter", () => {
+    const layer = new RopeLayer(stubCanvas(), "over");
+    string("s1", "p1", "p2");
+    draw(layer);
+    drapeOverItem();
+    calls.strokes.length = 0;
+    draw(layer);
+
+    expect(calls.strokes).toHaveLength(4);
+    const [flat, lift, body] = calls.strokes;
+    // Same light, further along it, wider and weaker.
+    expect(lift!.tx / lift!.ty).toBeCloseTo(LIGHT_DX / LIGHT_DY, 6);
+    expect(lift!.ty).toBeGreaterThan(flat!.ty);
+    expect(lift!.width).toBeGreaterThan(flat!.width);
+    expect(alphaOf(lift!.style)).toBeLessThan(alphaOf(flat!.style));
+    // And it is still a shadow, not a second string.
+    expect(lift!.style).toMatch(/^rgba\(0, 0, 0, 0\./);
+    expect(body!.style).toBe("#a8322c");
+  });
+
+  /** A board with nothing draped on it must cost exactly what it always did —
+   *  three strokes, and no second walk of the points to split. */
+  it("costs nothing on a string that is lying on bare cork", () => {
+    const layer = new RopeLayer(stubCanvas(), "over");
+    string("s1", "p1", "p2");
+    draw(layer);
+    expect(calls.strokes).toHaveLength(3);
+  });
+
+  /** The lift is the *item's* thickness. A string whose shadow said it was
+   *  further off the cork than the paper it lies on is the one thing this
+   *  effect cannot survive, so the number is the item sprite's own. */
+  it("lifts the string by exactly as much as the item is lifted", () => {
+    const layer = new RopeLayer(stubCanvas(), "over");
+    string("s1", "p1", "p2");
+    draw(layer);
+    drapeOverItem();
+    calls.strokes.length = 0;
+    draw(layer);
+
+    const [flat, lift] = calls.strokes;
+    expect(Math.hypot(lift!.tx, lift!.ty) - Math.hypot(flat!.tx, flat!.ty)).toBeCloseTo(
+      RESTING_LIFT,
+      6,
+    );
+  });
+
+  /** An `under` string passes behind items and is never flagged, so the layer
+   *  that draws it never splits a shadow. */
+  it("never appears on the under layer", () => {
+    const layer = new RopeLayer(stubCanvas(), "under");
+    string("s1", "p1", "p2", { layer: "under" });
+    ropes.setString(scene, dirty, "s1", ["p1", "p2"], [0.2, 0.2], false, "string", "under");
+    draw(layer);
+    drapeOverItem();
+    calls.strokes.length = 0;
+    draw(layer);
+    expect(calls.strokes).toHaveLength(3);
+  });
+});
+
+function alphaOf(style: string): number {
+  return Number(/rgba\(0, 0, 0, ([0-9.]+)\)/.exec(style)?.[1] ?? "1");
+}
 
 describe("the three passes", () => {
   it("strokes shadow, body and highlight — and nothing else", () => {

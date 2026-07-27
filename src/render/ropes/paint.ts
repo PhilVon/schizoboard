@@ -57,7 +57,7 @@
 
 import { fibre } from "@/lib/material";
 import { presetSlack } from "@/lib/slack";
-import { LIGHT_DX, LIGHT_DY } from "@/render/items/shadow";
+import { LIGHT_DX, LIGHT_DY, RESTING_LIFT } from "@/render/items/shadow";
 import type { RopeSet } from "@/sim/ropes";
 import type { Camera } from "@/state/camera";
 import type { DirtySets } from "@/state/dirty";
@@ -69,13 +69,40 @@ import type { Bounds, Scene } from "@/state/scene";
  *
  * Screen pixels rather than board units, like everything else here — a string
  * lying on cork is a fixed small distance off it, and the shadow of a real one
- * does not grow when you lean in. Where the string crosses an *item* it is
- * genuinely lifted and the offset widens; that is T-66, and this is the number
- * it will start from.
+ * does not grow when you lean in.
  */
 const SHADOW_OFFSET = 2.2;
 const SHADOW_WIDEN = 1.45;
 const SHADOW_ALPHA = 0.26;
+
+/**
+ * The same three numbers for the stretches of string that are lying on
+ * something rather than on the cork.
+ *
+ * > Where the string crosses over an item it's physically lifted off the cork,
+ * > so the offset widens and the alpha drops. That single detail is what sells
+ * > draping. — DESIGN section 4.6
+ *
+ * The offset is *derived*, not chosen: a string lying on a photograph is
+ * exactly as far off the cork as the photograph is, and how far that is already
+ * has an answer — the displacement `render/items/shadow.ts` bakes into the
+ * item's own resting sprite. Picking a second number here would let the two
+ * drift, and a string whose shadow disagreed with the shadow of the paper it is
+ * lying on is the specific thing this effect cannot survive.
+ *
+ * That number is in board units and this one is in screen pixels, which is the
+ * same unit at 100% and is the trade the whole painter already makes (see the
+ * note on constant widths above): the string keeps its lit-cylinder proportions
+ * at every zoom rather than dissolving, and the lift keeps the proportion it
+ * has at 100%.
+ *
+ * Wider and fainter follow from the same physics as the item's own `lift`
+ * recipe — further from the surface is a softer, weaker shadow — and the alpha
+ * is dropped by about the ratio that recipe uses.
+ */
+const LIFT_OFFSET = SHADOW_OFFSET + RESTING_LIFT;
+const LIFT_WIDEN = 2.05;
+const LIFT_ALPHA = 0.17;
 
 /**
  * The highlight rides the lit side, a fraction of the body's width — but never
@@ -210,14 +237,74 @@ const CULL_MARGIN = 64;
  * exactly as before, and a board that has been deliberately re-slacked segment
  * by segment pays at most four.
  */
-/** The gaps of one string that share a slack rung, as one path. */
+/**
+ * The gaps of one string that share a slack rung, as one path — and, when any
+ * of it is lying on something, the same polyline split in two for the shadow.
+ *
+ * `path` is always the whole thing: body, highlight and fuzz do not care what
+ * the string is resting on, and building three copies of the walk for the
+ * common case where nothing is lifted would be three times the `lineTo`s for a
+ * board of five hundred strings that are all on bare cork.
+ *
+ * `flat` and `lift` are `null` in exactly that case, and the shadow pass uses
+ * `path` whole. When they are not, they partition the *links*: a link with a
+ * lifted particle at either end goes to `lift`, a link with a flat particle at
+ * either end goes to `flat`, and the link that spans the change goes to both —
+ * which draws the two shadows overlapping for one particle spacing rather than
+ * meeting at a hard step.
+ */
 interface RungPath {
   readonly rung: number;
   readonly path: Path2D;
+  readonly flat: Path2D | null;
+  readonly lift: Path2D | null;
+}
+
+/** The same thing while it is still being filled in. */
+interface MutableRungPath {
+  readonly rung: number;
+  readonly path: Path2D;
+  flat: Path2D | null;
+  lift: Path2D | null;
+}
+
+/**
+ * Add to `path` every link of a `count`-particle polyline that `wants` either
+ * end of, as runs of `lineTo` broken by `moveTo` wherever the run stops.
+ *
+ * `wants` is asked about *particles* and the link is claimed if either of its
+ * two is wanted, which is what puts the link spanning a change into both of the
+ * shadow's paths — see `RungPath`.
+ */
+function trace(
+  path: Path2D,
+  count: number,
+  wants: (i: number) => boolean,
+  sx: (i: number) => number,
+  sy: (i: number) => number,
+): void {
+  let open = false;
+  for (let i = 0; i < count - 1; i++) {
+    if (!wants(i) && !wants(i + 1)) {
+      open = false;
+      continue;
+    }
+    if (!open) {
+      path.moveTo(sx(i), sy(i));
+      open = true;
+    }
+    path.lineTo(sx(i + 1), sy(i + 1));
+  }
 }
 
 interface Batch {
   path: Path2D;
+  /** The shadow, split where the string is held off the cork. `lifted` is
+   *  false on a board where nothing is draped, and then `flat` is unused and
+   *  `path` is stroked instead — see `strokeBatch`. */
+  flat: Path2D;
+  lift: Path2D;
+  lifted: boolean;
   color: string;
   /** The authored thickness and material — the batch *key*, alongside colour.
    *  Keyed on the inputs rather than on the widths they resolve to, because
@@ -314,7 +401,15 @@ export class RopeLayer {
       const parts = this.pathsFor(id, ropes, camera);
       if (parts === null) continue;
       for (const part of parts) {
-        this.batchFor(style.color, style.thickness, style.material, part.rung).path.addPath(part.path);
+        const batch = this.batchFor(style.color, style.thickness, style.material, part.rung);
+        batch.path.addPath(part.path);
+        if (part.lift === null) {
+          batch.flat.addPath(part.path);
+        } else {
+          if (part.flat !== null) batch.flat.addPath(part.flat);
+          batch.lift.addPath(part.lift);
+          batch.lifted = true;
+        }
       }
     }
 
@@ -355,12 +450,27 @@ export class RopeLayer {
   private strokeBatch(ctx: CanvasRenderingContext2D, batch: Batch): void {
     // 1. Shadow: down-light, wider, dark and faint. An offset pass, never
     //    `shadowBlur` (AC-69).
+    //
+    //    Two of them where any of the string is lying on a photograph rather
+    //    than on the cork: the same pass at a wider offset and a lower alpha
+    //    for the lifted stretches, and the flat one drawing everything else.
+    //    A board with nothing draped on it — which is most boards, most of the
+    //    time — pays neither the split nor the second `stroke`.
     ctx.save();
     ctx.translate(LIGHT_DX * SHADOW_OFFSET, LIGHT_DY * SHADOW_OFFSET);
     ctx.strokeStyle = `rgba(0, 0, 0, ${SHADOW_ALPHA})`;
     ctx.lineWidth = batch.width * SHADOW_WIDEN;
-    ctx.stroke(batch.path);
+    ctx.stroke(batch.lifted ? batch.flat : batch.path);
     ctx.restore();
+
+    if (batch.lifted) {
+      ctx.save();
+      ctx.translate(LIGHT_DX * LIFT_OFFSET, LIGHT_DY * LIFT_OFFSET);
+      ctx.strokeStyle = `rgba(0, 0, 0, ${LIFT_ALPHA})`;
+      ctx.lineWidth = batch.width * LIFT_WIDEN;
+      ctx.stroke(batch.lift);
+      ctx.restore();
+    }
 
     /**
      * 1a. Fuzz, for a fibre that has any — a wide, faint pass of the body
@@ -418,6 +528,9 @@ export class RopeLayer {
     const width = Math.max(BODY_MIN, bodyWidth(thickness, material) * SLACK_RUNGS[rung]!.scale);
     const batch: Batch = {
       path: new Path2D(),
+      flat: new Path2D(),
+      lift: new Path2D(),
+      lifted: false,
       color,
       thickness,
       material,
@@ -447,24 +560,43 @@ export class RopeLayer {
     if (cached !== undefined) return cached;
 
     const pool = ropes.positions;
+    const lifted = ropes.lifted;
     const zoom = camera.zoom;
     const camX = camera.x;
     const camY = camera.y;
-    const parts: RungPath[] = [];
+    const parts: MutableRungPath[] = [];
 
     ropes.visit(id, (at, count, _asleep, slack) => {
       const rung = slackRung(slack);
       let part = parts.find((p) => p.rung === rung);
       if (part === undefined) {
-        part = { rung, path: new Path2D() };
+        part = { rung, path: new Path2D(), flat: null, lift: null };
         parts.push(part);
       }
       const path = part.path;
-      path.moveTo((pool[at]! - camX) * zoom, (pool[at + 1]! - camY) * zoom);
-      for (let i = 1; i < count; i++) {
-        const j = at + i * 2;
-        path.lineTo((pool[j]! - camX) * zoom, (pool[j + 1]! - camY) * zoom);
+      const sx = (i: number): number => (pool[at + i * 2]! - camX) * zoom;
+      const sy = (i: number): number => (pool[at + i * 2 + 1]! - camY) * zoom;
+
+      path.moveTo(sx(0), sy(0));
+      for (let i = 1; i < count; i++) path.lineTo(sx(i), sy(i));
+
+      // The flags live one byte per particle, so this segment's run of them
+      // starts at half its coordinate offset.
+      const flagAt = at / 2;
+      let any = false;
+      for (let i = 0; i < count && !any; i++) any = lifted[flagAt + i] === 1;
+      if (!any) return;
+
+      if (part.flat === null) {
+        part.flat = new Path2D();
+        part.lift = new Path2D();
       }
+      // Two independent walks rather than one with a state machine. Each link
+      // is claimed by whichever paths want it, and the one spanning the change
+      // is claimed by both — `moveTo` only when the previous link was not
+      // claimed, which is what makes a run of links one subpath.
+      trace(part.flat, count, (i) => lifted[flagAt + i] !== 1, sx, sy);
+      trace(part.lift!, count, (i) => lifted[flagAt + i] === 1, sx, sy);
     });
 
     if (parts.length === 0) return null;

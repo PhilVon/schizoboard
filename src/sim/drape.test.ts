@@ -109,6 +109,19 @@ function points(id: string): Array<[number, number]> {
   return out;
 }
 
+/**
+ * Which of a rope's particles are lying on something — the lift shadow's
+ * input (T-66), in the same order `points` reports.
+ */
+function lifts(id: string): boolean[] {
+  const out: boolean[] = [];
+  const flags = ropes.lifted;
+  ropes.visit(id, (at, count) => {
+    for (let i = 0; i < count; i++) out.push(flags[at / 2 + i] === 1);
+  });
+  return out;
+}
+
 /** The lowest a rope hangs. Board y grows downward, so this is the maximum. */
 function lowest(pose: Array<[number, number]>): number {
   return Math.max(...pose.map(([, y]) => y));
@@ -300,6 +313,104 @@ describe("the photograph a string is pinned to", () => {
     const middle = pose.filter(([x]) => x > PHOTO_LEFT + 20 && x < PHOTO_RIGHT - 20);
     expect(middle.length).toBeGreaterThan(4);
     for (const [, y] of middle) expect(y).toBeCloseTo(top, 1);
+  });
+});
+
+/**
+ * T-66's input. The renderer draws a wider, fainter shadow along the stretches
+ * of string that are held off the cork by the paper under them, and this is
+ * where it is told which stretches those are.
+ *
+ * Produced by the collision pass because "is this particle on a photograph" is
+ * the test that pass is already doing — so what is worth pinning here is that
+ * the flag follows the *lying on*, which is not the same thing as the pushing
+ * out: a string tied to a photograph is lying on it and is never pushed off it.
+ */
+describe("which part of a string is lying on something", () => {
+  it("marks the stretch resting on the paper and nothing else", () => {
+    const free = freeSag();
+    const top = free / 2;
+    settledSpan();
+    photoWithTopAt(top);
+    const pose = settle();
+    const flags = lifts("s1");
+
+    for (let i = 0; i < pose.length; i++) {
+      const [x] = pose[i]!;
+      // Well inside the paper's span it is resting; well outside, on bare cork.
+      if (x > PHOTO_LEFT + 20 && x < PHOTO_RIGHT - 20) expect(flags[i]).toBe(true);
+      if (x < PHOTO_LEFT - 20 || x > PHOTO_RIGHT + 20) expect(flags[i]).toBe(false);
+    }
+  });
+
+  /** The item a string is pinned to is not an obstacle to it, but the string
+   *  is still lying on it — the commonest way a string is on a photograph at
+   *  all, and the one a flag driven off the push-out would miss. */
+  it("marks a string lying on the photograph it is pinned to", () => {
+    item("photo", { x: 0, y: 0, w: 400, h: 300 });
+    pin("p1", 0, 0, "photo");
+    pin("p2", 600, 0);
+    ropes.setString(scene, dirty, "s1", ["p1", "p2"], [SLACK], false, "cotton", "over");
+    ropes.wake("s1");
+    const pose = settle();
+    const flags = lifts("s1");
+
+    // The pin is in the middle of the paper, so the string leaves it lying on
+    // the paper and is off it well before x = 600.
+    expect(flags[0]).toBe(true);
+    expect(flags[1]).toBe(true);
+    expect(flags[flags.length - 1]).toBe(false);
+    // Nothing outside the paper is marked.
+    for (let i = 0; i < pose.length; i++) {
+      if (pose[i]![0]! > 220) expect(flags[i]).toBe(false);
+    }
+  });
+
+  it("stops marking anything once the photograph is taken away", () => {
+    const free = freeSag();
+    settledSpan();
+    item("photo", { x: 3000, y: 3000 });
+    settle();
+    scene.setPose("photo", { x: (LEFT + RIGHT) / 2, y: free / 2 + PHOTO_H / 2 });
+    dirty.item("photo");
+    settle();
+    expect(lifts("s1").some(Boolean)).toBe(true);
+
+    scene.setPose("photo", { x: 3000, y: 3000 });
+    dirty.item("photo");
+    settle();
+    expect(lifts("s1").some(Boolean)).toBe(false);
+  });
+
+  /** An `under` string passes behind items, so it is never on one. */
+  it("marks nothing on a string that is tucked behind", () => {
+    const free = freeSag();
+    settledSpan("s1", "under");
+    photoWithTopAt(free / 2);
+    ropes.wake("s1");
+    settle();
+    expect(lifts("s1").some(Boolean)).toBe(false);
+  });
+
+  /**
+   * A rope put back on its analytic rest pose knows nothing about what is in
+   * the way — the seed is pure catenary. Left set, the flags would open a
+   * reloaded board with a shadow lifted onto nothing, along a rope that is no
+   * longer where it was resting.
+   */
+  it("forgets what it was resting on when the rope is re-seeded", () => {
+    const free = freeSag();
+    settledSpan();
+    photoWithTopAt(free / 2);
+    settle();
+    expect(lifts("s1").some(Boolean)).toBe(true);
+
+    // A topology change rebuilds the segments and re-seeds them, which is the
+    // same path a load takes.
+    pin("p3", RIGHT, 200);
+    ropes.setString(scene, dirty, "s1", ["p1", "p2", "p3"], [SLACK, SLACK], false, "cotton", "over");
+    expect(lifts("s1").length).toBeGreaterThan(0);
+    expect(lifts("s1").some(Boolean)).toBe(false);
   });
 });
 
