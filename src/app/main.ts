@@ -766,6 +766,13 @@ async function boot(): Promise<void> {
     if (camera.version !== cameraVersion) {
       cameraVersion = camera.version;
       dirty.camera = true;
+      // Every camera change ends in a re-raster, not only a pointer gesture.
+      // `Ctrl+0`, `F`, a resize and an undo restoring a stashed view all change
+      // the zoom without `navigation.gestured` ever being true, and a bitmap
+      // built for the old scale then stays stretched until somebody happens to
+      // pan. Debounced like the rest — a keyboard fit is a gesture that took one
+      // frame, and it re-rasters 180 ms later along with everything else.
+      world.gestureTick(camera.zoom);
       // An open menu is anchored to a screen point that meant something when
       // it opened. Pan or zoom and it is a box of verbs pointing at whatever
       // has slid underneath it, so the camera moving dismisses it.
@@ -1046,6 +1053,11 @@ async function boot(): Promise<void> {
   // more: there is a real way to put things on it now, and a board that opens
   // holding somebody else's placeholders is a demo rather than a tool.
   camera.fit(scene.contentBounds() ?? { minX: -400, minY: -300, maxX: 400, maxY: 300 }, 120);
+  // The zoom the board opens at is a zoom nobody gestured into, and until this
+  // was here every bitmap was built for a scale of 1 — a board opened at 50%
+  // spent twice the pixels it needed on ink, and one opened at 200% on a 2x
+  // display drew it at a quarter of the resolution, both until the first pan.
+  world.settle(camera.zoom);
 
   /**
    * `window.schizo` — a handle on the running board, for driving it from

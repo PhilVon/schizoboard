@@ -660,6 +660,35 @@ describe("ink", () => {
   });
 
   /**
+   * T-63. The re-raster is the same bitmap at a different resolution, and the
+   * two assertions below are the two halves of that sentence: more device
+   * pixels, over the same item-local box.
+   *
+   * The second is what makes the interim a *stretch* rather than a jump. The
+   * canvas's CSS size is in the item's own units, so a canvas that has not been
+   * repainted yet is displayed at exactly the size it always was and the browser
+   * scales the pixels it has — which is what DESIGN section 9.3 asks for while
+   * `paintInk`'s budget works through the board.
+   */
+  it("spends more device pixels on the same ink when the board zooms in", () => {
+    add("a");
+    drawOn("a");
+    layer.sync(scene, dirty, null);
+    layer.paintInk(scene, dirty);
+    const canvas = canvases()[0]!;
+    const before = canvas.width;
+    const box = canvas.style.width;
+
+    // What `World.onRasterize` hands over on a settled camera at 2x.
+    layer.setRasterScale(2);
+    dirty.everything();
+    layer.paintInk(scene, dirty);
+
+    expect(canvas.width).toBeGreaterThan(before);
+    expect(canvas.style.width).toBe(box);
+  });
+
+  /**
    * The wet/dry handoff's signal (T-58). The marker goes on drawing a committed
    * stroke on the overlay until this says the bitmap has caught up, so an answer
    * that is wrong in the true direction leaves the mark drawn twice for a frame

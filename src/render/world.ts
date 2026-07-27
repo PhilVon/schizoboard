@@ -113,6 +113,27 @@ export class World {
     this.gestureTimer = window.setTimeout(() => this.endGesture(scale), GESTURE_END_MS);
   }
 
+  /**
+   * The camera is at this zoom and is not moving — re-raster now, without the
+   * debounce.
+   *
+   * For the settled camera nobody gestured into: the opening `camera.fit`, which
+   * is where the board's zoom comes from before anything is touched. Without it
+   * every bitmap on the board — an item's ink canvas, and which stored variant a
+   * photograph points at — is built for a scale of 1 until the first pan or zoom
+   * *gesture* ends, which on a board somebody only reads may be never.
+   *
+   * Straight through `endGesture` rather than beside it, so the 1.25x threshold
+   * and the notification are the ones every other re-raster goes through. It
+   * cancels a pending debounce for the same reason: this is a statement about
+   * where the camera has ended up, and a timer from a gesture that got here is
+   * about to say the same thing more slowly.
+   */
+  settle(zoom: number): void {
+    if (this.gestureTimer !== 0) clearTimeout(this.gestureTimer);
+    this.endGesture(zoom);
+  }
+
   private endGesture(scale: number): void {
     this.gestureTimer = 0;
     this.gesturing = false;
