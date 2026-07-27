@@ -115,6 +115,35 @@ export function strokeOptions(tool: InkTool, size: number, last: boolean): Strok
   return { ...OPTIONS[tool], size, last, simulatePressure: false };
 }
 
+/**
+ * How far past its own path a stroke's paint can reach, in the samples' units —
+ * the pad a canvas has to add to a stroke's bounding box so the ink is not cut
+ * off at the edge.
+ *
+ * **Not `size / 2`.** `perfect-freehand`'s radius is
+ * `size * (0.5 - thinning * (0.5 - pressure))`, so a *thinned* nib is wider than
+ * half the nominal size wherever the pressure is above the middle. Measured
+ * against the real library at `size` 6, the marker's half-width is 1.350, 3.000
+ * and 4.650 at pressure 0, 0.5 and 1 — that last is `0.775 * size`, so a pad of
+ * `size / 2` clips every hard-pressed stroke by a quarter of its width. It does
+ * it only at the edge of the canvas, which is how it would fail invisibly.
+ *
+ * The `sqrt(2)` is the degenerate case rather than a fudge. `getStrokePoints`
+ * extends a single-sample stroke by `[1, 1]` before outlining it, so a dot
+ * reaches a diagonal unit further than its own radius: measured at 6.063 against
+ * the 4.650 the formula alone gives.
+ *
+ * This duplicates a dependency's internals, which is a thing worth not doing —
+ * `getStrokeRadius` is not exported, so the alternative was reading it out of
+ * the minified bundle at every call site instead of one. `render/ink/dry.test.ts`
+ * checks the real outline against this, so an upstream change to the easing
+ * fails a test rather than a screenshot.
+ */
+export function strokeReach(tool: InkTool, size: number): number {
+  const thinning = OPTIONS[tool].thinning ?? 0;
+  return size * (0.5 + Math.max(0, thinning) / 2) + Math.SQRT2;
+}
+
 /** A vertex of the outline polygon, in the samples' own space. */
 export type OutlinePoint = readonly [number, number];
 
