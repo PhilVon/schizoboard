@@ -321,8 +321,8 @@ describe("Overlay, strings", () => {
     scene.strings.set("s", {
       id: "s",
       nodes: [
-        { pin: "p0", slackAfter: 0.2 },
-        { pin: "p1", slackAfter: 0.2 },
+        { nodeId: "n0", pin: "p0", slackAfter: 0.2 },
+        { nodeId: "n1", pin: "p1", slackAfter: 0.2 },
       ],
       color: "#a8322c",
       thickness,

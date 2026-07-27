@@ -11,7 +11,16 @@
 
 import { describe, expect, it } from "vitest";
 
-import { clamp, mergeSlack, MIN_SLACK, splitSlack } from "@/lib/slack";
+import {
+  clamp,
+  DEFAULT_SLACK,
+  MAX_PRESET_SLACK,
+  mergeSlack,
+  MIN_SLACK,
+  presetSlack,
+  splitSlack,
+  toggleTaut,
+} from "@/lib/slack";
 
 /** How much string there is between two pins. */
 const rest = (chord: number, slack: number): number => chord * (1 + slack);
@@ -193,5 +202,104 @@ describe("the merge puts it back", () => {
    *  both of them together still cannot produce a taut result. */
   it("clamps when the pins have been dragged apart since", () => {
     expect(mergeSlack(100, 0.01, 100, 0.01, 900)).toBe(MIN_SLACK);
+  });
+});
+
+/**
+ * The `1`-`9` ladder.
+ *
+ * > | Slack presets | `1`-`9` with a string selected | Taut through to heavily
+ * > draped | — DESIGN section 3.4
+ *
+ * What is being tested is not the arithmetic — it is one exponential — but the
+ * shape: that the nine steps are *perceptually* even, which for a ratio means
+ * geometrically even, and that the two ends are the two things the design names.
+ */
+describe("the slack presets", () => {
+  it("puts taut at 1 and a heavy drape at 9", () => {
+    expect(presetSlack(1)).toBe(MIN_SLACK);
+    expect(presetSlack(9)).toBeCloseTo(MAX_PRESET_SLACK, 12);
+  });
+
+  /**
+   * The property that matters, and the one a linear ladder fails: every step is
+   * the same multiple, so the difference between `2` and `3` reads as the same
+   * amount of extra drape as the difference between `7` and `8`. Linear steps
+   * from 0.01 to 1 would put `2` at 0.13 — already past the default — and spend
+   * the remaining seven presets in territory nobody can tell apart.
+   */
+  it("steps by a constant ratio rather than a constant amount", () => {
+    const ratio = presetSlack(2) / presetSlack(1);
+    for (let n = 2; n < 9; n++) {
+      expect(presetSlack(n + 1) / presetSlack(n)).toBeCloseTo(ratio, 9);
+    }
+    expect(ratio).toBeGreaterThan(1);
+  });
+
+  /**
+   * Not arranged, and worth pinning down because it is what makes the ladder
+   * usable rather than merely even: anchoring the ends at the minimum and at a
+   * doubled-back loop happens to land `5` on the default, and puts `4`, `5` and
+   * `6` inside DATA-MODEL section 5.2's "typical range is 0.05 to 0.3" with `7`
+   * a hair past the top of it. Three presets for the range most string lives in
+   * and six for the extremes either side is the right way round: the wheel is
+   * the fine control, and the presets exist to get you out of the middle.
+   */
+  it("lands the middle on the default and the typical range in the middle", () => {
+    expect(presetSlack(5)).toBeCloseTo(DEFAULT_SLACK, 1);
+    expect(presetSlack(3)).toBeLessThan(0.05);
+    for (const n of [4, 5, 6]) {
+      expect(presetSlack(n)).toBeGreaterThanOrEqual(0.05);
+      expect(presetSlack(n)).toBeLessThanOrEqual(0.3);
+    }
+    expect(presetSlack(7)).toBeGreaterThan(0.3);
+  });
+
+  it("clamps into the ladder rather than extrapolating off the end of it", () => {
+    expect(presetSlack(0)).toBe(presetSlack(1));
+    expect(presetSlack(-4)).toBe(presetSlack(1));
+    expect(presetSlack(20)).toBe(presetSlack(9));
+    expect(presetSlack(Number.NaN)).toBe(DEFAULT_SLACK);
+  });
+
+  it("never returns something the schema would reject", () => {
+    for (let n = -2; n <= 12; n++) {
+      expect(presetSlack(n)).toBeGreaterThanOrEqual(MIN_SLACK);
+      expect(Number.isFinite(presetSlack(n))).toBe(true);
+    }
+  });
+});
+
+/**
+ * > | Toggle taut | Double-click a segment | Snaps between taut and default
+ * > slack | — DESIGN section 3.4
+ */
+describe("the taut toggle", () => {
+  it("goes both ways", () => {
+    expect(toggleTaut(MIN_SLACK)).toBe(DEFAULT_SLACK);
+    expect(toggleTaut(DEFAULT_SLACK)).toBe(MIN_SLACK);
+    expect(toggleTaut(toggleTaut(DEFAULT_SLACK))).toBe(DEFAULT_SLACK);
+  });
+
+  /**
+   * The wheel can leave a segment a hair above the floor, and a double-click
+   * there that pulled it *tighter* by half a percent and called that a toggle
+   * would read as the gesture having failed. Anything the eye would call taut
+   * goes back to the default.
+   */
+  it("treats nearly taut as taut", () => {
+    expect(toggleTaut(MIN_SLACK * 1.4)).toBe(DEFAULT_SLACK);
+    expect(toggleTaut(0)).toBe(DEFAULT_SLACK);
+    expect(toggleTaut(Number.NaN)).toBe(DEFAULT_SLACK);
+  });
+
+  it("treats anything visibly slack as slack, including a heavy drape", () => {
+    expect(toggleTaut(0.05)).toBe(MIN_SLACK);
+    expect(toggleTaut(MAX_PRESET_SLACK)).toBe(MIN_SLACK);
+    expect(toggleTaut(4)).toBe(MIN_SLACK);
+  });
+
+  it("agrees with preset 1 about what taut means", () => {
+    expect(toggleTaut(DEFAULT_SLACK)).toBe(presetSlack(1));
   });
 });

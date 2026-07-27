@@ -32,12 +32,33 @@ export interface PointerSample {
 }
 
 export type ToolInput =
-  | { kind: "down"; at: PointerSample }
+  /**
+   * `double` is the second press of a double-click, decided by `machine.ts`
+   * from the time and the distance since the last one.
+   *
+   * On the press rather than as an input of its own, and acted on at the
+   * release, because a double-click and a drag that happens to start with one
+   * are different gestures and only the pointer knows which this is: pressing
+   * twice on a string and then pulling means pull a loop out of it, not toggle
+   * it taut and also pull a loop out of it. The flag is where the tool needs it
+   * — alongside the rest of what the press landed on, which is decided at
+   * pointer-down and resolved at pointer-up.
+   */
+  | { kind: "down"; at: PointerSample; double?: boolean }
   | { kind: "move"; at: PointerSample }
   | { kind: "up"; at: PointerSample }
   /** Pointer capture lost — the OS took the gesture away, so revert it. */
   | { kind: "cancel" }
-  | { kind: "key"; code: string; shift: boolean; ctrl: boolean; alt: boolean };
+  | { kind: "key"; code: string; shift: boolean; ctrl: boolean; alt: boolean }
+  /**
+   * A wheel notch the tool asked for — see `Tool.claimsWheel`. `dy` is the
+   * event's `deltaY`, summed over however many landed in this frame, so the
+   * sign convention is the DOM's: negative is away from the user.
+   *
+   * A tool is only handed the ones it claimed, so an unclaimed wheel is the
+   * camera's and never reaches here at all.
+   */
+  | { kind: "wheel"; at: PointerSample; dy: number };
 
 /** A pose to write to the document. `rot` absent means "leave it alone". */
 export interface WritePose {
@@ -185,6 +206,37 @@ export interface BoardWriter {
     slackAfter: number,
     settle?: ReadonlyMap<string, WritePose>,
   ): void;
+  /**
+   * The slack of **one gap** — the wheel over a segment, and the double-click
+   * that snaps it taut (DESIGN section 3.4).
+   *
+   * Named by the id of the node the gap starts at, not by its index in the run.
+   * A wheel edit reads the current slack on one frame and writes the new one on
+   * the next, and an index is exactly the kind of handle a concurrent insert
+   * invalidates in between — it would silently adjust the neighbouring gap.
+   */
+  setNodeSlack(stringId: string, nodeId: string, slack: number): void;
+  /**
+   * The same gap, multiplied — one notch of the wheel over a segment.
+   *
+   * A factor and not a value, because a tool's writes are queued to phase 9: a
+   * tool that read the slack out of the scene and wrote back the product would
+   * read a frame-old number every time, so a steady roll would move the sag by
+   * one notch and then stop. The document compounds it instead.
+   */
+  scaleNodeSlack(stringId: string, nodeId: string, factor: number): void;
+  /** Every gap of these strings to one value — the `1`-`9` presets. Absolute,
+   *  because pressing `1` means taut whatever the run looked like before. */
+  setStringSlack(stringIds: readonly string[], slack: number): void;
+  /**
+   * Every gap of these strings multiplied — `Alt`+wheel, "all segments
+   * together".
+   *
+   * A factor and not a value, so that a run whose gaps are deliberately unequal
+   * — which is every run that has had a pin pulled out of its middle — gains
+   * drape without losing the shape `lib/slack.ts` gave it.
+   */
+  scaleStringSlack(stringIds: readonly string[], factor: number): void;
 }
 
 /**
@@ -262,6 +314,27 @@ export interface Tool {
   readonly id: string;
   /** One buffered input, in the INPUT phase. */
   handle(input: ToolInput, ctx: ToolContext): void;
+  /**
+   * Does a wheel notch here mean something to this tool? Absent means no, which
+   * is the answer for every tool but select.
+   *
+   * The wheel is the one input the camera and the board both want. Everything
+   * else divides cleanly — navigation has the middle button and the space bar,
+   * the machine has the primary button — but "wheel zooms" (DESIGN section 3.7)
+   * and "wheel over a selected segment adjusts its slack" (section 3.4) are the
+   * same event, so one of them has to ask the other first. This is the asking,
+   * and it is the mirror of `ToolMachineOptions.suppressed`: that one is the
+   * board standing aside for a pan, this one is the camera standing aside for a
+   * gesture.
+   *
+   * **Pure.** Unlike `handle`, this is called from the wheel listener rather
+   * than from the INPUT phase, because the camera needs its answer in time to
+   * not zoom — so it may read, and it may not change anything. `handle` is where
+   * the notch is acted on, and it asks the same question again a fraction of a
+   * frame later; the two agreeing is a property of this being a function of
+   * state neither of them touches.
+   */
+  claimsWheel?(at: PointerSample, ctx: ToolContext): boolean;
   /** Once per frame after this frame's inputs, with the frame's dt in ms.
    *  Where anything that eases over time is stepped. */
   tick(dt: number, ctx: ToolContext): void;

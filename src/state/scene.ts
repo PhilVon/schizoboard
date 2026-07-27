@@ -87,6 +87,22 @@ export interface PinNode {
  * at, so on an open run the last value is never asked for.
  */
 export interface StringNode {
+  /**
+   * The node's own identity, which is here for exactly one reason: it is how a
+   * slack edit names the gap it means.
+   *
+   * `crdt/ops/strings.ts`'s `setNodeSlack` addresses a gap by the id of the node
+   * it starts at rather than by index, because an index computed on one frame
+   * and written on the next is an index a concurrent insert may have moved — and
+   * the wheel over a segment (DESIGN section 3.4) is precisely a read on one
+   * frame and a write on the next. Without this the tool would have nothing to
+   * pass but the index it just measured.
+   *
+   * Nothing else reads it. The renderer draws pins in run order and the
+   * simulation compares runs by their pin ids, both of which are questions about
+   * the run rather than about a node.
+   */
+  nodeId: string;
   pin: string;
   slackAfter: number;
 }

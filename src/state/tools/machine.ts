@@ -25,11 +25,23 @@
  * button and by the `suppressed` predicate, which is wired to
  * `Navigation.panReady` — space going down mid-hover must not leave the board
  * able to start a drag.
+ *
+ * The wheel is the exception, because it is the one input both of them want: it
+ * zooms the camera (DESIGN section 3.7) *and* it adjusts a selected segment's
+ * slack (section 3.4). So there is no wheel listener here at all. Navigation
+ * owns the only one and offers each notch to `claimWheel` below before it acts —
+ * which is why that method both decides and delivers, and why it is the only
+ * thing on this class that reaches the tool from outside the frame.
  */
 
 import type { Camera } from "@/state/camera";
 import type { DirtySets } from "@/state/dirty";
-import { isChromeTarget, isTextTarget } from "@/state/input";
+import {
+  DOUBLE_CLICK_MS,
+  DOUBLE_CLICK_SLOP,
+  isChromeTarget,
+  isTextTarget,
+} from "@/state/input";
 import type { Scene } from "@/state/scene";
 import type { Selection } from "@/state/selection";
 import type {
@@ -54,16 +66,30 @@ export interface ToolMachineOptions {
   hitString: (boardX: number, boardY: number, reach: number) => StringHit | null;
   /** True when navigation owns the pointer — space held, or mid-pan. */
   suppressed?: () => boolean;
+  /** Wall clock, injected so the double-click window is testable — the same
+   *  seam `state/tools/string.ts` has for the same reason. */
+  now?: () => number;
 }
 
 function sample(e: PointerEvent | MouseEvent): PointerSample {
   return { x: e.clientX, y: e.clientY, shift: e.shiftKey, ctrl: e.ctrlKey, alt: e.altKey };
 }
 
+/**
+ * The `1`-`9` presets, by `code` rather than by `key`.
+ *
+ * `Digit1` is the physical key and is the same on every layout; `key` is `"1"`
+ * on a US keyboard and `"&"` on a French one. `0` is deliberately absent: the
+ * ladder is nine wide and `Digit0` is only ever seen here as half of the
+ * camera's `Ctrl`+`0`.
+ */
+const DIGIT_KEYS = /^(Digit|Numpad)[1-9]$/;
+
 export class ToolMachine {
   private readonly target: HTMLElement;
   private readonly ctx: ToolContext;
   private readonly suppressed: () => boolean;
+  private readonly now: () => number;
   private readonly disposers: (() => void)[] = [];
 
   private tool: Tool;
@@ -74,10 +100,16 @@ export class ToolMachine {
   private pendingEnd = false;
   private ended = false;
 
+  /** The last press, for deciding whether the next one is a double. */
+  private lastDownAt = Number.NEGATIVE_INFINITY;
+  private lastDownX = 0;
+  private lastDownY = 0;
+
   constructor(tool: Tool, target: HTMLElement, options: ToolMachineOptions) {
     this.tool = tool;
     this.target = target;
     this.suppressed = options.suppressed ?? (() => false);
+    this.now = options.now ?? (() => Date.now());
     this.ctx = {
       scene: options.scene,
       dirty: options.dirty,
@@ -143,6 +175,32 @@ export class ToolMachine {
     this.pendingEnd = true;
   }
 
+  /**
+   * Offer a wheel notch to the active tool. True means it took it, and the
+   * camera must leave this one alone.
+   *
+   * Called straight from `state/navigation.ts`'s wheel listener rather than from
+   * a listener of our own, which is deliberate: the camera needs the answer
+   * *now*, in the same event, and two listeners on one element deciding the same
+   * thing independently is a truce that holds only as long as nobody changes the
+   * order they were registered in.
+   *
+   * So the claim and the delivery are the same call. Asking twice — once to
+   * decide and once to queue — would be two reads of a board that a write
+   * queued for phase 9 can move between them, and a notch that the camera
+   * declined and the tool then also declined is a notch that does nothing.
+   *
+   * `suppressed` applies here as it does to a press: while the space bar is down
+   * the pointer belongs to the camera, and so does the wheel.
+   */
+  claimWheel(e: WheelEvent): boolean {
+    if (this.suppressed() || isChromeTarget(e.target)) return false;
+    const at = sample(e);
+    if (this.tool.claimsWheel?.(at, this.ctx) !== true) return false;
+    this.push({ kind: "wheel", at, dy: e.deltaY });
+    return true;
+  }
+
   /** INPUT phase. Drains the frame's input, then steps the tool once. */
   flush(dtMs: number): void {
     this.ended = this.pendingEnd;
@@ -166,7 +224,48 @@ export class ToolMachine {
         return;
       }
     }
+    // Wheel notches collapse the other way round from moves: a position
+    // supersedes, a delta accumulates. A fast roll delivers several notches
+    // between frames and they are all part of the same turn of the wheel, so the
+    // tool is handed the total at the latest position rather than being stepped
+    // once per notch — which for a slack edit would be several document writes
+    // in one frame, each read from a scene the previous one had not reached yet.
+    if (input.kind === "wheel") {
+      const last = this.queue[this.queue.length - 1];
+      if (last?.kind === "wheel") {
+        this.queue[this.queue.length - 1] = { ...input, dy: last.dy + input.dy };
+        return;
+      }
+    }
     this.queue.push(input);
+  }
+
+  /**
+   * Is this press the second of a double-click?
+   *
+   * Ours rather than the DOM's, because `pointerdown` below calls
+   * `preventDefault` — which suppresses the compatibility mouse events, and
+   * `dblclick` is one of them. The window and the slop live in
+   * `state/input.ts`, shared with the string tool, which asks the same question
+   * of the *click* rather than of the press.
+   *
+   * The clock is read once per press and the result is a flag on the input, so
+   * what the tool acts on is still only ever something the frame handed it.
+   */
+  private doublePress(at: PointerSample): boolean {
+    const now = this.now();
+    const dx = at.x - this.lastDownX;
+    const dy = at.y - this.lastDownY;
+    const double =
+      now - this.lastDownAt <= DOUBLE_CLICK_MS &&
+      dx * dx + dy * dy <= DOUBLE_CLICK_SLOP * DOUBLE_CLICK_SLOP;
+    // A third press in the same spot is not a second double-click. Resetting
+    // the clock makes triple-click land as click, double, click rather than as
+    // two overlapping doubles, which is what every text field does.
+    this.lastDownAt = double ? Number.NEGATIVE_INFINITY : now;
+    this.lastDownX = at.x;
+    this.lastDownY = at.y;
+    return double;
   }
 
   private attach(): void {
@@ -193,7 +292,8 @@ export class ToolMachine {
       // board is a direct-manipulation surface; losing the release is what
       // leaves an item stuck to the cursor.
       this.target.setPointerCapture?.(e.pointerId);
-      this.push({ kind: "down", at: sample(e) });
+      const at = sample(e);
+      this.push({ kind: "down", at, double: this.doublePress(at) });
     });
 
     add(this.target, "pointermove", (e: PointerEvent) => {
@@ -241,6 +341,23 @@ export class ToolMachine {
           e.preventDefault();
           break;
         default:
+          // > 1-9 slack presets — DESIGN section 3.9's key table.
+          //
+          // Bare only. `Ctrl`+`0` and `Ctrl`+`1` are the camera's (fit and
+          // actual size), and forwarding those would have a preset fire every
+          // time someone reset the zoom. Not `preventDefault`ed, unlike every
+          // other key here: those all have a webview default worth stopping —
+          // `Backspace` navigates back, `Enter` activates — and a bare digit
+          // over a canvas has none.
+          if (
+            DIGIT_KEYS.test(e.code) &&
+            !e.ctrlKey &&
+            !e.metaKey &&
+            !e.altKey &&
+            !e.shiftKey
+          ) {
+            this.push({ kind: "key", code: e.code, shift: false, ctrl: false, alt: false });
+          }
           break;
       }
     });

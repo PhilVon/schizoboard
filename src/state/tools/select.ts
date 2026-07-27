@@ -48,7 +48,7 @@
  */
 
 import { rotateIn, rotateOut, type Point } from "@/lib/rotate";
-import { splitSlack } from "@/lib/slack";
+import { presetSlack, splitSlack, toggleTaut } from "@/lib/slack";
 import type { Bounds, Vec2 } from "@/state/camera";
 import {
   chromeFrame,
@@ -74,6 +74,22 @@ import type {
 /** Screen pixels the pointer must travel before a press becomes a drag. Below
  *  this, a click that trembles is still a click. */
 const DRAG_THRESHOLD_PX = 3;
+
+/**
+ * What a turn of the wheel is adjusting.
+ *
+ * > | Adjust one segment | Wheel over a selected segment | Slack up or down |
+ * > | Adjust the whole string | `Alt`+wheel | All segments together |
+ * > — DESIGN section 3.4
+ *
+ * The two are different enough to be different shapes. One gap is named by the
+ * node it starts at, because that is what survives a concurrent insert; a whole
+ * string is named by the selection it came out of, snapshotted, because the
+ * modifier is read once at the start of a roll and so is what it applied to.
+ */
+type SlackRoll =
+  | { readonly kind: "segment"; readonly string: string; readonly nodeId: string }
+  | { readonly kind: "whole"; readonly strings: readonly string[] };
 
 /**
  * Crash-safety write interval during a drag.
@@ -117,6 +133,43 @@ const SETTLED_EPSILON = 5e-5;
 const ROTATE_DEAD_RADIUS_PX = 24;
 
 /**
+ * Wheel delta to slack factor — one 100 px mouse notch multiplies the slack by
+ * about 1.22.
+ *
+ * **Multiplicative, like the zoom and for the same reason.** Slack is a ratio
+ * with no natural step: an additive nudge that reads as a gentle adjustment at
+ * a heavy drape walks straight through the minimum at a taut one, and one that
+ * is safe at the taut end takes a hundred notches to reach the other. A factor
+ * is the same *proportion* of drape wherever on the ladder you are.
+ *
+ * Brisker than the zoom's rate because the coarse control already exists: `1`-`9`
+ * get you to the right neighbourhood in one keystroke, so the wheel's job is the
+ * last little bit, and about twenty-five notches end to end is the fine end of
+ * usable rather than the coarse.
+ *
+ * The sign follows the zoom's — wheel away from you for more, which on this
+ * board already means more magnification and here means more sag. See Q-14.
+ */
+const WHEEL_SLACK_RATE = 0.002;
+
+/**
+ * How long after the last notch a slack roll stays latched to the segment it
+ * started on, in milliseconds.
+ *
+ * Without this the gesture eats itself. Rolling slack *up* lets the rope droop,
+ * and the rope drooping is the rope leaving the eight screen pixels either side
+ * of the cursor that made it grabbable — so somewhere mid-roll the board would
+ * stop claiming the wheel and the camera would start zooming instead, which
+ * reads as the application having lost its mind. A roll therefore keeps hold of
+ * the gap it began on, exactly as a drag keeps hold of the handle it began on,
+ * until the wheel stops.
+ *
+ * Comfortably longer than the gap between notches of a continuous roll and
+ * shorter than the pause before someone means something else by the wheel.
+ */
+const SLACK_ROLL_IDLE_MS = 250;
+
+/**
  * The smallest a sheet of paper can be dragged down to, in board units.
  *
  * The schema floor is one unit (invariant 6), and an item one unit across is a
@@ -158,6 +211,21 @@ function approach(current: number, target: number, dt: number, tau: number): num
  * Only the *last* pin. Going from two to one starts it hanging, which is a
  * swing rather than a jump; three to two changes nothing at all.
  */
+/**
+ * The preset a key code names, or null if it names none.
+ *
+ * By `code` rather than `key`, like every other binding on the board: `Digit1`
+ * is the physical key and is the same on every layout, where `key` is `"1"` on a
+ * US keyboard and `"&"` on a French one. `machine.ts` already filters to bare
+ * `Digit1`-`Digit9` and `Numpad1`-`Numpad9`, so this is a parse rather than a
+ * second gate — and it is here rather than there because which keys mean
+ * something is the tool's business.
+ */
+function presetFor(code: string): number | null {
+  const digit = /^(?:Digit|Numpad)([1-9])$/.exec(code);
+  return digit === null ? null : Number(digit[1]);
+}
+
 function settleOnUnpin(ctx: ToolContext, pinId: string): ReadonlyMap<string, WritePose> {
   const settle = new Map<string, WritePose>();
   const parent = ctx.scene.pins.get(pinId)?.parent ?? null;
@@ -292,6 +360,22 @@ export class SelectTool implements Tool {
    */
   private pendingSelect: string | null = null;
 
+  /**
+   * Was the press that is still pending the second of a double-click? Recorded
+   * at pointer-down and acted on at pointer-up, alongside the rest of what the
+   * press landed on — because pressing twice on a string and *then* pulling
+   * means pull a loop out of it, not toggle it taut as well.
+   */
+  private pendingDouble = false;
+
+  /**
+   * The slack roll in progress, latched to what the first notch decided, or null
+   * between rolls. See `SLACK_ROLL_IDLE_MS` for why it is latched at all.
+   */
+  private slackRoll: SlackRoll | null = null;
+  /** Milliseconds since the last notch, for expiring the latch. */
+  private sinceRoll = 0;
+
   /** Reused, because the camera hands back a fresh object otherwise and this
    *  runs on every pointer move of every gesture. */
   private readonly board: Vec2 = { x: 0, y: 0 };
@@ -402,7 +486,7 @@ export class SelectTool implements Tool {
   handle(input: ToolInput, ctx: ToolContext): void {
     switch (input.kind) {
       case "down":
-        this.onDown(input.at, ctx);
+        this.onDown(input.at, ctx, input.double === true);
         break;
       case "move":
         this.onMove(input.at, ctx);
@@ -416,12 +500,122 @@ export class SelectTool implements Tool {
       case "key":
         this.onKey(input, ctx);
         break;
+      case "wheel":
+        this.onWheel(input.at, input.dy, ctx);
+        break;
     }
+  }
+
+  /**
+   * Does a wheel notch here mean slack rather than zoom?
+   *
+   * Asked by the camera, from inside the wheel listener, before it decides
+   * whether to zoom — so this is pure, and `onWheel` below asks the same
+   * question again in the INPUT phase and gets the same answer. See
+   * `Tool.claimsWheel`.
+   */
+  claimsWheel(at: PointerSample, ctx: ToolContext): boolean {
+    return this.slackTarget(at, ctx) !== null;
+  }
+
+  /**
+   * One notch of the wheel, on a string.
+   *
+   * The document is handed a *factor* rather than a value in both cases. A tool's
+   * writes are queued to phase 9, so a slack read here is always one frame older
+   * than the write it would produce: reading and multiplying in the tool would
+   * make a steady roll move the sag once and then keep re-deriving the same
+   * answer from the same stale number. `crdt/ops/strings.ts` compounds it
+   * instead.
+   */
+  private onWheel(at: PointerSample, dy: number, ctx: ToolContext): void {
+    const target = this.slackTarget(at, ctx);
+    // Only reachable if the claim and this disagreed, which the latch is there
+    // to make impossible after the first notch. Dropping the latch is still the
+    // right response: whatever it was holding is no longer there.
+    if (target === null) {
+      this.slackRoll = null;
+      return;
+    }
+    this.slackRoll = target;
+    this.sinceRoll = 0;
+
+    // Away from the user is more sag, which is the sign the zoom already uses
+    // for "more" on this board (Q-14).
+    const factor = Math.exp(-dy * WHEEL_SLACK_RATE);
+    if (target.kind === "whole") ctx.write.scaleStringSlack(target.strings, factor);
+    else ctx.write.scaleNodeSlack(target.string, target.nodeId, factor);
+  }
+
+  /**
+   * What a wheel notch at this point, with these modifiers, would adjust — or
+   * null, which means the camera keeps it.
+   *
+   * Pure: `claimsWheel` runs it from a listener. Nothing here writes, and the
+   * only state it reads that a frame can change is the scene and the selection.
+   */
+  private slackTarget(at: PointerSample, ctx: ToolContext): SlackRoll | null {
+    // `Ctrl`+wheel is a zoom on every engine and is what a trackpad pinch
+    // synthesises, so it is never ours. Nor is a wheel arriving in the middle of
+    // a drag — the gesture in progress is what the pointer is doing.
+    if (at.ctrl || this.gesturing) return null;
+
+    // A roll already under way keeps what it took hold of, even once the sag has
+    // drooped out from under the cursor — which is the point (`SLACK_ROLL_IDLE_MS`).
+    const latched = this.liveRoll(ctx);
+    if (latched !== null) return latched;
+
+    // > Adjust the whole string | `Alt`+wheel — DESIGN section 3.4, and unlike
+    // the per-segment case it asks nothing about where the cursor is. That is
+    // the whole difference between them: one needs aiming and one does not.
+    if (at.alt) {
+      const strings = [...ctx.selection.strings];
+      return strings.length > 0 ? { kind: "whole", strings } : null;
+    }
+
+    // > Wheel over a **selected** segment. Selection is what disambiguates this
+    // from a zoom, so a string merely under the cursor is not enough — and
+    // `stringAt` is the same function the press and the hover highlight use, so
+    // the wheel cannot claim a segment a click would not have offered.
+    const hit = stringAt(
+      ctx.scene,
+      ctx.camera,
+      ctx.hitTest,
+      ctx.hitPin,
+      ctx.hitString,
+      at.x,
+      at.y,
+    );
+    if (hit === null || !ctx.selection.hasString(hit.string)) return null;
+    const nodeId = ctx.scene.strings.get(hit.string)?.nodes[hit.node]?.nodeId;
+    return nodeId === undefined ? null : { kind: "segment", string: hit.string, nodeId };
+  }
+
+  /**
+   * The latched roll, if it is still a thing that exists — a collaborator can
+   * cut the string mid-roll, and a click elsewhere can deselect it.
+   *
+   * Does not clear the latch when it answers null, because it is called from
+   * `claimsWheel`, which may not change anything. `onWheel` and `tick` are what
+   * let go.
+   */
+  private liveRoll(ctx: ToolContext): SlackRoll | null {
+    const roll = this.slackRoll;
+    if (roll === null) return null;
+    if (roll.kind === "segment") {
+      return ctx.selection.hasString(roll.string) && ctx.scene.strings.has(roll.string)
+        ? roll
+        : null;
+    }
+    for (const id of roll.strings) {
+      if (!ctx.selection.hasString(id) || !ctx.scene.strings.has(id)) return null;
+    }
+    return roll;
   }
 
   // --- pointer --------------------------------------------------------------
 
-  private onDown(at: PointerSample, ctx: ToolContext): void {
+  private onDown(at: PointerSample, ctx: ToolContext, double: boolean): void {
     // A collaborator may have deleted something we still think we have hold
     // of. Dragging a ghost silently does nothing, which is the worst kind.
     ctx.selection.prune(
@@ -434,6 +628,7 @@ export class SelectTool implements Tool {
     this.pendingSelect = null;
     this.pendingPin = null;
     this.pendingString = null;
+    this.pendingDouble = double;
     this.grabbed = null;
     const board = ctx.camera.screenToBoard(at.x, at.y, this.board);
     this.downBoardX = board.x;
@@ -630,9 +825,30 @@ export class SelectTool implements Tool {
       return;
     }
     if (this.pendingString !== null) {
-      const stringId = this.pendingString.string;
+      const hit = this.pendingString;
       this.pendingString = null;
-      ctx.selection.replaceStrings([stringId]);
+      ctx.selection.replaceStrings([hit.string]);
+      /**
+       * > | Toggle taut | Double-click a segment | Snaps between taut and
+       * > default slack | — DESIGN section 3.4
+       *
+       * The second click of the double, which by now has already selected the
+       * string on the first one — so the toggle and the selection are the same
+       * two presses rather than a gesture that needs setting up.
+       *
+       * Absolute rather than a factor, unlike the wheel: this one is a *state*
+       * and it needs the current slack to know which of the two states to go to.
+       * Reading it here is safe where reading it for the wheel is not, because
+       * nothing is compounding — a second double-click computed from a frame-old
+       * number gives the same answer, and the answer is one of two values.
+       */
+      if (this.pendingDouble) {
+        const node = ctx.scene.strings.get(hit.string)?.nodes[hit.node];
+        if (node) {
+          ctx.write.setNodeSlack(hit.string, node.nodeId, toggleTaut(node.slackAfter));
+        }
+      }
+      this.pendingDouble = false;
       this.phase = "idle";
       return;
     }
@@ -666,6 +882,7 @@ export class SelectTool implements Tool {
       ctx.selection.replace([this.pendingSelect]);
     }
     this.pendingSelect = null;
+    this.pendingDouble = false;
     // A click on a handle that never became a drag rotates and resizes by
     // nothing, which is the right amount, and must not deselect either. A click
     // on a pin is the same: it moves the pin nowhere, and leaves the selection
@@ -1110,14 +1327,43 @@ export class SelectTool implements Tool {
         return;
       }
 
-      default:
+      default: {
+        /**
+         * > | Slack presets | `1`-`9` with a string selected | Taut through to
+         * > heavily draped | — DESIGN section 3.4
+         *
+         * Absolute and uniform, which is what a preset means: `1` is taut
+         * whatever the run looked like a moment ago, and pressing it twice is
+         * the same statement twice. It is the one slack verb that deliberately
+         * flattens the unequal ratios a mid-string split leaves behind — the
+         * wheel and `Alt`+wheel both scale, precisely so that they do not.
+         *
+         * The ladder itself is `lib/slack.ts`; it is geometric, and that file
+         * says why a linear one would put seven of the nine presets in territory
+         * nobody can tell apart.
+         */
+        const preset = presetFor(input.code);
+        if (preset === null || input.ctrl || input.alt || this.gesturing) return;
+        const strings = [...ctx.selection.strings];
+        if (strings.length === 0) return;
+        ctx.write.setStringSlack(strings, presetSlack(preset));
         return;
+      }
     }
   }
 
   // --- the frame ------------------------------------------------------------
 
   tick(dt: number, ctx: ToolContext): void {
+    // A roll of the wheel ends by stopping, which is not an event, so it is
+    // measured. Until it expires the roll stays latched to the gap it began on —
+    // see `SLACK_ROLL_IDLE_MS`, which is about the sag drooping out from under
+    // the cursor and the camera taking over mid-roll.
+    if (this.slackRoll !== null && dt > 0) {
+      this.sinceRoll += dt;
+      if (this.sinceRoll >= SLACK_ROLL_IDLE_MS) this.slackRoll = null;
+    }
+
     if (
       dt > 0 &&
       (this.phase === "dragging" || this.phase === "rotating" || this.phase === "resizing")
@@ -1273,11 +1519,18 @@ export class SelectTool implements Tool {
     this.lag = 0;
 
     this.pendingSelect = null;
+    this.pendingDouble = false;
     this.pendingPin = null;
     this.pendingString = null;
     this.grabbed = null;
     this.rect = null;
     this.phase = "idle";
+    // A tool switch or a lost focus ends a roll of the wheel too. Nothing was
+    // half-written — every notch is its own complete edit — so letting go of the
+    // latch is the whole of it, and keeping it would mean the wheel still meant
+    // slack after the board came back.
+    this.slackRoll = null;
+    this.sinceRoll = 0;
   }
 
   /** End of a gesture: the items stay in `animating` until their transients

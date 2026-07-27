@@ -30,6 +30,8 @@ import {
   insertPinIntoString,
   insertStringNode,
   removeStringNodes,
+  scaleNodeSlack,
+  scaleStringSlack,
   setNodeSlack,
   setStringSlack,
   setStringStyle,
@@ -166,7 +168,7 @@ describe("slack is a ratio, not a length (AC-66)", () => {
 
     const id = createString(board, { pins: ["p1", "p2"], slack: 0 })!;
     expect(slacks(id)[0]).toBe(MIN_SLACK);
-    setStringSlack(board, id, -1);
+    setStringSlack(board, [id], -1);
     expect(slacks(id)[0]).toBe(MIN_SLACK);
   });
 
@@ -546,8 +548,121 @@ describe("editing a string", () => {
 
   it("adjusts the whole string at once", () => {
     const id = createString(board, { pins: ["p1", "p2", "p3"], slack: [0.1, 0.2, 0.3] })!;
-    setStringSlack(board, id, 0.5);
+    setStringSlack(board, [id], 0.5);
     expect(slacks(id)).toEqual([0.5, 0.5, 0.5]);
+  });
+
+  /** A preset applied to a multiple selection is one thing the user did, so it
+   *  is one transaction and therefore one undo entry. */
+  it("adjusts several strings in one transaction", () => {
+    const a = createString(board, { pins: ["p1", "p2"], slack: 0.1 })!;
+    const b = createString(board, { pins: ["p2", "p3"], slack: 0.4 })!;
+    const history = new UndoHistory(board);
+    setStringSlack(board, [a, b], 0.5);
+    expect([...slacks(a), ...slacks(b)]).toEqual([0.5, 0.5, 0.5, 0.5]);
+    history.undo();
+    expect(slacks(a)[0]).toBeCloseTo(0.1, 12);
+    expect(slacks(b)[0]).toBeCloseTo(0.4, 12);
+    history.destroy();
+  });
+
+  /**
+   * `Alt`+wheel, and the whole reason it is a different op from the preset
+   * above.
+   *
+   * > | Adjust the whole string | `Alt`+wheel | All segments together |
+   * > — DESIGN section 3.4
+   *
+   * "Together" means the run keeps its shape. A run that has had a pin pulled
+   * out of its middle has deliberately unequal ratios — `lib/slack.ts` gives the
+   * short chord the large one — and setting them all to a single value would
+   * throw that away on the first notch of the wheel.
+   */
+  it("scales the whole string without flattening its shape", () => {
+    const id = createString(board, { pins: ["p1", "p2", "p3"], slack: [0.1, 0.2, 0.4] })!;
+    scaleStringSlack(board, [id], 1.5);
+    expect(slacks(id)[0]).toBeCloseTo(0.15, 12);
+    expect(slacks(id)[1]).toBeCloseTo(0.3, 12);
+    expect(slacks(id)[2]).toBeCloseTo(0.6, 12);
+  });
+
+  /**
+   * The wheel over one segment, and it takes a factor rather than a value for a
+   * reason the tool could not work around: a tool reads the scene one frame
+   * before its write lands, so a roll that multiplied in the tool would keep
+   * re-deriving the same product from the same stale number. Compounding has to
+   * happen where the current value is.
+   */
+  it("compounds a run of notches on one gap", () => {
+    const id = createString(board, { pins: ["p1", "p2", "p3"], slack: [0.1, 0.2, 0.3] })!;
+    const gap = nodes(id)[1].nodeId;
+    for (let i = 0; i < 4; i++) scaleNodeSlack(board, id, gap, 1.2);
+    expect(slacks(id)[1]).toBeCloseTo(0.2 * 1.2 ** 4, 12);
+    // And its neighbours are where they were.
+    expect(slacks(id)[0]).toBeCloseTo(0.1, 12);
+    expect(slacks(id)[2]).toBeCloseTo(0.3, 12);
+  });
+
+  /**
+   * And what it does *not* buy, which is worth a test so that nobody reads the
+   * factor as a CRDT trick. `slackAfter` is a `Y.Map` field, so it is
+   * last-write-wins: two people adjusting one gap at once converge on one of the
+   * two answers rather than on the product. That is the right resolution for a
+   * scalar — the alternative is a gap whose slack is neither person's — and it is
+   * why the concurrency D-5 worries about is insertion rather than adjustment.
+   */
+  it("resolves two clients adjusting one gap to one of their answers", () => {
+    const alice = openBoardDoc();
+    const bob = openBoardDoc();
+    const id = createString(board, { pins: ["p1", "p2"], slack: 0.2 })!;
+    const base = Y.encodeStateAsUpdate(board.doc);
+    Y.applyUpdate(alice.doc, base);
+    Y.applyUpdate(bob.doc, base);
+    const gap = nodes(id)[0].nodeId;
+
+    scaleNodeSlack(alice, id, gap, 1.5);
+    scaleNodeSlack(bob, id, gap, 2);
+    const fromAlice = Y.encodeStateAsUpdate(alice.doc);
+    const fromBob = Y.encodeStateAsUpdate(bob.doc);
+    Y.applyUpdate(alice.doc, fromBob);
+    Y.applyUpdate(bob.doc, fromAlice);
+
+    const settled = (doc: BoardDoc): number =>
+      readString(id, doc.strings.get(id) as YMap)!.nodes[0].slackAfter;
+    expect(settled(alice)).toBe(settled(bob));
+    expect([0.3, 0.4]).toContain(Number(settled(alice).toFixed(12)));
+  });
+
+  /**
+   * Scaling down far enough pins the slackest gaps to the floor along with the
+   * tightest, and scaling back up does not restore the shape. That is correct
+   * rather than merely tolerated: the run went taut, and there is no more string
+   * to pay back out by turning the wheel the other way either.
+   */
+  it("cannot scale a gap below the minimum, and does not remember trying", () => {
+    const id = createString(board, { pins: ["p1", "p2", "p3"], slack: [0.02, 0.5, 0.5] })!;
+    scaleStringSlack(board, [id], 1e-6);
+    expect(slacks(id)).toEqual([MIN_SLACK, MIN_SLACK, MIN_SLACK]);
+    scaleStringSlack(board, [id], 1e6);
+    expect(slacks(id).every((s) => s === slacks(id)[0])).toBe(true);
+  });
+
+  it("refuses a factor that is not a positive number", () => {
+    const id = createString(board, { pins: ["p1", "p2"], slack: 0.2 })!;
+    for (const factor of [0, -1, Number.NaN, Infinity]) {
+      scaleStringSlack(board, [id], factor);
+      scaleNodeSlack(board, id, nodes(id)[0].nodeId, factor);
+      expect(slacks(id)[0]).toBeCloseTo(0.2, 12);
+    }
+  });
+
+  it("ignores a node id and a string id that are not there", () => {
+    const id = createString(board, { pins: ["p1", "p2"], slack: 0.2 })!;
+    expect(() => scaleNodeSlack(board, id, "nope", 2)).not.toThrow();
+    expect(() => scaleNodeSlack(board, "s-nope", nodes(id)[0].nodeId, 2)).not.toThrow();
+    expect(() => scaleStringSlack(board, ["s-nope"], 2)).not.toThrow();
+    expect(() => setStringSlack(board, ["s-nope"], 0.5)).not.toThrow();
+    expect(slacks(id)[0]).toBeCloseTo(0.2, 12);
   });
 
   it("restyles colour, thickness, material and layer", () => {

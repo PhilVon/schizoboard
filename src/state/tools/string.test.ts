@@ -126,6 +126,18 @@ beforeEach(() => {
       insertPin: () => {
         throw new Error("the string tool does not insert into an existing run");
       },
+      setNodeSlack: () => {
+        throw new Error("the string tool does not edit an existing run's slack");
+      },
+      scaleNodeSlack: () => {
+        throw new Error("the string tool does not edit an existing run's slack");
+      },
+      setStringSlack: () => {
+        throw new Error("the string tool does not edit an existing run's slack");
+      },
+      scaleStringSlack: () => {
+        throw new Error("the string tool does not edit an existing run's slack");
+      },
     },
   };
 });

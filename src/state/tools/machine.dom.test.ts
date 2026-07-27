@@ -23,9 +23,16 @@ class RecordingTool implements Tool {
   ticks = 0;
   cancels = 0;
 
+  /** Off by default, so every test that predates the wheel still sees the
+   *  camera keep it. */
+  wantsWheel = false;
+
   handle(input: ToolInput, ctx: ToolContext): void {
     this.seen.push(input);
     this.heldAtHandle.push([...ctx.held]);
+  }
+  claimsWheel(): boolean {
+    return this.wantsWheel;
   }
   tick(): void {
     this.ticks++;
@@ -39,6 +46,9 @@ let root: HTMLDivElement;
 let tool: RecordingTool;
 let machine: ToolMachine;
 let suppressed: boolean;
+/** The machine's clock, so the double-click window is a thing the test sets
+ *  rather than a thing it waits for. */
+let now: number;
 
 function pointer(type: string, init: Record<string, unknown>): void {
   const event = new PointerEvent(type, { bubbles: true, cancelable: true, ...init });
@@ -53,6 +63,12 @@ function kinds(): string[] {
   return tool.seen.map((i) => i.kind);
 }
 
+function key(code: string, init: Record<string, unknown> = {}): void {
+  const target = init["target"] as HTMLElement | undefined;
+  const event = new KeyboardEvent("keydown", { code, bubbles: true, ...init });
+  (target ?? window).dispatchEvent(event);
+}
+
 beforeEach(() => {
   document.body.innerHTML = "";
   root = document.createElement("div");
@@ -63,6 +79,7 @@ beforeEach(() => {
 
   tool = new RecordingTool();
   suppressed = false;
+  now = 1000;
   const scene = new Scene();
   machine = new ToolMachine(tool, root, {
     scene,
@@ -79,11 +96,16 @@ beforeEach(() => {
       deletePins: () => {},
     createString: () => {},
     insertPin: () => {},
+    setNodeSlack: () => {},
+    scaleNodeSlack: () => {},
+    setStringSlack: () => {},
+    scaleStringSlack: () => {},
     },
     hitTest: () => null,
     hitPin: () => null,
     hitString: () => null,
     suppressed: () => suppressed,
+    now: () => now,
   });
 });
 
@@ -269,5 +291,169 @@ describe("ToolMachine", () => {
     pointer("pointerdown", { button: 0, pointerId: 10, clientX: 0, clientY: 0 });
     machine.flush(16);
     expect(tool.seen).toEqual([]);
+  });
+});
+
+/**
+ * The two inputs T-49 added, both of which are the machine's job rather than a
+ * tool's: deciding that two presses were a double-click, and deciding that a
+ * wheel notch belongs to the board rather than to the camera.
+ */
+describe("the second press of a double-click", () => {
+  function press(x: number, y: number, id = 40): void {
+    pointer("pointerdown", { button: 0, pointerId: id, clientX: x, clientY: y });
+    pointer("pointerup", { pointerId: id, clientX: x, clientY: y });
+  }
+
+  function doubles(): Array<boolean | undefined> {
+    return tool.seen
+      .filter((i): i is Extract<ToolInput, { kind: "down" }> => i.kind === "down")
+      .map((i) => i.double);
+  }
+
+  it("flags the second press and not the first", () => {
+    press(10, 10, 41);
+    press(10, 10, 42);
+    machine.flush(16);
+    expect(doubles()).toEqual([false, true]);
+  });
+
+  /** Ours rather than the DOM's `dblclick`, which never fires: `pointerdown`
+   *  calls `preventDefault` and that suppresses the compatibility mouse
+   *  events. */
+  it("is decided by our own clock, not by the DOM", () => {
+    now = 1000;
+    press(10, 10, 43);
+    now = 1500;
+    press(10, 10, 44);
+    machine.flush(16);
+    expect(doubles()).toEqual([false, false]);
+  });
+
+  it("is not a double when the second press has wandered", () => {
+    press(10, 10, 45);
+    press(40, 10, 46);
+    machine.flush(16);
+    expect(doubles()).toEqual([false, false]);
+  });
+
+  /** A third press in the same spot is not a second double-click — click,
+   *  double, click, which is what every text field does. */
+  it("does not chain into a second double on a triple press", () => {
+    press(10, 10, 47);
+    press(10, 10, 48);
+    press(10, 10, 49);
+    machine.flush(16);
+    expect(doubles()).toEqual([false, true, false]);
+  });
+});
+
+describe("the 1-9 slack presets", () => {
+  function codes(): string[] {
+    return tool.seen
+      .filter((i): i is Extract<ToolInput, { kind: "key" }> => i.kind === "key")
+      .map((i) => i.code);
+  }
+
+  it("forwards a bare digit, by code so it survives a foreign layout", () => {
+    key("Digit3");
+    key("Numpad9");
+    machine.flush(16);
+    expect(codes()).toEqual(["Digit3", "Numpad9"]);
+  });
+
+  /** `Ctrl`+`0` fits the board and `Ctrl`+`1` is actual size (DESIGN section
+   *  3.7). Forwarding those would fire a preset every time someone reset the
+   *  zoom. */
+  it("leaves Ctrl and Alt digits to the camera", () => {
+    key("Digit1", { ctrlKey: true });
+    key("Digit0");
+    key("Digit4", { altKey: true });
+    machine.flush(16);
+    expect(codes()).toEqual([]);
+  });
+
+  it("is not board input while someone is writing on a note", () => {
+    const field = document.createElement("input");
+    document.body.append(field);
+    key("Digit5", { target: field });
+    machine.flush(16);
+    expect(codes()).toEqual([]);
+  });
+});
+
+/**
+ * The wheel, which is the one input the camera and the board both want — it
+ * zooms (DESIGN section 3.7) and it adjusts a selected segment's slack (section
+ * 3.4). There is no wheel listener on the machine at all: navigation owns the
+ * only one and offers each notch here first.
+ */
+describe("offering a wheel notch to the tool", () => {
+  function scroll(dy: number): boolean {
+    const event = new WheelEvent("wheel", { deltaY: dy, clientX: 5, clientY: 6 });
+    // happy-dom drops the MouseEventInit fields on a WheelEvent exactly as it
+    // does on a PointerEvent — see `pointer` above.
+    for (const [k, v] of [["clientX", 5], ["clientY", 6]] as const) {
+      Object.defineProperty(event, k, { value: v });
+    }
+    for (const k of ["shiftKey", "ctrlKey", "altKey"] as const) {
+      Object.defineProperty(event, k, { value: false });
+    }
+    Object.defineProperty(event, "target", { value: root });
+    return machine.claimWheel(event);
+  }
+
+  it("declines, and delivers nothing, when the tool does not want it", () => {
+    expect(scroll(-100)).toBe(false);
+    machine.flush(16);
+    expect(kinds()).toEqual([]);
+  });
+
+  it("claims and delivers when the tool wants it", () => {
+    tool.wantsWheel = true;
+    expect(scroll(-100)).toBe(true);
+    // Buffered like every other input — the tool must not be stepped from
+    // inside a listener.
+    expect(tool.seen).toEqual([]);
+    machine.flush(16);
+    expect(tool.seen).toEqual([
+      { kind: "wheel", at: { x: 5, y: 6, shift: false, ctrl: false, alt: false }, dy: -100 },
+    ]);
+  });
+
+  /**
+   * A fast roll delivers several notches between frames and they are all part
+   * of the same turn of the wheel. Stepping the tool once per notch would be
+   * several document writes in one frame, each read from a scene the previous
+   * one had not reached yet.
+   */
+  it("sums the notches that land in one frame", () => {
+    tool.wantsWheel = true;
+    scroll(-100);
+    scroll(-100);
+    scroll(-40);
+    machine.flush(16);
+    const wheels = tool.seen.filter((i) => i.kind === "wheel");
+    expect(wheels).toHaveLength(1);
+    expect(wheels[0]).toMatchObject({ dy: -240 });
+  });
+
+  it("does not collapse across a press that landed between the notches", () => {
+    tool.wantsWheel = true;
+    scroll(-100);
+    pointer("pointerdown", { button: 0, pointerId: 50, clientX: 5, clientY: 6 });
+    scroll(-100);
+    machine.flush(16);
+    expect(kinds()).toEqual(["wheel", "down", "wheel"]);
+  });
+
+  /** While the space bar is down the pointer belongs to the camera, and so
+   *  does the wheel. */
+  it("declines while navigation owns the pointer", () => {
+    tool.wantsWheel = true;
+    suppressed = true;
+    expect(scroll(-100)).toBe(false);
+    machine.flush(16);
+    expect(kinds()).toEqual([]);
   });
 });

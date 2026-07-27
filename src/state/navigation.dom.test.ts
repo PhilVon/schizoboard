@@ -148,3 +148,74 @@ describe("World", () => {
     expect(world.applyCamera(camera)).toBe(true);
   });
 });
+
+/**
+ * The truce over the wheel.
+ *
+ * It is the one input the camera and the board both want — it zooms (DESIGN
+ * section 3.7) and it adjusts a selected segment's slack (section 3.4) — so the
+ * camera offers each notch to the board first and acts only on what is left.
+ * Wired to `ToolMachine.claimWheel` in `app/main.ts`; a predicate here, so this
+ * module still knows nothing about tools, selections or strings.
+ */
+describe("offering the wheel to the board", () => {
+  let offered: WheelEvent[];
+  let claim: boolean;
+
+  beforeEach(() => {
+    offered = [];
+    claim = false;
+    navigation.destroy();
+    navigation = new Navigation(camera, root, {
+      offerWheel: (e) => {
+        offered.push(e);
+        return claim;
+      },
+    });
+  });
+
+  it("zooms as before when the board declines", () => {
+    const before = camera.zoom;
+    wheel({ deltaY: -100, clientX: 500, clientY: 300 });
+    navigation.flush();
+    expect(offered).toHaveLength(1);
+    expect(camera.zoom).toBeGreaterThan(before);
+  });
+
+  it("neither zooms nor pans when the board claims the notch", () => {
+    claim = true;
+    const before = { x: camera.x, y: camera.y, zoom: camera.zoom, version: camera.version };
+    wheel({ deltaY: -100, clientX: 500, clientY: 300 });
+    wheel({ deltaX: 30, deltaY: 12 });
+    navigation.flush();
+    expect(offered).toHaveLength(2);
+    expect(camera.zoom).toBe(before.zoom);
+    expect(camera.x).toBe(before.x);
+    expect(camera.y).toBe(before.y);
+    expect(camera.version).toBe(before.version);
+    expect(navigation.gestured).toBe(false);
+  });
+
+  /**
+   * Whoever ends up acting on the notch, the one thing that must not happen is
+   * the page scrolling or the webview browser-zooming underneath the board — so
+   * the default is prevented before the offer rather than after it.
+   */
+  it("still swallows the event the board took", () => {
+    claim = true;
+    const event = new WheelEvent("wheel", { bubbles: true, cancelable: true, deltaY: -100 });
+    root.dispatchEvent(event);
+    expect(event.defaultPrevented).toBe(true);
+  });
+
+  it("goes back to zooming the moment the board stops claiming", () => {
+    claim = true;
+    wheel({ deltaY: -100, clientX: 500, clientY: 300 });
+    navigation.flush();
+    claim = false;
+    const before = camera.zoom;
+    wheel({ deltaY: -100, clientX: 500, clientY: 300 });
+    navigation.flush();
+    expect(camera.zoom).toBeGreaterThan(before);
+  });
+});

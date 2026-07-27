@@ -60,6 +60,22 @@ export interface NavigationOptions {
   contentBounds?: () => Bounds | null;
   /** Board bounds of the selection, for `F`. Null when nothing is selected. */
   selectionBounds?: () => Bounds | null;
+  /**
+   * Offer each wheel notch to the board before the camera takes it. True means
+   * the board took it, and this one neither zooms nor pans.
+   *
+   * The wheel is the only input the camera and the board both want — "wheel
+   * zooms" (DESIGN section 3.7) and "wheel over a selected segment adjusts its
+   * slack" (section 3.4) are the same event — so one of them has to ask. It is
+   * the camera that asks, because the board's claim is the narrower and more
+   * specific of the two: it needs a string selected *and* the cursor on one of
+   * its segments, and everything else is a zoom.
+   *
+   * The mirror of `ToolMachineOptions.suppressed`, and wired to
+   * `ToolMachine.claimWheel`, which both decides and delivers. Injected, so this
+   * module still knows nothing about tools, selections or strings.
+   */
+  offerWheel?: (e: WheelEvent) => boolean;
 }
 
 export class Navigation {
@@ -137,7 +153,11 @@ export class Navigation {
 
     add(this.target, "wheel", (e: WheelEvent) => {
       // The page must never scroll and the webview must never browser-zoom.
+      // Unconditional, and before the offer: whoever ends up acting on this
+      // notch, the one thing that must not happen is the document scrolling.
       e.preventDefault();
+      // The board first — see `NavigationOptions.offerWheel`.
+      if (this.options.offerWheel?.(e) === true) return;
       if (classifyWheel(e) === "zoom") {
         this.queueZoom(Math.exp(-e.deltaY * WHEEL_ZOOM_RATE), e.clientX, e.clientY);
       } else {

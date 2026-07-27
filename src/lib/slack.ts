@@ -53,10 +53,86 @@
  */
 export const MIN_SLACK = 0.01;
 
+/**
+ * The slack a string gets when nobody has said otherwise, and the far end of
+ * the taut toggle.
+ *
+ * > Typical range is 0.05 to 0.3. — DATA-MODEL section 5.2
+ *
+ * Near the bottom of that: a new string should read as a line drawn between
+ * two things with a little weight in it, and the drape is something you add.
+ *
+ * Unlike `MIN_SLACK` above this is *not* duplicated from `crdt/`. It lives
+ * here and `crdt/ops/strings.ts` imports it, because the two constants are
+ * different kinds of thing. `MIN_SLACK` is a schema invariant, enforced by
+ * `crdt/schema.ts`'s reader on every node that arrives from a peer, so its home
+ * is the schema and this file mirrors it under test. This one is *policy* about
+ * what an untouched string looks like — which the ops need in order to create
+ * one and the select tool needs in order to snap one back to it (DESIGN section
+ * 3.4's "snaps between taut and default slack"), and a tool may not import
+ * `crdt/` at all.
+ */
+export const DEFAULT_SLACK = 0.12;
+
+/**
+ * The far end of the `1`-`9` ladder — "heavily draped" (DESIGN section 3.4).
+ *
+ * A rest length twice the chord: string that doubles back on itself and hangs
+ * in a deep loop. D-16's seeding table already treats "100% slack" as the
+ * extreme worth measuring, so this is the top of the range the solver has been
+ * shown to hold rather than a number picked for looking big.
+ */
+export const MAX_PRESET_SLACK = 1;
+
 /** Strictly positive, and never `NaN` — a slack that fails every comparison
  *  would reach a rest length, a particle position, and every peer. */
 export function clamp(slack: number): number {
   return Number.isFinite(slack) && slack > MIN_SLACK ? slack : MIN_SLACK;
+}
+
+/**
+ * The `1`-`9` presets.
+ *
+ * > | Slack presets | `1`-`9` with a string selected | Taut through to heavily
+ * > draped | — DESIGN section 3.4
+ *
+ * **Geometric, not linear**, and that is the whole content of this function.
+ * Slack is a ratio, so what the eye reads as one step of drape is a constant
+ * *multiple* rather than a constant difference: linear steps from taut to a
+ * doubled-back loop would put seven of the nine presets in territory nobody
+ * calls anything but "very slack", and crowd the entire useful range — DATA-
+ * MODEL's 0.05 to 0.3 — into the gap between `1` and `2`.
+ *
+ * Anchored at both ends rather than through the middle: `1` is exactly
+ * `MIN_SLACK`, which is exactly what the taut toggle means by taut, and `9` is
+ * `MAX_PRESET_SLACK`. What falls out is a `5` of almost exactly `DEFAULT_SLACK`
+ * and a `4`-to-`7` that spans the typical range, neither of which was arranged.
+ *
+ * Anything outside `1`-`9` is clamped into it rather than extrapolated, so a
+ * caller that hands this a key code it has not checked gets an end of the
+ * ladder instead of a rope on the far side of the board.
+ */
+export function presetSlack(preset: number): number {
+  if (!Number.isFinite(preset)) return DEFAULT_SLACK;
+  const step = Math.min(8, Math.max(0, Math.round(preset) - 1)) / 8;
+  return clamp(MIN_SLACK * (MAX_PRESET_SLACK / MIN_SLACK) ** step);
+}
+
+/**
+ * What a double-click on a segment makes its slack.
+ *
+ * > | Toggle taut | Double-click a segment | Snaps between taut and default
+ * > slack | — DESIGN section 3.4
+ *
+ * The test for "is it taut already" is deliberately loose. Taut is a place the
+ * user can only arrive at through this toggle or preset `1`, both of which land
+ * exactly on `MIN_SLACK` — but the wheel can leave a segment a hair above it,
+ * and a double-click there that pulled it *tighter* by half a percent and
+ * called that a toggle would read as the gesture having failed. Anything the
+ * eye would call taut goes back to the default.
+ */
+export function toggleTaut(slack: number): number {
+  return clamp(slack) <= MIN_SLACK * 2 ? DEFAULT_SLACK : MIN_SLACK;
 }
 
 /**

@@ -52,6 +52,10 @@ beforeEach(() => {
       deletePins: () => {},
     createString: () => {},
     insertPin: () => {},
+    setNodeSlack: () => {},
+    scaleNodeSlack: () => {},
+    setStringSlack: () => {},
+    scaleStringSlack: () => {},
       createNote: (x, y) => created.push({ x, y }),
     },
   };

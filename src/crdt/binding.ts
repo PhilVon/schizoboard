@@ -154,7 +154,11 @@ export class Binding {
     }
     this.scene.strings.set(id, {
       id,
-      nodes: fields.nodes.map((node) => ({ pin: node.pin, slackAfter: node.slackAfter })),
+      nodes: fields.nodes.map((node) => ({
+        nodeId: node.nodeId,
+        pin: node.pin,
+        slackAfter: node.slackAfter,
+      })),
       color: fields.color,
       thickness: fields.thickness,
       material: fields.material,

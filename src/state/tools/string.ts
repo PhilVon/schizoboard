@@ -53,6 +53,11 @@
  */
 
 import type { Vec2 } from "@/state/camera";
+// The window and the slop are shared with `state/tools/machine.ts`, which flags
+// the second *press* of a double for the select tool — two answers to "was that
+// a double-click" on one surface would make the same two presses mean different
+// things depending on which tool held the board.
+import { DOUBLE_CLICK_MS, DOUBLE_CLICK_SLOP } from "@/state/input";
 import { anchorAt, anchorParent, settleOnPin } from "@/state/tools/frame";
 import type {
   PointerSample,
@@ -62,10 +67,6 @@ import type {
   ToolInput,
 } from "@/state/tools/tool";
 
-/** How near two clicks have to be, in screen pixels, to count as a
- *  double-click rather than two stops in the same place. */
-const DOUBLE_CLICK_SLOP = 6;
-const DOUBLE_CLICK_MS = 400;
 /** How near the first stop a `Shift`+click has to land to close the loop. */
 const CLOSE_LOOP_SLOP = 18;
 

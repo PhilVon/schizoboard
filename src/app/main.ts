@@ -21,7 +21,11 @@ import {
   insertPinIntoString,
   placePin,
   resizeItems,
+  scaleNodeSlack,
+  scaleStringSlack,
   setItemPoses,
+  setNodeSlack,
+  setStringSlack,
 } from "@/crdt/ops";
 import { Origin } from "@/crdt/origins";
 import { Persistence } from "@/crdt/persistence";
@@ -162,9 +166,24 @@ async function boot(): Promise<void> {
   const ropes = new RopeSet();
   const loop = new FrameLoop();
   const selection = new Selection();
-  const navigation = new Navigation(camera, root, {
+  // Both annotated, and they have to be: `offerWheel` below reaches forward to
+  // `tools` and `tools`' `suppressed` reaches back to this, so inference has a
+  // cycle to walk and gives up. The truce being mutual is the reason.
+  const navigation: Navigation = new Navigation(camera, root, {
     contentBounds: () => scene.contentBounds(),
     selectionBounds: () => scene.boundsOfMany(selection.members),
+    /**
+     * The wheel is the one input the camera and the board both want — it zooms
+     * (DESIGN section 3.7) and it adjusts a selected segment's slack (section
+     * 3.4) — so the camera offers each notch to the active tool first. True
+     * means the tool took it.
+     *
+     * `tools` is declared below and this closes over it, which is safe because
+     * nothing calls it until a wheel event arrives. The two objects need each
+     * other: this is the truce in one direction and `suppressed` below is the
+     * same truce in the other.
+     */
+    offerWheel: (e): boolean => tools.claimWheel(e),
   });
 
   // --- interaction ---------------------------------------------------------
@@ -273,6 +292,30 @@ async function boot(): Promise<void> {
       const poses = settled(settle);
       queued.push(() => deletePins(board, snapshot, poses));
     },
+    /**
+     * The four slack writes — DESIGN section 3.4's editing table, which is one
+     * gap or the whole run, set or scaled.
+     *
+     * The two scaling ones hand over a factor rather than a value on purpose:
+     * a tool's read of the scene is a frame older than the write it produces,
+     * so a roll of the wheel that multiplied in the tool would keep deriving
+     * the same answer from the same stale number. `crdt/ops/strings.ts` says it
+     * at length.
+     */
+    setNodeSlack: (stringId, nodeId, slack) => {
+      queued.push(() => setNodeSlack(board, stringId, nodeId, slack));
+    },
+    scaleNodeSlack: (stringId, nodeId, factor) => {
+      queued.push(() => scaleNodeSlack(board, stringId, nodeId, factor));
+    },
+    setStringSlack: (stringIds, slack) => {
+      const snapshot = [...stringIds];
+      queued.push(() => setStringSlack(board, snapshot, slack));
+    },
+    scaleStringSlack: (stringIds, factor) => {
+      const snapshot = [...stringIds];
+      queued.push(() => scaleStringSlack(board, snapshot, factor));
+    },
   };
 
   /**
@@ -351,7 +394,7 @@ async function boot(): Promise<void> {
   const hitString = (bx: number, by: number, reach: number): RopeHit | null =>
     ropes.nearest(bx, by, reach);
 
-  const tools = new ToolMachine(select, root, {
+  const tools: ToolMachine = new ToolMachine(select, root, {
     scene,
     dirty,
     camera,

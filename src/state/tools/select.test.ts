@@ -11,6 +11,7 @@
 import { beforeEach, describe, expect, it } from "vitest";
 
 import { CAPTURE_TIMEOUT_MS } from "@/crdt/undo";
+import { DEFAULT_SLACK, MIN_SLACK, presetSlack } from "@/lib/slack";
 import { Torsion } from "@/sim/torsion";
 import { Camera } from "@/state/camera";
 import { DirtySets } from "@/state/dirty";
@@ -35,7 +36,11 @@ type Write =
       before: number;
       after: number;
       settle: Map<string, WritePose>;
-    };
+    }
+  | { kind: "nodeSlack"; stringId: string; nodeId: string; slack: number }
+  | { kind: "scaleNode"; stringId: string; nodeId: string; factor: number }
+  | { kind: "stringSlack"; stringIds: string[]; slack: number }
+  | { kind: "scaleString"; stringIds: string[]; factor: number };
 
 let scene: Scene;
 let dirty: DirtySets;
@@ -148,6 +153,11 @@ function at(x: number, y: number, mods: Partial<PointerSample> = {}): PointerSam
 function down(x: number, y: number, mods?: Partial<PointerSample>): void {
   tool.handle({ kind: "down", at: at(x, y, mods) }, ctx);
 }
+/** The second press of a double-click, which `machine.ts` decides from the time
+ *  and the distance since the last one and flags on the press itself. */
+function downAgain(x: number, y: number, mods?: Partial<PointerSample>): void {
+  tool.handle({ kind: "down", at: at(x, y, mods), double: true }, ctx);
+}
 function move(x: number, y: number, mods?: Partial<PointerSample>): void {
   tool.handle({ kind: "move", at: at(x, y, mods) }, ctx);
 }
@@ -162,6 +172,14 @@ function key(code: string, mods: { shift?: boolean; ctrl?: boolean } = {}): void
 }
 function tick(dt = 16): void {
   tool.tick(dt, ctx);
+}
+/** One notch of the wheel, offered and — if the tool claims it — delivered,
+ *  which is the pair `state/tools/machine.ts` makes of it in one call. */
+function wheel(x: number, y: number, dy: number, mods?: Partial<PointerSample>): boolean {
+  const sample = at(x, y, mods);
+  if (!tool.claimsWheel(sample, ctx)) return false;
+  tool.handle({ kind: "wheel", at: sample, dy }, ctx);
+  return true;
 }
 
 function lastPoses(): Map<string, WritePose> {
@@ -237,6 +255,17 @@ beforeEach(() => {
           settle: new Map(settle),
         });
       },
+      // The four slack writes (DESIGN section 3.4's editing table). The scaling
+      // pair carries a factor rather than a value on purpose — see
+      // `crdt/ops/strings.ts`.
+      setNodeSlack: (stringId, nodeId, slack) =>
+        writes.push({ kind: "nodeSlack", stringId, nodeId, slack }),
+      scaleNodeSlack: (stringId, nodeId, factor) =>
+        writes.push({ kind: "scaleNode", stringId, nodeId, factor }),
+      setStringSlack: (stringIds, slack) =>
+        writes.push({ kind: "stringSlack", stringIds: [...stringIds], slack }),
+      scaleStringSlack: (stringIds, factor) =>
+        writes.push({ kind: "scaleString", stringIds: [...stringIds], factor }),
     },
   };
 });
@@ -1347,7 +1376,7 @@ describe("pulling a pin out of a string", () => {
   ): void {
     scene.strings.set(id, {
       id,
-      nodes: pins.map((pin) => ({ pin, slackAfter: SLACK })),
+      nodes: pins.map((pin, i) => ({ nodeId: `${id}-n${i}`, pin, slackAfter: SLACK })),
       color: "#a8322c",
       thickness: 3,
       material: "string",
@@ -1833,5 +1862,389 @@ describe("moving a pin between items that hang", () => {
 
     expect(writes.some((w) => w.kind === "string")).toBe(true);
     expect(stringSettles[0]!.get("a")).toEqual(pose);
+  });
+});
+
+/**
+ * Slack controls — DESIGN section 3.4's editing table, and section 3.9's
+ * "1-9 slack presets · Alt+wheel whole-string slack".
+ *
+ * The interesting half of this is not the arithmetic, which lives in
+ * `lib/slack.ts` and `crdt/ops/strings.ts`. It is the routing: the wheel is the
+ * one input the camera and the board both want, and most of what follows is
+ * really asking *which of them gets this notch*. `claimsWheel` is that answer —
+ * the camera calls it — and `wheel()` stands in for the pair of calls
+ * `state/tools/machine.ts` makes of it, returning whether the board took it.
+ */
+describe("slack controls", () => {
+  const SLACK = 0.2;
+
+  /** A run of pins along y=0, 200 apart, with a string through them and its
+   *  gaps addressable by node id the way the binding leaves them. */
+  function run(...slacks: number[]): void {
+    const count = Math.max(2, slacks.length);
+    for (let i = 0; i < count; i++) putPin(`p${i}`, null, i * 200, 0);
+    scene.strings.set("s", {
+      id: "s",
+      nodes: Array.from({ length: count }, (_, i) => ({
+        nodeId: `n${i}`,
+        pin: `p${i}`,
+        slackAfter: slacks[i] ?? SLACK,
+      })),
+      color: "#a8322c",
+      thickness: 3,
+      material: "string",
+      layer: "over",
+      closed: false,
+    });
+  }
+
+  /** Two pins 200 apart with one gap between them. */
+  function span(...slacks: number[]): void {
+    run(...(slacks.length > 0 ? slacks : [SLACK, SLACK]));
+  }
+
+  function lastWrite(): Write {
+    const write = writes[writes.length - 1];
+    if (!write) throw new Error("nothing was written");
+    return write;
+  }
+
+  /** Move the whole run a long way off, so nothing is under the cursor any
+   *  more — a pin dragged, the sag letting out, it makes no difference which. */
+  function moveStringAway(): void {
+    for (const pin of scene.pins.values()) pin.wy = 900;
+  }
+
+  describe("the wheel over a segment", () => {
+    /**
+     * > | Adjust one segment | Wheel over a **selected** segment | Slack up or
+     * > down; the sag responds live | — DESIGN section 3.4
+     *
+     * Selection is what disambiguates this from a zoom. Without it every wheel
+     * notch near a string would stop zooming the board, which is by far the
+     * more common thing to want to do near a string.
+     */
+    it("adjusts the gap under the cursor when its string is selected", () => {
+      span();
+      selection.replaceStrings(["s"]);
+      expect(wheel(100, 0, -100)).toBe(true);
+      const write = lastWrite();
+      expect(write.kind).toBe("scaleNode");
+      if (write.kind !== "scaleNode") return;
+      expect(write.stringId).toBe("s");
+      expect(write.nodeId).toBe("n0");
+      // Away from the user is more sag, which is the sign the zoom already uses
+      // for "more" on this board (Q-14).
+      expect(write.factor).toBeGreaterThan(1);
+    });
+
+    it("runs the other way when the wheel does", () => {
+      span();
+      selection.replaceStrings(["s"]);
+      wheel(100, 0, 100);
+      const write = lastWrite();
+      expect(write.kind === "scaleNode" && write.factor).toBeLessThan(1);
+    });
+
+    /** The camera's, and the tool must not even hear about it. */
+    it("leaves the notch to the camera when the string is not selected", () => {
+      span();
+      expect(wheel(100, 0, -100)).toBe(false);
+      expect(writes).toEqual([]);
+    });
+
+    it("leaves the notch to the camera over bare cork", () => {
+      span();
+      selection.replaceStrings(["s"]);
+      expect(wheel(600, 400, -100)).toBe(false);
+      expect(writes).toEqual([]);
+    });
+
+    /** `Ctrl`+wheel is a zoom on every engine and is what a trackpad pinch
+     *  synthesises, so it is never the board's however well it is aimed. */
+    it("leaves Ctrl+wheel to the camera even over a selected segment", () => {
+      span();
+      selection.replaceStrings(["s"]);
+      expect(wheel(100, 0, -100, { ctrl: true })).toBe(false);
+      expect(writes).toEqual([]);
+    });
+
+    /** The gesture in progress is what the pointer is doing; a wheel arriving
+     *  mid-drag belongs to the camera. */
+    it("leaves the notch to the camera during a drag", () => {
+      span();
+      selection.replaceStrings(["s"]);
+      put("a", 600, 600);
+      const from = camera.boardToScreen(600, 600);
+      down(from.x, from.y);
+      move(from.x + 40, from.y);
+      writes.length = 0;
+      expect(wheel(100, 0, -100)).toBe(false);
+      expect(writes.every((w) => w.kind !== "scaleNode")).toBe(true);
+    });
+
+    /**
+     * Which gap, not just which string. A three-pin run has two of them and the
+     * wheel means the one the cursor is over.
+     */
+    it("picks the gap the cursor is actually over", () => {
+      run(SLACK, SLACK, SLACK);
+      selection.replaceStrings(["s"]);
+      wheel(300, 0, -100);
+      const write = lastWrite();
+      expect(write.kind === "scaleNode" && write.nodeId).toBe("n1");
+    });
+  });
+
+  /**
+   * The latch, which exists because the gesture would otherwise eat itself.
+   *
+   * Rolling slack *up* lets the rope droop, and the rope drooping is the rope
+   * leaving the eight screen pixels either side of the cursor that made it
+   * grabbable. Without a latch the board would stop claiming the wheel somewhere
+   * mid-roll and the camera would start zooming instead, which reads as the
+   * application having lost its mind.
+   */
+  describe("a roll in progress", () => {
+    it("keeps the gap it started on after the sag has moved out from under the cursor", () => {
+      span();
+      selection.replaceStrings(["s"]);
+      expect(wheel(100, 0, -100)).toBe(true);
+      moveStringAway();
+      writes.length = 0;
+
+      expect(wheel(100, 0, -100)).toBe(true);
+      expect(lastWrite()).toMatchObject({ kind: "scaleNode", nodeId: "n0" });
+    });
+
+    it("lets go once the wheel stops, and the camera has it again", () => {
+      span();
+      selection.replaceStrings(["s"]);
+      wheel(100, 0, -100);
+      moveStringAway();
+      // A quarter of a second of no notches ends the roll.
+      for (let i = 0; i < 20; i++) tick(16);
+      expect(wheel(100, 0, -100)).toBe(false);
+    });
+
+    it("holds on across the frames of a continuous roll", () => {
+      span();
+      selection.replaceStrings(["s"]);
+      wheel(100, 0, -100);
+      moveStringAway();
+      for (let i = 0; i < 30; i++) {
+        tick(16);
+        expect(wheel(100, 0, -100)).toBe(true);
+      }
+    });
+
+    it("lets go when the string it was holding is deselected", () => {
+      span();
+      selection.replaceStrings(["s"]);
+      wheel(100, 0, -100);
+      moveStringAway();
+      selection.clear();
+      expect(wheel(100, 0, -100)).toBe(false);
+    });
+
+    it("lets go when a collaborator cuts the string mid-roll", () => {
+      span();
+      selection.replaceStrings(["s"]);
+      wheel(100, 0, -100);
+      moveStringAway();
+      scene.strings.delete("s");
+      expect(wheel(100, 0, -100)).toBe(false);
+    });
+
+    it("lets go when the tool is switched away from", () => {
+      span();
+      selection.replaceStrings(["s"]);
+      wheel(100, 0, -100);
+      tool.cancel(ctx);
+      selection.replaceStrings(["s"]);
+      moveStringAway();
+      expect(wheel(100, 0, -100)).toBe(false);
+    });
+  });
+
+  /**
+   * > | Adjust the whole string | `Alt`+wheel | All segments together |
+   * > — DESIGN section 3.4
+   *
+   * Unlike the per-segment case it asks nothing about where the cursor is, and
+   * that is the whole difference between the two: one needs aiming and one does
+   * not.
+   */
+  describe("Alt+wheel", () => {
+    it("scales the whole selected string from anywhere on the board", () => {
+      span();
+      selection.replaceStrings(["s"]);
+      expect(wheel(900, 700, -100, { alt: true })).toBe(true);
+      const write = lastWrite();
+      expect(write.kind).toBe("scaleString");
+      if (write.kind !== "scaleString") return;
+      expect(write.stringIds).toEqual(["s"]);
+      expect(write.factor).toBeGreaterThan(1);
+    });
+
+    /** Scaled, never set: a run that has had a pin pulled out of its middle has
+     *  deliberately unequal gaps and `Alt`+wheel must not flatten them. */
+    it("never sets the whole string to one value", () => {
+      span(0.05, 0.5);
+      selection.replaceStrings(["s"]);
+      wheel(900, 700, -100, { alt: true });
+      expect(writes.every((w) => w.kind !== "stringSlack")).toBe(true);
+    });
+
+    it("leaves the notch to the camera when no string is selected", () => {
+      span();
+      expect(wheel(100, 0, -100, { alt: true })).toBe(false);
+      expect(writes).toEqual([]);
+    });
+
+    /** The modifier is read once, at the start of the roll, like the handle a
+     *  drag took hold of — so letting go of Alt mid-roll does not switch to the
+     *  segment under the cursor half way through. */
+    it("stays a whole-string roll once it has started", () => {
+      span();
+      selection.replaceStrings(["s"]);
+      wheel(900, 700, -100, { alt: true });
+      writes.length = 0;
+      expect(wheel(100, 0, -100)).toBe(true);
+      expect(lastWrite().kind).toBe("scaleString");
+    });
+  });
+
+  /**
+   * > | Slack presets | `1`-`9` with a string selected | Taut through to
+   * > heavily draped | — DESIGN section 3.4
+   */
+  describe("the 1-9 presets", () => {
+    it("sets every gap of the selected string to the preset", () => {
+      span();
+      selection.replaceStrings(["s"]);
+      key("Digit1");
+      const write = lastWrite();
+      expect(write.kind).toBe("stringSlack");
+      if (write.kind !== "stringSlack") return;
+      expect(write.stringIds).toEqual(["s"]);
+      expect(write.slack).toBe(presetSlack(1));
+    });
+
+    it("walks the ladder from taut to heavily draped", () => {
+      span();
+      selection.replaceStrings(["s"]);
+      for (const n of [1, 5, 9]) key(`Digit${n}`);
+      const ladder = writes
+        .filter((w): w is Extract<Write, { kind: "stringSlack" }> => w.kind === "stringSlack")
+        .map((w) => w.slack);
+      expect(ladder).toEqual([presetSlack(1), presetSlack(5), presetSlack(9)]);
+      expect(ladder[0]).toBeLessThan(ladder[1]!);
+      expect(ladder[1]).toBeLessThan(ladder[2]!);
+    });
+
+    it("takes the numpad too, since it is the same key by code", () => {
+      span();
+      selection.replaceStrings(["s"]);
+      key("Numpad7");
+      expect(lastWrite()).toMatchObject({ kind: "stringSlack", slack: presetSlack(7) });
+    });
+
+    it("does nothing with no string selected", () => {
+      span();
+      put("a", 0, 0);
+      selection.replace(["a"]);
+      key("Digit4");
+      expect(writes).toEqual([]);
+    });
+
+    /** `Digit0` is only ever seen here as half of the camera's `Ctrl`+`0`, and
+     *  the ladder is nine wide. */
+    it("ignores 0 and anything that is not a digit", () => {
+      span();
+      selection.replaceStrings(["s"]);
+      key("Digit0");
+      key("KeyG");
+      expect(writes).toEqual([]);
+    });
+
+    /** `Ctrl`+`1` is the camera's actual-size shortcut. The machine filters it
+     *  out, but a tool that acted on it anyway would be a bug waiting for the
+     *  day something else forwards a key. */
+    it("ignores a digit with Ctrl held", () => {
+      span();
+      selection.replaceStrings(["s"]);
+      key("Digit3", { ctrl: true });
+      expect(writes).toEqual([]);
+    });
+  });
+
+  /**
+   * > | Toggle taut | Double-click a segment | Snaps between taut and default
+   * > slack | — DESIGN section 3.4
+   */
+  describe("double-clicking a segment", () => {
+    /** The first click of the double has already selected the string, so the
+     *  toggle and the selection are the same two presses. */
+    function doubleClick(x: number, y: number): void {
+      down(x, y);
+      up(x, y);
+      downAgain(x, y);
+      up(x, y);
+    }
+
+    it("snaps a slack segment taut", () => {
+      span();
+      doubleClick(100, 0);
+      const write = lastWrite();
+      expect(write.kind).toBe("nodeSlack");
+      if (write.kind !== "nodeSlack") return;
+      expect(write.stringId).toBe("s");
+      expect(write.nodeId).toBe("n0");
+      expect(write.slack).toBe(MIN_SLACK);
+    });
+
+    it("snaps a taut segment back to the default", () => {
+      span(MIN_SLACK, MIN_SLACK);
+      doubleClick(100, 0);
+      expect(lastWrite()).toMatchObject({ kind: "nodeSlack", slack: DEFAULT_SLACK });
+    });
+
+    it("selects the string as well, which the first click did", () => {
+      span();
+      doubleClick(100, 0);
+      expect([...selection.strings]).toEqual(["s"]);
+    });
+
+    /** One gap, not the run: the design says segment, and a three-pin string
+     *  with one taut leg is a thing people want. */
+    it("toggles only the segment under the cursor", () => {
+      run(SLACK, SLACK, SLACK);
+      doubleClick(300, 0);
+      expect(lastWrite()).toMatchObject({ kind: "nodeSlack", nodeId: "n1" });
+      expect(writes.every((w) => w.kind !== "stringSlack")).toBe(true);
+    });
+
+    /**
+     * The reason the flag is acted on at the release rather than at the press.
+     * Pressing twice on a string and *then* pulling means pull a loop out of it
+     * — the headline gesture — and not that as well as a toggle.
+     */
+    it("is a loop pull, not a toggle, when the second press drags", () => {
+      span();
+      selection.replaceStrings(["s"]);
+      downAgain(100, 0);
+      move(100, 40);
+      up(100, 40);
+      expect(writes.some((w) => w.kind === "insert")).toBe(true);
+      expect(writes.every((w) => w.kind !== "nodeSlack")).toBe(true);
+    });
+
+    it("does nothing on bare cork", () => {
+      span();
+      doubleClick(600, 400);
+      expect(writes).toEqual([]);
+    });
   });
 });

@@ -24,9 +24,14 @@ import {
   appendStringNode,
   createString,
   deleteStrings,
+  scaleNodeSlack,
+  scaleStringSlack,
+  setNodeSlack,
   setStringSlack,
   setStringStyle,
 } from "@/crdt/ops/strings";
+import { MIN_SLACK, readString, type YMap } from "@/crdt/schema";
+import { presetSlack } from "@/lib/slack";
 import { UndoHistory } from "@/crdt/undo";
 import { RopeSet } from "@/sim/ropes";
 import { DirtySets } from "@/state/dirty";
@@ -138,7 +143,7 @@ describe("editing a string", () => {
     frame();
     const before = ropes.boundsOf(id, { ...box })!.maxY;
 
-    setStringSlack(board, id, 0.6);
+    setStringSlack(board, [id], 0.6);
     frame();
     expect(ropes.awake).toBe(1);
 
@@ -268,5 +273,159 @@ describe("a whole board being restored", () => {
     expect(ropes.size).toBe(1);
     expect(ropes.awake).toBe(0);
     expect(pointsOf(keep)[0]).toEqual([0, 0]);
+  });
+});
+
+/**
+ * The slack controls, end to end — DESIGN section 3.4.
+ *
+ * The chain a wheel notch travels is long and every link is somebody else's
+ * module: the tool names a gap by node id, the op writes it, the binding
+ * mirrors the run, and `RopeSet.sync` decides whether that was a topology change
+ * or a slack change. These are the joins, which is the one thing no unit test
+ * either side of them can see.
+ */
+describe("slack controls end to end", () => {
+  /**
+   * The addressing chain. `setNodeSlack` names a gap by the id of the node it
+   * starts at rather than by index — an index read on one frame and written on
+   * the next is one a concurrent insert may have moved — and the only way a tool
+   * can know that id is if the mirror carries it.
+   */
+  it("mirrors the node ids a slack edit has to address gaps by", () => {
+    const [a, b] = twoPins();
+    const id = createString(board, { pins: [a, b], slack: 0.2 })!;
+    frame();
+
+    const authored = readString(id, board.strings.get(id) as YMap)!;
+    const mirrored = scene.strings.get(id)!;
+    expect(mirrored.nodes.map((n) => n.nodeId)).toEqual(authored.nodes.map((n) => n.nodeId));
+    expect(mirrored.nodes[0]!.nodeId).not.toBe(mirrored.nodes[1]!.nodeId);
+  });
+
+  it("adjusts the gap the id names, through the mirror and into the rope", () => {
+    const [a, b] = twoPins();
+    const c = createPin(board, { parent: null, lx: 400, ly: 0 });
+    const id = createString(board, { pins: [a, b, c], slack: 0.1 })!;
+    frame(3);
+    const gaps = scene.strings.get(id)!.nodes.map((n) => n.nodeId);
+
+    scaleNodeSlack(board, id, gaps[1]!, 4);
+    frame();
+    expect(scene.strings.get(id)!.nodes[0]!.slackAfter).toBeCloseTo(0.1, 12);
+    expect(scene.strings.get(id)!.nodes[1]!.slackAfter).toBeCloseTo(0.4, 12);
+
+    // And it is the far half of the run that drops, not the near one.
+    for (let i = 0; i < 400 && ropes.awake > 0; i++) frame();
+    const points = pointsOf(id);
+    const lowestNear = Math.max(...points.slice(0, points.length / 2).map(([, y]) => y));
+    const lowestFar = Math.max(...points.slice(points.length / 2).map(([, y]) => y));
+    expect(lowestFar).toBeGreaterThan(lowestNear + 10);
+  });
+
+  /**
+   * What one notch of the wheel actually does, which is the claim in
+   * DESIGN section 3.4's table: "slack up or down; **the sag responds live**".
+   *
+   * A notch is a 22% change in the ratio, and on a 200-unit chord at 20% slack
+   * that is about five board units of extra droop — enough to see, nowhere near
+   * enough to startle. The number is asserted loosely because what is being
+   * pinned down is the order of magnitude: a notch that moved the rope by a
+   * tenth of a pixel would read as the wheel being broken, and one that moved it
+   * fifty would read as the string being yanked.
+   */
+  it("moves the sag by a visible, proportionate amount for one notch", () => {
+    const [a, b] = twoPins();
+    const id = createString(board, { pins: [a, b], slack: 0.2 })!;
+    frame(3);
+    const before = pointsOf(id);
+
+    // The factor `state/tools/select.ts` produces for a single 100 px notch.
+    scaleNodeSlack(board, id, scene.strings.get(id)!.nodes[0]!.nodeId, Math.exp(0.2));
+    // > Wake on: ... a slack change — DESIGN section 5.3. Awake rather than
+    // re-seeded, and the distinction is not cosmetic: seeding a rope puts every
+    // particle on the new analytic catenary and marks it asleep *immediately*
+    // (section 5.3), so a rope that is awake at all is a rope that is moving to
+    // its new pose rather than having been placed at it.
+    frame();
+    expect(ropes.awake).toBe(1);
+
+    for (let i = 0; i < 400 && ropes.awake > 0; i++) frame();
+    const dropped = Math.max(...pointsOf(id).map(([, y], i) => y - before[i]![1]));
+    expect(dropped).toBeGreaterThan(2);
+    expect(dropped).toBeLessThan(15);
+  });
+
+  /**
+   * And why the wheel hands the document a *factor* rather than a value: notches
+   * compound. A tool that read the slack out of the scene and wrote back the
+   * product would read a frame-old number every time, so a steady roll would
+   * move the sag once and then keep re-deriving the same answer.
+   */
+  it("compounds a roll of the wheel into a real drape", () => {
+    const [a, b] = twoPins();
+    const id = createString(board, { pins: [a, b], slack: 0.2 })!;
+    frame(3);
+    const before = pointsOf(id);
+
+    const gap = scene.strings.get(id)!.nodes[0]!.nodeId;
+    for (let i = 0; i < 10; i++) {
+      scaleNodeSlack(board, id, gap, Math.exp(0.2));
+      frame();
+    }
+    expect(scene.strings.get(id)!.nodes[0]!.slackAfter).toBeCloseTo(0.2 * Math.exp(2), 9);
+
+    for (let i = 0; i < 400 && ropes.awake > 0; i++) frame();
+    const dropped = Math.max(...pointsOf(id).map(([, y], i) => y - before[i]![1]));
+    expect(dropped).toBeGreaterThan(60);
+  });
+
+  /** The `1`-`9` presets, which are the one slack verb that sets rather than
+   *  scales — and which therefore land every gap on the same value. */
+  it("flattens the run to one value for a preset, and only for a preset", () => {
+    const [a, b] = twoPins();
+    const c = createPin(board, { parent: null, lx: 400, ly: 0 });
+    const id = createString(board, { pins: [a, b, c], slack: [0.05, 0.4, 0.4] })!;
+    frame();
+
+    scaleStringSlack(board, [id], 2);
+    frame();
+    const scaled = scene.strings.get(id)!.nodes.map((n) => n.slackAfter);
+    expect(scaled[0]).toBeCloseTo(0.1, 12);
+    expect(scaled[1]).toBeCloseTo(0.8, 12);
+
+    setStringSlack(board, [id], presetSlack(9));
+    frame();
+    const preset = scene.strings.get(id)!.nodes.map((n) => n.slackAfter);
+    expect(preset[0]).toBeCloseTo(preset[1]!, 12);
+    expect(preset[0]).toBeCloseTo(presetSlack(9), 12);
+  });
+
+  /**
+   * Invariant 2 from the far end of the chain: no route the user has can put a
+   * rest length at or below the chord, where "the solver has no slack to absorb
+   * error and the rope jitters visibly" (DESIGN section 5.4).
+   */
+  it("cannot drive a gap to or below the minimum by any route", () => {
+    const [a, b] = twoPins();
+    const id = createString(board, { pins: [a, b], slack: 0.2 })!;
+    frame();
+    const gap = scene.strings.get(id)!.nodes[0]!.nodeId;
+
+    setNodeSlack(board, id, gap, -5);
+    setStringSlack(board, [id], 0);
+    setNodeSlack(board, id, gap, Number.NaN);
+    for (let i = 0; i < 50; i++) scaleNodeSlack(board, id, gap, 0.5);
+    scaleStringSlack(board, [id], 1e-12);
+    frame();
+
+    for (const node of scene.strings.get(id)!.nodes) {
+      expect(node.slackAfter).toBeGreaterThanOrEqual(MIN_SLACK);
+      expect(Number.isFinite(node.slackAfter)).toBe(true);
+    }
+    for (const [x, y] of pointsOf(id)) {
+      expect(Number.isFinite(x)).toBe(true);
+      expect(Number.isFinite(y)).toBe(true);
+    }
   });
 });

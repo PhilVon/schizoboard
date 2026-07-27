@@ -60,6 +60,7 @@
 import * as Y from "yjs";
 
 import { freshId, mutate, type BoardDoc } from "@/crdt/doc";
+import { DEFAULT_SLACK } from "@/lib/slack";
 import { newId } from "@/crdt/ids";
 import { writePoses, type Pose } from "@/crdt/ops/items";
 import { buildPin } from "@/crdt/ops/pins";
@@ -75,12 +76,17 @@ import {
 /**
  * The slack a string gets when nobody has said otherwise.
  *
- * > Typical range is 0.05 to 0.3. — DATA-MODEL section 5.2
+ * Re-exported rather than declared, because `state/tools/select.ts` needs the
+ * same number — a double-click on a segment "snaps between taut and default
+ * slack" (DESIGN section 3.4) — and a tool may not import `crdt/`. So the
+ * definition sits in `lib/slack.ts`, which anything may import, and this is the
+ * name the ops and their tests have always known it by.
  *
- * Near the bottom of that: a new string should read as a line drawn between
- * two things with a little weight in it, and the drape is something you add.
+ * The other direction round from `MIN_SLACK`, which `lib/slack.ts` mirrors from
+ * `crdt/schema.ts` under test rather than importing; `lib/slack.ts` says why the
+ * two constants are not the same kind of thing.
  */
-export const DEFAULT_SLACK = 0.12;
+export { DEFAULT_SLACK };
 
 /**
  * Invariant 2, enforced on the way in.
@@ -413,13 +419,122 @@ export function setNodeSlack(
   });
 }
 
-/** Set every gap at once — `Alt`+wheel, and the `1`-`9` presets. */
-export function setStringSlack(board: BoardDoc, stringId: string, slack: number): void {
+/**
+ * Multiply one gap's slack — the wheel over a segment (DESIGN section 3.4).
+ *
+ * A factor rather than a value, which is not merely symmetry with
+ * `scaleStringSlack` below. The alternative is the tool reading the current
+ * slack out of the scene mirror and writing back the product, and a tool's
+ * writes are queued to phase 9: the read is one frame older than the write every
+ * time, so a roll of the wheel would be a run of edits each computed from a
+ * value the previous one had already replaced. Rolling steadily would move the
+ * sag by one notch and then stop. Handing over the factor and letting the
+ * document compound it is the only version that adds up.
+ *
+ * It buys nothing at all against a *peer* rolling the same wheel, and it is
+ * worth being clear about that: this writes an absolute `slackAfter` in the end,
+ * and a `Y.Map` field is last-write-wins, so two people adjusting one gap at
+ * once converge on one of the two answers rather than on the product. That is
+ * the right resolution for a scalar — the alternative is a gap whose slack is
+ * neither person's — and it is why the concurrency D-5 worries about is
+ * insertion rather than adjustment.
+ */
+export function scaleNodeSlack(
+  board: BoardDoc,
+  stringId: string,
+  nodeId: string,
+  factor: number,
+): void {
+  if (!Number.isFinite(factor) || factor <= 0) return;
   mutate(board, Origin.LOCAL_USER, () => {
     const nodes = nodesOf(board, stringId);
     if (!nodes) return;
+    for (const node of nodes) {
+      if (node.get("nodeId") !== nodeId) continue;
+      const current = node.get("slackAfter");
+      node.set(
+        "slackAfter",
+        clampSlack((typeof current === "number" ? current : DEFAULT_SLACK) * factor),
+      );
+      return;
+    }
+  });
+}
+
+/**
+ * Set every gap of every one of these strings to the same value — the `1`-`9`
+ * presets (DESIGN section 3.4).
+ *
+ * Absolute rather than relative, and uniform, because that is what a preset
+ * *is*: pressing `1` means taut, whatever the run happened to look like before,
+ * and pressing it twice means the same thing twice. It is also the one verb here
+ * that deliberately discards the unequal ratios a mid-string split left behind
+ * — see `scaleStringSlack` for the one that must not.
+ *
+ * Takes a run of ids so that a preset applied to a multiple selection is one
+ * transaction and therefore one undo entry.
+ *
+ * An array and not the `Iterable<string>` that `setStringStyle` and
+ * `deleteStrings` take, because a bare string id *is* an `Iterable<string>` — of
+ * its own characters — so `setStringSlack(board, id, 0.5)` type-checks and then
+ * quietly looks up three strings called `"s"`, `"1"` and `"2"`. An array rejects
+ * it where it is written instead.
+ */
+export function setStringSlack(
+  board: BoardDoc,
+  stringIds: readonly string[],
+  slack: number,
+): void {
+  mutate(board, Origin.LOCAL_USER, () => {
     const value = clampSlack(slack);
-    for (const node of nodes) node.set("slackAfter", value);
+    for (const stringId of stringIds) {
+      const nodes = nodesOf(board, stringId);
+      if (!nodes) continue;
+      for (const node of nodes) node.set("slackAfter", value);
+    }
+  });
+}
+
+/**
+ * Multiply every gap of every one of these strings — `Alt`+wheel.
+ *
+ * > | Adjust the whole string | `Alt`+wheel | All segments together |
+ * > — DESIGN section 3.4
+ *
+ * "Together" is the word that makes this a different op from `setStringSlack`
+ * rather than a caller of it. A run that has had a pin pulled out of its middle
+ * has deliberately unequal ratios — `lib/slack.ts`'s split gives the short
+ * chord the large ratio and the long one the small, which is what stops the sag
+ * jumping at the instant of insertion — and setting them all to one value would
+ * throw that away on the first notch of the wheel. Scaling adds drape to the
+ * whole run and leaves its shape alone.
+ *
+ * A factor rather than a set of values because slack is a ratio and no geometry
+ * is involved: unlike the split, this needs no chords, so there is nothing here
+ * for the caller to compute and no reason for `crdt/` to be handed a map.
+ *
+ * The clamp bites asymmetrically and that is correct rather than merely
+ * tolerable: scaling a run down far enough pins its slackest gaps to the floor
+ * along with its tightest, so scaling back up does not restore the shape. There
+ * is no more string to pay back out — the run went taut, which is a thing that
+ * happens to real string and is not recoverable by turning the wheel the other
+ * way either.
+ */
+export function scaleStringSlack(
+  board: BoardDoc,
+  stringIds: readonly string[],
+  factor: number,
+): void {
+  if (!Number.isFinite(factor) || factor <= 0) return;
+  mutate(board, Origin.LOCAL_USER, () => {
+    for (const stringId of stringIds) {
+      const nodes = nodesOf(board, stringId);
+      if (!nodes) continue;
+      for (const node of nodes) {
+        const current = node.get("slackAfter");
+        node.set("slackAfter", clampSlack((typeof current === "number" ? current : DEFAULT_SLACK) * factor));
+      }
+    }
   });
 }
 

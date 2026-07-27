@@ -99,8 +99,8 @@ function string(id: string, a: string, b: string, style: Partial<StringNodes> = 
   scene.strings.set(id, {
     id,
     nodes: [
-      { pin: a, slackAfter: 0.2 },
-      { pin: b, slackAfter: 0.2 },
+      { nodeId: `${id}-n0`, pin: a, slackAfter: 0.2 },
+      { nodeId: `${id}-n1`, pin: b, slackAfter: 0.2 },
     ],
     color: "#a8322c",
     thickness: 3,
