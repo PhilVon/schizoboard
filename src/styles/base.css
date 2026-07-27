@@ -296,9 +296,18 @@ body {
   cursor: default;
 }
 
+/*
+ * Focus and hover are a halo *outside* the chip, never a border.
+ *
+ * Because the border is already saying something else — see `.menu-on` — and
+ * on a strip of six swatches a focus ring that looked like the current-value
+ * ring would read as two colours being current at once. Different shape, not
+ * a different shade of the same shape: a shade is a comparison the eye has to
+ * make between two chips it cannot see side by side.
+ */
 .menu-chip:hover,
 .menu-chip:focus {
-  border-color: rgba(255, 255, 255, 0.3);
+  box-shadow: 0 0 0 2px rgba(232, 222, 210, 0.26);
   outline: none;
 }
 
