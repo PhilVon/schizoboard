@@ -34,7 +34,26 @@ export interface HudStats {
   items: number;
   /** Items the renderer is actually presenting — the gap is culling. */
   mounted: number;
+  /**
+   * Ink canvases that exist, and the device pixels they hold between them.
+   *
+   * The count is the only place off-screen eviction is observable: pan an
+   * annotated photograph away and it falls, pan back and it returns (DESIGN
+   * section 9.3). The pixels are the memory that sizing a canvas in
+   * power-of-two steps can run up — a 300-unit stroke at four times zoom rounds
+   * to a 2048-square backing store — and they are here so that a decision to
+   * deviate from that sizing can be made off a number rather than off a hunch.
+   */
+  inked: number;
+  inkPixels: number;
 }
+
+/**
+ * Ink held, past which the sizing is worth revisiting. Four canvases at the
+ * worst power-of-two rounding, which is the point at which "most items have no
+ * ink" has stopped being true of what is on screen.
+ */
+const INK_ALERT_PIXELS = 64 * 1024 * 1024;
 
 function formatBytes(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;
@@ -123,6 +142,13 @@ export class Hud {
     rows.push(this.stat("camera", `${Math.round(s.cameraX)}, ${Math.round(s.cameraY)}`));
     rows.push(this.stat("items", `${s.mounted} / ${s.items}`));
     rows.push(this.stat("awake", String(s.awakeParticles)));
+    rows.push(
+      this.stat(
+        "ink",
+        s.inked === 0 ? "0" : `${s.inked} · ${(s.inkPixels / 1e6).toFixed(1)} MP`,
+        s.inkPixels > INK_ALERT_PIXELS,
+      ),
+    );
     rows.push(this.stat("dom", String(this.domNodes)));
     rows.push(
       this.stat("doc", formatBytes(s.docBytes), s.docBytes > DOC_SIZE_ALERT_BYTES),

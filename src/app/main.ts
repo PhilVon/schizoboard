@@ -642,6 +642,8 @@ async function boot(): Promise<void> {
       docBytes,
       items: scene.size,
       mounted: items.mounted,
+      inked: items.inked,
+      inkPixels: items.inkPixels,
     };
   };
 
@@ -860,7 +862,20 @@ async function boot(): Promise<void> {
     applyCursor();
   });
 
-  // 6 INK  T-57
+  /**
+   * Phase 6. The committed ink, on each item's own canvas inside its rotated
+   * node.
+   *
+   * A phase of its own rather than part of the DOM phase above, because the two
+   * are woken by different things: that one writes a transform for everything
+   * that moved, this one fills a bitmap for the few items somebody drew on. A
+   * board where a photograph is being dragged runs the DOM phase every frame and
+   * this one never — which is the whole of what "ink inside the item's
+   * transform" buys (DESIGN section 6.2).
+   */
+  loop.on("ink", () => {
+    items.paintInk(scene, dirty);
+  });
 
   /**
    * Phase 7. Under first, then over, which is only a matter of taste — they are
