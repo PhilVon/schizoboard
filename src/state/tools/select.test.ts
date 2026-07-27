@@ -980,12 +980,13 @@ describe("deleting", () => {
 
     /** The one gesture that produces a selection of every kind at once, which
      *  is what made this bug ordinary rather than theoretical. */
-    it("splits a followed thread into the two writes it actually is", () => {
+    it("splits a followed thread into the three writes it actually is", () => {
       selection.replaceThread(["a"], ["s"], ["s-a"]);
       key("Delete");
       expect(writes).toEqual([
         { kind: "delete", ids: ["a"], keepPins: false },
         { kind: "deleteStrings", stringIds: ["s"] },
+        { kind: "unpin", ids: ["s-a"], settle: [] },
       ]);
     });
 
@@ -1001,15 +1002,73 @@ describe("deleting", () => {
       ]);
     });
 
-    /** What `Delete` should mean for a pin - and especially what
-     *  `Shift`+`Delete` should - is a question nothing has answered yet, and
-     *  answering it by accident inside the keystroke that deletes photographs
-     *  is how you lose a board. `Alt`+click removes a pin today. */
-    it("leaves a pin-only selection alone, selection included", () => {
+    /** Q-24. The strings through it heal, which is the op's cascade and the
+     *  same one `Alt`+click reaches. */
+    it("removes a selected pin", () => {
       selection.replaceThread([], [], ["s-a"]);
       key("Delete");
+      expect(writes).toEqual([{ kind: "unpin", ids: ["s-a"], settle: [] }]);
+      expect(selection.isEmpty).toBe(true);
+    });
+
+    /**
+     * An item hanging by the pin about to go is drawn at `rot + swing` about a
+     * shifted centre, and neither transient is in the document — so without
+     * this the paper snaps back to an angle nobody chose the instant the pin
+     * leaves. The same map `Alt`+click and the pin context menu send.
+     */
+    it("settles an item that was hanging by the pin it takes", () => {
+      put("hung", 0, 0);
+      putPin("only", "hung", 0, 0);
+      const slot = scene.slotOf("hung")!;
+      scene.swing[slot] = 0.25;
+      selection.replaceThread([], [], ["only"]);
+      key("Delete");
+      expect(writes).toEqual([
+        { kind: "unpin", ids: ["only"], settle: [["hung", { x: 0, y: 0, rot: expect.closeTo(0.25) }]] },
+      ]);
+    });
+
+    /**
+     * `Shift` means "keep the pins" for the whole selection, not only for the
+     * item cascade. On a followed thread the selected pins *are* the items'
+     * pins, so a `Shift` that reached the cascade alone would delete every one
+     * of them anyway and the modifier would be a lie exactly where it matters.
+     */
+    it("keeps every pin on Shift+Delete, including the ones in the selection", () => {
+      selection.replaceThread(["a"], ["s"], ["s-a"]);
+      key("Delete", { shift: true });
+      expect(writes).toEqual([
+        { kind: "delete", ids: ["a"], keepPins: true },
+        { kind: "deleteStrings", stringIds: ["s"] },
+      ]);
+    });
+
+    /** Which leaves one contradiction with nowhere to go: "delete these pins,
+     *  but keep the pins". Nothing happens, and the selection stays. */
+    it("does nothing on Shift+Delete over a selection of nothing but pins", () => {
+      selection.replaceThread([], [], ["s-a"]);
+      key("Delete", { shift: true });
       expect(writes).toEqual([]);
       expect(selection.pins.has("s-a")).toBe(true);
+    });
+
+    /**
+     * A pin its own item is about to take with it. `deleteItems` cascades to
+     * it, so naming it again would be a write against something already gone —
+     * and worse, the settle would carry a pose for a deleted item, which in a
+     * CRDT is how you bring one back.
+     */
+    it("does not name a pin the item cascade is already taking", () => {
+      put("hung", 0, 0);
+      putPin("its-own", "hung", 0, 0);
+      putPin("free", null, 500, 500);
+      selection.replaceThread(["hung"], [], ["its-own", "free"]);
+      key("Delete");
+      expect(writes).toEqual([
+        { kind: "delete", ids: ["hung"], keepPins: false },
+        { kind: "unpin", ids: ["free"], settle: [] },
+      ]);
     });
   });
 });

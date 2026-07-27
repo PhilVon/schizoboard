@@ -1440,21 +1440,48 @@ export class SelectTool implements Tool {
          * references them, and D-1 is why a reference never owned them — so
          * deleting one is unconditional and the modifier does not reach it.
          *
-         * Selected *pins* are still left alone. `Alt`+click removes a pin
-         * today; what `Delete` and especially `Shift`+`Delete` should mean for
-         * one is a question nothing has answered, and answering it by accident
-         * inside the keystroke that also deletes photographs is how you lose a
-         * board.
+         * Three writes now (Q-24): a selected *pin* goes too, and the strings
+         * through it heal, which is `Alt`+click's cascade reached by the key
+         * that deletes everything else. It waited for an answer because a
+         * double-click on a hub pin selects a whole connected component, so one
+         * keystroke can take a web apart — but a selection that quietly ignores
+         * one of the three kinds it holds is the same bug T-121 fixed for
+         * strings, and it was the more surprising of the two.
+         *
+         * `Shift` therefore means "keep the pins" for the *whole* selection and
+         * not only for the item cascade. Otherwise it would be a lie exactly
+         * where it is most needed: on a followed thread the selected pins **are**
+         * the items' pins, so applying it to the cascade alone would delete
+         * every one of them anyway and the modifier would do nothing visible.
+         * The cost is that `Shift`+`Delete` on a selection of nothing but pins
+         * is a no-op — "delete these, but keep them" has no other answer.
          */
         const items = ctx.selection.toArray();
         const strings = [...ctx.selection.strings];
-        if (items.length === 0 && strings.length === 0) return;
+        /**
+         * Not the pins an item is about to take with it: `deleteItems` cascades
+         * to them (DESIGN section 3.8), so naming them here would be a second
+         * write against something already gone — and the pose in `settleOnUnpin`
+         * would name a deleted item, which in a CRDT is how you resurrect one.
+         */
+        const doomed = new Set(items);
+        const pins = input.shift
+          ? []
+          : [...ctx.selection.pins].filter((id) => {
+              const parent = ctx.scene.pins.get(id)?.parent ?? null;
+              return parent === null || !doomed.has(parent);
+            });
+        if (items.length === 0 && strings.length === 0 && pins.length === 0) return;
         ctx.selection.clear();
         for (const id of items) this.animating.delete(id);
         // Shift+Delete keeps the pins: "the string web keeps its shape with a
         // hole where the evidence was" (DESIGN section 3.8).
         if (items.length > 0) ctx.write.deleteItems(items, input.shift);
         if (strings.length > 0) ctx.write.deleteStrings(strings);
+        // The settle is the same one `Alt`+click and the pin menu send, and for
+        // the same reason: an item hanging by a pin about to go is drawn at an
+        // angle the document has never held.
+        if (pins.length > 0) ctx.write.deletePins(pins, settleOnUnpin(ctx.scene, pins));
         return;
       }
 
