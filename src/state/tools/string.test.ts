@@ -109,6 +109,7 @@ beforeEach(() => {
     // The string tool builds runs from clicks; grabbing an existing one in the
     // middle belongs to the select tool.
     hitString: () => null,
+    pluck: () => {},
     write: {
       setPoses: () => {},
       setSizes: () => {},

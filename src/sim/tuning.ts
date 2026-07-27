@@ -159,3 +159,25 @@ export const ROPE_ITERATIONS = 2;
  */
 export const ROPE_SLEEP_MOVE = 0.05;
 export const ROPE_SLEEP_STEPS = 12;
+
+/**
+ * A pluck: how hard, and how much of the rope feels it.
+ *
+ * > | Pluck | Click and release without dragging, on a taut string | A
+ * > travelling wave runs down it and damps out. Purely for joy
+ * > — DESIGN section 3.4
+ *
+ * Board units per second, like everything else here. A board unit is about
+ * half a millimetre (see `GRAVITY`), so 1600 is roughly 0.8 m/s — the speed a
+ * real string leaves your fingertip at, which is the number worth starting
+ * from even though the only thing that settles it is watching one.
+ *
+ * The reach is why it is a wave and not a spike. Kicking a single particle
+ * gives the solver a kink it clears in one pass, and nothing visible happens;
+ * kicking a few either side with a linear falloff gives it a *bump*, which is
+ * what propagates. Three either side is about a third of the particles on a
+ * short segment and a tenth of a long one, which is the right shape both ways:
+ * a pluck is a local event on a long rope and most of a short one.
+ */
+export const PLUCK_SPEED = 1600;
+export const PLUCK_REACH = 3;

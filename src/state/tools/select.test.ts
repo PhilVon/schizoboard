@@ -60,6 +60,7 @@ let writes: Write[];
 let placeSettles: Array<Map<string, WritePose>>;
 let stringSettles: Array<Map<string, WritePose>>;
 let held: Set<string>;
+let plucks: { stringId: string; x: number; y: number }[];
 let ctx: ToolContext;
 
 /** Insertion order is paint order, as it is in the real layer for equal z. */
@@ -219,6 +220,7 @@ beforeEach(() => {
   selection = new Selection();
   tool = new SelectTool();
   writes = [];
+  plucks = [];
   placeSettles = [];
   stringSettles = [];
   held = new Set<string>();
@@ -230,6 +232,9 @@ beforeEach(() => {
     hitTest,
     hitPin,
     hitString,
+    // Not a question: a pluck is transient physics and writes nothing, so it
+    // is recorded here rather than pushed onto `writes`.
+    pluck: (stringId, x, y) => plucks.push({ stringId, x, y }),
     held,
     write: {
       setPoses: (poses, phase) => writes.push({ kind: "poses", phase, poses: new Map(poses) }),
@@ -2280,6 +2285,81 @@ describe("slack controls", () => {
   });
 
   /**
+   * > | Pluck | Click and release without dragging, on a taut string | A
+   * > travelling wave runs down it and damps out. Purely for joy
+   * > — DESIGN section 3.4
+   *
+   * The wave is `sim/ropes.test.ts`. What is under test here is only which
+   * press asks for one, and the answer turns on a line four rows further up the
+   * same table — "a plain click without dragging selects the string instead".
+   * The two are not in competition: a click selects, and a click on a taut
+   * string also plucks.
+   */
+  describe("plucking", () => {
+    it("plucks a taut segment, at the point on it that was clicked", () => {
+      span(MIN_SLACK, MIN_SLACK);
+      down(100, 0);
+      up(100, 0);
+      expect(plucks).toHaveLength(1);
+      expect(plucks[0]!.stringId).toBe("s");
+      expect(plucks[0]!.x).toBeCloseTo(100, 0);
+    });
+
+    /** And selects it, which is the other half of the same click. */
+    it("selects it as well", () => {
+      span(MIN_SLACK, MIN_SLACK);
+      down(100, 0);
+      up(100, 0);
+      expect([...selection.strings]).toEqual(["s"]);
+    });
+
+    /** > on a taut string — a draped one has nothing to twang, and a wave in it
+     *  would be lost in the sag. */
+    it("does not pluck a slack one", () => {
+      span();
+      down(100, 0);
+      up(100, 0);
+      expect(plucks).toEqual([]);
+      expect([...selection.strings]).toEqual(["s"]);
+    });
+
+    /**
+     * Not on the second click of a double, because that one is the taut toggle
+     * and its whole job is to stop the segment being taut. A pluck there would
+     * shake a string on its way to going slack.
+     */
+    it("does not pluck on the click that toggles it slack", () => {
+      span(MIN_SLACK, MIN_SLACK);
+      down(100, 0);
+      up(100, 0);
+      expect(plucks).toHaveLength(1);
+      downAgain(100, 0);
+      up(100, 0);
+      expect(plucks).toHaveLength(1);
+      expect(lastWrite()).toMatchObject({ kind: "nodeSlack", slack: DEFAULT_SLACK });
+    });
+
+    /** A press that travelled is the headline gesture, not a click. */
+    it("does not pluck when the press turns into a loop pull", () => {
+      span(MIN_SLACK, MIN_SLACK);
+      down(100, 0);
+      move(100, 40);
+      up(100, 40);
+      expect(plucks).toEqual([]);
+    });
+
+    /** > Physics never writes to the document — DESIGN section 5.1. Nothing
+     *  about a pluck is durable, so a peer sees nothing and undo has nothing to
+     *  undo. */
+    it("writes nothing", () => {
+      span(MIN_SLACK, MIN_SLACK);
+      down(100, 0);
+      up(100, 0);
+      expect(writes).toEqual([]);
+    });
+  });
+
+  /**
    * > | Toggle taut | Double-click a segment | Snaps between taut and default
    * > slack | — DESIGN section 3.4
    */
@@ -2348,17 +2428,6 @@ describe("slack controls", () => {
   });
 });
 
-/**
- * > | Tuck behind | Context menu → *Tuck behind* | Flips `layer`; the string
- * > now runs behind items instead of over them — DESIGN section 3.4
- *
- * On `B` rather than that menu, which does not exist yet and which arrives with
- * the restyle verbs it shares — `select.ts` says why. What is under test here
- * is only the write: everything the flip then *does* was already built and is
- * proved elsewhere. `render/ropes/paint.test.ts` has the canvas filter, and
- * "cannot be grabbed through a photograph it is tucked behind" above has the
- * hit test.
- */
 /**
  * > | Follow the thread | Double-click | Selects the entire connected component
  * > of pins, strings and items | — DESIGN section 3.3

@@ -261,6 +261,27 @@ function seat(
 }
 
 /** `next = pos + (pos - prev) * damping + gravity * h^2`, interior only. */
+/**
+ * Give one particle some velocity, in board units per second.
+ *
+ * A position-based solver has no velocities to add to — the velocity of a
+ * particle *is* `pos - prev`, so an impulse is a displacement of where it came
+ * from. Which micro-step that difference is measured over is this module's
+ * business and nobody else's, which is why the conversion is here rather than
+ * at the call site: `sim/ropes.ts` decides which particles are plucked and
+ * which way, and does not need to know the solver substeps sixteen times.
+ *
+ * Added rather than assigned, because an impulse is an impulse: plucking a
+ * ringing string again makes it ring harder, which is what a string does.
+ *
+ * Only `prev` is touched: the particle stays exactly where it is and merely
+ * arrives there travelling.
+ */
+export function nudge(prev: Float64Array, i: number, vx: number, vy: number): void {
+  prev[i] = prev[i]! - vx * MICRO_H;
+  prev[i + 1] = prev[i + 1]! - vy * MICRO_H;
+}
+
 function integrate(pos: Float64Array, prev: Float64Array, at: number, last: number): void {
   for (let i = at + 2; i < last; i += 2) {
     const x = pos[i]!;

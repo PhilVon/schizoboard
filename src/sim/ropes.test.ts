@@ -247,6 +247,134 @@ describe("waking", () => {
   });
 });
 
+describe("plucking", () => {
+  /** > A travelling wave runs down it and damps out. Purely for joy.
+   *  > — DESIGN section 3.4 */
+  const TAUT = 0.01;
+
+  /** How far every particle sits from where it started, the largest first. */
+  function offsets(id: string, from: Array<[number, number]>): number[] {
+    return points(id)
+      .map(([x, y], i) => Math.hypot(x - from[i]![0], y - from[i]![1]))
+      .sort((a, b) => b - a);
+  }
+
+  it("shakes the rope, from a point on it", () => {
+    string("s1", TAUT);
+    frame(4);
+    const rest = points("s1");
+
+    expect(ropes.pluck("s1", 100, 0)).toBe(true);
+    frame(4);
+    expect(offsets("s1", rest)[0]).toBeGreaterThan(1);
+  });
+
+  /**
+   * Sideways, and downward.
+   *
+   * The impulse is perpendicular to the rope because a kick *along* it is
+   * absorbed by the first projection pass - the links resist stretching almost
+   * completely - so a lengthwise kick would move nothing at all.
+   *
+   * Down of the two perpendiculars, because a real string is released and falls
+   * through, and because choosing the side by the rope's own geometry rather
+   * than by where the cursor is means a click landing exactly *on* the string
+   * still has a direction.
+   *
+   * The particles also travel a comparable distance *along* the span, which is
+   * not a bug and is why this asserts the direction rather than a ratio: a taut
+   * rope bowing sideways has to draw its own length in from the ends, and at 1%
+   * slack there is very little to draw.
+   */
+  it("kicks the rope across itself, downward", () => {
+    string("s1", TAUT);
+    frame(4);
+    const rest = points("s1");
+    const mid = Math.floor(rest.length / 2);
+
+    ropes.pluck("s1", 100, 0);
+    // One frame, because that is how long the answer stays a direction: a rope
+    // this taut is through the middle and heading back up by the next one, and
+    // ringing is the point.
+    frame(1);
+    expect(points("s1")[mid]![1]).toBeGreaterThan(rest[mid]![1] + 1);
+  });
+
+  /**
+   * A bump, not a spike.
+   *
+   * Kicking one particle gives the solver a kink, and a kink is what a
+   * projection pass is *for* - it comes out as a small, fast ripple rather than
+   * as a wave. The tell is the shape of the crest one frame in: the seven
+   * particles the kick reaches should all have moved about as far as each
+   * other, where a single-particle kick leaves a peak with the rest of the rope
+   * trailing off behind it. Measured, that is a seventh-largest displacement at
+   * 90% of the largest here against 50% with the reach turned off.
+   */
+  it("kicks a run of particles rather than one", () => {
+    string("s1", TAUT);
+    frame(4);
+    const rest = points("s1");
+
+    ropes.pluck("s1", 100, 0);
+    // The kick lands on `prev`, so it is one step that turns it into motion.
+    frame(1);
+    const moved = offsets("s1", rest);
+    // Seven: PLUCK_REACH of 3 either side of the particle that was hit. A
+    // literal rather than the constant, so that retuning the reach makes
+    // somebody look at this number rather than making the test agree with
+    // itself whatever it is set to.
+    expect(moved[6]!).toBeGreaterThan(moved[0]! * 0.7);
+  });
+
+  /**
+   * > Physics never writes to the document. — DESIGN section 5.1
+   *
+   * And the corollary that matters here: a rope that has been plucked goes back
+   * to sleep on its own, so a board where somebody twanged a string ten minutes
+   * ago costs exactly what an untouched one does.
+   */
+  it("wakes the rope and lets it settle again", () => {
+    string("s1", TAUT);
+    untilAsleep();
+    expect(ropes.awake).toBe(0);
+
+    ropes.pluck("s1", 100, 0);
+    expect(ropes.awake).toBe(1);
+    expect(untilAsleep()).toBeLessThan(1000);
+    expect(ropes.awake).toBe(0);
+  });
+
+  /**
+   * A wave cannot cross a pin, because a pin is a fixed anchor - so only the
+   * segment that was plucked moves. Waking the neighbours instead would show a
+   * wave appearing on the far side of something that never moved.
+   */
+  it("stays in the segment it was given to", () => {
+    pin("p3", 400, 0);
+    ropes.setString(scene, dirty, "s1", ["p1", "p2", "p3"], [TAUT, TAUT]);
+    frame(4);
+
+    ropes.pluck("s1", 100, 0);
+    expect(ropes.awake).toBe(1);
+  });
+
+  it("does nothing for a string that is not there", () => {
+    expect(ropes.pluck("nope", 0, 0)).toBe(false);
+  });
+
+  /** Two particles is all anchor: both ends are pins, and `sim/verlet.ts` seats
+   *  those every micro-step, so there is nothing a kick could survive on. */
+  it("does nothing to a rope with no interior", () => {
+    // A span far shorter than ROPE_SPACING, so it seeds with two particles.
+    pin("q1", 0, 400);
+    pin("q2", 1, 400);
+    ropes.setString(scene, dirty, "short", ["q1", "q2"], [TAUT]);
+    expect(points("short")).toHaveLength(2);
+    expect(ropes.pluck("short", 0.5, 400)).toBe(false);
+  });
+});
+
 describe("sleeping", () => {
   /** AC-64. Twelve consecutive quiet frames, and the counter restarts the
    *  moment anything moves it again. */

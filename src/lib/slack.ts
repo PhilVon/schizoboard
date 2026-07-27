@@ -130,9 +130,19 @@ export function presetSlack(preset: number): number {
  * and a double-click there that pulled it *tighter* by half a percent and
  * called that a toggle would read as the gesture having failed. Anything the
  * eye would call taut goes back to the default.
+ *
+ * The predicate is its own function because a second caller wants it: a pluck
+ * is offered on a taut string and not on a draped one (DESIGN section 3.4), and
+ * two ideas of what taut means would make the two gestures disagree about the
+ * same segment.
  */
+export function isTaut(slack: number): boolean {
+  return clamp(slack) <= MIN_SLACK * 2;
+}
+
+/** The toggle itself. Taut goes to the default; anything else goes taut. */
 export function toggleTaut(slack: number): number {
-  return clamp(slack) <= MIN_SLACK * 2 ? DEFAULT_SLACK : MIN_SLACK;
+  return isTaut(slack) ? DEFAULT_SLACK : MIN_SLACK;
 }
 
 /**

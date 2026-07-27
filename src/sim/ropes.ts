@@ -47,12 +47,14 @@
 
 import { sampleChain, solveCatenary } from "@/sim/catenary";
 import {
+  PLUCK_REACH,
+  PLUCK_SPEED,
   ROPE_SLEEP_MOVE,
   ROPE_SLEEP_STEPS,
   ROPE_SPACING,
   SIM_STEP_MS,
 } from "@/sim/tuning";
-import { FixedStep, stepRope } from "@/sim/verlet";
+import { FixedStep, nudge, stepRope } from "@/sim/verlet";
 import type { DirtySets } from "@/state/dirty";
 import type { Bounds, Scene } from "@/state/scene";
 
@@ -380,10 +382,101 @@ export class RopeSet {
     );
   }
 
-  /** Wake every segment of a string — a pluck, an impulse, a slack nudge that
-   *  did not go through the document. */
+  /** Wake every segment of a string — an impulse, or a slack nudge that did not
+   *  go through the document. */
   wake(id: string): void {
     for (const segment of this.byString.get(id) ?? []) this.rouse(segment);
+  }
+
+  /**
+   * Pluck the string nearest this board point.
+   *
+   * > | Pluck | Click and release without dragging, on a taut string | A
+   * > travelling wave runs down it and damps out. Purely for joy
+   * > — DESIGN section 3.4
+   *
+   * Whether the string is taut enough to be worth plucking is not asked here.
+   * That is `lib/slack.ts`'s `isTaut`, and it is asked by the gesture, because
+   * it is the same question the taut *toggle* asks of the same segment and two
+   * answers would be two different ideas of taut.
+   *
+   * ## Sideways, and into one segment
+   *
+   * The kick is perpendicular to the rope where it was grabbed, because a
+   * transverse wave is the only kind this solver can carry — the links resist
+   * stretching almost completely, so a kick along the rope is absorbed by the
+   * first projection pass and nothing moves.
+   *
+   * And it stays in the segment it was given to. A pin is a fixed anchor, so a
+   * wave physically cannot cross one; on a two-pin string — which is nearly all
+   * of them — that is the whole string, and on a longer run it is the stretch
+   * you actually plucked. Waking the neighbours instead would show a wave
+   * appearing on the far side of a pin that never moved.
+   *
+   * Returns whether anything was plucked, so the caller can tell a hit from a
+   * string with nothing to shake: a two-particle segment is all anchor and has
+   * no interior to move.
+   */
+  pluck(id: string, bx: number, by: number): boolean {
+    const owned = this.byString.get(id);
+    if (owned === undefined) return false;
+
+    // The nearest *interior* particle. The endpoints are pins and are seated
+    // every micro-step (`sim/verlet.ts`), so a kick there is overwritten before
+    // it is integrated once.
+    let target: Segment | null = null;
+    let index = -1;
+    let nearest = Infinity;
+    for (const segment of owned) {
+      for (let i = 1; i < segment.count - 1; i++) {
+        const j = segment.at + i * 2;
+        const dx = this.pos[j]! - bx;
+        const dy = this.pos[j + 1]! - by;
+        const d = dx * dx + dy * dy;
+        if (d >= nearest) continue;
+        nearest = d;
+        target = segment;
+        index = i;
+      }
+    }
+    if (target === null) return false;
+
+    const j = target.at + index * 2;
+    // The tangent from the two neighbours rather than one, so the direction is
+    // the rope's rather than one link's.
+    let tx = this.pos[j + 2]! - this.pos[j - 2]!;
+    let ty = this.pos[j + 3]! - this.pos[j - 1]!;
+    const length = Math.hypot(tx, ty);
+    if (length > 0) {
+      tx /= length;
+      ty /= length;
+    } else {
+      tx = 1;
+      ty = 0;
+    }
+    // Downward of the two perpendiculars — a real pluck is released and falls
+    // through, and picking a side by the geometry rather than by the cursor
+    // means a click exactly *on* the string still has a direction. A vertical
+    // rope has no downward perpendicular, so it goes to the right instead.
+    let nx = -ty;
+    let ny = tx;
+    if (ny < 0 || (ny === 0 && nx < 0)) {
+      nx = -nx;
+      ny = -ny * 1;
+    }
+
+    for (let k = -PLUCK_REACH; k <= PLUCK_REACH; k++) {
+      const i = index + k;
+      if (i < 1 || i > target.count - 2) continue;
+      // Linear falloff to zero just past the reach, which is the bump that
+      // makes this a wave rather than a kink the solver flattens in one pass.
+      const share = 1 - Math.abs(k) / (PLUCK_REACH + 1);
+      const speed = PLUCK_SPEED * share;
+      nudge(this.prev, target.at + i * 2, nx * speed, ny * speed);
+    }
+
+    this.rouse(target);
+    return true;
   }
 
   /**
