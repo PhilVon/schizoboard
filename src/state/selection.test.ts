@@ -255,3 +255,56 @@ describe("Selection, pins and threads", () => {
     expect(selection.version).toBe(version + 1);
   });
 });
+
+describe("snapshot and restore", () => {
+  const all = () => true;
+
+  it("carries every kind, which toArray does not", () => {
+    selection.replaceThread(["a", "b"], ["s"], ["p", "q"]);
+    expect(selection.snapshot()).toEqual({
+      items: ["a", "b"],
+      strings: ["s"],
+      pins: ["p", "q"],
+    });
+    // The shape the stash used to be handed, and what it lost.
+    expect(selection.toArray()).toEqual(["a", "b"]);
+  });
+
+  it("puts a thread back exactly, in one version bump", () => {
+    selection.replaceThread(["a"], ["s"], ["p"]);
+    const stash = selection.snapshot();
+
+    selection.replace(["z"]);
+    const version = selection.version;
+    selection.restore(stash, all, all, all);
+
+    expect(selection.toArray()).toEqual(["a"]);
+    expect([...selection.strings]).toEqual(["s"]);
+    expect([...selection.pins]).toEqual(["p"]);
+    expect(selection.version).toBe(version + 1);
+  });
+
+  it("drops what has gone, each kind by its own predicate", () => {
+    selection.replaceThread(["a", "b"], ["s", "t"], ["p", "q"]);
+    const stash = selection.snapshot();
+    selection.clear();
+
+    selection.restore(
+      stash,
+      (id) => id !== "b",
+      (id) => id !== "t",
+      (id) => id !== "q",
+    );
+
+    expect(selection.toArray()).toEqual(["a"]);
+    expect([...selection.strings]).toEqual(["s"]);
+    expect([...selection.pins]).toEqual(["p"]);
+  });
+
+  it("restores an empty snapshot as an empty selection", () => {
+    const stash = selection.snapshot();
+    selection.replaceThread(["a"], ["s"], ["p"]);
+    selection.restore(stash, all, all, all);
+    expect(selection.isBare).toBe(true);
+  });
+});

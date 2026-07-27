@@ -473,7 +473,7 @@ async function boot(): Promise<void> {
       x: camera.x,
       y: camera.y,
       zoom: camera.zoom,
-      selection: selection.toArray(),
+      selection: selection.snapshot(),
     }),
     restoreView: (view) => {
       camera.setView(view.x, view.y, view.zoom);
@@ -481,7 +481,12 @@ async function boot(): Promise<void> {
       // can name things that no longer exist. A selection holding a ghost
       // makes the next Delete an op that quietly does nothing, which is the
       // confusing kind of nothing.
-      selection.replace(view.selection.filter((id) => scene.has(id)));
+      selection.restore(
+        view.selection,
+        (id) => scene.has(id),
+        (id) => scene.strings.has(id),
+        (id) => scene.pins.has(id),
+      );
     },
   });
 

@@ -47,6 +47,23 @@
  * purpose.
  */
 
+/**
+ * The whole selection, flattened — every kind at once.
+ *
+ * `toArray` answers "which items", which is what every item verb wants and
+ * what most callers should keep using. A *stash* is the other question: put
+ * this back later, exactly. Undo asked `toArray` for four months and so put
+ * you back with your items and none of your strings, because the shape it was
+ * handed had no room for them (T-123). Three named fields is the shape that
+ * cannot lose a kind — adding a fourth kind of member breaks every snapshot
+ * site at compile time, which is where a bug like that should surface.
+ */
+export interface SelectionSnapshot {
+  readonly items: readonly string[];
+  readonly strings: readonly string[];
+  readonly pins: readonly string[];
+}
+
 export class Selection {
   /** Bumped whenever the membership changes, and only then. */
   version = 1;
@@ -105,6 +122,38 @@ export class Selection {
 
   toArray(): string[] {
     return [...this.ids];
+  }
+
+  /** Every member, by kind — see `SelectionSnapshot`. */
+  snapshot(): SelectionSnapshot {
+    return {
+      items: [...this.ids],
+      strings: [...this.stringIds],
+      pins: [...this.pinIds],
+    };
+  }
+
+  /**
+   * Put a snapshot back, dropping whatever is no longer on the board.
+   *
+   * Same three predicates as `prune`, and needed for the same reason one step
+   * earlier: undoing a paste un-creates what it selected, so a stash taken
+   * before the undo can name things that no longer exist by the time it lands.
+   *
+   * One `replaceThread`, so a restore is one version bump and the overlay
+   * restrokes once.
+   */
+  restore(
+    snapshot: SelectionSnapshot,
+    exists: (id: string) => boolean,
+    stringExists: (id: string) => boolean,
+    pinExists: (id: string) => boolean,
+  ): void {
+    this.replaceThread(
+      snapshot.items.filter(exists),
+      snapshot.strings.filter(stringExists),
+      snapshot.pins.filter(pinExists),
+    );
   }
 
   add(id: string): void {

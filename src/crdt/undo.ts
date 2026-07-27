@@ -41,6 +41,7 @@ import * as Y from "yjs";
 
 import type { BoardDoc } from "@/crdt/doc";
 import { TRACKED_ORIGINS } from "@/crdt/origins";
+import type { SelectionSnapshot } from "@/state/selection";
 
 /**
  * DATA-MODEL section 11. `state/tools/select.ts` writes its crash-safety pose
@@ -66,7 +67,12 @@ export interface ViewState {
   readonly x: number;
   readonly y: number;
   readonly zoom: number;
-  readonly selection: readonly string[];
+  /**
+   * Every kind of selected thing, not just the items. This was a bare
+   * `string[]` of item ids until T-123, which is why undoing a slack change
+   * put the string's sag back and left you pointing at nothing.
+   */
+  readonly selection: SelectionSnapshot;
 }
 
 export interface UndoOptions {

@@ -16,6 +16,7 @@ import { Origin } from "@/crdt/origins";
 import { createItems, createPin, deleteItems, setItemPoses } from "@/crdt/ops";
 import { readItem } from "@/crdt/schema";
 import { MAX_ENTRIES, UndoHistory, type ViewState } from "@/crdt/undo";
+import type { SelectionSnapshot } from "@/state/selection";
 
 function board(): BoardDoc {
   const b = openBoardDoc();
@@ -219,12 +220,20 @@ describe("cascades", () => {
 });
 
 describe("camera and selection", () => {
+  function sel(
+    items: string[] = [],
+    strings: string[] = [],
+    pins: string[] = [],
+  ): SelectionSnapshot {
+    return { items, strings, pins };
+  }
+
   function views(b: BoardDoc): {
     undo: UndoHistory;
     current: { value: ViewState };
     restored: ViewState[];
   } {
-    const current = { value: { x: 0, y: 0, zoom: 1, selection: [] as string[] } as ViewState };
+    const current = { value: { x: 0, y: 0, zoom: 1, selection: sel() } as ViewState };
     const restored: ViewState[] = [];
     const undo = new UndoHistory(b, {
       captureView: () => current.value,
@@ -238,14 +247,14 @@ describe("camera and selection", () => {
     const id = polaroid(b, 0, 0);
     const { undo, current, restored } = views(b);
 
-    current.value = { x: 100, y: 200, zoom: 0.5, selection: [id] };
+    current.value = { x: 100, y: 200, zoom: 0.5, selection: sel([id]) };
     setItemPoses(b, new Map([[id, { x: 0, y: 50 }]]), Origin.LOCAL_USER);
 
     // Wander off before pressing Ctrl+Z.
-    current.value = { x: -900, y: -900, zoom: 4, selection: [] };
+    current.value = { x: -900, y: -900, zoom: 4, selection: sel() };
     undo.undo();
 
-    expect(restored).toEqual([{ x: 100, y: 200, zoom: 0.5, selection: [id] }]);
+    expect(restored).toEqual([{ x: 100, y: 200, zoom: 0.5, selection: sel([id]) }]);
   });
 
   it("takes redo back to where undo was pressed", () => {
@@ -253,12 +262,12 @@ describe("camera and selection", () => {
     const id = polaroid(b, 0, 0);
     const { undo, current, restored } = views(b);
 
-    current.value = { x: 1, y: 1, zoom: 1, selection: [] };
+    current.value = { x: 1, y: 1, zoom: 1, selection: sel() };
     setItemPoses(b, new Map([[id, { x: 0, y: 50 }]]), Origin.LOCAL_USER);
 
-    current.value = { x: 2, y: 2, zoom: 2, selection: [] };
+    current.value = { x: 2, y: 2, zoom: 2, selection: sel() };
     undo.undo();
-    current.value = { x: 3, y: 3, zoom: 3, selection: [] };
+    current.value = { x: 3, y: 3, zoom: 3, selection: sel() };
     undo.redo();
 
     expect(restored.map((v) => v.x)).toEqual([1, 2]);
@@ -269,10 +278,10 @@ describe("camera and selection", () => {
     const id = polaroid(b, 0, 0);
     const { undo, current, restored } = views(b);
 
-    current.value = { x: 10, y: 0, zoom: 1, selection: [id] };
+    current.value = { x: 10, y: 0, zoom: 1, selection: sel([id]) };
     setItemPoses(b, new Map([[id, { x: 0, y: 20 }]]), Origin.DRAG_THROTTLE);
     // The camera moves under a drag that reaches the edge of the viewport.
-    current.value = { x: 999, y: 0, zoom: 1, selection: [id] };
+    current.value = { x: 999, y: 0, zoom: 1, selection: sel([id]) };
     setItemPoses(b, new Map([[id, { x: 0, y: 60 }]]), Origin.LOCAL_USER);
 
     undo.undo();
