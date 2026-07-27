@@ -12,9 +12,9 @@
  * > 4. Resolve item collisions if the string is on the `over` layer.
  * > — DESIGN section 5.2
  *
- * Step 4 is draping, and it arrives as a `RopeDrape` this module calls and does
- * not otherwise know anything about — `sim/collide.ts` is the one that has
- * heard of an item.
+ * Step 4 is not here, and is not anywhere: draping was built and then scrapped
+ * (D-22). An `over` string draws above the item layer and passes over whatever
+ * it crosses, so the solver has three steps and no seam for a fourth.
  *
  * This module owns no state but the clock. It is handed a slice of somebody
  * else's particle buffer and the two anchor positions, and it moves the
@@ -114,19 +114,6 @@ const MICRO_GRAVITY = GRAVITY * MICRO_H * MICRO_H;
 const MICRO_DAMPING = Math.pow(ROPE_DAMPING, 1 / ROPE_SUBSTEPS);
 
 /**
- * Whatever is going to keep this rope out of the things it crosses.
- *
- * An interface rather than the class itself, and declared here rather than
- * imported, because the solver's contract is "something moves the particles
- * after each projection pass" and that is the whole of what it needs to know. A
- * rope on the `under` layer, and every rope with nothing near it, is handed
- * `null` and pays a branch per micro-step — see `sim/ropes.ts`, which decides.
- */
-export interface RopeDrape {
-  resolve(pos: Float64Array, prev: Float64Array, at: number, count: number): void;
-}
-
-/**
  * The accumulator that makes the simulation framerate-independent (AC-63).
  *
  * One of these for the whole board, not one per rope: every rope has to step
@@ -212,7 +199,6 @@ export function stepRope(
   bx: number,
   by: number,
   steps: number,
-  drape: RopeDrape | null = null,
 ): number {
   const last = at + (count - 1) * 2;
 
@@ -248,18 +234,6 @@ export function stepRope(
       seat(pos, prev, last, fromBx + (bx - fromBx) * t, fromBy + (by - fromBy) * t);
       integrate(pos, prev, at, last);
       project(pos, at, last, link);
-      // Step 4, and last of the four so that whatever the frame hands the
-      // renderer is a rope that is *outside* the things it crosses. Projection
-      // afterwards would put a link's worth of it back inside, one micro-step
-      // out of every sixteen, which reads as a rope that flickers through the
-      // photograph it is resting on.
-      //
-      // Every micro-step rather than once per fixed step, which is sixteen
-      // times the work and is the difference between resting and vibrating: a
-      // fixed step is enough gravity to sink a particle a visible fraction of a
-      // unit, and a rope that falls in and is fished out again once a step
-      // never stops moving, so it never sleeps.
-      if (drape !== null) drape.resolve(pos, prev, at, count);
     }
 
     for (let i = 2; i < span - 2; i += 2) {

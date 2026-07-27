@@ -40,12 +40,11 @@
  *
  * ## The buckets themselves are `lib/cellgrid.ts`
  *
- * `sim/collide.ts` asks the same question of a rope's bounding box that this
- * asks of the viewport, and the two may not import each other, so the grid is a
- * `lib/` primitive both use. What stays here is all the policy: which rectangle
- * an item is indexed at (rotation-expanded and shadow-padded), when to re-index
- * it (the dirty sets), and the hysteresis band — none of which the collision
- * pass wants, and none of which the grid has ever heard of.
+ * The grid moved to `lib/` when the draping pass wanted the same buckets, and
+ * has stayed there since that pass was scrapped (D-22). What is here is all the
+ * policy: which rectangle an item is indexed at (rotation-expanded and
+ * shadow-padded), when to re-index it (the dirty sets), and the hysteresis
+ * band — none of which the grid has ever heard of.
  */
 
 import { CellGrid, type CellRange } from "@/lib/cellgrid";

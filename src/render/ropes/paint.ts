@@ -51,8 +51,7 @@
  * same file twice: the layer stack needs two canvases because a photograph can
  * be pinned on top of string that was already there (DESIGN section 6.2), but
  * *painting* does not change between them. So this is one class, instantiated
- * once per canvas with the layer it draws, and `over` is the one that will
- * grow the lifted shadow when draping lands (T-66).
+ * once per canvas with the layer it draws.
  */
 
 import { fibre } from "@/lib/material";
@@ -64,37 +63,28 @@ import type { DirtySets } from "@/state/dirty";
 import type { Bounds, Scene } from "@/state/scene";
 
 /**
- * How far the shadow sits from the string, in screen pixels, and how much
- * wider and darker it is.
+ * How far the shadow sits from the string, in screen pixels, how much wider it
+ * is, and how faint.
  *
  * Screen pixels rather than board units, like everything else here — a string
  * lying on cork is a fixed small distance off it, and the shadow of a real one
  * does not grow when you lean in.
+ *
+ * One shadow, everywhere, including where a string lies across an item. DESIGN
+ * section 4.6 asks for a second, raised one there — "the offset widens and the
+ * alpha drops... the detail that sells draping" — and it was built and then
+ * taken out. `shadowBlur` is forbidden (AC-69), so a shadow here is an offset
+ * stroke and nothing else, which leaves "wider" as the only way to say
+ * "softer"; and a wider hard-edged stroke vanishes into mottled cork and turns
+ * into a solid grey bar on white paper. Draping itself went with it (D-22).
+ *
+ * The colour is the warm brown every other shadow in the application uses
+ * (DESIGN section 4.1). It was black here for four phases, which survives
+ * against cork and reads as grey ink the moment a string lies on a white note.
  */
 const SHADOW_OFFSET = 2.2;
 const SHADOW_WIDEN = 1.45;
 const SHADOW_ALPHA = 0.26;
-
-/**
- * There is deliberately **no second, raised shadow** where a string lies on an
- * item, though DESIGN section 4.6 asks for one:
- *
- * > Where the string crosses over an item it's physically lifted off the cork,
- * > so the offset widens and the alpha drops. That single detail is what sells
- * > draping.
- *
- * It was built (T-66) and taken out again (T-143) after looking at it on a real
- * board. The reason it cannot work is `AC-69`: `shadowBlur` is forbidden, so a
- * shadow here is an offset stroke and nothing else, and the only way to say
- * "softer" is to say "wider". A wider hard-edged stroke vanishes into mottled
- * brown cork and becomes a solid grey bar on white paper — so the pass that was
- * meant to read as a string lifted a paper's thickness off the board read as a
- * stripe ruled along the top of the note. Measured at 8x against the uniform
- * shadow, which reads correctly as a string lying on paper.
- *
- * The lift is not lost, only the shadow of it: an `over` string draws above the
- * item layer, so it is visibly on top of what it crosses (DESIGN section 5.6).
- */
 
 /**
  * The highlight rides the lit side, a fraction of the body's width — but never

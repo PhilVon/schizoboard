@@ -28,7 +28,7 @@ when the document write lands.
 | `app/` | bootstrap, window chrome, menus, provider wiring |
 | `crdt/` | schema, `Y.Doc`, `ops/`, `binding.ts`, undo, persistence, `sync/` |
 | `state/` | scene mirror, dirty sets, camera, selection, `tools/` |
-| `sim/` | verlet, catenary, ropes, torsion, collide, constants |
+| `sim/` | verlet, catenary, ropes, torsion, constants |
 | `render/` | the single rAF loop, world transform, culling, items, ink, ropes, pins, presence, cork |
 | `platform/` | every `invoke()`, clipboard, files — mockable for browser dev |
 | `styles/` | global chrome only; board content is styled by `render/` |

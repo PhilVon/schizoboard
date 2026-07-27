@@ -146,52 +146,6 @@ export const ROPE_SUBSTEPS = 16;
 export const ROPE_ITERATIONS = 2;
 
 /**
- * How much of a particle's speed a contact takes away, per micro-step.
- *
- * String on paper does not slide freely, and until this existed the simulation
- * said it did — a contact moved `prev` with `pos` so that the correction added
- * no velocity, which avoids a bounce and also removes nothing. That is only
- * half a contact model, and the missing half is what let ropes run forever:
- * position-based projection puts energy *in* every step (it moves `pos` and not
- * `prev`, so the correction becomes velocity on the next one), a frictionless
- * contact takes none *out*, and a rope pressed against an edge by its own
- * tension churns there for good. It never falls under `ROPE_SLEEP_MOVE`, so it
- * never sleeps, and a permanently awake rope is the one thing DESIGN section
- * 5.3 will not have.
- *
- * Measured, not chosen. Ten geometries with an item planted between a string's
- * two pins — chord through the middle, tall item, wide item, tilted, clipped
- * corner, and so on — counting how many never settle and how long the slowest
- * of the rest takes:
- *
- * | friction | never settle | slowest to settle |
- * |---|---|---|
- * | 0 | **6 of 10** | — |
- * | 0.01 | 2 of 10 | 267 frames |
- * | 0.02 | 0 of 10 | 485 frames |
- * | 0.05 | 0 of 10 | **167 frames** |
- * | 0.1 | 0 of 10 | 180 frames |
- *
- * So 0.05 is the knee: 0.02 clears the board but leaves an eight-second tail,
- * which is too close to the edge to trust, and past 0.05 the string only gets
- * stickier for nothing. Six failures in ten is the number worth keeping in
- * mind — this was not an edge case, it was most of them.
- *
- * Applied per micro-step and only while a particle is actually inside a
- * silhouette, so a rope in free air is untouched and `ROPE_DAMPING` remains the
- * whole of its energy loss. Sixteen micro-steps make a fixed step, so a
- * particle in sustained contact keeps `0.95^16`, a little under half its speed,
- * across one.
- *
- * Isotropic rather than tangential-only, which is a stylisation: real friction
- * acts along the surface and leaves the normal component to the constraint.
- * Splitting the velocity into components costs a dot product and a projection
- * per contact per micro-step, and at these speeds the normal component has
- * already been largely cancelled by the push-out that precedes it.
- */
-export const CONTACT_FRICTION = 0.05;
-
-/**
  * When a rope is finished moving.
  *
  * > Sleep when the largest particle movement stays under about 0.05 px for 12

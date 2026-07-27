@@ -1,21 +1,18 @@
 /**
  * A uniform spatial grid over board space, addressed by slot.
  *
- * Two things on the board need to ask "what is near this rectangle?" and
- * neither may import the other: `render/cull.ts` asks it of the viewport to
- * decide what is worth having in the DOM, and `sim/collide.ts` asks it of a
- * rope's bounding box to decide what that rope might be lying on. The question
- * is the same question, the buckets are the same buckets, and the invalidation
- * discipline is the same discipline — so it lives here, in `lib/`, which is
- * dependency-free primitives importable by anyone.
+ * `render/cull.ts` asks it of the viewport to decide what is worth having in
+ * the DOM, and is currently the only thing that does — it was extracted here
+ * when `sim/collide.ts` wanted the same buckets to ask what a rope might be
+ * lying on, and that module has since been scrapped (D-22). It stays in `lib/`
+ * rather than going back into the culler because the split is a good one on its
+ * own: what is here is the structure, and what is not here is any notion of
+ * what an entry *means*.
  *
- * What is *not* here is anything about what an entry means. The grid stores
- * integers and rectangles: it has never heard of an item, a slot table, a
- * shadow pad or a hysteresis band, and both callers keep their own policy about
- * which rectangle to index and what to do with the answer. That is the line
- * that makes one structure serve two callers without becoming a third one's
- * problem — see the note on stale entries below, which is deliberately *not*
- * solved here.
+ * The grid stores integers and rectangles. It has never heard of an item, a
+ * slot table, a shadow pad or a hysteresis band; the caller keeps all of that,
+ * including the invalidation policy — see the note on stale entries below,
+ * which is deliberately *not* solved here.
  *
  * ## Invalidation is the caller's
  *

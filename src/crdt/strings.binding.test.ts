@@ -233,36 +233,26 @@ describe("editing a string", () => {
     expect(biggest).toBeLessThan((before - lowest) / 6);
   });
 
-  /** Colour and thickness change no geometry, so they must not disturb a rope
-   *  that has settled. Material and layer are the two restyles that do. */
+  /**
+   * Colour, thickness and tuck-behind change no geometry, so they must not
+   * disturb a rope that has settled. Material is the one restyle that does.
+   *
+   * Tuck-behind briefly did too, while draping existed: an `over` string rested
+   * on what it crossed and an `under` one passed through, so flipping the layer
+   * changed the shape the rope hung in. Draping was scrapped (D-22), so the
+   * layer is once again only a question of which canvas draws the string.
+   */
   it("leaves a sleeping rope alone for a style change", () => {
     const [a, b] = twoPins();
     const id = createString(board, { pins: [a, b] })!;
     frame(3);
     const settled = pointsOf(id);
 
-    setStringStyle(board, [id], { color: "#2c5aa8", thickness: 6 });
+    setStringStyle(board, [id], { color: "#2c5aa8", thickness: 6, layer: "under" });
     frame();
     expect(ropes.awake).toBe(0);
     expect(pointsOf(id)).toEqual(settled);
     // The renderer still hears about it — that is what `dirty.strings` is for.
-    expect(scene.strings.get(id)!.color).toBe("#2c5aa8");
-  });
-
-  /**
-   * *Tuck behind* stopped being a style edit when draping landed (T-65): an
-   * `over` string rests on what it crosses and an `under` one passes through,
-   * so the rope has to be let out to find the shape the new layer hangs in.
-   */
-  it("wakes a sleeping rope when it is tucked behind", () => {
-    const [a, b] = twoPins();
-    const id = createString(board, { pins: [a, b] })!;
-    frame(3);
-    expect(ropes.awake).toBe(0);
-
-    setStringStyle(board, [id], { layer: "under" });
-    frame();
-    expect(ropes.awake).toBe(1);
     expect(scene.strings.get(id)!.layer).toBe("under");
   });
 

@@ -34,7 +34,7 @@ You know the board. It's in every conspiracy film: a wall of photographs and cli
 
 Every digital tool that gestures at this idea sands it down. Mind-mappers force a tree. Whiteboards give you rectangles and arrows. Note apps give you a list. All of them ask you to know the structure before you have it. The corkboard doesn't: you pin things up, you look at them, and the connections come later.
 
-Schizoboard is that board, rendered with enough physical fidelity that it feels like a place rather than a diagram. Photographs arrive as polaroids. Text arrives on paper. You can scribble on any of it with a marker. And the string sags, and swings when you move a photo, and drapes over whatever it crosses, because the moment it stops behaving like string it becomes an arrow and the whole thing collapses back into a flowchart.
+Schizoboard is that board, rendered with enough physical fidelity that it feels like a place rather than a diagram. Photographs arrive as polaroids. Text arrives on paper. You can scribble on any of it with a marker. And the string sags, and swings when you move a photo, because the moment it stops behaving like string it becomes an arrow and the whole thing collapses back into a flowchart.
 
 ### 1.2 Who it's for
 
@@ -485,24 +485,41 @@ An item with **zero pins** lies flat and doesn't move.
 
 `θ` is never stored and never synced. It is a local visual offset, recomputed from scratch, and the equilibrium rotation is a pure function of pin geometry — so no client ever needs to write it down.
 
-### 5.6 Draping
+### 5.6 Draping — built, and scrapped
 
-An `over` string cannot sag through an item. It rests on it.
+**There is no rope-item collision.** An `over` string draws above the item layer
+and passes over whatever it crosses; an `under` string draws beneath it. That is
+the whole of the interaction between string and paper.
 
-During constraint projection, for awake ropes only, particles are pushed out of the silhouettes of nearby items — found via the spatial index, restricted to items intersecting the rope's bounding box. A rope crossing a photograph therefore comes to rest along the photograph's top edge instead of cutting through it, exactly as real string does.
+This section used to specify the opposite — that an `over` string could not sag
+through an item and came to rest along its top edge — and that was built in full
+and then removed. D-22 is the decision record; the short version is that the
+stylisation cost far more than it returned:
 
-Because string physically lies *on top* of the items it crosses, there's no z-interleaving problem to solve: `over` strings simply draw above the item layer, and that alone is what communicates the lift — see §4.6 for why the shadow does not.
+- **Nearest-edge ejection**, the only formulation that is stable, does not
+  produce draping. It produces *repulsion*: a string crossing a note is pushed
+  down and around it, clinging to the underside and running up the far side, and
+  held **32% past its own rest length** while it does so.
+- **Top-edge-only ejection**, which is what this section actually asked for, is
+  not stable. Ejecting upward is discontinuous at an item's left and right
+  edges — one particle is lifted the height of the paper and its neighbour a
+  link away is untouched — and the rope tears apart there. Every variant tried
+  (depth-limited, rate-limited, one-way) either failed to settle or failed to
+  catch, and the ones that passed did so on fitted constants with no margin.
+- **Catching only a string that sags onto an item** is stable and almost never
+  fires, because a rope is *seeded at its rest pose* rather than dropped. A
+  string is placed inside an item; it never falls onto one.
 
-`under` strings — string that a photograph was later pinned over — skip collision entirely and draw beneath the item layer.
+Underneath all three is the same thing: a hard non-penetration constraint sitting
+next to a hard distance constraint, in a solver that has no way to trade them off
+against each other. Getting it right needs a different solver, not another
+constant — and this is visual flair, so it does not get one.
 
-**A contact has friction.** String on paper does not slide freely, and the simulation said it did until it was measured. A contact carries the particle's velocity through unchanged so that the correction is not also an impulse — which avoids a bounce and removes no energy at all. Meanwhile position-based projection puts energy *in* on every step, so a rope pressed against an edge by its own tension churns there for good: never under the sleep threshold, never asleep. With an item planted between a string's two pins, **six of ten arrangements never settled**. Bleeding a slice of the speed off at each contact fixes all ten, and is what a real string on real paper does anyway.
+What did come out of the exercise and stays: the string's shadow is the warm
+brown of §4.1 rather than black (it had been black since the painter was
+written), and `lib/cellgrid.ts` — the uniform grid the draping pass wanted to
+share with culling — remains a `lib/` primitive.
 
-Collision is off for sleeping ropes, which is nearly all of them. Two consequences fall out of that and both are load-bearing:
-
-- **A rope wakes when an item near it moves**, or nothing happens at all — a photograph dragged under a settled string would pass straight through it. The waking test is the *swept* rectangle of the move, so taking a photograph away wakes the string that was resting on it.
-- **A board that loads wakes the ropes it left inside something.** The seed pose is an analytic catenary and a catenary has never heard of a photograph, so a board reopens with its strings through the items they were resting on unless the ones in the wrong place are let out. This is the single exception to "a board opens perfectly still", and it is deliberately narrow: only a rope genuinely *inside* an item wakes.
-
-**An item holding either end of a rope is not an obstacle to that rope.** An endpoint is infinite mass — seated on its pin every micro-step, never integrated — so if that pin is inside a silhouette the endpoint cannot be pushed out of it, and pushing its neighbours out anyway is a fight nobody wins: the rope never sleeps, and it comes to rest running the long way round the outside of the paper before jumping to a pin in the middle of it. The condition is geometric rather than about parentage, because a *free* pin that somebody later drops a note over is inside an item it is not a child of.
 
 ### 5.7 String pulling back on items
 
@@ -543,7 +560,7 @@ The escalation path is real and pre-planned: if we exceed roughly 1500 simultane
 └─────────────────────────────────────────────┘  Cork background          same camera transform
 ```
 
-**Two rope canvases, not one.** Real boards have string running behind photographs that were pinned on top of it later, and a single overlay forces every string above or every string below. A per-string `layer` field plus one extra clear-and-draw buys that back, and it composes exactly with draping: `over` strings collide with items, `under` strings pass behind them and don't.
+**Two rope canvases, not one.** Real boards have string running behind photographs that were pinned on top of it later, and a single overlay forces every string above or every string below. A per-string `layer` field plus one extra clear-and-draw buys that back. It is purely a question of which canvas draws the string — nothing in the simulation reads it (§5.6).
 
 **One camera transform.** The world wrapper carries a single `translate` + `scale`. Items position themselves inside it in board coordinates and never know about the camera. The rope and overlay canvases are full-viewport, in screen space, and apply the camera per-point at draw time.
 
@@ -773,7 +790,7 @@ Each phase produces something runnable and demonstrable on its own.
 | **3** | **String.** Pin-to-pin, live rope with sag, catenary seeding, wake and sleep. Multi-pin runs. |
 | **4** | Mid-string pin insertion and drag-to-note, with proportional slack splitting. Slack control, colours, hub pins, over/under layers. |
 | **5** | Ink. Marker and highlighter, item-local strokes, wet/dry split, erasers. |
-| **6** | Draping. Rope-item collision and lift shadows. |
+| **6** | ~~Draping. Rope-item collision and lift shadows.~~ Built and scrapped — see §5.6 and D-22. |
 | **7** | **Multiplayer over the wire.** Relay, presence, asset transfer, placeholder states. |
 | **8** | Polish. Ageing and wear, tape, handwritten captions, image and PDF export, bundle import/export. |
 

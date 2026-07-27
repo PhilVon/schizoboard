@@ -52,7 +52,6 @@ src/
     catenary.ts       analytic rest-pose seeding
     ropes.ts          rope set allocation, sleep manager, bounds index
     torsion.ts        single-pin item swing
-    collide.ts        rope↔item draping
     tuning.ts         every tuning value, one place, bound to a debug panel
 
   render/

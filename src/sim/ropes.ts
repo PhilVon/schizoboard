@@ -47,7 +47,6 @@
 
 import { DEFAULT_STRING_MATERIAL, fibre, sagFor, sagWith } from "@/lib/material";
 import { sampleChain, solveCatenary } from "@/sim/catenary";
-import { Draper } from "@/sim/collide";
 import {
   MATERIAL_EASE,
   PLUCK_REACH,
@@ -120,18 +119,6 @@ interface Segment {
    * a board opening is not somebody changing their mind about wire.
    */
   sag: number;
-  /**
-   * Whether this is an `over` string, and therefore whether it collides.
-   *
-   * > `under` strings — string that a photograph was later pinned over — skip
-   * > collision entirely and draw beneath the item layer. — DESIGN section 5.6
-   *
-   * Mirrored per segment beside `slack` and `material` for the same reason they
-   * are: it is read in the step loop, and a segment's string is a Map lookup
-   * away. Unlike those two it is a property of the whole string, and every
-   * segment of one always agrees about it.
-   */
-  over: boolean;
   /** Offset into the particle pool, in coordinates rather than particles. */
   at: number;
   count: number;
@@ -176,12 +163,6 @@ export class RopeSet {
    */
   private readonly runs = new Map<string, string>();
 
-  /** Draping: where the items are, and the push-out itself. Owned here because
-   *  this is what knows which ropes are awake and which are `over`. */
-  private readonly draper = new Draper();
-  /** The box `drapeFor` asks the broad phase about, reused across ropes. */
-  private readonly reach: Bounds = { minX: 0, minY: 0, maxX: 0, maxY: 0 };
-
   private pos = new Float64Array(INITIAL_POOL);
   private prev = new Float64Array(INITIAL_POOL);
   private top = 0;
@@ -224,7 +205,6 @@ export class RopeSet {
     slack: readonly number[],
     closed = false,
     material: string = DEFAULT_STRING_MATERIAL,
-    layer = "over",
   ): void {
     this.removeString(dirty, id);
     const spans = closed ? pins.length : pins.length - 1;
@@ -243,7 +223,6 @@ export class RopeSet {
         // A rope being built is a rope arriving, not one changing material, so
         // it starts on its own number rather than easing onto it.
         sag: fibre(material).sag,
-        over: layer !== "under",
         at: 0,
         count: 0,
         asleep: true,
@@ -293,7 +272,6 @@ export class RopeSet {
     this.free.clear();
     this.top = 0;
     this.clock.reset();
-    this.draper.clear();
   }
 
   /**
@@ -314,18 +292,11 @@ export class RopeSet {
       for (const id of dirty.strings) this.sync(scene, dirty, id);
     }
 
-    // Where the items are, for the awake `over` ropes that are about to ask,
-    // and which stretches of board moved, for the sleeping ones that are about
-    // to be woken by it. Once for the frame rather than once per rope, and free
-    // on a frame where nothing moved.
-    this.draper.update(scene, dirty);
-
     if (dirty.all) {
       // A load or an undo is a state restore rather than an event. Every rope
       // goes back to its analytic rest pose, asleep — which is AC-62, and the
       // same argument `torsion.ts` makes for settling swings on the same flag.
       for (const segment of this.segments) this.seed(scene, segment);
-      this.wakeWhereObstructed(scene);
       for (const id of this.byString.keys()) dirty.rope(id);
     } else {
       this.wakeDisturbed(scene, dirty);
@@ -362,7 +333,6 @@ export class RopeSet {
         b.wx,
         b.wy,
         steps,
-        this.drapeFor(scene, segment, a.wx, a.wy, b.wx, b.wy),
       );
 
       segment.ax = a.wx;
@@ -440,21 +410,10 @@ export class RopeSet {
           owned[i]!.material = mirror.material;
           moved = true;
         }
-        // *Tuck behind* stopped being a style edit when draping landed: an
-        // `over` string rests on what it crosses and an `under` one passes
-        // through, so flipping the layer changes the shape the rope hangs in
-        // and the solver has to be let out to find it. Waking rather than
-        // re-seeding, for the same reason a slack change wakes — the string
-        // should be seen to settle onto the photograph, not to appear on it.
-        const over = mirror.layer !== "under";
-        if (owned[i]!.over !== over) {
-          owned[i]!.over = over;
-          moved = true;
-        }
       }
-      // The edits that really are only style — a colour, a thickness — change
-      // no geometry, so they wake nothing. The renderer is told by
-      // `dirty.strings` directly and reads them off the mirror.
+      // The style edits that are only style — a colour, a thickness, a
+      // tuck-behind — change no geometry, so they wake nothing. The renderer is
+      // told by `dirty.strings` directly and reads them off the mirror.
       if (moved) for (const segment of owned) this.rouse(segment);
       return;
     }
@@ -467,7 +426,6 @@ export class RopeSet {
       mirror.nodes.map((node) => node.slackAfter),
       mirror.closed,
       mirror.material,
-      mirror.layer,
     );
   }
 
@@ -726,41 +684,6 @@ export class RopeSet {
     for (const itemId of dirty.items) {
       for (const pinId of scene.pinsOf(itemId)) this.rousePin(scene, dirty, pinId);
     }
-    this.wakeUnderItems();
-  }
-
-  /**
-   * Wake the `over` ropes that an item moved through this frame.
-   *
-   * Draping only happens while a rope is being stepped, and a rope that has
-   * settled is asleep — so without this, putting a photograph under a string
-   * changes nothing at all, and taking one away leaves the string draped on
-   * thin air. The pin index above cannot answer it: the photograph somebody is
-   * dragging across a string is usually nothing to do with that string's pins.
-   *
-   * Against every segment rather than through an index, which is the one linear
-   * walk left in this file. It is bounded by what *moved*: a frame in which no
-   * item changed does nothing, and a drag is a handful of rectangles against a
-   * few hundred stored boxes — a few thousand floating-point comparisons on a
-   * frame that is already stepping ropes. An index over rope bounds would be a
-   * second structure to keep honest for a cost that does not show up.
-   */
-  private wakeUnderItems(): void {
-    const quads = this.draper.index.disturbed;
-    if (quads.length === 0) return;
-    for (const segment of this.segments) {
-      if (!segment.asleep || !segment.over || segment.count === 0) continue;
-      for (let q = 0; q < quads.length; q += 4) {
-        // A particle spacing of margin, so a photograph slid up to a string
-        // wakes it just before it touches rather than just after.
-        if (segment.maxX < quads[q]! - ROPE_SPACING) continue;
-        if (segment.minX > quads[q + 2]! + ROPE_SPACING) continue;
-        if (segment.maxY < quads[q + 1]! - ROPE_SPACING) continue;
-        if (segment.minY > quads[q + 3]! + ROPE_SPACING) continue;
-        this.rouse(segment);
-        break;
-      }
-    }
   }
 
   private rousePin(scene: Scene, dirty: DirtySets, pinId: string): void {
@@ -792,90 +715,6 @@ export class RopeSet {
   private rouse(segment: Segment): void {
     segment.asleep = false;
     segment.still = 0;
-  }
-
-  /**
-   * Wake the ropes that a load has left sitting inside something.
-   *
-   * `seed` lays the analytic catenary, and a catenary has never heard of a
-   * photograph — so a board whose string was resting on one comes back with the
-   * string through it, asleep, and stays that way until somebody happens to
-   * move the photograph. Which is what a reloaded board actually did.
-   *
-   * > a board opens perfectly still — AC-62
-   *
-   * This is the exception to that, and it is the narrowest one available. Only
-   * a rope that is genuinely *inside* an item wakes: a string merely passing
-   * near one is already right, and — the case that matters — a string pinned to
-   * a photograph is lying on that photograph for the whole of its life and must
-   * not be woken by it, or every string on every board would settle on open.
-   * `Draper.intrudes` is that distinction.
-   *
-   * What the woken ones then do is climb out, which takes about a third of a
-   * second to look right and a couple of seconds to fall asleep. That is a
-   * string being seen to come to rest on a photograph, which is the thing this
-   * phase is about; the alternative was to relax the seed pose against the
-   * items and open still on a pose that is not the one the solver would find.
-   */
-  private wakeWhereObstructed(scene: Scene): void {
-    for (const segment of this.segments) {
-      if (!segment.over || segment.count < 3) continue;
-
-      const box = this.reach;
-      box.minX = segment.minX;
-      box.minY = segment.minY;
-      box.maxX = segment.maxX;
-      box.maxY = segment.maxY;
-      const last = segment.at + (segment.count - 1) * 2;
-      const found = this.draper.prepare(
-        scene,
-        box,
-        this.pos[segment.at]!,
-        this.pos[segment.at + 1]!,
-        this.pos[last]!,
-        this.pos[last + 1]!,
-      );
-      if (found > 0 && this.draper.intrudes(this.pos, segment.at, segment.count)) {
-        this.rouse(segment);
-      }
-    }
-  }
-
-  /**
-   * What this segment should be kept out of this frame, or `null` for a rope
-   * that collides with nothing.
-   *
-   * `null` is the answer for every `under` string (DESIGN section 5.6) and for
-   * every `over` one with no item near it, which on a real board is most of
-   * them — so the ordinary rope pays one broad-phase query per frame and a
-   * branch per micro-step, and nothing else.
-   *
-   * The box asked about is the pose the rope is *leaving*, widened to take in
-   * where its anchors are going. A dragged pin can travel a long way in one
-   * frame and the rope follows it, so the query has to cover the destination or
-   * a string flung across a photograph would arrive already through it.
-   */
-  private drapeFor(
-    scene: Scene,
-    segment: Segment,
-    ax: number,
-    ay: number,
-    bx: number,
-    by: number,
-  ): Draper | null {
-    if (segment.over && segment.count >= 3) {
-      const box = this.reach;
-      box.minX = Math.min(segment.minX, ax, bx);
-      box.minY = Math.min(segment.minY, ay, by);
-      box.maxX = Math.max(segment.maxX, ax, bx);
-      box.maxY = Math.max(segment.maxY, ay, by);
-
-      // Where the ends are *going*, not where they were: the endpoints are
-      // walked onto these over the step, so an item that will be holding one of
-      // them by the end of it must not be an obstacle to it during it.
-      if (this.draper.prepare(scene, box, ax, ay, bx, by) > 0) return this.draper;
-    }
-    return null;
   }
 
   /**
