@@ -325,6 +325,8 @@ Zoom range is roughly 5% to 400%. The board is unbounded in every direction.
 
 Click to select, `Shift`+click to add, drag on empty cork for a marquee, `Ctrl+A` for everything visible. Double-clicking a pin selects the whole connected component, which is how you grab an entire thread of an investigation and move it somewhere else.
 
+Both bulk gestures take **free pins** as well as items — a free pin is a thing on the board in its own right, and `Shift+Delete` is forever making more of them. Parented pins are not members: they travel inside their paper already, and the paragraph below is why counting them twice would shear the web. A pin is a point for this, so it is in if its position is.
+
 `Delete` removes the selection, including its pins and any strings that drop below two nodes.
 
 `Shift+Delete` removes the items but **leaves their pins free-floating in the cork**, so the string web keeps its shape with a hole where the evidence was.

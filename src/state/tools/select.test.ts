@@ -383,6 +383,25 @@ describe("selecting", () => {
     key("KeyA", { ctrl: true });
     expect(selection.toArray()).toEqual(["near"]);
   });
+
+  /**
+   * T-106. A free pin is visible, so "Ctrl+A for everything visible" takes it
+   * — and until it did, an orphan left behind by a deleted photograph could
+   * only be cleared one `Alt`+click at a time. They accumulate silently, and
+   * two of them landing on a note makes it rigid instead of hanging.
+   */
+  it("takes the free pins for Ctrl+A, and leaves the parented ones alone", () => {
+    put("a", 100, 100);
+    putPin("hers", "a", 100, 60);
+    putPin("orphan", null, 260, 140);
+    putPin("distant", null, 9000, 9000);
+
+    key("KeyA", { ctrl: true });
+
+    expect(selection.toArray()).toEqual(["a"]);
+    // Parented: it travels inside its item and would be transformed twice.
+    expect([...selection.pins]).toEqual(["orphan"]);
+  });
 });
 
 describe("dragging", () => {
@@ -895,6 +914,38 @@ describe("the marquee", () => {
     expect(tool.gesturing).toBe(false);
   });
 
+  /** T-106, the aimed half of it. Phil's call on Q-51 was that both gestures
+   *  gather free pins, so one sweep can clear a corner of the board. */
+  it("sweeps up the free pins it crosses, and not the parented ones", () => {
+    putPin("hers", "in", 0, -40);
+    putPin("orphan", null, 60, 60);
+    putPin("missed", null, 400, 400);
+
+    down(-300, -300);
+    move(120, 120);
+
+    expect(selection.toArray().sort()).toEqual(["edge", "in"]);
+    expect([...selection.pins]).toEqual(["orphan"]);
+  });
+
+  it("keeps the pins a shift-extend started with, and puts them back on Escape", () => {
+    putPin("first", null, 600, 600);
+    putPin("second", null, 60, 60);
+
+    // Sweep the far corner, then extend from it over the near one.
+    down(500, 500);
+    move(700, 700);
+    up(700, 700);
+    expect([...selection.pins]).toEqual(["first"]);
+
+    down(-300, -300, { shift: true });
+    move(120, 120);
+    expect([...selection.pins].sort()).toEqual(["first", "second"]);
+
+    key("Escape");
+    expect([...selection.pins]).toEqual(["first"]);
+  });
+
   it("does not grab a tilted item it only appears to overlap", () => {
     scene.clear();
     // A bar turned 45 degrees, so it runs corner to corner. Its rotation-
@@ -934,6 +985,22 @@ describe("deleting", () => {
     selection.clear();
     key("Delete");
     expect(writes).toEqual([]);
+  });
+
+  /**
+   * The whole of T-106, end to end: the report was not "Ctrl+A misses pins",
+   * it was "Ctrl+A then Delete leaves free-floating pins behind". T-129 built
+   * the Delete half; this is the gesture that could not reach it.
+   */
+  it("clears the free pins Ctrl+A picked up, in the same press", () => {
+    putPin("orphan", null, 150, 40);
+    key("KeyA", { ctrl: true });
+    expect([...selection.pins]).toEqual(["orphan"]);
+
+    key("Delete");
+    expect(writes).toContainEqual({ kind: "delete", ids: ["a", "b"], keepPins: false });
+    expect(writes.some((w) => w.kind === "unpin" && w.ids.includes("orphan"))).toBe(true);
+    expect(selection.isBare).toBe(true);
   });
 
   it("refuses to delete out from under a drag in progress", () => {

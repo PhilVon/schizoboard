@@ -1,4 +1,4 @@
-/**
+﻿/**
  * The select tool — `V`, and the one the board starts in.
  *
  * Click to select, `Shift`+click to add, drag on empty cork for a marquee,
@@ -59,6 +59,7 @@ import {
   type HandleId,
 } from "@/state/handles";
 import type { ItemPose } from "@/state/scene";
+import type { SelectionSnapshot } from "@/state/selection";
 import { threadFrom } from "@/state/thread";
 import {
   anchorAt,
@@ -219,6 +220,40 @@ function presetFor(code: string): number | null {
   return digit === null ? null : Number(digit[1]);
 }
 
+/**
+ * The free pins inside a board rectangle — what `Ctrl+A` and a marquee sweep
+ * up alongside the items (T-106).
+ *
+ * **Free ones only.** A parented pin is part of its paper: it travels with the
+ * item for nothing, because its stored position is in item-local space, and
+ * selecting it beside its own item would transform it twice. DESIGN section
+ * 3.8 draws exactly that line — "group rotation transports parented pins for
+ * free ... but free pins inside the selection have their board coordinates
+ * transformed as leaves of the same transform". A free pin has no paper to
+ * carry it, which is the same sentence read the other way round and is why it
+ * has to be a member in its own right.
+ *
+ * A pin is a **point**, not a disc. It is in if its board position is in,
+ * which is the rule that needs no radius and does not change with zoom — and
+ * for a free pin `lx`/`ly` *are* the board position, so this asks nothing of
+ * the LAYOUT phase having run.
+ */
+function freePinsIn(ctx: ToolContext, rect: Bounds): string[] {
+  const found: string[] = [];
+  for (const pin of ctx.scene.pins.values()) {
+    if (pin.parent !== null) continue;
+    if (
+      pin.lx >= rect.minX &&
+      pin.lx <= rect.maxX &&
+      pin.ly >= rect.minY &&
+      pin.ly <= rect.maxY
+    ) {
+      found.push(pin.id);
+    }
+  }
+  return found;
+}
+
 export class SelectTool implements Tool {
   readonly id = "select";
 
@@ -356,8 +391,9 @@ export class SelectTool implements Tool {
   private readonly animating = new Set<string>();
 
   /** Selection at the moment a marquee began, so `Shift` extends rather than
-   *  replaces — and so `Esc` can put it back. */
-  private marqueeBase: ReadonlySet<string> = new Set();
+   *  replaces — and so `Esc` can put it back. Every kind, because a sweep now
+   *  gathers free pins as well as items and an extend has to keep both. */
+  private marqueeBase: SelectionSnapshot = { items: [], strings: [], pins: [] };
   private rect: Bounds | null = null;
   private readonly rectBuf: Bounds = { minX: 0, minY: 0, maxX: 0, maxY: 0 };
 
@@ -741,7 +777,7 @@ export class SelectTool implements Tool {
       // Empty cork: a marquee. Without Shift it starts from nothing, which is
       // also what makes a plain click on the cork a deselect.
       if (!at.shift) ctx.selection.clear();
-      this.marqueeBase = new Set(ctx.selection.members);
+      this.marqueeBase = ctx.selection.snapshot();
       this.rectBuf.minX = this.rectBuf.maxX = board.x;
       this.rectBuf.minY = this.rectBuf.maxY = board.y;
       this.rect = this.rectBuf;
@@ -1398,11 +1434,15 @@ export class SelectTool implements Tool {
     rect.maxY = Math.max(this.downBoardY, board.y);
     this.rect = rect;
 
-    const inside = new Set(this.marqueeBase);
+    const inside = new Set(this.marqueeBase.items);
     for (const id of ctx.scene.itemIds()) {
       if (ctx.scene.intersectsRect(id, rect)) inside.add(id);
     }
-    ctx.selection.replace(inside);
+    const pins = new Set(this.marqueeBase.pins);
+    for (const id of freePinsIn(ctx, rect)) pins.add(id);
+    // The strings ride along untouched: a sweep says nothing about them, and
+    // dropping one an extend started from would make Shift a partial extend.
+    ctx.selection.replaceThread(inside, this.marqueeBase.strings, pins);
   }
 
   // --- keys -----------------------------------------------------------------
@@ -1488,13 +1528,16 @@ export class SelectTool implements Tool {
       case "KeyA": {
         if (!input.ctrl || this.gesturing) return;
         // "Ctrl+A for everything visible" — on an unbounded board, everything
-        // is not a useful selection.
+        // is not a useful selection. A free pin is visible, so it comes too
+        // (T-106); before this it could only be reached one Alt+click at a
+        // time, and orphans left by a deleted photograph quietly accumulated
+        // until two of them landed on a note and made it rigid.
         const view = ctx.camera.visibleBounds();
         const seen: string[] = [];
         for (const id of ctx.scene.itemIds()) {
           if (ctx.scene.intersectsRect(id, view)) seen.push(id);
         }
-        ctx.selection.replace(seen);
+        ctx.selection.replaceThread(seen, [], freePinsIn(ctx, view));
         return;
       }
 
@@ -1678,7 +1721,12 @@ export class SelectTool implements Tool {
       }
       this.release();
     } else if (this.phase === "marquee") {
-      ctx.selection.replace(this.marqueeBase);
+      ctx.selection.restore(
+        this.marqueeBase,
+        (id) => ctx.scene.has(id),
+        (id) => ctx.scene.strings.has(id),
+        (id) => ctx.scene.pins.has(id),
+      );
     }
 
     // The carry goes with the gesture rather than easing down, because a
