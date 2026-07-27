@@ -37,8 +37,18 @@
  * query counts the cells it is about to visit first and takes the scan when
  * there are more cells than items. One structure, two access paths, and the
  * cheaper one is chosen per frame rather than argued about here.
+ *
+ * ## The buckets themselves are `lib/cellgrid.ts`
+ *
+ * `sim/collide.ts` asks the same question of a rope's bounding box that this
+ * asks of the viewport, and the two may not import each other, so the grid is a
+ * `lib/` primitive both use. What stays here is all the policy: which rectangle
+ * an item is indexed at (rotation-expanded and shadow-padded), when to re-index
+ * it (the dirty sets), and the hysteresis band — none of which the collision
+ * pass wants, and none of which the grid has ever heard of.
  */
 
+import { CellGrid, type CellRange } from "@/lib/cellgrid";
 import { SHADOW_PAD } from "@/render/items/shadow";
 import type { Camera } from "@/state/camera";
 import type { DirtySets } from "@/state/dirty";
@@ -71,183 +81,6 @@ export const ENTER_MARGIN = 0.2;
  */
 export const LEAVE_MARGIN = 0.3;
 
-/**
- * An item spanning more cells than this is not indexed at all.
- *
- * `readItem` clamps item size from below and not from above (`crdt/schema.ts`),
- * so a corrupt or hostile document can name an item a million units wide, and
- * indexing it would insert into millions of buckets inside one frame. Such an
- * item goes on a list that is always a candidate instead, which degrades the
- * whole query to the linear scan — bounded, correct, and the safe direction to
- * fail. 256 cells is a 8192-unit square, twenty-five times the size of anything
- * this application creates.
- */
-const MAX_CELLS_PER_ITEM = 256;
-
-/**
- * Cell coordinates to one integer key.
- *
- * Wraps every 65536 cells — ±16.7 million board units, well past where
- * `Float32Array` positions stop being trustworthy at all (`state/scene.ts`) —
- * and a wrap can only ever produce a *false candidate*, which the exact bounds
- * test then rejects. Never a missing one. Cheap enough to matter: a small
- * integer key keeps the bucket map on V8's fast path, and a string key would not.
- */
-function cellKey(cx: number, cy: number): number {
-  return ((cx & 0xffff) << 16) | (cy & 0xffff);
-}
-
-/**
- * The uniform grid.
- *
- * Buckets hold **slots**, not ids: the whole point of the walk is to reach the
- * typed arrays without a Map lookup per item.
- *
- * ## Invalidation
- *
- * Maintained from `dirty.items` rather than by hooking scene mutations, which
- * works because of an invariant the DOM layer already depends on: *anything that
- * changes where an item is on the board marks it dirty*. It has to — otherwise
- * the item's transform would never be rewritten either, and it would visibly
- * stop moving. So one source of truth serves both.
- *
- * Deletion is the one thing a dirty *id* cannot express, because the slot is
- * already gone by the time we look. Those entries are left in place and filtered
- * on read (`scene.idAt(slot)` is null), and cleaned out for real by whichever
- * item inherits the slot — `place` knows the previous occupant's cell range
- * because it stored it. The cost is a few dead slots in a few buckets on a board
- * where things are deleted and never replaced, each one an array read and a null
- * check.
- */
-class CellGrid {
-  private readonly buckets = new Map<number, number[]>();
-
-  /** The cell range each indexed slot currently occupies. */
-  private minCx = new Int32Array(0);
-  private minCy = new Int32Array(0);
-  private maxCx = new Int32Array(0);
-  private maxCy = new Int32Array(0);
-  /** 1 while a slot has entries in `buckets` describing the range above. */
-  private indexed = new Uint8Array(0);
-
-  /** Slots too big to index — see MAX_CELLS_PER_ITEM. Normally empty. */
-  readonly oversized = new Set<number>();
-
-  private capacity = 0;
-
-  private ensure(slots: number): void {
-    if (slots <= this.capacity) return;
-    let next = Math.max(64, this.capacity);
-    while (next < slots) next *= 2;
-    const grow = (source: Int32Array): Int32Array => {
-      const grown = new Int32Array(next);
-      grown.set(source);
-      return grown;
-    };
-    this.minCx = grow(this.minCx);
-    this.minCy = grow(this.minCy);
-    this.maxCx = grow(this.maxCx);
-    this.maxCy = grow(this.maxCy);
-    const indexed = new Uint8Array(next);
-    indexed.set(this.indexed);
-    this.indexed = indexed;
-    this.capacity = next;
-  }
-
-  clear(): void {
-    this.buckets.clear();
-    this.indexed.fill(0);
-    this.oversized.clear();
-  }
-
-  /** Index or re-index one slot from its padded board bounds. */
-  place(slot: number, bounds: Bounds): void {
-    this.ensure(slot + 1);
-
-    const cx0 = Math.floor(bounds.minX / CELL);
-    const cy0 = Math.floor(bounds.minY / CELL);
-    const cx1 = Math.floor(bounds.maxX / CELL);
-    const cy1 = Math.floor(bounds.maxY / CELL);
-    const cells = (cx1 - cx0 + 1) * (cy1 - cy0 + 1);
-
-    if (!Number.isFinite(cells) || cells > MAX_CELLS_PER_ITEM) {
-      if (this.indexed[slot]) this.unindex(slot);
-      this.oversized.add(slot);
-      return;
-    }
-    this.oversized.delete(slot);
-
-    // A drag moves an item a few units a frame, so most re-indexes land in the
-    // same cells it was already in and there is nothing to do.
-    if (
-      this.indexed[slot] === 1 &&
-      this.minCx[slot] === cx0 &&
-      this.minCy[slot] === cy0 &&
-      this.maxCx[slot] === cx1 &&
-      this.maxCy[slot] === cy1
-    ) {
-      return;
-    }
-
-    if (this.indexed[slot]) this.unindex(slot);
-
-    this.minCx[slot] = cx0;
-    this.minCy[slot] = cy0;
-    this.maxCx[slot] = cx1;
-    this.maxCy[slot] = cy1;
-    this.indexed[slot] = 1;
-
-    for (let cx = cx0; cx <= cx1; cx++) {
-      for (let cy = cy0; cy <= cy1; cy++) {
-        const key = cellKey(cx, cy);
-        const bucket = this.buckets.get(key);
-        if (bucket) bucket.push(slot);
-        else this.buckets.set(key, [slot]);
-      }
-    }
-  }
-
-  /** Remove a slot's entries, using the range it was indexed at. */
-  private unindex(slot: number): void {
-    for (let cx = this.minCx[slot]!; cx <= this.maxCx[slot]!; cx++) {
-      for (let cy = this.minCy[slot]!; cy <= this.maxCy[slot]!; cy++) {
-        const key = cellKey(cx, cy);
-        const bucket = this.buckets.get(key);
-        if (!bucket) continue;
-        const at = bucket.indexOf(slot);
-        // Order in a bucket means nothing, so the last entry fills the hole.
-        if (at >= 0) {
-          bucket[at] = bucket[bucket.length - 1]!;
-          bucket.pop();
-        }
-        if (bucket.length === 0) this.buckets.delete(key);
-      }
-    }
-    this.indexed[slot] = 0;
-  }
-
-  /** How many cells a rectangle covers — how much the grid path would cost. */
-  cellsIn(rect: Bounds): number {
-    const cells =
-      (Math.floor(rect.maxX / CELL) - Math.floor(rect.minX / CELL) + 1) *
-      (Math.floor(rect.maxY / CELL) - Math.floor(rect.minY / CELL) + 1);
-    return Number.isFinite(cells) ? cells : Number.POSITIVE_INFINITY;
-  }
-
-  bucketAt(cx: number, cy: number): readonly number[] | undefined {
-    return this.buckets.get(cellKey(cx, cy));
-  }
-
-  cellRange(rect: Bounds): { cx0: number; cy0: number; cx1: number; cy1: number } {
-    return {
-      cx0: Math.floor(rect.minX / CELL),
-      cy0: Math.floor(rect.minY / CELL),
-      cx1: Math.floor(rect.maxX / CELL),
-      cy1: Math.floor(rect.maxY / CELL),
-    };
-  }
-}
-
 /** Which access path the last query took — the grid, or the dense slot scan. */
 export type CullPath = "grid" | "scan" | "none";
 
@@ -262,10 +95,28 @@ export class Culler {
   /** Diagnostic: how the last query was answered. Read by tests and the HUD. */
   path: CullPath = "none";
 
-  private readonly grid = new CellGrid();
+  /**
+   * Buckets of **slots**, not ids: the whole point of the walk is to reach the
+   * typed arrays without a Map lookup per item.
+   *
+   * ## Invalidation
+   *
+   * Maintained from `dirty.items` rather than by hooking scene mutations, which
+   * works because of an invariant the DOM layer already depends on: *anything
+   * that changes where an item is on the board marks it dirty*. It has to —
+   * otherwise the item's transform would never be rewritten either, and it
+   * would visibly stop moving. So one source of truth serves both.
+   *
+   * Deletion is the one thing a dirty *id* cannot express, because the slot is
+   * already gone by the time we look. Those entries are left in place and
+   * filtered on read (`scene.idAt(slot)` is null), and cleaned out for real by
+   * whichever item inherits the slot — see `lib/cellgrid.ts`.
+   */
+  private readonly grid = new CellGrid(CELL);
   private readonly enter: Bounds = { minX: 0, minY: 0, maxX: 0, maxY: 0 };
   private readonly leave: Bounds = { minX: 0, minY: 0, maxX: 0, maxY: 0 };
   private readonly item: Bounds = { minX: 0, minY: 0, maxX: 0, maxY: 0 };
+  private readonly cells: CellRange = { cx0: 0, cy0: 0, cx1: 0, cy1: 0 };
 
   /** Whether the grid has ever been filled. See `update`. */
   private built = false;
@@ -358,7 +209,7 @@ export class Culler {
     }
 
     this.path = "grid";
-    const { cx0, cy0, cx1, cy1 } = this.grid.cellRange(rect);
+    const { cx0, cy0, cx1, cy1 } = this.grid.cellRange(rect, this.cells);
     for (let cx = cx0; cx <= cx1; cx++) {
       for (let cy = cy0; cy <= cy1; cy++) {
         const bucket = this.grid.bucketAt(cx, cy);
