@@ -65,8 +65,14 @@ export const RESTING_LIFT = RECIPES.rest.offset;
 /**
  * Never black. "Shadow colour is never black. It's a desaturated warm brown
  * drawn from the cork, at low alpha." (DESIGN section 4.1)
+ *
+ * Exported because every shadow in the application has to agree with it, and
+ * the string's is drawn by a different module in a different way — a canvas
+ * stroke rather than a baked sprite. It was black there until T-142, which
+ * survives against cork and reads as grey ink the moment a string lies on a
+ * white note.
  */
-const SHADOW_RGB = "38, 24, 12";
+export const SHADOW_RGB = "38, 24, 12";
 
 /** Stretchable middle of the nine-slice, in sprite pixels. */
 const CENTRE = 24;

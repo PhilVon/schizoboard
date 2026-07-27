@@ -12,7 +12,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { DEFAULT_SLACK, MIN_SLACK, presetSlack } from "@/lib/slack";
 import { lighten, RopeLayer, slackRung } from "@/render/ropes/paint";
-import { LIGHT_DX, LIGHT_DY, RESTING_LIFT } from "@/render/items/shadow";
+import { LIGHT_DX, LIGHT_DY } from "@/render/items/shadow";
 import { RopeSet } from "@/sim/ropes";
 import { Camera } from "@/state/camera";
 import { DirtySets } from "@/state/dirty";
@@ -133,19 +133,17 @@ beforeEach(() => {
 });
 
 /**
- * T-66 — the lift shadow.
+ * T-143 - and the *absence* of a lift shadow.
  *
- * > Where the string crosses over an item it's physically lifted off the cork,
- * > so the offset widens and the alpha drops. That single detail is what sells
- * > draping. — DESIGN section 4.6
- *
- * The sim decides *where* (`sim/collide.ts` flags the particles); what is
- * checked here is that the painter turns those flags into a second, further,
- * fainter shadow pass and leaves everything else alone.
+ * DESIGN section 4.6 asks for a second, raised shadow where a string lies on an
+ * item. It was built (T-66) and taken out again after looking at it on a real
+ * board: `shadowBlur` is forbidden (AC-69), so "softer" can only be faked as
+ * "wider", and a wider hard-edged stroke vanishes into mottled cork and becomes
+ * a grey bar on white paper. These pin the decision, so a well-meant
+ * reintroduction has to argue with a failing test rather than with a comment.
  */
-describe("the lift shadow", () => {
-  /** Put a photograph under the string and let the rope settle onto it, which
-   *  is what sets the flags the painter reads. */
+describe("the shadow of a string lying on an item", () => {
+  /** Put a photograph under the string and let the rope settle onto it. */
   function drapeOverItem(): void {
     scene.putItem(
       { id: "photo", type: "polaroid", z: "a0", seed: 1, assetId: null, createdBy: 1, createdAt: 0, text: "" },
@@ -160,91 +158,25 @@ describe("the lift shadow", () => {
     dirty.rope("s1");
   }
 
-  it("adds a fourth pass, further down-light and fainter", () => {
+  it("is the same shadow it has on bare cork, and there is only one of it", () => {
     const layer = new RopeLayer(stubCanvas(), "over");
     string("s1", "p1", "p2");
     draw(layer);
+    const onCork = calls.strokes.map((stroke) => ({ ...stroke }));
+
     drapeOverItem();
     calls.strokes.length = 0;
     draw(layer);
 
-    expect(calls.strokes).toHaveLength(4);
-    const [flat, lift, body] = calls.strokes;
-    // Same light, further along it, wider and weaker.
-    expect(lift!.tx / lift!.ty).toBeCloseTo(LIGHT_DX / LIGHT_DY, 6);
-    expect(lift!.ty).toBeGreaterThan(flat!.ty);
-    expect(lift!.width).toBeGreaterThan(flat!.width);
-    expect(alphaOf(lift!.style)).toBeLessThan(alphaOf(flat!.style));
-    // And it is still a shadow, not a second string.
-    expect(lift!.style).toMatch(/^rgba\(0, 0, 0, 0\./);
-    expect(body!.style).toBe("#a8322c");
-  });
-
-  /** A board with nothing draped on it must cost exactly what it always did —
-   *  three strokes, and no second walk of the points to split. */
-  it("costs nothing on a string that is lying on bare cork", () => {
-    const layer = new RopeLayer(stubCanvas(), "over");
-    string("s1", "p1", "p2");
-    draw(layer);
     expect(calls.strokes).toHaveLength(3);
+    expect(calls.strokes[0]!.tx).toBeCloseTo(onCork[0]!.tx, 6);
+    expect(calls.strokes[0]!.ty).toBeCloseTo(onCork[0]!.ty, 6);
+    expect(calls.strokes[0]!.width).toBeCloseTo(onCork[0]!.width, 6);
+    expect(calls.strokes[0]!.style).toBe(onCork[0]!.style);
   });
 
-  /** The lift is the *item's* thickness. A string whose shadow said it was
-   *  further off the cork than the paper it lies on is the one thing this
-   *  effect cannot survive, so the number is the item sprite's own. */
-  it("lifts the string by exactly as much as the item is lifted", () => {
-    const layer = new RopeLayer(stubCanvas(), "over");
-    string("s1", "p1", "p2");
-    draw(layer);
-    drapeOverItem();
-    calls.strokes.length = 0;
-    draw(layer);
-
-    const [flat, lift] = calls.strokes;
-    expect(Math.hypot(lift!.tx, lift!.ty) - Math.hypot(flat!.tx, flat!.ty)).toBeCloseTo(
-      RESTING_LIFT,
-      6,
-    );
-  });
-
-  /**
-   * And it shrinks with the zoom, which nothing else in this painter does.
-   *
-   * A line width is about legibility and must not shrink; this is a physical
-   * height — the thickness of a sheet of paper — and the item's own shadow is
-   * displaced by that height in *board* units, so it does. Left in screen
-   * pixels the two disagree everywhere but 100%: at 50% the string's shadow sat
-   * three times further from the string than the note's from the note, and read
-   * as the string floating above the paper. Reported off a real board.
-   */
-  it("scales that lift with the zoom, so it agrees with the item's own shadow", () => {
-    const layer = new RopeLayer(stubCanvas(), "over");
-    string("s1", "p1", "p2");
-    draw(layer);
-    drapeOverItem();
-
-    const liftAt = (zoom: number): number => {
-      camera.zoom = zoom;
-      calls.strokes.length = 0;
-      draw(layer);
-      const [flat, lift] = calls.strokes;
-      return Math.hypot(lift!.tx, lift!.ty) - Math.hypot(flat!.tx, flat!.ty);
-    };
-
-    expect(liftAt(1)).toBeCloseTo(RESTING_LIFT, 6);
-    expect(liftAt(0.5)).toBeCloseTo(RESTING_LIFT / 2, 6);
-    expect(liftAt(2)).toBeCloseTo(RESTING_LIFT * 2, 6);
-  });
-
-  /**
-   * The two shadows partition the string; neither link is drawn by both.
-   *
-   * The first version put the link spanning the change into both paths, meaning
-   * to soften the join — but two translucent strokes over each other are just
-   * darker, so every place a string climbed onto a photograph grew a short dark
-   * dash. Reported off a real board.
-   */
-  it("never draws the flat and lifted shadows over each other", () => {
+  /** One walk of the points for the one path, not three for a split. */
+  it("walks the polyline once", () => {
     const layer = new RopeLayer(stubCanvas(), "over");
     string("s1", "p1", "p2");
     draw(layer);
@@ -258,29 +190,29 @@ describe("the lift shadow", () => {
 
     calls.lines.length = 0;
     draw(layer);
-
-    // One walk for the body path, and one for the two shadow paths between
-    // them. Any link claimed twice shows up here as an extra `lineTo`.
-    expect(calls.lines).toHaveLength(links * 2);
+    expect(calls.lines).toHaveLength(links);
   });
 
-  /** An `under` string passes behind items and is never flagged, so the layer
-   *  that draws it never splits a shadow. */
-  it("never appears on the under layer", () => {
-    const layer = new RopeLayer(stubCanvas(), "under");
-    string("s1", "p1", "p2", { layer: "under" });
-    ropes.setString(scene, dirty, "s1", ["p1", "p2"], [0.2, 0.2], false, "string", "under");
+  /**
+   * > Shadow colour is never black. It's a desaturated warm brown drawn from
+   * > the cork, at low alpha. - DESIGN section 4.1
+   *
+   * Every other shadow in the application obeys this; the rope painter did not
+   * until T-143. Black at low alpha survives against mottled brown cork and
+   * reads as grey ink the moment a string lies on a white note.
+   */
+  it("is warm brown and never black", () => {
+    const layer = new RopeLayer(stubCanvas(), "over");
+    string("s1", "p1", "p2");
     draw(layer);
-    drapeOverItem();
-    calls.strokes.length = 0;
-    draw(layer);
-    expect(calls.strokes).toHaveLength(3);
+
+    const channels = /rgba\((\d+), (\d+), (\d+),/.exec(calls.strokes[0]!.style);
+    expect(channels).not.toBeNull();
+    const [r, g, b] = channels!.slice(1).map(Number);
+    expect(r! + g! + b!).toBeGreaterThan(0);
+    expect(r!).toBeGreaterThan(b!);
   });
 });
-
-function alphaOf(style: string): number {
-  return Number(/rgba\(0, 0, 0, ([0-9.]+)\)/.exec(style)?.[1] ?? "1");
-}
 
 describe("the three passes", () => {
   it("strokes shadow, body and highlight — and nothing else", () => {
@@ -298,7 +230,7 @@ describe("the three passes", () => {
     draw(layer);
 
     const [shadow, body] = calls.strokes;
-    expect(shadow.style).toMatch(/^rgba\(0, 0, 0, 0\./);
+    expect(shadow.style).toMatch(/^rgba\(\d+, \d+, \d+, 0\./);
     expect(shadow.width).toBeGreaterThan(body.width);
     // Offset along the light, which is down and to the right.
     expect(shadow.tx / shadow.ty).toBeCloseTo(LIGHT_DX / LIGHT_DY, 6);

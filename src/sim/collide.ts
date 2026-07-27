@@ -300,16 +300,16 @@ const QUERY_MARGIN = ROPE_SPACING;
 const MAX_CANDIDATES = 24;
 
 /**
- * How close to a silhouette counts as lying on it, board units.
+ * How far past a silhouette's edge a pin still counts as being inside it,
+ * board units.
  *
- * A rope at rest sits exactly *on* an edge, where the depth is zero to within
- * whatever the last projection pass left behind — a few hundredths of a unit,
- * either side, differing per particle and per frame. A flag tested at exactly
- * zero would flicker along a settled string, and the shadow it drives would be
- * seen to crawl. One board unit is far under anything visible and far over the
- * solver's residual.
+ * A pin pushed through the very corner of a photograph sits about *on* the
+ * edge, where the answer is decided by the last few hundredths of a unit and
+ * differs frame to frame as the item drifts. Without the slack the item would
+ * flip between obstacle and not, and the rope would be pushed off it and let
+ * back on alternate frames. One board unit is far under anything visible.
  */
-const LIFT_SKIN = 1;
+const EDGE_SLACK = 1;
 
 /**
  * The push-out, and the arrays it works from.
@@ -348,24 +348,9 @@ export class Draper {
   private minY = new Float64Array(MAX_CANDIDATES);
   private maxX = new Float64Array(MAX_CANDIDATES);
   private maxY = new Float64Array(MAX_CANDIDATES);
-  /**
-   * 1 for a candidate the rope may lie *on* but is not pushed out of — the
-   * item its own pins are stuck into.
-   *
-   * It stays a candidate rather than being dropped, because being on a
-   * photograph is exactly what the lift shadow is about (T-66) and a string
-   * pinned to one is the commonest way a string is on one at all.
-   */
-  private skip = new Uint8Array(MAX_CANDIDATES);
 
   private n = 0;
   private readonly query: Bounds = { minX: 0, minY: 0, maxX: 0, maxY: 0 };
-
-  /** Where to record which particles are lying on something, and the index in
-   *  it of this rope's first particle. Set by `prepare`, for the same reason
-   *  the silhouettes are: it is per rope, and `resolve` runs sixteen times. */
-  private lift: Uint8Array = new Uint8Array(0);
-  private liftAt = 0;
 
   /** SIM phase (3), once per frame, before any rope steps. */
   update(scene: Scene, dirty: DirtySets): void {
@@ -378,12 +363,6 @@ export class Draper {
    *
    * `box` is where the rope is now; `QUERY_MARGIN` covers where it is about to
    * be. `ax, ay` and `bx, by` are where the segment's two end pins are.
-   *
-   * `lift` and `liftAt` are where to record which of this rope's particles end
-   * up lying on something — one byte per particle, `liftAt` being the index of
-   * its first. That is the lift shadow's input (T-66) and it costs nothing to
-   * produce here, because "is this particle on a photograph" is the test the
-   * push-out is already doing.
    *
    * ## Why an item holding one of this rope's ends is not an obstacle to it
    *
@@ -405,27 +384,15 @@ export class Draper {
    * note on top of is inside an item it is not a child of, and that is the case
    * that thrashed.
    *
-   * The item stays a candidate rather than being dropped, because the string is
-   * genuinely lying on it and that is what the lift shadow is about. Only the
-   * push-out is skipped. The price is a long string that sags back across the
-   * same photograph its end is pinned to and cuts through it, which takes a
-   * deliberately slack run to arrange and is a great deal less visible than a
-   * kink at every pin.
+   * Such an item is dropped outright rather than kept and marked, so no later
+   * pass has to remember the distinction. The price is a long string that sags
+   * back across the same photograph its end is pinned to and cuts through it,
+   * which takes a deliberately slack run to arrange and is a great deal less
+   * visible than a kink at every pin.
    */
-  prepare(
-    scene: Scene,
-    box: Bounds,
-    ax: number,
-    ay: number,
-    bx: number,
-    by: number,
-    lift: Uint8Array,
-    liftAt: number,
-  ): number {
+  prepare(scene: Scene, box: Bounds, ax: number, ay: number, bx: number, by: number): number {
     this.n = 0;
     this.slots.length = 0;
-    this.lift = lift;
-    this.liftAt = liftAt;
 
     this.query.minX = box.minX - QUERY_MARGIN;
     this.query.minY = box.minY - QUERY_MARGIN;
@@ -457,7 +424,8 @@ export class Draper {
       this.minY[n] = this.cy[n]! - ry;
       this.maxX[n] = this.cx[n]! + rx;
       this.maxY[n] = this.cy[n]! + ry;
-      this.skip[n] = this.holds(n, ax, ay) || this.holds(n, bx, by) ? 1 : 0;
+      // An item holding either end of this rope is not an obstacle to it.
+      if (this.holds(n, ax, ay) || this.holds(n, bx, by)) continue;
       // Overwritten in place so the dedupe scan above reads what was kept
       // rather than what the index happened to return.
       this.slots[n] = slot;
@@ -483,29 +451,12 @@ export class Draper {
    * pushes one back up is a micro-step it does not sink. The rope settles along
    * the edge it landed on, which is the one a real string would drape over.
    *
-   * ## The lift flag
-   *
-   * Every particle that is on a silhouette is marked, whether or not it was
-   * pushed — that is what tells the painter where the string is held off the
-   * cork by the thickness of a photograph, and it is the whole of T-66. The
-   * skin is because a rope at rest is sitting exactly *on* an edge, where the
-   * depth is zero to within whatever the last projection pass left behind; a
-   * flag that flickered on and off along a settled string would read as the
-   * shadow crawling.
-   *
-   * Written rather than accumulated, so the last micro-step of the frame is
-   * what the renderer sees. A particle that was on a photograph at the start of
-   * a step and has been dragged off it by the end is off it.
-   *
    * ## Endpoints are not pushed
    *
    * They are pins, seated on their anchors every micro-step by the solver and
    * infinite-mass by construction. A correction applied to one is overwritten
    * before it is integrated once, so applying it is wasted work that would also
    * make a pin *look* like it had moved to anything reading the particle back.
-   *
-   * They are still *marked*, because a string tied to a photograph starts on
-   * that photograph and its shadow should say so from the pin outwards.
    *
    * ## Why `prev` moves with `pos`
    *
@@ -518,10 +469,6 @@ export class Draper {
    */
   resolve(pos: Float64Array, prev: Float64Array, at: number, count: number): void {
     const last = at + (count - 1) * 2;
-    const lift = this.lift;
-    const liftAt = this.liftAt;
-    lift.fill(0, liftAt, liftAt + count);
-
     for (let c = 0; c < this.n; c++) {
       const cx = this.cx[c]!;
       const cy = this.cy[c]!;
@@ -533,29 +480,22 @@ export class Draper {
       const minY = this.minY[c]!;
       const maxX = this.maxX[c]!;
       const maxY = this.maxY[c]!;
-      const push = this.skip[c] === 0;
 
-      for (let i = at; i <= last; i += 2) {
+      // Interior only — the endpoints are pins and are re-seated every
+      // micro-step, so a correction applied to one is thrown away.
+      for (let i = at + 2; i < last; i += 2) {
         const px = pos[i]!;
         const py = pos[i + 1]!;
-        if (px < minX - LIFT_SKIN || px > maxX + LIFT_SKIN) continue;
-        if (py < minY - LIFT_SKIN || py > maxY + LIFT_SKIN) continue;
+        if (px < minX || px > maxX || py < minY || py > maxY) continue;
 
         const ox = px - cx;
         const oy = py - cy;
         const lx = ox * cos + oy * sin;
         const depthX = hw - Math.abs(lx);
-        if (depthX <= -LIFT_SKIN) continue;
+        if (depthX <= 0) continue;
         const ly = oy * cos - ox * sin;
         const depthY = hh - Math.abs(ly);
-        if (depthY <= -LIFT_SKIN) continue;
-
-        lift[liftAt + (i - at) / 2] = 1;
-
-        // Endpoints are pins and are re-seated every micro-step; the item this
-        // rope is tied to is not an obstacle to it. Both still got their flag.
-        if (!push || i === at || i === last) continue;
-        if (depthX <= 0 || depthY <= 0) continue;
+        if (depthY <= 0) continue;
 
         let ex = lx;
         let ey = ly;
@@ -575,7 +515,7 @@ export class Draper {
   /**
    * Is candidate `c` holding this point inside itself?
    *
-   * Grown by `LIFT_SKIN`, so a pin sitting exactly on a photograph's edge —
+   * Grown by `EDGE_SLACK`, so a pin sitting exactly on a photograph's edge —
    * which is where a pin pushed through a corner sits — gives the same answer
    * two frames running instead of flipping the item between obstacle and not.
    */
@@ -585,8 +525,8 @@ export class Draper {
     const cos = this.cos[c]!;
     const sin = this.sin[c]!;
     return (
-      Math.abs(ox * cos + oy * sin) <= this.hw[c]! + LIFT_SKIN &&
-      Math.abs(oy * cos - ox * sin) <= this.hh[c]! + LIFT_SKIN
+      Math.abs(ox * cos + oy * sin) <= this.hw[c]! + EDGE_SLACK &&
+      Math.abs(oy * cos - ox * sin) <= this.hh[c]! + EDGE_SLACK
     );
   }
 
@@ -596,17 +536,19 @@ export class Draper {
    * Asked once per rope when a board loads, and nowhere else. `prepare` has to
    * have run first; the candidates it left are what this reads.
    *
-   * Deliberately not "does this rope have a candidate". A string pinned to a
-   * photograph has that photograph as a candidate for the whole of its life —
-   * it is being lain on, which is the point — and a board where every string is
-   * pinned to something is every board. So the question is the narrower one
-   * that only a rope in the wrong place answers yes to, and the items this rope
-   * is allowed to be inside are excluded exactly as they are from the push-out.
+   * Deliberately not "does this rope have a candidate". A rope near a
+   * photograph it is not touching is exactly where it should be, and a board
+   * where a string passes near something is every board — so waking on
+   * proximity would settle the whole board on every open. This asks the
+   * narrower question that only a rope in the wrong place answers yes to.
+   *
+   * The items a rope is *allowed* to be inside — the ones holding its own ends
+   * — are not candidates at all by the time this runs, so they cannot make it
+   * answer yes.
    */
   intrudes(pos: Float64Array, at: number, count: number): boolean {
     const last = at + (count - 1) * 2;
     for (let c = 0; c < this.n; c++) {
-      if (this.skip[c] === 1) continue;
       const cx = this.cx[c]!;
       const cy = this.cy[c]!;
       const cos = this.cos[c]!;

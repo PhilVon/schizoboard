@@ -395,7 +395,9 @@ The most important surface in the application.
 
 Rendered as a three-pass stroke along the simulated polyline:
 
-1. **Shadow** — offset along the light direction, dark, low alpha, wider than the string. Where the string crosses over an item it's physically lifted off the cork, so the offset widens and the alpha drops. That single detail is what sells draping (§5.6).
+1. **Shadow** — offset along the light direction, a desaturated warm brown at low alpha (§4.1, never black), wider than the string. The *same* shadow everywhere, including where the string lies on top of an item.
+
+   This last part is a reversal. The plan was for the shadow to widen and soften where a string is lifted onto a photograph, and it was built and then taken out again after looking at it: §6.4 forbids `shadowBlur`, so a canvas shadow here is an offset stroke and nothing else, and the only way to say *softer* is to say *wider*. A wider hard-edged stroke disappears into mottled brown cork and becomes a solid grey bar on white paper — so the pass meant to read as a string lifted a paper's thickness off the board read as a stripe ruled along the top of the note. The lift is not lost, only the shadow of it: an `over` string draws above the item layer, so it is visibly on top of what it crosses.
 2. **Body** — the main colour, full width, round joins and caps.
 3. **Highlight** — a brighter tint at reduced width, offset perpendicular to the light by about a pixel.
 
@@ -489,11 +491,16 @@ An `over` string cannot sag through an item. It rests on it.
 
 During constraint projection, for awake ropes only, particles are pushed out of the silhouettes of nearby items — found via the spatial index, restricted to items intersecting the rope's bounding box. A rope crossing a photograph therefore comes to rest along the photograph's top edge instead of cutting through it, exactly as real string does.
 
-Because string physically lies *on top* of the items it crosses, there's no z-interleaving problem to solve: `over` strings simply draw above the item layer. The lift is communicated entirely through the shadow, which widens and softens where the string crosses something (§4.6).
+Because string physically lies *on top* of the items it crosses, there's no z-interleaving problem to solve: `over` strings simply draw above the item layer, and that alone is what communicates the lift — see §4.6 for why the shadow does not.
 
 `under` strings — string that a photograph was later pinned over — skip collision entirely and draw beneath the item layer.
 
-Collision is off for sleeping ropes, which is nearly all of them.
+Collision is off for sleeping ropes, which is nearly all of them. Two consequences fall out of that and both are load-bearing:
+
+- **A rope wakes when an item near it moves**, or nothing happens at all — a photograph dragged under a settled string would pass straight through it. The waking test is the *swept* rectangle of the move, so taking a photograph away wakes the string that was resting on it.
+- **A board that loads wakes the ropes it left inside something.** The seed pose is an analytic catenary and a catenary has never heard of a photograph, so a board reopens with its strings through the items they were resting on unless the ones in the wrong place are let out. This is the single exception to "a board opens perfectly still", and it is deliberately narrow: only a rope genuinely *inside* an item wakes.
+
+**An item holding either end of a rope is not an obstacle to that rope.** An endpoint is infinite mass — seated on its pin every micro-step, never integrated — so if that pin is inside a silhouette the endpoint cannot be pushed out of it, and pushing its neighbours out anyway is a fight nobody wins: the rope never sleeps, and it comes to rest running the long way round the outside of the paper before jumping to a pin in the middle of it. The condition is geometric rather than about parentage, because a *free* pin that somebody later drops a note over is inside an item it is not a child of.
 
 ### 5.7 String pulling back on items
 
