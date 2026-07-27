@@ -1237,6 +1237,29 @@ async function boot(): Promise<void> {
     queued.length = 0;
   });
 
+  /**
+   * Settle the swing before framing anything.
+   *
+   * `contentBounds` is the box the board is *drawn* in: `boundsAt` turns an
+   * item by `rot + swing` and centres it on `x + drift`, both of which phase 3
+   * owns and neither of which exists until phase 3 has run once. Framing
+   * before that frames every hanging item un-hung, so the opening view and
+   * `Ctrl+0` a moment later disagreed by three percent of zoom on a real board
+   * — and deterministically, every single time, which read as the shortcut
+   * being subtly wrong rather than as the two being taken of different scenes
+   * (T-135).
+   *
+   * Not a simulation. `binding.start()` has just resynced, so `dirty.all` is
+   * up and phase 3 takes its settle branch: every item placed at its
+   * equilibrium with no motion (DESIGN section 5.3, and T-110 for why an
+   * arriving item never animates). `dt` of zero says so — there is no substep
+   * to take, and nothing to integrate.
+   *
+   * Ropes need no equivalent. A rope is seeded analytically and asleep, and
+   * `contentBounds` does not look at particles anyway.
+   */
+  torsion.step(scene, dirty, 0);
+
   // An empty board is the correct first thing to see. Nothing seeds it any
   // more: there is a real way to put things on it now, and a board that opens
   // holding somebody else's placeholders is a demo rather than a tool.

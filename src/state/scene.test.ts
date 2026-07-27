@@ -5,6 +5,7 @@
 
 import { describe, expect, it } from "vitest";
 
+import { Torsion } from "@/sim/torsion";
 import { DirtySets } from "@/state/dirty";
 import { Scene, type ItemCold, type ItemPose, type StringNodes } from "@/state/scene";
 
@@ -371,6 +372,45 @@ describe("bounds", () => {
 
   it("has no bounds when the board is empty", () => {
     expect(new Scene().contentBounds()).toBeNull();
+  });
+
+  /**
+   * T-135. The trap under the bug rather than the bug: these bounds are the
+   * box the board is *drawn* in, so they are a function of `swing` and `drift`
+   * — which phase 3 owns and which do not exist until it has run once. Anyone
+   * framing the board before then frames every hanging item un-hung, which is
+   * what made the opening view and `Ctrl+0` disagree on a real board.
+   */
+  it("moves with the swing, so it is only true after phase 3 has run", () => {
+    const scene = new Scene();
+    scene.putItem(
+      { id: "a", type: "note", z: "a0", seed: 1, assetId: null, createdBy: 1, createdAt: 0, text: "" },
+      { x: 0, y: 0, rot: 0.9, w: 300, h: 100 },
+    );
+    scene.putPin({
+      id: "p",
+      parent: "a",
+      lx: 0,
+      ly: -50,
+      kind: "pushpin",
+      color: "#f00",
+      wx: 0,
+      wy: -50,
+    });
+
+    const unhung = { ...scene.contentBounds()! };
+
+    const dirty = new DirtySets();
+    dirty.everything();
+    new Torsion().step(scene, dirty, 0);
+
+    const hung = scene.contentBounds()!;
+
+    // Tilted at 0.9 rad the 300x100 note's expanded box is 300|cos| + 100|sin|
+    // wide; hanging plumb it is exactly 300. Thirty-five units of difference on
+    // one small note, in the direction that makes the board bigger.
+    expect(unhung.maxX - unhung.minX).toBeCloseTo(264.8, 1);
+    expect(hung.maxX - hung.minX).toBeCloseTo(300, 6);
   });
 });
 
