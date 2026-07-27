@@ -475,3 +475,198 @@ describe("hitTest", () => {
     expect(layer.hitTest(scene, 0, 0)).toBeNull();
   });
 });
+
+/**
+ * The ink canvas: where it lives, when it exists, and when it goes.
+ *
+ * happy-dom has no 2D context, so `getContext("2d")` returns null and nothing
+ * here can assert a pixel. What it *can* assert is the part that fails quietly:
+ * which element the canvas is parented to, how big it is, and whether a pooled
+ * node carries one item's marks onto the next.
+ */
+describe("ink", () => {
+  function drawOn(id: string, size = 6, span = 40): void {
+    const samples = [];
+    for (let i = 0; i <= 10; i++) samples.push({ x: (i / 10) * span - span / 2, y: 0, pressure: 0.5 });
+    scene.putStrokes(id, [
+      {
+        id: `${id}-s`,
+        tool: "marker",
+        color: "#1f1b17",
+        size,
+        opacity: 1,
+        seed: 1,
+        z: "a0",
+        bbox: [-span / 2, 0, span / 2, 0],
+        samples,
+      },
+    ]);
+    dirty.inkFor(id);
+  }
+
+  function canvases(): HTMLCanvasElement[] {
+    return [...host.querySelectorAll("canvas.item-ink")] as HTMLCanvasElement[];
+  }
+
+  it("gives an item with no ink no canvas at all", () => {
+    add("a");
+    layer.sync(scene, dirty, null);
+    layer.paintInk(scene, dirty);
+    expect(canvases()).toHaveLength(0);
+    expect(layer.inked).toBe(0);
+  });
+
+  /**
+   * The clipping regression, and it is invisible in happy-dom any other way:
+   * `.pol-window` and `.paper-surface` are `overflow: hidden`, so a canvas
+   * parented into either would crop ink that runs off the edge of the paper.
+   */
+  it("hangs the canvas off the item root, not off anything that clips", () => {
+    add("a");
+    drawOn("a");
+    layer.sync(scene, dirty, null);
+    layer.paintInk(scene, dirty);
+
+    const canvas = canvases()[0]!;
+    expect(canvas.parentElement!.classList.contains("item")).toBe(true);
+    expect(canvas.parentElement!.querySelector(".pol-window")).not.toBeNull();
+  });
+
+  it("sizes the backing store to the ink and in powers of two", () => {
+    add("a", {}, { w: 400, h: 400 });
+    drawOn("a", 6, 40);
+    layer.sync(scene, dirty, null);
+    layer.paintInk(scene, dirty);
+
+    const canvas = canvases()[0]!;
+    expect(canvas.width & (canvas.width - 1)).toBe(0);
+    expect(canvas.height & (canvas.height - 1)).toBe(0);
+    // Sized to the ink, not the item: a 40-unit stroke on a 400-unit sheet.
+    expect(parseFloat(canvas.style.width)).toBeLessThan(400);
+  });
+
+  it("grows for a stroke that runs further, and does not shrink back", () => {
+    add("a", {}, { w: 4000, h: 4000 });
+    drawOn("a", 6, 40);
+    layer.sync(scene, dirty, null);
+    layer.paintInk(scene, dirty);
+    const small = canvases()[0]!.width;
+
+    drawOn("a", 6, 3000);
+    layer.paintInk(scene, dirty);
+    const large = canvases()[0]!.width;
+    expect(large).toBeGreaterThan(small);
+
+    drawOn("a", 6, 40);
+    layer.paintInk(scene, dirty);
+    // Eviction reclaims the pixels when the item leaves; shrinking here would
+    // re-sample every remaining stroke to save memory that is about to go anyway.
+    expect(canvases()[0]!.width).toBe(large);
+  });
+
+  it("drops the canvas when the last stroke is erased", () => {
+    add("a");
+    drawOn("a");
+    layer.sync(scene, dirty, null);
+    layer.paintInk(scene, dirty);
+    expect(layer.inked).toBe(1);
+
+    scene.putStrokes("a", []);
+    dirty.inkFor("a");
+    layer.paintInk(scene, dirty);
+    // An item that stays mounted and loses its ink would otherwise go on
+    // showing it.
+    expect(canvases()).toHaveLength(0);
+    expect(layer.inked).toBe(0);
+  });
+
+  it("evicts the canvas when the item leaves the viewport, and re-rasters on return", () => {
+    add("a");
+    drawOn("a");
+    layer.sync(scene, dirty, null);
+    layer.paintInk(scene, dirty);
+    expect(layer.inked).toBe(1);
+    expect(layer.inkPixels).toBeGreaterThan(0);
+
+    dirty.item("a");
+    layer.sync(scene, dirty, new Set());
+    expect(layer.inked).toBe(0);
+    expect(layer.inkPixels).toBe(0);
+    expect(canvases()).toHaveLength(0);
+
+    dirty.item("a");
+    layer.sync(scene, dirty, new Set(["a"]));
+    layer.paintInk(scene, dirty);
+    // Strokes are the truth and the canvas is a cache, so coming back is a
+    // re-raster and not a restore.
+    expect(layer.inked).toBe(1);
+  });
+
+  /** The same bug the photograph's `release()` already guards against: a pooled
+   *  node keeps its subtree, so it would sit there wearing the last item's marks. */
+  it("does not carry one item's ink onto the next item in the pooled node", () => {
+    add("a");
+    drawOn("a");
+    layer.sync(scene, dirty, null);
+    layer.paintInk(scene, dirty);
+    expect(layer.inked).toBe(1);
+
+    scene.removeItem("a");
+    dirty.item("a");
+    layer.sync(scene, dirty, null);
+
+    add("b");
+    layer.sync(scene, dirty, null);
+    layer.paintInk(scene, dirty);
+    expect(canvases()).toHaveLength(0);
+    expect(layer.inked).toBe(0);
+  });
+
+  it("re-rasters only a few items a frame, and finishes the rest on the next", () => {
+    for (const id of ["a", "b", "c", "d", "e"]) {
+      add(id);
+      drawOn(id);
+    }
+    layer.sync(scene, dirty, null);
+
+    // Without a budget, one debounced zoom-end repaints every ink canvas on
+    // screen inside one frame — the shape of the 777 ms frame D-12 measured.
+    layer.paintInk(scene, dirty);
+    expect(layer.inked).toBe(3);
+    layer.paintInk(scene, dirty);
+    expect(layer.inked).toBe(5);
+  });
+
+  it("queues every mounted inked item when the whole board is dirty", () => {
+    for (const id of ["a", "b"]) {
+      add(id);
+      drawOn(id);
+    }
+    layer.sync(scene, dirty, null);
+    dirty.clear();
+
+    // What `world.onRasterize` raises on a debounced gesture end.
+    dirty.everything();
+    layer.paintInk(scene, dirty);
+    expect(layer.inked).toBe(2);
+  });
+
+  it("drops ink dirt for an item nobody has mounted", () => {
+    add("a");
+    drawOn("a");
+    // Never synced, so there is no node and nothing to be stale.
+    layer.paintInk(scene, dirty);
+    expect(layer.inked).toBe(0);
+  });
+
+  it("frees every backing store on teardown", () => {
+    add("a");
+    drawOn("a");
+    layer.sync(scene, dirty, null);
+    layer.paintInk(scene, dirty);
+
+    layer.destroy();
+    expect(layer.inked).toBe(0);
+    expect(document.querySelectorAll("canvas.item-ink")).toHaveLength(0);
+  });
+});

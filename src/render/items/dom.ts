@@ -45,6 +45,7 @@ import {
   stockBase,
   stockRuling,
 } from "@/render/items/paper";
+import { ItemInk } from "@/render/ink/canvas";
 import { counterRotate, shadowSprite, type Elevation } from "@/render/items/shadow";
 import type { ItemLayer } from "@/render/items/view";
 import type { DirtySets } from "@/state/dirty";
@@ -62,6 +63,17 @@ export type AssetResolver = (sha256: string, screenPx: number) => string;
 
 type Archetype = "polaroid" | "paper";
 
+/**
+ * How many ink canvases may be re-rastered in one frame — see
+ * [`DomItemLayer.paintInk`].
+ *
+ * Three, which is a guess with a reason rather than a measurement: a re-raster
+ * is an allocation plus a fill per stroke, and the frame it lands on is the one
+ * after a gesture ended, when the browser is already busy re-promoting the world
+ * layer. The number to watch is the `ink` row in the dev HUD.
+ */
+const MAX_RASTERS_PER_FRAME = 3;
+
 function archetypeOf(type: string): Archetype {
   return type === "polaroid" ? "polaroid" : "paper";
 }
@@ -72,6 +84,11 @@ interface View {
   bind(cold: ItemCold, assetUrl: AssetResolver, screenPx: number): void;
   /** `lift` is the scene's carry transient, 0 at rest and 1 while carried. */
   transform(x: number, y: number, rot: number, w: number, h: number, lift: number): void;
+  /**
+   * The item's committed ink. Identical on both archetypes, which is right —
+   * every kind of paper on this board can be drawn on (DESIGN section 2.1).
+   */
+  readonly ink: ItemInk;
   release(): void;
 }
 
@@ -167,10 +184,12 @@ class PolaroidView implements View {
 
   private readonly shadow = new ShadowNode();
   private readonly frame: HTMLDivElement;
+  readonly ink: ItemInk;
 
   constructor() {
     this.el = document.createElement("div");
     this.el.className = "item item-polaroid";
+    this.ink = new ItemInk(this.el);
 
     // The frame is a separate box from the item so the shadow can extend past
     // the item's edge without being clipped by the frame's own containment.
@@ -300,6 +319,11 @@ class PolaroidView implements View {
     this.photo.removeAttribute("src");
     this.el.classList.remove("is-lifted", "is-waiting");
     this.shadow.reset();
+    // And the ink, for the reason the photograph goes: a pooled node keeps its
+    // subtree, so a view recycled onto a different item would sit there wearing
+    // the previous item's marks. The bitmap is a cache of strokes that are still
+    // in the document, so this costs a re-raster if the item comes back.
+    this.ink.release();
   }
 }
 
@@ -323,10 +347,12 @@ class PaperView implements View {
   private readonly grain: HTMLDivElement;
   private readonly body: HTMLDivElement;
   private boundCold: ItemCold | null = null;
+  readonly ink: ItemInk;
 
   constructor() {
     this.el = document.createElement("div");
     this.el.className = "item item-paper";
+    this.ink = new ItemInk(this.el);
 
     // The sheet clips its own grain and text; the shadow lives outside it.
     this.surface = document.createElement("div");
@@ -369,6 +395,7 @@ class PaperView implements View {
     this.boundCold = null;
     this.el.classList.remove("is-lifted");
     this.shadow.reset();
+    this.ink.release();
   }
 }
 
@@ -410,6 +437,15 @@ export class DomItemLayer implements ItemLayer {
   /** Reused by `hitTest`, which walks the paint order on every pointer move. */
   private readonly probe: Point = { x: 0, y: 0 };
 
+  /**
+   * Items whose ink canvas is out of date, waiting for the INK phase.
+   *
+   * This layer's, not the dirty sets'. `dirty.ink` is cleared at the end of
+   * every frame (phase 9) and a re-raster deliberately may not finish in one —
+   * see [`paintInk`] for the budget and why it exists.
+   */
+  private readonly inkPending = new Set<string>();
+
   constructor(host: HTMLElement, assetUrl: AssetResolver) {
     this.host = host;
     this.assetUrl = assetUrl;
@@ -417,6 +453,58 @@ export class DomItemLayer implements ItemLayer {
 
   get mounted(): number {
     return this.views.size;
+  }
+
+  get inked(): number {
+    let n = 0;
+    for (const view of this.views.values()) if (view.ink.live) n++;
+    return n;
+  }
+
+  get inkPixels(): number {
+    let n = 0;
+    for (const view of this.views.values()) n += view.ink.pixels;
+    return n;
+  }
+
+  /**
+   * INK phase (6). Re-raster the ink of the items that need it, a few at a time.
+   *
+   * Three things fill the queue: a stroke was committed or erased
+   * (`dirty.ink`), an item came back into the viewport and its canvas had been
+   * evicted (the mount path in `sync`), and `dirty.all` — which is what the
+   * debounced gesture end raises, and is therefore the zoom-end re-raster of
+   * everything on screen.
+   *
+   * **Budgeted, and that is not a micro-optimisation.** `world.onRasterize`
+   * calls `dirty.everything()`, so without a cap one zoom-end reallocates and
+   * repaints every ink canvas in the viewport inside a single frame — which is
+   * the shape of the 777 ms frame the phase-0 spike measured (D-12): cost that
+   * tracks the number of live nodes, landing on the frame after a gesture ends.
+   * The items not reached this frame keep the bitmap they have and it stretches,
+   * which is exactly what DESIGN section 9.3 asks for in the interim.
+   *
+   * An id that is not mounted is dropped rather than queued. The canvas is a
+   * cache of strokes that are still in the document, so an item off screen has
+   * nothing to be stale — and the mount path above will queue it if it returns.
+   */
+  paintInk(scene: Scene, dirty: DirtySets): void {
+    if (dirty.all) {
+      for (const [id, view] of this.views) if (view.ink.live || scene.hasInk(id)) this.inkPending.add(id);
+    } else {
+      for (const id of dirty.ink) if (this.views.has(id)) this.inkPending.add(id);
+    }
+    if (this.inkPending.size === 0) return;
+
+    let budget = MAX_RASTERS_PER_FRAME;
+    for (const id of this.inkPending) {
+      if (budget === 0) break;
+      this.inkPending.delete(id);
+      const view = this.views.get(id);
+      if (!view) continue;
+      view.ink.update(scene.strokesOf(id), this.rasterScale);
+      budget--;
+    }
   }
 
   sync(scene: Scene, dirty: DirtySets, visible: ReadonlySet<string> | null): void {
@@ -485,6 +573,10 @@ export class DomItemLayer implements ItemLayer {
         // anyway, so mounting costs one style write and disturbs nobody else.
         const rank = this.rank.get(id);
         if (rank !== undefined) view.el.style.zIndex = String(rank);
+        // Culling threw this item's canvas away when it left, which is the whole
+        // point of the eviction — so coming back means rastering again. Queued
+        // rather than done here: the DOM phase does not paint.
+        if (scene.hasInk(id)) this.inkPending.add(id);
       }
 
       if (isNew || dirty.all || dirty.items.has(id)) {
@@ -619,8 +711,17 @@ export class DomItemLayer implements ItemLayer {
   }
 
   destroy(): void {
-    for (const view of this.views.values()) view.el.remove();
+    // `release()` and not just `remove()`, because a released node frees its ink
+    // canvas's backing store — dropping the element alone leaves the bitmap
+    // alive until the collector gets to it, and a torn-down layer still holding
+    // megabytes is the kind of leak that only shows up in a long session.
+    for (const view of this.views.values()) {
+      view.release();
+      view.el.remove();
+    }
+    for (const pooled of [...this.pool.polaroid, ...this.pool.paper]) pooled.release();
     this.views.clear();
+    this.inkPending.clear();
     this.pool.polaroid.length = 0;
     this.pool.paper.length = 0;
     this.order = [];

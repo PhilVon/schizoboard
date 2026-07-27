@@ -64,6 +64,31 @@
   z-index: 9999 !important;
 }
 
+/* --- ink ------------------------------------------------------------------ */
+
+/*
+ * A child of the item **root**, not of `.pol-window` or `.paper-surface` — both
+ * of those clip, and ink drawn off the edge of a photograph is meant to run onto
+ * the cork. The root is the one place inside an item that deliberately does not
+ * clip; the shadow is the other thing that needs it.
+ *
+ * `left`/`top` at 50% put the origin at the item's centre, which is where an
+ * item's local coordinates are measured from, so `render/ink/canvas.ts` places
+ * the canvas with margins alone and never has to know how big the item is. A
+ * resize therefore never touches the ink.
+ *
+ * No `will-change`. During a zoom the canvas is inside the promoted world layer
+ * and stretches with everything else, which is DESIGN section 9.3's "stale
+ * bitmap stretched in the interim" rather than a defect — the crisp re-raster
+ * arrives on the debounced gesture end.
+ */
+.item-ink {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  pointer-events: none;
+}
+
 /* --- the shadow ----------------------------------------------------------- */
 
 .item-shadow {

@@ -46,8 +46,37 @@ export interface ItemLayer {
    */
   setRasterScale(scale: number): void;
 
+  /**
+   * INK phase (6). Re-raster the committed ink of the items that need it.
+   *
+   * Its own phase and its own method rather than part of `sync`, because the two
+   * are woken by different things and cost differently: the DOM phase writes
+   * transforms for everything that moved, and this fills bitmaps for the few
+   * items that were drawn on. A board where somebody is dragging a photograph
+   * runs `sync` every frame and this one never.
+   *
+   * Still no element crosses this interface. An ink canvas has to live inside
+   * the item's rotated node — that is what makes ink follow a move and a
+   * rotation for free (DESIGN section 6.2) — so the layer that owns the node
+   * owns the canvas, and a Pixi implementation would satisfy this with a render
+   * texture in the same place.
+   */
+  paintInk(scene: Scene, dirty: DirtySets): void;
+
   /** How many item presentations currently exist — for the dev HUD. */
   readonly mounted: number;
+
+  /**
+   * How many ink canvases exist right now, and how many device pixels they hold
+   * between them — both for the dev HUD.
+   *
+   * `inked` is the one observable that shows off-screen eviction actually
+   * happening: pan an inked item away and it falls. `inkPixels` is the memory
+   * this task's power-of-two sizing can run up, made watchable rather than
+   * argued about — the same move the document made with its byte count.
+   */
+  readonly inked: number;
+  readonly inkPixels: number;
 
   destroy(): void;
 }
