@@ -47,6 +47,7 @@
 
 import { DEFAULT_STRING_MATERIAL, fibre, sagFor, sagWith } from "@/lib/material";
 import { sampleChain, solveCatenary } from "@/sim/catenary";
+import { Draper } from "@/sim/collide";
 import {
   MATERIAL_EASE,
   PLUCK_REACH,
@@ -119,6 +120,18 @@ interface Segment {
    * a board opening is not somebody changing their mind about wire.
    */
   sag: number;
+  /**
+   * Whether this is an `over` string, and therefore whether it collides.
+   *
+   * > `under` strings — string that a photograph was later pinned over — skip
+   * > collision entirely and draw beneath the item layer. — DESIGN section 5.6
+   *
+   * Mirrored per segment beside `slack` and `material` for the same reason they
+   * are: it is read in the step loop, and a segment's string is a Map lookup
+   * away. Unlike those two it is a property of the whole string, and every
+   * segment of one always agrees about it.
+   */
+  over: boolean;
   /** Offset into the particle pool, in coordinates rather than particles. */
   at: number;
   count: number;
@@ -163,6 +176,12 @@ export class RopeSet {
    */
   private readonly runs = new Map<string, string>();
 
+  /** Draping: where the items are, and the push-out itself. Owned here because
+   *  this is what knows which ropes are awake and which are `over`. */
+  private readonly draper = new Draper();
+  /** The box `drapeFor` asks the broad phase about, reused across ropes. */
+  private readonly reach: Bounds = { minX: 0, minY: 0, maxX: 0, maxY: 0 };
+
   private pos = new Float64Array(INITIAL_POOL);
   private prev = new Float64Array(INITIAL_POOL);
   private top = 0;
@@ -205,6 +224,7 @@ export class RopeSet {
     slack: readonly number[],
     closed = false,
     material: string = DEFAULT_STRING_MATERIAL,
+    layer = "over",
   ): void {
     this.removeString(dirty, id);
     const spans = closed ? pins.length : pins.length - 1;
@@ -223,6 +243,7 @@ export class RopeSet {
         // A rope being built is a rope arriving, not one changing material, so
         // it starts on its own number rather than easing onto it.
         sag: fibre(material).sag,
+        over: layer !== "under",
         at: 0,
         count: 0,
         asleep: true,
@@ -272,6 +293,7 @@ export class RopeSet {
     this.free.clear();
     this.top = 0;
     this.clock.reset();
+    this.draper.clear();
   }
 
   /**
@@ -305,6 +327,11 @@ export class RopeSet {
     const steps = this.clock.advance(dtMs);
     if (steps === 0) return;
 
+    // Where the items are, for the awake `over` ropes that are about to ask.
+    // Once for the frame rather than once per rope, and free on a frame where
+    // nothing moved.
+    this.draper.update(scene, dirty);
+
     for (const segment of this.segments) {
       if (segment.asleep) continue;
       const a = scene.pins.get(segment.a);
@@ -333,6 +360,7 @@ export class RopeSet {
         b.wx,
         b.wy,
         steps,
+        this.drapeFor(scene, segment, a.wx, a.wy, b.wx, b.wy),
       );
 
       segment.ax = a.wx;
@@ -410,10 +438,21 @@ export class RopeSet {
           owned[i]!.material = mirror.material;
           moved = true;
         }
+        // *Tuck behind* stopped being a style edit when draping landed: an
+        // `over` string rests on what it crosses and an `under` one passes
+        // through, so flipping the layer changes the shape the rope hangs in
+        // and the solver has to be let out to find it. Waking rather than
+        // re-seeding, for the same reason a slack change wakes — the string
+        // should be seen to settle onto the photograph, not to appear on it.
+        const over = mirror.layer !== "under";
+        if (owned[i]!.over !== over) {
+          owned[i]!.over = over;
+          moved = true;
+        }
       }
-      // The style edits that are only style — a colour, a thickness, a
-      // tuck-behind — change no geometry, so they wake nothing. The renderer is
-      // told by `dirty.strings` directly and reads them off the mirror.
+      // The edits that really are only style — a colour, a thickness — change
+      // no geometry, so they wake nothing. The renderer is told by
+      // `dirty.strings` directly and reads them off the mirror.
       if (moved) for (const segment of owned) this.rouse(segment);
       return;
     }
@@ -426,6 +465,7 @@ export class RopeSet {
       mirror.nodes.map((node) => node.slackAfter),
       mirror.closed,
       mirror.material,
+      mirror.layer,
     );
   }
 
@@ -718,6 +758,45 @@ export class RopeSet {
   }
 
   /**
+   * What this segment should be kept out of this frame, or `null` for a rope
+   * that collides with nothing.
+   *
+   * `null` is the answer for every `under` string (DESIGN section 5.6) and for
+   * every `over` one with no item near it, which on a real board is most of
+   * them — so the ordinary rope pays one broad-phase query per frame and a
+   * branch per micro-step, and nothing else.
+   *
+   * The box asked about is the pose the rope is *leaving*, widened to take in
+   * where its anchors are going. A dragged pin can travel a long way in one
+   * frame and the rope follows it, so the query has to cover the destination or
+   * a string flung across a photograph would arrive already through it.
+   */
+  private drapeFor(
+    scene: Scene,
+    segment: Segment,
+    ax: number,
+    ay: number,
+    bx: number,
+    by: number,
+  ): Draper | null {
+    if (!segment.over || segment.count < 3) return null;
+
+    const box = this.reach;
+    box.minX = Math.min(segment.minX, ax, bx);
+    box.minY = Math.min(segment.minY, ay, by);
+    box.maxX = Math.max(segment.maxX, ax, bx);
+    box.maxY = Math.max(segment.maxY, ay, by);
+
+    const found = this.draper.prepare(
+      scene,
+      box,
+      anchorSlot(scene, segment.a),
+      anchorSlot(scene, segment.b),
+    );
+    return found > 0 ? this.draper : null;
+  }
+
+  /**
    * Walk a segment's sag multiplier toward the one its material asks for, and
    * say whether it is still on the way.
    *
@@ -859,6 +938,19 @@ export class RopeSet {
     reusable.push(segment.at);
     segment.count = 0;
   }
+}
+
+/**
+ * The item slot a pin is stuck into, or −1 for one in the bare cork.
+ *
+ * What `Draper.prepare` needs to know so a string does not drape over the
+ * photograph it is tied to — the reasoning is there, because that is where the
+ * consequence is.
+ */
+function anchorSlot(scene: Scene, pinId: string): number {
+  const parent = scene.pins.get(pinId)?.parent;
+  if (parent === null || parent === undefined) return -1;
+  return scene.slotOf(parent) ?? -1;
 }
 
 /**

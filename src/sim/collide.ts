@@ -10,8 +10,8 @@
  * > of cutting through it, exactly as real string does.
  * > — DESIGN section 5.6
  *
- * This file is the "found via the spatial index" half (T-64). The push-out
- * itself is T-65 and lands beside it.
+ * `ItemIndex` is the "found via the spatial index" half and `Draper` is the
+ * push-out, which the solver calls into once per micro-step.
  *
  * ## Why this index is not `render/cull.ts`'s
  *
@@ -45,6 +45,7 @@
  */
 
 import { CellGrid, type CellRange } from "@/lib/cellgrid";
+import { ROPE_SPACING } from "@/sim/tuning";
 import type { DirtySets } from "@/state/dirty";
 import type { Bounds, Scene } from "@/state/scene";
 
@@ -169,5 +170,222 @@ export class ItemIndex {
   clear(): void {
     this.grid.clear();
     this.built = false;
+  }
+}
+
+/**
+ * How far outside a rope's own bounding box the broad phase looks.
+ *
+ * The box is where the rope was when it last stopped, and the solver is about
+ * to move it — up to a whole fixed step's worth of gravity and of anchor
+ * travel. One particle spacing of slop covers that with room to spare, and the
+ * cost of being generous here is a candidate the exact test rejects.
+ */
+const QUERY_MARGIN = ROPE_SPACING;
+
+/**
+ * How many items one rope will collide against in a frame.
+ *
+ * Not a correctness bound, and it is never reached by anything a person makes:
+ * a string long enough to cross two dozen photographs is a string across the
+ * whole board. It is here because `prepare` runs per rope per frame and the
+ * arrays it fills are the hot loop's — a pathological document that piles four
+ * hundred items into one place must not turn one rope's step into a hundred
+ * thousand tests. Past the cap the rope drapes over the first `MAX_CANDIDATES`
+ * it was handed and passes through the rest, which is a wrong picture rather
+ * than a stalled frame.
+ */
+const MAX_CANDIDATES = 24;
+
+/**
+ * The push-out, and the arrays it works from.
+ *
+ * One of these for the whole board, not one per rope: `sim/ropes.ts` steps a
+ * rope to completion before it starts the next, so `prepare` overwrites the
+ * candidate arrays each time and nothing is allocated per rope per frame.
+ *
+ * ## Why the item is a rectangle here and a box in the index
+ *
+ * The index answers in rotation-expanded boxes, which over-report a tilted
+ * polaroid by several units at the corners. This is where that is paid back:
+ * `prepare` reads the item's *actual* rotation and half-extents out of the
+ * scene, and `resolve` works in the item's own frame, so a rope resting on a
+ * tilted photograph rests on the tilted edge rather than on an invisible
+ * upright box around it.
+ */
+export class Draper {
+  readonly index = new ItemIndex();
+
+  private readonly slots: number[] = [];
+
+  /** Candidate silhouettes, unpacked into flat arrays because `resolve` walks
+   *  them once per particle per micro-step and a field access per test is the
+   *  difference between this fitting in the frame and not. */
+  private cx = new Float64Array(MAX_CANDIDATES);
+  private cy = new Float64Array(MAX_CANDIDATES);
+  private cos = new Float64Array(MAX_CANDIDATES);
+  private sin = new Float64Array(MAX_CANDIDATES);
+  private hw = new Float64Array(MAX_CANDIDATES);
+  private hh = new Float64Array(MAX_CANDIDATES);
+  /** The same silhouettes as axis-aligned boxes — the cheap per-particle
+   *  rejection, and on a long rope crossing one photograph it rejects almost
+   *  every particle in four comparisons. */
+  private minX = new Float64Array(MAX_CANDIDATES);
+  private minY = new Float64Array(MAX_CANDIDATES);
+  private maxX = new Float64Array(MAX_CANDIDATES);
+  private maxY = new Float64Array(MAX_CANDIDATES);
+
+  private n = 0;
+  private readonly query: Bounds = { minX: 0, minY: 0, maxX: 0, maxY: 0 };
+
+  /** SIM phase (3), once per frame, before any rope steps. */
+  update(scene: Scene, dirty: DirtySets): void {
+    this.index.update(scene, dirty);
+  }
+
+  /**
+   * Load the silhouettes one rope could be lying on, and say how many there
+   * are — zero meaning the solver should not be handed this at all.
+   *
+   * `box` is where the rope is now; `QUERY_MARGIN` covers where it is about to
+   * be. `skipA` and `skipB` are the slots of the items the segment's two end
+   * pins are parented to, or −1 for a pin in the bare cork.
+   *
+   * ## Why a string never drapes over the item it is pinned to
+   *
+   * A parented pin's world position is derived from its item's pose, so the pin
+   * is *inside* that item's silhouette — always, by construction. Pushing the
+   * particles next to it out would kink the string hard around the photograph's
+   * edge the instant it leaves its own pin, on very nearly every string on the
+   * board, because pinning string to photographs is what the application is for.
+   *
+   * So the item a segment is tied to is not an obstacle to that segment. The
+   * price is a long string that sags back across its own photograph and cuts
+   * through it, which takes a deliberately slack run to arrange and is a great
+   * deal less visible than a kink at every pin.
+   */
+  prepare(scene: Scene, box: Bounds, skipA: number, skipB: number): number {
+    this.n = 0;
+    this.slots.length = 0;
+
+    this.query.minX = box.minX - QUERY_MARGIN;
+    this.query.minY = box.minY - QUERY_MARGIN;
+    this.query.maxX = box.maxX + QUERY_MARGIN;
+    this.query.maxY = box.maxY + QUERY_MARGIN;
+    this.index.query(scene, this.query, this.slots);
+
+    for (let i = 0; i < this.slots.length && this.n < MAX_CANDIDATES; i++) {
+      const slot = this.slots[i]!;
+      if (slot === skipA || slot === skipB) continue;
+      // An item spanning several cells comes back once per cell; the arrays are
+      // short enough that a scan beats a per-query stamp array.
+      let seen = false;
+      for (let k = 0; k < this.n; k++) {
+        if (this.slots[k] === slot) seen = true;
+      }
+      if (seen) continue;
+
+      const angle = scene.rot[slot]! + scene.swing[slot]!;
+      const n = this.n;
+      this.cx[n] = scene.x[slot]! + scene.driftX[slot]!;
+      this.cy[n] = scene.y[slot]! + scene.driftY[slot]!;
+      this.cos[n] = Math.cos(angle);
+      this.sin[n] = Math.sin(angle);
+      this.hw[n] = scene.w[slot]! / 2;
+      this.hh[n] = scene.h[slot]! / 2;
+      const rx = (scene.w[slot]! * Math.abs(this.cos[n]!) + scene.h[slot]! * Math.abs(this.sin[n]!)) / 2;
+      const ry = (scene.w[slot]! * Math.abs(this.sin[n]!) + scene.h[slot]! * Math.abs(this.cos[n]!)) / 2;
+      this.minX[n] = this.cx[n]! - rx;
+      this.minY[n] = this.cy[n]! - ry;
+      this.maxX[n] = this.cx[n]! + rx;
+      this.maxY[n] = this.cy[n]! + ry;
+      // Overwritten in place so the dedupe scan above reads what was kept
+      // rather than what the index happened to return.
+      this.slots[n] = slot;
+      this.n = n + 1;
+    }
+    return this.n;
+  }
+
+  /**
+   * Move any particle that is inside a silhouette to the nearest point on its
+   * edge — the fourth step of DESIGN section 5.2's solver, called once per
+   * micro-step from `sim/verlet.ts`.
+   *
+   * ## Nearest edge, and why that gives the top one
+   *
+   * The exit is along whichever of the item's two axes the particle is least
+   * deep into, which is the standard resolution for a rotated box and is the
+   * only one that does not need a contact normal the simulation has no way to
+   * know. It is not, on its own, "rests on the top edge" — a particle nearer
+   * the bottom leaves through the bottom. Gravity is what makes the top edge
+   * the answer: a rope arrives at a photograph from above, so its particles
+   * enter through the top and are shallowest there, and every micro-step that
+   * pushes one back up is a micro-step it does not sink. The rope settles along
+   * the edge it landed on, which is the one a real string would drape over.
+   *
+   * ## Endpoints are not pushed
+   *
+   * They are pins, seated on their anchors every micro-step by the solver and
+   * infinite-mass by construction. A correction applied to one is overwritten
+   * before it is integrated once, so applying it is wasted work that would also
+   * make a pin *look* like it had moved to anything reading the particle back.
+   *
+   * ## Why `prev` moves with `pos`
+   *
+   * A Verlet particle's velocity *is* `pos - prev`, so moving `pos` alone and
+   * leaving `prev` where it was hands the particle the whole correction as
+   * speed — it is fired away from the photograph it just touched, and a rope
+   * resting on one buzzes instead of resting. Moving both by the same vector
+   * carries the velocity through the contact unchanged: no bounce, no friction,
+   * and the rope's own damping bleeds off the rest.
+   */
+  resolve(pos: Float64Array, prev: Float64Array, at: number, count: number): void {
+    const last = at + (count - 1) * 2;
+    for (let c = 0; c < this.n; c++) {
+      const cx = this.cx[c]!;
+      const cy = this.cy[c]!;
+      const cos = this.cos[c]!;
+      const sin = this.sin[c]!;
+      const hw = this.hw[c]!;
+      const hh = this.hh[c]!;
+      const minX = this.minX[c]!;
+      const minY = this.minY[c]!;
+      const maxX = this.maxX[c]!;
+      const maxY = this.maxY[c]!;
+
+      for (let i = at + 2; i < last; i += 2) {
+        const px = pos[i]!;
+        const py = pos[i + 1]!;
+        if (px < minX || px > maxX || py < minY || py > maxY) continue;
+
+        const ox = px - cx;
+        const oy = py - cy;
+        const lx = ox * cos + oy * sin;
+        const depthX = hw - Math.abs(lx);
+        if (depthX <= 0) continue;
+        const ly = oy * cos - ox * sin;
+        const depthY = hh - Math.abs(ly);
+        if (depthY <= 0) continue;
+
+        let ex = lx;
+        let ey = ly;
+        if (depthX < depthY) ex = lx < 0 ? -hw : hw;
+        else ey = ly < 0 ? -hh : hh;
+
+        const dx = cx + ex * cos - ey * sin - px;
+        const dy = cy + ex * sin + ey * cos - py;
+        pos[i] = px + dx;
+        pos[i + 1] = py + dy;
+        prev[i] = prev[i]! + dx;
+        prev[i + 1] = prev[i + 1]! + dy;
+      }
+    }
+  }
+
+  clear(): void {
+    this.index.clear();
+    this.n = 0;
+    this.slots.length = 0;
   }
 }
