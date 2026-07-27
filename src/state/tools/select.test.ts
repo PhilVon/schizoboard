@@ -2360,3 +2360,112 @@ describe("tucking a string behind the items", () => {
     expect(writes.every((w) => w.kind !== "layer")).toBe(true);
   });
 });
+
+/**
+ * > | Follow the thread | Double-click | Selects the entire connected component
+ * > of pins, strings and items | — DESIGN section 3.3
+ *
+ * The walk itself is `state/thread.test.ts`. What is under test here is only
+ * the gesture: which press does it, which press must not, and that it does not
+ * collide with the other double-click on this tool.
+ */
+describe("following the thread", () => {
+  /** A photograph on a pin, a string from that pin to a free one. */
+  function web(): void {
+    put("photo", 0, 0, 80, 80);
+    putPin("onPhoto", "photo", 0, 0);
+    putPin("far", null, 300, 0);
+    scene.putString({
+      id: "s",
+      nodes: [
+        { nodeId: "n0", pin: "onPhoto", slackAfter: 0.2 },
+        { nodeId: "n1", pin: "far", slackAfter: 0.2 },
+      ],
+      color: "#a8322c",
+      thickness: 3,
+      material: "string",
+      layer: "over",
+      closed: false,
+    });
+  }
+
+  it("takes the whole component on a double-click of a pin", () => {
+    web();
+    down(0, 0);
+    up(0, 0);
+    // The first press of the double is still a plain click on a pin, which
+    // leaves the selection alone. All of it happens on the second.
+    expect(selection.pins.size).toBe(0);
+    expect(selection.strings.size).toBe(0);
+
+    downAgain(0, 0);
+    up(0, 0);
+
+    expect([...selection.members]).toEqual(["photo"]);
+    expect([...selection.strings]).toEqual(["s"]);
+    expect([...selection.pins].sort()).toEqual(["far", "onPhoto"]);
+  });
+
+  /** The same component from the other end of the string, which is what makes
+   *  it a component rather than a direction. */
+  it("gives the same answer from the far pin", () => {
+    web();
+    downAgain(300, 0);
+    up(300, 0);
+    expect([...selection.members]).toEqual(["photo"]);
+    expect([...selection.pins].sort()).toEqual(["far", "onPhoto"]);
+  });
+
+  /**
+   * A single click on a pin still leaves the selection exactly as it found it.
+   * That is what makes the double composable: the first press does nothing, so
+   * there is no transitional selection to see.
+   */
+  it("does nothing on a single click", () => {
+    web();
+    put("elsewhere", 500, 500);
+    selection.replace(["elsewhere"]);
+    down(0, 0);
+    up(0, 0);
+    expect([...selection.members]).toEqual(["elsewhere"]);
+    expect(selection.pins.size).toBe(0);
+  });
+
+  /**
+   * The reason it is acted on at the release. Pressing twice on a pin and then
+   * pulling means drag the pin — the primary verb a pin has — and it must not
+   * select half the board on the way past.
+   */
+  it("is a pin drag, not a thread, when the second press drags", () => {
+    web();
+    downAgain(300, 0);
+    move(340, 40);
+    up(340, 40);
+    expect(selection.pins.size).toBe(0);
+    expect(writes.some((w) => w.kind === "place")).toBe(true);
+  });
+
+  /**
+   * The other double-click on this tool. They cannot collide because the press
+   * resolves a pin before it resolves a string, but the two live a few lines
+   * apart and nothing else says so.
+   */
+  it("leaves double-clicking a segment to the taut toggle", () => {
+    web();
+    // Mid-run, well away from either pin.
+    downAgain(150, 0);
+    up(150, 0);
+    expect(selection.pins.size).toBe(0);
+    expect([...selection.strings]).toEqual(["s"]);
+    expect(writes.some((w) => w.kind === "nodeSlack")).toBe(true);
+  });
+
+  it("selects a lone pin, and only it", () => {
+    putPin("alone", null, 0, 0);
+    downAgain(0, 0);
+    up(0, 0);
+    expect([...selection.pins]).toEqual(["alone"]);
+    expect(selection.members.size).toBe(0);
+    expect(selection.strings.size).toBe(0);
+  });
+});

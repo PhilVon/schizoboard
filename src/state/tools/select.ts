@@ -59,6 +59,7 @@ import {
   type HandleId,
 } from "@/state/handles";
 import type { ItemPose } from "@/state/scene";
+import { threadFrom } from "@/state/thread";
 import { anchorAt, anchorParent, drawnPose, settleOnPin, stringAt } from "@/state/tools/frame";
 import { PinDrag } from "@/state/tools/pindrag";
 import type {
@@ -881,6 +882,23 @@ export class SelectTool implements Tool {
       // click, so it means that one item — DESIGN section 3.8, "click to
       // select" — and the group it was standing in goes.
       ctx.selection.replace([this.pendingSelect]);
+    } else if (this.pendingPin !== null && this.pendingDouble) {
+      /**
+       * > | Follow the thread | Double-click | Selects the entire connected
+       * > component of pins, strings and items | — DESIGN section 3.3
+       *
+       * At the release and only if the press never became a drag, for the same
+       * reason toggle-taut is: pressing twice on a pin and *then* pulling means
+       * drag the pin, which is the primary verb a pin has, and it must not also
+       * select half the board on the way past.
+       *
+       * A single click on a pin still leaves the selection exactly as it found
+       * it — see the note below. So the first click of the double does nothing
+       * and the second does all of it, which is what makes this composable with
+       * a pin drag rather than a mode.
+       */
+      const thread = threadFrom(ctx.scene, this.pendingPin);
+      ctx.selection.replaceThread(thread.items, thread.strings, thread.pins);
     }
     this.pendingSelect = null;
     this.pendingDouble = false;
