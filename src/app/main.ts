@@ -281,16 +281,17 @@ async function boot(): Promise<void> {
      * section 3.4). The pin and the node it hangs on are one transaction, so
      * `Ctrl+Z` takes the pin with the node rather than leaving it in the cork.
      *
-     * The two slack ratios arrive computed. They are geometry and geometry
-     * lives in the scene, which `crdt/` may not read — see
-     * `state/tools/select.ts` and `lib/slack.ts`.
+     * The chords arrive measured, because geometry lives in the scene and
+     * `crdt/` may not read it. The segment's own slack does not: the op reads
+     * that inside its transaction, which is what makes the `queued.push` below
+     * safe — the write runs at the next flush, and by then the number the
+     * gesture saw may be a peer's edit old (DATA-MODEL section 5.4).
      */
-    insertPin: (stringId, index, anchor, slackBefore, slackAfter, settle) => {
+    insertPin: (stringId, index, anchor, split, settle) => {
       const at = { ...anchor };
+      const cut = { ...split };
       const poses = settled(settle);
-      queued.push(() =>
-        insertPinIntoString(board, stringId, index, at, slackBefore, slackAfter, poses),
-      );
+      queued.push(() => insertPinIntoString(board, stringId, index, at, cut, poses));
     },
     deletePins: (ids, settle) => {
       const snapshot = [...ids];

@@ -62,7 +62,7 @@ import * as Y from "yjs";
 import { freshId, mutate, type BoardDoc } from "@/crdt/doc";
 import { DEFAULT_STRING_MATERIAL } from "@/lib/material";
 import { DEFAULT_STRING_COLOR, DEFAULT_STRING_THICKNESS } from "@/lib/palette";
-import { DEFAULT_SLACK } from "@/lib/slack";
+import { DEFAULT_SLACK, splitSlack } from "@/lib/slack";
 import { newId } from "@/crdt/ids";
 import { writePoses, type Pose } from "@/crdt/ops/items";
 import { buildPin } from "@/crdt/ops/pins";
@@ -179,6 +179,28 @@ export function createString(board: BoardDoc, input: CreateStringInput): string 
 export type StringAnchor =
   | { readonly pin: string }
   | { readonly parent: string | null; readonly lx: number; readonly ly: number };
+
+/**
+ * Where a segment was cut, as pure geometry — everything `lib/slack.ts`'s
+ * `splitSlack` needs *except* the segment's own slack.
+ *
+ * That omission is the point. These four numbers are things only the caller can
+ * know: three chord lengths measured off the scene, and the arc-length fraction
+ * the cursor was at. The fifth input is the slack the segment already had,
+ * which is document state and is therefore read in the transaction that writes
+ * it rather than passed in from a gesture that started seconds ago — see
+ * `insertPinIntoString` and DATA-MODEL section 5.4.
+ */
+export interface SegmentSplit {
+  /** Chord of the segment being split, board units. */
+  readonly chord: number;
+  /** Chord from the segment's first pin to the new one. */
+  readonly first: number;
+  /** Chord from the new pin to the segment's second. */
+  readonly second: number;
+  /** Arc-length fraction along the original segment, 0 at its start. */
+  readonly t: number;
+}
 
 /**
  * Make a string through a run of anchors, pushing in whatever pins the run
@@ -319,11 +341,33 @@ export function insertStringNode(
  * pulling a loop of string out is one thing the user did, so undoing it must
  * not leave a pin behind in the cork.
  *
- * `slackBefore` and `slackAfter` come from `lib/slack.ts`'s `splitSlack`. They
- * are the caller's because only the caller knows where the pins actually are —
- * the chords are geometry, and geometry lives in the scene, which `crdt/` may
- * not read. Getting them wrong is the one visible failure this gesture has
- * (DESIGN section 3.4, AC-18).
+ * `split` is geometry and a gesture, and it is the caller's because only the
+ * caller knows where the pins actually are — chords live in the scene, which
+ * `crdt/` may not read. Getting it wrong is the one visible failure this
+ * gesture has (DESIGN section 3.4, AC-18).
+ *
+ * What the caller does **not** supply is the segment's own slack, and that is
+ * the whole of DATA-MODEL section 5.4:
+ *
+ * > Read the prior state **inside** the transaction.
+ *
+ * The two halves used to arrive already divided, which meant they were divided
+ * against whatever the segment's slack was when the *gesture began*. That is a
+ * long time ago: the loop is picked up on pointer-down, dropped some seconds
+ * later, and `app/main.ts` then queues the write to run at the next flush. A
+ * peer who re-slacks that segment anywhere in that window had their value
+ * silently overwritten by arithmetic that never saw it. So the division moved
+ * in here, where `previous.get("slackAfter")` is read in the same transaction
+ * that writes it and the two cannot disagree.
+ *
+ * It does not make concurrent splits of the *same* segment conflict-free —
+ * nothing can, and 5.4 says so:
+ *
+ * > Accept the one-time sag change in this rare conflict. The result is always
+ * > valid; it just sags slightly differently than either user expected.
+ *
+ * The window shrinks from a whole gesture to the instant of the transaction,
+ * which is as far as a CRDT can take it.
  *
  * `settle` is the same argument `deletePins` takes, and it is here for the
  * mirror-image reason. An item that had one pin and now has two has stopped
@@ -338,8 +382,7 @@ export function insertPinIntoString(
   stringId: string,
   index: number,
   anchor: StringAnchor,
-  slackBefore: number,
-  slackAfter: number,
+  split: SegmentSplit,
   settle?: ReadonlyMap<string, Pose>,
 ): string | null {
   return mutate(board, Origin.LOCAL_USER, () => {
@@ -358,10 +401,17 @@ export function insertPinIntoString(
     }
 
     const at = Math.max(0, Math.min(index, nodes.length));
-    const node = buildNode(pin, slackAfter);
-    nodes.insert(at, [node]);
+    // Read the parent's slack before anything is written, so the division and
+    // the write it feeds see one state — DATA-MODEL section 5.4.
     const previous = at > 0 ? nodes.get(at - 1) : undefined;
-    if (previous) previous.set("slackAfter", clampSlack(slackBefore));
+    const parent =
+      typeof previous?.get("slackAfter") === "number"
+        ? (previous.get("slackAfter") as number)
+        : DEFAULT_SLACK;
+    const [before, after] = splitSlack(split.chord, parent, split.first, split.second, split.t);
+
+    nodes.insert(at, [buildNode(pin, after)]);
+    if (previous) previous.set("slackAfter", clampSlack(before));
     return pin;
   });
 }

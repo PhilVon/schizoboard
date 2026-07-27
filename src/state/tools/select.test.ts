@@ -11,7 +11,7 @@
 import { beforeEach, describe, expect, it } from "vitest";
 
 import { CAPTURE_TIMEOUT_MS } from "@/crdt/undo";
-import { DEFAULT_SLACK, MIN_SLACK, presetSlack } from "@/lib/slack";
+import { DEFAULT_SLACK, MIN_SLACK, presetSlack, splitSlack } from "@/lib/slack";
 import { Torsion } from "@/sim/torsion";
 import { Camera } from "@/state/camera";
 import { DirtySets } from "@/state/dirty";
@@ -20,7 +20,7 @@ import { Selection } from "@/state/selection";
 import { MIN_RESIZE, LIVE_WRITE_MS, SelectTool } from "@/state/tools/select";
 import type { Vec2 } from "@/state/camera";
 import type {
-  StringAnchor, PointerSample, StringHit, ToolContext, WritePose, WriteSize } from "@/state/tools/tool";
+  SegmentSplit, StringAnchor, PointerSample, StringHit, ToolContext, WritePose, WriteSize } from "@/state/tools/tool";
 
 type Write =
   | { kind: "poses"; phase: "live" | "final"; poses: Map<string, WritePose> }
@@ -35,8 +35,7 @@ type Write =
       stringId: string;
       index: number;
       anchor: StringAnchor;
-      before: number;
-      after: number;
+      split: SegmentSplit;
       settle: Map<string, WritePose>;
     }
   | { kind: "nodeSlack"; stringId: string; nodeId: string; slack: number }
@@ -262,14 +261,13 @@ beforeEach(() => {
       },
       // The other one: a loop pulled out of the middle of a string, which makes
       // a pin and the node that carries it in one transaction (DESIGN 3.4).
-      insertPin: (stringId, index, anchor, before, after, settle) => {
+      insertPin: (stringId, index, anchor, split, settle) => {
         writes.push({
           kind: "insert",
           stringId,
           index,
           anchor: { ...anchor },
-          before,
-          after,
+          split: { ...split },
           settle: new Map(settle),
         });
       },
@@ -1517,20 +1515,29 @@ describe("pulling a pin out of a string", () => {
   });
 
   /**
-   * AC-73, from the tool's side. `lib/slack.ts` proves the arithmetic; this
-   * proves the tool hands it the right chords — measured to where the pin was
-   * actually dropped, not to where the string was grabbed.
+   * AC-73, from the tool's side — and the tool's side is now only the chords.
+   *
+   * The division itself moved into `crdt/ops/strings.ts`, which does it against
+   * the slack read in its own transaction (DATA-MODEL section 5.4), so what is
+   * left to prove here is that the numbers it is handed are measured to where
+   * the pin was actually *dropped* rather than to where the string was grabbed.
+   * Running `splitSlack` over them is how that is checked: given the right
+   * chords the two halves conserve the rest length, and given the wrong ones
+   * they cannot.
    */
-  it("splits the slack so the two halves hold exactly as much string as one did", () => {
+  it("measures the chords the split needs to the point the pin was dropped", () => {
     taut();
     down(100, 0);
     move(100, 20);
     up(100, 20);
 
-    const write = lastInsert();
-    const first = Math.hypot(100 - 0, 20 - 0);
-    const second = Math.hypot(200 - 100, 0 - 20);
-    expect(first * (1 + write.before) + second * (1 + write.after)).toBeCloseTo(
+    const { split } = lastInsert();
+    expect(split.chord).toBeCloseTo(200, 6);
+    expect(split.first).toBeCloseTo(Math.hypot(100, 20), 6);
+    expect(split.second).toBeCloseTo(Math.hypot(100, 20), 6);
+
+    const [before, after] = splitSlack(split.chord, SLACK, split.first, split.second, split.t);
+    expect(split.first * (1 + before) + split.second * (1 + after)).toBeCloseTo(
       200 * (1 + SLACK),
       6,
     );
@@ -1543,13 +1550,16 @@ describe("pulling a pin out of a string", () => {
     move(50, 20);
     up(50, 20);
 
-    const write = lastInsert();
-    const first = Math.hypot(50, 20);
-    const second = Math.hypot(150, 20);
+    const { split } = lastInsert();
+    // `t` is the whole of "where it was grabbed", and it is the tool's to
+    // report — the op has no idea where the cursor was.
+    expect(split.t).toBeCloseTo(0.25, 6);
+
+    const [before, after] = splitSlack(split.chord, SLACK, split.first, split.second, split.t);
     // A quarter of the rest length went to the near side, so its own chord is
     // proportionally the tauter of the two.
-    expect(first * (1 + write.before)).toBeCloseTo(200 * (1 + SLACK) * 0.25, 6);
-    expect(second * (1 + write.after)).toBeCloseTo(200 * (1 + SLACK) * 0.75, 6);
+    expect(split.first * (1 + before)).toBeCloseTo(200 * (1 + SLACK) * 0.25, 6);
+    expect(split.second * (1 + after)).toBeCloseTo(200 * (1 + SLACK) * 0.75, 6);
   });
 
   it("drops the new pin into an item, so it travels with it", () => {

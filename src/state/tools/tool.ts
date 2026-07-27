@@ -185,11 +185,18 @@ export interface BoardWriter {
    * Push a pin into the middle of a run — the headline gesture (DESIGN section
    * 3.4), as one transaction so that undoing it takes the pin with it.
    *
-   * `index` is where in the run the new node goes; `slackBefore` and
-   * `slackAfter` are what the gap either side of it becomes. Those two are the
-   * tool's to compute and not the op's, because they are geometry — the chords
-   * come from where the neighbouring pins actually are, and `crdt/` may not read
-   * the scene. `lib/slack.ts` does the arithmetic; getting it wrong is the one
+   * `index` is where in the run the new node goes; `split` says where the cut
+   * fell. Those measurements are the tool's and not the op's, because they are
+   * geometry — the chords come from where the neighbouring pins actually are,
+   * and `crdt/` may not read the scene.
+   *
+   * What the tool deliberately does *not* send is the two slack ratios the cut
+   * produces. It used to, and that was wrong: the tool knows the segment's slack
+   * only as it was at pointer-down, and the write lands a gesture and a queue
+   * flush later. Dividing against a number that stale silently discards a peer's
+   * re-slack of the very segment being cut. The op reads it inside its own
+   * transaction instead — DATA-MODEL section 5.4. `lib/slack.ts` still does the
+   * arithmetic, just on the other side of the seam; getting it wrong is the one
    * visible failure this gesture has.
    *
    * `settle` is `deletePins`' argument arriving from the other direction, and
@@ -202,8 +209,7 @@ export interface BoardWriter {
     stringId: string,
     index: number,
     anchor: StringAnchor,
-    slackBefore: number,
-    slackAfter: number,
+    split: SegmentSplit,
     settle?: ReadonlyMap<string, WritePose>,
   ): void;
   /**
@@ -316,6 +322,21 @@ export interface StringStyle {
 export type StringAnchor =
   | { readonly pin: string }
   | { readonly parent: string | null; readonly lx: number; readonly ly: number };
+
+/**
+ * Where a segment was cut — three chords off the scene and the arc-length
+ * fraction the cursor was at. See `BoardWriter.insertPin`.
+ *
+ * Declared here rather than imported from `crdt/` for the same reason
+ * `StringAnchor` is. Notably it carries no slack: that is the one input to the
+ * split that belongs to the document rather than to the gesture.
+ */
+export interface SegmentSplit {
+  readonly chord: number;
+  readonly first: number;
+  readonly second: number;
+  readonly t: number;
+}
 
 /**
  * Where a board point lands on a string — what `RopeSet.nearest` answers,

@@ -48,7 +48,7 @@
  */
 
 import { rotateIn, rotateOut, type Point } from "@/lib/rotate";
-import { isTaut, presetSlack, splitSlack, toggleTaut } from "@/lib/slack";
+import { isTaut, presetSlack, toggleTaut } from "@/lib/slack";
 import type { Bounds, Vec2 } from "@/state/camera";
 import {
   chromeFrame,
@@ -281,11 +281,17 @@ export class SelectTool implements Tool {
   private loopString: string | null = null;
   private loopIndex = 0;
   /** Arc-length fraction along the grabbed segment — where the user took hold
-   *  of the string, which is what `splitSlack` divides the sag at. */
+   *  of the string, which is what the split divides the sag at. */
   private loopT = 0;
-  /** The gap's slack before the split; the sum of the two halves has to come
-   *  back to it, or the string flinches at the instant it succeeds. */
-  private loopSlack = 0;
+  /**
+   * The gap's slack before the split is deliberately *not* held here.
+   *
+   * The sum of the two halves has to come back to it or the string flinches at
+   * the instant the gesture succeeds — but the value that has to be conserved
+   * is the one at the moment of the write, and this tool would be remembering
+   * the one from pointer-down. `crdt/ops/strings.ts` reads it inside the
+   * transaction instead (DATA-MODEL section 5.4); all this sends is geometry.
+   */
   private loopFrom: string | null = null;
   private loopTo: string | null = null;
   /** The three-point run drawn while the loop is out. Reused rather than minted
@@ -1138,7 +1144,6 @@ export class SelectTool implements Tool {
     this.loopString = hit.string;
     this.loopIndex = hit.node + 1;
     this.loopT = hit.t;
-    this.loopSlack = from.slackAfter;
     this.loopFrom = from.pin;
     this.loopTo = to.pin;
     this.refreshLoop(ctx);
@@ -1194,16 +1199,19 @@ export class SelectTool implements Tool {
     // revert `Esc` gives and the same rule the `Alt` pull follows.
     if ("pin" in drop.anchor && (drop.anchor.pin === from || drop.anchor.pin === to)) return;
 
-    const chord = Math.hypot(b.wx - a.wx, b.wy - a.wy);
-    const first = Math.hypot(drop.x - a.wx, drop.y - a.wy);
-    const second = Math.hypot(b.wx - drop.x, b.wy - drop.y);
-    const [before, after] = splitSlack(chord, this.loopSlack, first, second, this.loopT);
+    // Chords only. The slack this gets divided against is read by the op, in
+    // the transaction that writes it — `this.loopSlack` is what the segment had
+    // when the drag started, and the write does not land until the next flush.
     ctx.write.insertPin(
       stringId,
       this.loopIndex,
       drop.anchor,
-      before,
-      after,
+      {
+        chord: Math.hypot(b.wx - a.wx, b.wy - a.wy),
+        first: Math.hypot(drop.x - a.wx, drop.y - a.wy),
+        second: Math.hypot(b.wx - drop.x, b.wy - drop.y),
+        t: this.loopT,
+      },
       settleOnPin(ctx.scene, [anchorParent(drop.anchor)]),
     );
   }
