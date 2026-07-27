@@ -415,6 +415,114 @@ describe("which part of a string is lying on something", () => {
 });
 
 /**
+ * T-140. `seed` lays the analytic catenary and a catenary has never heard of a
+ * photograph, so a board whose string was resting on one comes back with the
+ * string *through* it — and asleep, so it stays that way.
+ *
+ * These tests mirror the string into the scene as the binding would, because
+ * `dirty.all` is the document being re-read and `sync` goes looking for it.
+ */
+describe("a board coming back", () => {
+  /** The mirror entry `sync` reads on a reload, matching what `span` built. */
+  function mirror(id = "s1", layer = "over"): void {
+    scene.putString({
+      id,
+      nodes: [
+        { nodeId: `${id}-n0`, pin: "p1", slackAfter: SLACK },
+        { nodeId: `${id}-n1`, pin: "p2", slackAfter: SLACK },
+      ],
+      color: "#a8322c",
+      thickness: 3,
+      material: "cotton",
+      layer,
+      closed: false,
+    });
+  }
+
+  /** Everything the document layer does on a load: the mirror is rebuilt, so
+   *  every set is dirty and every rope is put back on its seed pose. */
+  function reload(): void {
+    dirty.everything();
+    frame();
+  }
+
+  it("opens with its strings resting on what they cross, not through them", () => {
+    const free = freeSag();
+    const top = free / 2;
+    mirror();
+    settledSpan();
+    photoWithTopAt(top);
+    settle();
+
+    reload();
+    const pose = settle();
+
+    const middle = pose.filter(([x]) => x > PHOTO_LEFT + 20 && x < PHOTO_RIGHT - 20);
+    expect(middle.length).toBeGreaterThan(4);
+    for (const [, y] of middle) expect(y).toBeCloseTo(top, 1);
+  });
+
+  /**
+   * > a board opens perfectly still — AC-62
+   *
+   * Still true everywhere it can be. A rope with nothing in its way is exactly
+   * where the seed put it and has no reason to move.
+   */
+  it("opens perfectly still where there is nothing in the way", () => {
+    mirror();
+    settledSpan();
+    item("elsewhere", { x: 3000, y: 3000 });
+    settle();
+
+    reload();
+    expect(ropes.awake).toBe(0);
+  });
+
+  /**
+   * The case that would undo the whole of AC-62 if the test were "has this rope
+   * got an item near it": a string pinned to a photograph is lying on that
+   * photograph for the whole of its life, and on a real board that is every
+   * string. It must open as still as any other.
+   */
+  it("does not wake a string just because it is pinned to a photograph", () => {
+    item("photo", { x: 0, y: 0, w: 400, h: 300 });
+    pin("p1", 0, 0, "photo");
+    pin("p2", 600, 0);
+    scene.putString({
+      id: "s1",
+      nodes: [
+        { nodeId: "s1-n0", pin: "p1", slackAfter: SLACK },
+        { nodeId: "s1-n1", pin: "p2", slackAfter: SLACK },
+      ],
+      color: "#a8322c",
+      thickness: 3,
+      material: "cotton",
+      layer: "over",
+      closed: false,
+    });
+    ropes.setString(scene, dirty, "s1", ["p1", "p2"], [SLACK], false, "cotton", "over");
+    ropes.wake("s1");
+    settle();
+
+    reload();
+    expect(ropes.awake).toBe(0);
+  });
+
+  /** An `under` string passes behind items, so being inside one is where it
+   *  belongs and there is nothing to climb out of. */
+  it("does not wake a string that is tucked behind", () => {
+    const free = freeSag();
+    mirror("s1", "under");
+    settledSpan("s1", "under");
+    photoWithTopAt(free / 2);
+    settle();
+
+    reload();
+    expect(ropes.awake).toBe(0);
+  });
+});
+
+/**
  * T-139. Everything above is about where an awake rope comes to rest, and a
  * rope on a board where nothing has happened is not awake — so all of it is
  * dead code unless a moving photograph is an event the simulation hears about.

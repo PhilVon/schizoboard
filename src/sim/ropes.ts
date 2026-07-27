@@ -341,6 +341,7 @@ export class RopeSet {
       // goes back to its analytic rest pose, asleep — which is AC-62, and the
       // same argument `torsion.ts` makes for settling swings on the same flag.
       for (const segment of this.segments) this.seed(scene, segment);
+      this.wakeWhereObstructed(scene);
       for (const id of this.byString.keys()) dirty.rope(id);
     } else {
       this.wakeDisturbed(scene, dirty);
@@ -819,6 +820,52 @@ export class RopeSet {
   private rouse(segment: Segment): void {
     segment.asleep = false;
     segment.still = 0;
+  }
+
+  /**
+   * Wake the ropes that a load has left sitting inside something.
+   *
+   * `seed` lays the analytic catenary, and a catenary has never heard of a
+   * photograph — so a board whose string was resting on one comes back with the
+   * string through it, asleep, and stays that way until somebody happens to
+   * move the photograph. Which is what a reloaded board actually did.
+   *
+   * > a board opens perfectly still — AC-62
+   *
+   * This is the exception to that, and it is the narrowest one available. Only
+   * a rope that is genuinely *inside* an item wakes: a string merely passing
+   * near one is already right, and — the case that matters — a string pinned to
+   * a photograph is lying on that photograph for the whole of its life and must
+   * not be woken by it, or every string on every board would settle on open.
+   * `Draper.intrudes` is that distinction.
+   *
+   * What the woken ones then do is climb out, which takes about a third of a
+   * second to look right and a couple of seconds to fall asleep. That is a
+   * string being seen to come to rest on a photograph, which is the thing this
+   * phase is about; the alternative was to relax the seed pose against the
+   * items and open still on a pose that is not the one the solver would find.
+   */
+  private wakeWhereObstructed(scene: Scene): void {
+    for (const segment of this.segments) {
+      if (!segment.over || segment.count < 3) continue;
+
+      const box = this.reach;
+      box.minX = segment.minX;
+      box.minY = segment.minY;
+      box.maxX = segment.maxX;
+      box.maxY = segment.maxY;
+      const found = this.draper.prepare(
+        scene,
+        box,
+        anchorSlot(scene, segment.a),
+        anchorSlot(scene, segment.b),
+        this.lift,
+        segment.at / 2,
+      );
+      if (found > 0 && this.draper.intrudes(this.pos, segment.at, segment.count)) {
+        this.rouse(segment);
+      }
+    }
   }
 
   /**

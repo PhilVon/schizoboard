@@ -559,6 +559,43 @@ export class Draper {
     }
   }
 
+  /**
+   * Is any of this rope *inside* something it should have been kept out of?
+   *
+   * Asked once per rope when a board loads, and nowhere else. `prepare` has to
+   * have run first; the candidates it left are what this reads.
+   *
+   * Deliberately not "does this rope have a candidate". A string pinned to a
+   * photograph has that photograph as a candidate for the whole of its life —
+   * it is being lain on, which is the point — and a board where every string is
+   * pinned to something is every board. So the question is the narrower one
+   * that only a rope in the wrong place answers yes to, and the items this rope
+   * is allowed to be inside are excluded exactly as they are from the push-out.
+   */
+  intrudes(pos: Float64Array, at: number, count: number): boolean {
+    const last = at + (count - 1) * 2;
+    for (let c = 0; c < this.n; c++) {
+      if (this.skip[c] === 1) continue;
+      const cx = this.cx[c]!;
+      const cy = this.cy[c]!;
+      const cos = this.cos[c]!;
+      const sin = this.sin[c]!;
+      const hw = this.hw[c]!;
+      const hh = this.hh[c]!;
+
+      for (let i = at + 2; i < last; i += 2) {
+        const ox = pos[i]! - cx;
+        const oy = pos[i + 1]! - cy;
+        const lx = ox * cos + oy * sin;
+        if (hw - Math.abs(lx) <= 0) continue;
+        const ly = oy * cos - ox * sin;
+        if (hh - Math.abs(ly) <= 0) continue;
+        return true;
+      }
+    }
+    return false;
+  }
+
   clear(): void {
     this.index.clear();
     this.n = 0;
