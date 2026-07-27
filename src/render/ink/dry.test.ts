@@ -343,11 +343,34 @@ describe("painting", () => {
     expect(calls.composites).toEqual(["multiply"]);
   });
 
+  /**
+   * > The smudge eraser is itself stored as a normal stroke with
+   * > `tool: 'erase'`, rendered with `destination-out`. — DATA-MODEL 6.2
+   *
+   * Which takes away only what is on this canvas. The photograph underneath is a
+   * different element and cannot be rubbed out, which is what makes the erase
+   * stroke safe to keep as a record at all.
+   */
+  it("rubs a smudge out of the ink and leaves the marks after it alone", () => {
+    const region = regionFor({ minX: -10, minY: -10, maxX: 80, maxY: 20 }, 1, null);
+    paintStrokes(
+      stubContext(),
+      [stroke({ id: "a", z: "a0" }), stroke({ id: "b", tool: "erase", z: "a1" }), stroke({ id: "c", z: "a2" })],
+      region,
+      paper(),
+    );
+
+    // Per stroke, and reset after: a smudge must not turn the ink drawn over it
+    // into another hole.
+    expect(calls.composites).toEqual(["source-over", "destination-out", "source-over"]);
+  });
+
   it("treats a tool it has never heard of as a marker, so the stroke still shows", () => {
     const region = regionFor({ minX: -10, minY: -10, maxX: 80, maxY: 20 }, 1, null);
-    // T-62's eraser, arriving before T-62. Visibly wrong beats invisibly
-    // missing: the record is in the document either way.
-    expect(paintStrokes(stubContext(), [stroke({ tool: "erase" })], region, paper())).toBe(true);
+    // A peer on a version with a tool this one does not have. Visibly wrong beats
+    // invisibly missing: the record is in the document either way.
+    expect(paintStrokes(stubContext(), [stroke({ tool: "crayon" })], region, paper())).toBe(true);
+    expect(calls.composites).toEqual(["source-over"]);
   });
 });
 

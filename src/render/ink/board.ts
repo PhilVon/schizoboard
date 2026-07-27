@@ -43,11 +43,12 @@
  * neither.
  */
 
+import type { InkSample } from "@/lib/ink";
 import { ENTER_MARGIN, LEAVE_MARGIN } from "@/render/cull";
 import { InkCanvas } from "@/render/ink/canvas";
 import type { Bounds, Camera } from "@/state/camera";
 import type { DirtySets } from "@/state/dirty";
-import type { BoardInkTile, Scene } from "@/state/scene";
+import type { BoardInkTile, Scene, SceneStroke } from "@/state/scene";
 
 /**
  * Tiles rastered per frame, and it is the same number and the same argument as
@@ -137,10 +138,15 @@ export class BoardInkLayer {
       this.remount(scene, camera);
     }
 
-    if (dirty.all) {
+    // Every mounted tile whenever *any* tile changed, not only the ones named.
+    // A smudge is filed by its own bounding-box centre like every other stroke,
+    // so the bucket it lands in is not necessarily the bucket holding the ink it
+    // takes away — rub the far end of a long mark and the two are in different
+    // cells. Repainting only the named tile would leave a hole that is drawn on
+    // one canvas and a mark that is drawn on another, and the mark would win.
+    // There are a handful of mounted tiles and this is a pen-up, not a frame.
+    if (dirty.all || dirty.boardInk.size > 0) {
       for (const key of this.tiles.keys()) this.pending.add(key);
-    } else {
-      for (const key of dirty.boardInk) if (this.tiles.has(key)) this.pending.add(key);
     }
     if (this.pending.size === 0) return;
 
@@ -153,9 +159,23 @@ export class BoardInkLayer {
       if (!canvas || !tile) continue;
       // Null paper: the cork has no edge for a pen to stop at, and a tile is a
       // bucket rather than a frame — see `paintStrokes`.
-      canvas.update(tile.strokes, this.rasterScale, null);
+      canvas.update(strokesFor(scene, tile), this.rasterScale, null);
       budget--;
     }
+  }
+
+  /**
+   * The live smudge, rubbed into every mounted tile — see `InkCanvas.rub`.
+   *
+   * Every one rather than the tile under the cursor, and it is not waste: each
+   * canvas is sized to its own ink and the fill is clipped to it, so a rub that
+   * misses a tile costs one transform and one empty fill. Picking the right tile
+   * instead would mean deciding which bucket a stroke that has not been committed
+   * yet belongs to, and getting it wrong leaves a rubber that does nothing over
+   * ink it is plainly on top of.
+   */
+  rub(samples: readonly InkSample[], size: number): void {
+    for (const canvas of this.tiles.values()) canvas.rub(samples, size, null);
   }
 
   /**
@@ -188,8 +208,45 @@ export class BoardInkLayer {
       this.pending.add(tile.key);
     }
   }
-
 }
+
+/**
+ * A tile's strokes, plus every smudge from anywhere else that reaches into it.
+ *
+ * The bucketing is by bounding-box centre (DATA-MODEL section 2), which is fine
+ * for marks — a stroke is drawn on the canvas it is filed in and that canvas is
+ * sized to hold it — and not fine for holes. `destination-out` only takes away
+ * what is on the *same* canvas, so a smudge filed one cell over from the mark it
+ * covers would be painted onto a bitmap with nothing in it.
+ *
+ * Appended after the tile's own, so a smudge is composited last and therefore
+ * takes away everything under it. Across a tile boundary there is no `z` order to
+ * respect — that is what a bucket means — and "the eraser goes on top" is the
+ * only order anybody would expect.
+ *
+ * Returns the tile's own array untouched when there is nothing to add, which is
+ * the overwhelmingly common case: most boards have no smudges at all.
+ */
+function strokesFor(scene: Scene, tile: BoardInkTile): readonly SceneStroke[] {
+  let out: SceneStroke[] | null = null;
+  for (const other of scene.boardInkTiles()) {
+    if (other.key === tile.key) continue;
+    for (const stroke of other.strokes) {
+      if (stroke.tool !== "erase") continue;
+      if (!boxesTouch(stroke.bbox, tile.bbox)) continue;
+      (out ??= [...tile.strokes]).push(stroke);
+    }
+  }
+  return out ?? tile.strokes;
+}
+
+function boxesTouch(
+  a: readonly [number, number, number, number],
+  b: readonly [number, number, number, number],
+): boolean {
+  return a[0] <= b[2] && a[2] >= b[0] && a[1] <= b[3] && a[3] >= b[1];
+}
+
 
 /** Does a tile's ink box touch a board rectangle? */
 function overlaps(bbox: BoardInkTile["bbox"], rect: Bounds): boolean {

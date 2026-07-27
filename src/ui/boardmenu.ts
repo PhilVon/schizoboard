@@ -273,6 +273,12 @@ export function pinMenuRows(
  * it takes no `BoardWriter`. That is also why there is no undo entry for picking
  * a colour — changing pens is not an edit to the board.
  */
+const PEN_LABEL: Readonly<Record<InkTool, string>> = {
+  marker: "Marker",
+  highlighter: "Highlighter",
+  erase: "Eraser",
+};
+
 export function penMenuRows(pen: Pen): MenuEntry[] {
   const colors: MenuChoice[] = inkColors(pen.kind).map(({ label, hex }) => ({
     label,
@@ -288,8 +294,11 @@ export function penMenuRows(pen: Pen): MenuEntry[] {
     run: () => pen.load({ size }),
   }));
 
+  // No colour row for the smudge, and not an empty one: a hole has no colour,
+  // and `lib/ink.ts` answers its palette with nothing for exactly this reason.
+  // A row with no swatches in it reads as a menu that failed to load.
   return [
-    { label: pen.kind === "highlighter" ? "Highlighter" : "Marker", choices: colors },
+    ...(colors.length === 0 ? [] : [{ label: PEN_LABEL[pen.kind], choices: colors }]),
     { label: "Size", choices: sizes },
   ];
 }

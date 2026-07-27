@@ -46,7 +46,15 @@ export interface InkSample {
  * (DATA-MODEL section 6.2). It joins this union when that lands (T-62), because
  * only then does it have geometry of its own.
  */
-export type InkTool = "marker" | "highlighter";
+/**
+ * `"erase"` is the `Shift+E` smudge, and it is a *kind of mark* rather than a
+ * kind of tool — which is why the plain eraser is not here. That one deletes
+ * records and leaves nothing behind (`state/tools/eraser.ts`); this one is
+ * stored as a normal stroke and drawn `destination-out` (DATA-MODEL section
+ * 6.2), so it has geometry, a width and a place in the paint order exactly as
+ * the two pens do. The only thing it has not got is a colour.
+ */
+export type InkTool = "marker" | "highlighter" | "erase";
 
 /**
  * The two things a stroke can be on: a piece of paper, or the cork.
@@ -171,10 +179,21 @@ export const HIGHLIGHTER_COLORS: readonly InkColor[] = [
   { label: "Blue", hex: "#3fc4f0" },
 ];
 
-/** The palette a tool draws from. */
+/**
+ * The palette a tool draws from — **empty for the smudge**, which has no colour
+ * to pick.
+ *
+ * Empty rather than the marker's list, and the menu drops the row rather than
+ * showing four swatches that all do the same nothing. A hole is not a colour,
+ * and offering one would be the only lie in a menu whose whole argument is that
+ * which red the red is, is a question only the cork can answer.
+ */
 export function inkColors(tool: InkTool): readonly InkColor[] {
+  if (tool === "erase") return NO_COLORS;
   return tool === "highlighter" ? HIGHLIGHTER_COLORS : MARKER_COLORS;
 }
+
+const NO_COLORS: readonly InkColor[] = Object.freeze([]);
 
 /**
  * The nib widths `[` and `]` walk, in board units.

@@ -197,6 +197,90 @@ describe("the raster budget", () => {
   });
 });
 
+/**
+ * A smudge is filed by its own bounding-box centre like every other stroke, so
+ * the bucket it lands in is not necessarily the bucket holding the ink it takes
+ * away. `destination-out` only removes what is on the *same* canvas, so a hole
+ * painted on the wrong bitmap is no hole at all — and the failure is silent: the
+ * mark is still there and the rubber was plainly on top of it.
+ */
+describe("a smudge that lands in a different tile from the ink it rubs", () => {
+  /** A run along y = 0, of whichever tool the caller wants. */
+  function run(id: string, tool: string, x0: number, x1: number): SceneStroke {
+    return {
+      id,
+      tool,
+      color: "#000",
+      size: 6,
+      opacity: 1,
+      seed: 1,
+      z: tool === "erase" ? "a9" : "a0",
+      bbox: [x0, 0, x1, 0],
+      samples: [
+        { x: x0, y: 0, pressure: 0.5 },
+        { x: x1, y: 0, pressure: 0.5 },
+      ],
+    };
+  }
+
+  const smudge = (id: string, x0: number, x1: number): SceneStroke => run(id, "erase", x0, x1);
+  const mark = (x0: number, x1: number): SceneStroke => run("m", "marker", x0, x1);
+
+  function widthOfFirstTile(): number {
+    return (host.children[0] as HTMLCanvasElement).width;
+  }
+
+  it("paints the foreign smudge onto the tile whose ink it overlaps", () => {
+    scene.putBoardStrokes("0,0", [mark(100, 140)]);
+    dirty.boardInkFor("0,0");
+    layer.setRasterScale(1);
+    layer.paint(scene, dirty, camera);
+    const alone = widthOfFirstTile();
+
+    // A rub filed in the next cell along, reaching back across this tile's ink.
+    scene.putBoardStrokes("1,0", [smudge("rub", 120, 900)]);
+    dirty.clear();
+    dirty.boardInkFor("1,0");
+    layer.paint(scene, dirty, camera);
+
+    // The tile's canvas grew to hold a stroke that is not filed in it, which is
+    // only possible if the smudge reached its paint list.
+    expect(widthOfFirstTile()).toBeGreaterThan(alone);
+  });
+
+  it("ignores a smudge that reaches nowhere near", () => {
+    scene.putBoardStrokes("0,0", [mark(100, 140)]);
+    dirty.boardInkFor("0,0");
+    layer.setRasterScale(1);
+    layer.paint(scene, dirty, camera);
+    const alone = widthOfFirstTile();
+
+    scene.putBoardStrokes("1,0", [smudge("far", 600, 900)]);
+    dirty.clear();
+    dirty.boardInkFor("1,0");
+    layer.paint(scene, dirty, camera);
+
+    expect(widthOfFirstTile()).toBe(alone);
+  });
+
+  /** Which is why a change to *any* tile re-rasters every mounted one: the tile
+   *  that has to change is not the tile whose key is in the dirty set. */
+  it("queues every mounted tile when any one of them changed", () => {
+    for (let i = 0; i < 4; i++) ink(`0,${i}`, 100 + i * 60, 400);
+    // Drain the mount queue: four tiles, three per frame.
+    layer.paint(scene, dirty, camera);
+    dirty.clear();
+    layer.paint(scene, dirty, camera);
+    expect([0, 1, 2, 3].filter((i) => layer.awaitingTile(`0,${i}`))).toHaveLength(0);
+
+    // One tile named. Queue only that one and the budget of three covers it;
+    // queue all four and one is left over — which is what says all four went in.
+    dirty.boardInkFor("0,0");
+    layer.paint(scene, dirty, camera);
+    expect([0, 1, 2, 3].filter((i) => layer.awaitingTile(`0,${i}`))).toHaveLength(1);
+  });
+});
+
 describe("the backing store", () => {
   it("is sized to the ink and not to the 2048-unit cell", () => {
     ink("0,0", 500, 400);

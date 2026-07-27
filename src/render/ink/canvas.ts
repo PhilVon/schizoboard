@@ -51,8 +51,10 @@
  * change out from under the bitmap.
  */
 
+import type { InkSample } from "@/lib/ink";
 import {
   clipToPaper,
+  COMPOSITE,
   inkBounds,
   paintStrokes,
   paperBox,
@@ -60,6 +62,7 @@ import {
   type InkBox,
   type InkRegion,
 } from "@/render/ink/dry";
+import { outlineStroke, strokeOptions, traceOutline } from "@/render/ink/geometry";
 import type { SceneStroke } from "@/state/scene";
 
 /**
@@ -146,6 +149,55 @@ export class InkCanvas {
   }
 
   /**
+   * The live smudge, rubbed straight into this bitmap.
+   *
+   * The one place on this board where the wet path writes to the dry surface,
+   * and it is not a shortcut — it is the only truthful option. A smudge is
+   * `destination-out`, and `destination-out` on the wet overlay would punch a
+   * hole in the *chrome* (cursors, ghosts, selection) and do nothing whatever to
+   * the ink, which is on this canvas. So the choice was between showing a
+   * pale ghost of where you are rubbing, showing nothing until pen-up, and
+   * rubbing the real thing. This is the third.
+   *
+   * It costs nothing to be wrong about, because the bitmap is a cache: every
+   * repaint rebuilds it from the records, so the worst a stray rub can do is
+   * survive until the next re-raster. Which is also why it must be called on
+   * **every** frame of the gesture rather than once — a re-raster for any other
+   * reason wipes the hole, and the next frame draws it again.
+   *
+   * False when there is no bitmap to rub, which is a surface with no ink on it:
+   * nothing to erase, and nothing to show for trying.
+   */
+  rub(samples: readonly InkSample[], size: number, paper: InkBox | null): boolean {
+    const region = this.region;
+    if (this.ctx === null || region === null || samples.length === 0) return false;
+    const outline = outlineStroke(samples, strokeOptions("erase", size, false));
+    const path = new Path2D();
+    if (!traceOutline(outline, path)) return false;
+
+    // The region's transform explicitly rather than whatever the last paint left
+    // behind: this can run on a frame where nothing repainted at all.
+    this.ctx.setTransform(
+      region.scale,
+      0,
+      0,
+      region.scale,
+      -region.ox * region.scale,
+      -region.oy * region.scale,
+    );
+    this.ctx.save();
+    if (paper !== null) {
+      this.ctx.beginPath();
+      this.ctx.rect(paper.minX, paper.minY, paper.maxX - paper.minX, paper.maxY - paper.minY);
+      this.ctx.clip();
+    }
+    this.ctx.globalCompositeOperation = COMPOSITE.erase;
+    this.ctx.fill(path);
+    this.ctx.restore();
+    return true;
+  }
+
+  /**
    * Evict.
    *
    * Called when the node is being recycled, and the three ways that happens —
@@ -217,6 +269,12 @@ export class ItemInk {
     this.boxW = w;
     this.boxH = h;
     this.canvas.update(strokes, scale, paperBox(w, h, this.paper));
+  }
+
+  /** The live smudge, clipped to this item's paper — the pen stops at the edge
+   *  (T-136) and so does the rubber. */
+  rub(samples: readonly InkSample[], size: number): boolean {
+    return this.canvas.rub(samples, size, paperBox(this.boxW, this.boxH, this.paper));
   }
 
   /**

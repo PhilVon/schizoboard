@@ -67,6 +67,14 @@ export interface InkRegion {
  */
 export const MAX_INK_PX = 4096;
 
+/** How each kind of mark lands on the ink canvas — one place, so the wet path
+ *  and the dry path cannot disagree about what a smudge does. */
+export const COMPOSITE: Readonly<Record<InkTool, GlobalCompositeOperation>> = {
+  marker: "source-over",
+  highlighter: "multiply",
+  erase: "destination-out",
+};
+
 /**
  * The box round an item's ink, each stroke padded by **its own** nib.
  *
@@ -258,9 +266,15 @@ export function paintStrokes(
     // highlighter does, and one pass over a dark photograph tints rather than
     // fogs only as far as its own alpha allows.
     //
-    // The eraser's `destination-out` belongs here too, and does not exist yet —
-    // T-62.
-    ctx.globalCompositeOperation = toolOf(stroke) === "highlighter" ? "multiply" : "source-over";
+    // > The smudge eraser is itself stored as a normal stroke with
+    // > `tool: 'erase'`, rendered with `destination-out`. — DATA-MODEL 6.2
+    //
+    // Which takes out the ink *on this canvas* and nothing else — the photograph
+    // underneath is a different element and is never touched. That is the whole
+    // reason the erase stroke can be a record at all: it removes paint from a
+    // cache rather than from a picture, so undoing it costs one map delete and
+    // rebuilds the cache from what is left.
+    ctx.globalCompositeOperation = COMPOSITE[toolOf(stroke)];
     ctx.fill(path);
     ctx.restore();
     drew = true;
@@ -311,13 +325,13 @@ export function clipToPaper(box: InkBox, paper: InkBox): InkBox | null {
  * imported across the one-way boundary is a dependency imported across it — so
  * it is narrowed here, the way `render/items/dom.ts` narrows an item's type.
  *
- * `"erase"` falls through to the marker's geometry until T-62 gives it
- * `destination-out`, which draws it as an opaque mark rather than as nothing.
- * Visibly wrong beats invisibly missing: the stroke is in the document either
- * way, and a smudge that shows up as a black line is a bug somebody reports.
+ * Anything unrecognised is a marker: a stroke written by a version of this
+ * application that has a tool this one does not is still a mark somebody made,
+ * and drawing it in the wrong geometry is better than not drawing it.
  */
 function toolOf(stroke: SceneStroke): InkTool {
-  return stroke.tool === "highlighter" ? "highlighter" : "marker";
+  if (stroke.tool === "highlighter") return "highlighter";
+  return stroke.tool === "erase" ? "erase" : "marker";
 }
 
 /** The next power of two at or above `n`, and never below 1. */

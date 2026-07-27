@@ -79,6 +79,18 @@ const OPTIONS: Readonly<Record<InkTool, StrokeOptions>> = {
     start: { cap: false, taper: 0 },
     end: { cap: false, taper: 0 },
   },
+  // The smudge, and it is the marker's geometry exactly. A rubber under a hand
+  // thins and tapers the way a pen does — the difference between the two is
+  // entirely in the compositing (`render/ink/dry.ts`), which is what makes one a
+  // mark and the other a hole. Written out rather than aliased so that a change
+  // to the marker's feel does not silently become a change to the eraser's.
+  erase: {
+    thinning: 0.55,
+    smoothing: 0.5,
+    streamline: 0.42,
+    start: { taper: 4, cap: true },
+    end: { taper: 12, cap: true },
+  },
 };
 
 /**

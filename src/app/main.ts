@@ -38,6 +38,7 @@ import { Persistence } from "@/crdt/persistence";
 import { UndoHistory } from "@/crdt/undo";
 import { noteSizeFor } from "@/app/ingest";
 import { Paste } from "@/app/paste";
+import { DEFAULT_ERASER_SIZE } from "@/lib/ink";
 import { initPlatform } from "@/platform";
 import { variantFor } from "@/platform/types";
 import { Cork } from "@/render/cork";
@@ -450,6 +451,7 @@ async function boot(): Promise<void> {
   const dried = (): void => {
     marker.dry();
     highlighter.dry();
+    smudge.dry();
   };
 
   /**
@@ -545,6 +547,23 @@ async function boot(): Promise<void> {
    */
   const eraser = new EraserTool({ onDone: () => queued.push(() => tools.setTool(select)) });
   /**
+   * `Shift+E` — the smudge, which is a mark rather than an absence and is
+   * therefore `MarkerTool` a third time.
+   *
+   * > A `Shift+E` smudge eraser paints a `destination-out` stroke for partial
+   * > rubbing-out. — DESIGN section 2.4
+   *
+   * Everything about the gesture, the space rule and the commit is the pens'.
+   * What differs is one line of compositing and the fact that it has no colour —
+   * `lib/ink.ts` answers the palette with an empty list, and the menu drops the
+   * row rather than offering four swatches that all do the same nothing.
+   */
+  const smudge = new MarkerTool({
+    tool: "erase",
+    size: DEFAULT_ERASER_SIZE,
+    onDone: () => queued.push(() => tools.setTool(select)),
+  });
+  /**
    * The pen currently in hand, or null when the tool is not one.
    *
    * Asked by the three things that treat the two pens as one tool with a
@@ -553,7 +572,19 @@ async function boot(): Promise<void> {
    * the board.
    */
   const penInHand = (): MarkerTool | null =>
-    tools.current === marker ? marker : tools.current === highlighter ? highlighter : null;
+    tools.current === marker
+      ? marker
+      : tools.current === highlighter
+        ? highlighter
+        : tools.current === smudge
+          ? smudge
+          : null;
+  /** The pen whose stroke the *overlay* draws — every one but the smudge, whose
+   *  mark is an absence and belongs on the ink canvas. See the OVERLAY phase. */
+  const wetPen = (): MarkerTool | null => {
+    const pen = penInHand();
+    return pen === null || pen.kind === "erase" ? null : pen;
+  };
   /**
    * The three hit tests, named once. The tool machine is handed them, and so is
    * the hover in phase 4 — which asks the same questions between gestures that
@@ -588,13 +619,10 @@ async function boot(): Promise<void> {
   /**
    * Picking a tool (DESIGN section 3.9).
    *
-   * All seven now, `E` included. `Shift+E` is not here: the smudge is the other
-   * half of T-62 and a key that silently does nothing is worse than one that is
-   * not bound — and this listener refuses modified keys anyway, so it would need
-   * its own branch rather than a seventh rung.
+   * All eight of DESIGN section 3.5's rows, `E` and `Shift+E` included.
    *
-   * Bare keys only. `Ctrl+V` is paste and must not also change tool, and inside
-   * a note an `n` is an `n`.
+   * Unmodified keys, plus the one `Shift`. `Ctrl+V` is paste and must not also
+   * change tool, and inside a note an `n` is an `n`.
    */
   window.addEventListener("keydown", (e) => {
     if (e.ctrlKey || e.metaKey || e.altKey || e.repeat) return;
@@ -613,7 +641,13 @@ async function boot(): Promise<void> {
                 : e.code === "KeyH"
                   ? highlighter
                   : e.code === "KeyE"
-                    ? eraser
+                    ? // The one key with a modifier on it. `E` takes whole
+                      // records away and `Shift+E` rubs part of one out — two
+                      // different tools, and DESIGN section 3.5 lists them as
+                      // two rows of the same table.
+                      e.shiftKey
+                      ? smudge
+                      : eraser
                     : null;
     if (!next) return;
     e.preventDefault();
@@ -965,7 +999,11 @@ async function boot(): Promise<void> {
     // string tracking the nib is a second cursor arguing with the mark, and both
     // of them promise a gesture that the marker is not going to make.
     const cursor =
-      navigation.panReady || marker.stroking || highlighter.stroking || eraser.sweeping
+      navigation.panReady ||
+      marker.stroking ||
+      highlighter.stroking ||
+      smudge.stroking ||
+      eraser.sweeping
         ? null
         : tools.cursor;
     if (!cursor) {
@@ -1061,6 +1099,26 @@ async function boot(): Promise<void> {
     // filled for the few tiles somebody drew in, not a transform written for
     // everything that moved.
     boardInk.paint(scene, dirty, camera);
+    /**
+     * The live smudge, rubbed into the real bitmap — and it has to be here,
+     * after both re-rasters and before the overlay.
+     *
+     * A hole cannot be previewed. `destination-out` on the wet overlay would
+     * punch through the chrome and leave the ink untouched, because the ink is
+     * on a different canvas; so the wet path writes to the dry surface for this
+     * one tool, and the commit's full repaint from records is what makes it true
+     * (`InkCanvas.rub`). Every frame of the gesture rather than once, because a
+     * re-raster for any other reason wipes the hole.
+     *
+     * `smudge.wet` covers the drying stroke as well as the live one, which is
+     * exactly right: the hole has to keep being drawn until the record that
+     * replaces it has reached the bitmap.
+     */
+    const rubbing = smudge.wet;
+    if (rubbing !== null) {
+      if (rubbing.item === null) boardInk.rub(rubbing.samples, rubbing.size);
+      else items.rubInk(rubbing.item, rubbing.samples, rubbing.size);
+    }
     // The handoff, and it is after the raster and before the overlay on purpose:
     // the frame that finally puts a committed stroke on its surface's canvas is
     // the frame that may stop drawing the wet copy of it, and neither an earlier
@@ -1147,7 +1205,12 @@ async function boot(): Promise<void> {
       // Asked of the tool rather than tracked here for the same reason
       // `pendingRun` is: the gesture owns its own transient, and nothing about it
       // is in the scene.
-      penInHand()?.wet ?? null,
+      //
+      // Never the smudge. That one is already on the ink canvas (the INK phase
+      // above), and drawing it here as well would paint an opaque mark over the
+      // hole it just made — the exact "visibly wrong" the erase tool spent a
+      // task avoiding.
+      wetPen()?.wet ?? null,
     );
     hud.update(frame.now);
   });
@@ -1259,7 +1322,8 @@ async function boot(): Promise<void> {
     `Alt+click a pin removes it · Alt+drag pulls a new string out of one · ` +
     `drag the middle of a string to pull a new pin out of it, click it to select · ` +
     `right-click a string for its menu · M or H to draw, right-click for ink · ` +
-    `E rubs a stroke out, [ and ] size the nib, Ctrl at pen-down means the cork · ` +
+    `E rubs a whole stroke out and Shift+E smudges part of one away · ` +
+    `[ and ] size the nib, Ctrl at pen-down means the cork · ` +
     `drag to move · drag the handle or R+drag to rotate · drag a note's edge to resize · ` +
     `drag the cork to marquee · Delete removes · ` +
     `Ctrl+Z undoes · space+drag pans · Ctrl+0 fit · F frame · \` for the HUD`;

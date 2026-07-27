@@ -35,6 +35,7 @@ import "@/render/items/items.css";
 // width — and the world wrapper is a zero-width point carrying the camera
 // transform, so every percentage in an item would silently compute to zero.
 import { carryScale } from "@/lib/carry";
+import type { InkSample } from "@/lib/ink";
 import { FRAME_BOTTOM, FRAME_SIDE } from "@/lib/polaroid";
 import { rotateIn, type Point } from "@/lib/rotate";
 import {
@@ -535,6 +536,18 @@ export class DomItemLayer implements ItemLayer {
       view.ink.update(scene.strokesOf(id), this.rasterScale, scene.w[slot]!, scene.h[slot]!);
       budget--;
     }
+  }
+
+  /**
+   * The live smudge, rubbed into one item's bitmap — see `InkCanvas.rub`.
+   *
+   * Not budgeted and not queued, unlike everything else in the INK phase: this
+   * is one fill on one canvas, it is the frame's answer to a pointer that is
+   * down, and a rub that arrived a frame late would be a rubber that lags the
+   * hand. False when the item is not mounted or has no ink to take away.
+   */
+  rubInk(id: string, samples: readonly InkSample[], size: number): boolean {
+    return this.views.get(id)?.ink.rub(samples, size) ?? false;
   }
 
   sync(scene: Scene, dirty: DirtySets, visible: ReadonlySet<string> | null): void {
