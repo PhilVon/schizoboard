@@ -209,6 +209,57 @@ body {
   background: rgba(255, 255, 255, 0.12);
 }
 
+/* --- context menu, docs/DESIGN.md section 3.4 ------------------------------ */
+
+/*
+ * Positioned by ui/menu.ts, which measures the box and flips it away from
+ * whichever viewport edge it has run out of. Nothing here may animate: the
+ * frame loop owns all motion, and a menu that faded in would be doing it
+ * behind the loop's back.
+ */
+.menu {
+  position: absolute;
+  min-width: 168px;
+  padding: 4px;
+  border: 1px solid rgba(255, 255, 255, 0.09);
+  border-radius: 7px;
+  background: rgba(22, 16, 12, 0.96);
+  /* Warm, like every other shadow on the board — docs/DESIGN.md section 4.1. */
+  box-shadow: 0 8px 24px rgba(var(--shadow-warm), 0.55);
+  font-size: 12.5px;
+  line-height: 1;
+}
+
+.menu-row {
+  display: block;
+  width: 100%;
+  padding: 7px 10px;
+  border: 0;
+  border-radius: 4px;
+  background: none;
+  color: #e8ded2;
+  font: inherit;
+  font-family: var(--ui-font);
+  text-align: left;
+  cursor: default;
+}
+
+.menu-row:hover,
+.menu-row:focus {
+  background: rgba(255, 255, 255, 0.09);
+  outline: none;
+}
+
+.menu-danger {
+  color: #f0a08a;
+}
+
+.menu-rule {
+  height: 1px;
+  margin: 4px 6px;
+  background: rgba(255, 255, 255, 0.1);
+}
+
 /* --- phase-0 scaffolding, removed once items land (T-24) ------------------- */
 
 .hint {

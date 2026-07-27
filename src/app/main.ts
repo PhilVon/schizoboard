@@ -18,6 +18,7 @@ import {
   createStringThrough,
   deleteItems,
   deletePins,
+  deleteStrings,
   insertPinIntoString,
   movePins,
   placePin,
@@ -49,7 +50,7 @@ import { Torsion } from "@/sim/torsion";
 import { Camera } from "@/state/camera";
 import { DirtySets } from "@/state/dirty";
 import { chromeFrame, emptyFrame, handleAt, handleCursor } from "@/state/handles";
-import { isTextTarget } from "@/state/input";
+import { isChromeTarget, isTextTarget } from "@/state/input";
 import { Navigation } from "@/state/navigation";
 import { Scene } from "@/state/scene";
 import { Selection } from "@/state/selection";
@@ -60,7 +61,9 @@ import { stringAt } from "@/state/tools/frame";
 import { SelectTool } from "@/state/tools/select";
 import { StringTool } from "@/state/tools/string";
 import type { BoardWriter, WritePose } from "@/state/tools/tool";
+import { stringMenuRows } from "@/ui/boardmenu";
 import { Hud, type HudStats } from "@/ui/hud";
+import { ContextMenu } from "@/ui/menu";
 
 async function boot(): Promise<void> {
   const native = await initPlatform();
@@ -331,6 +334,12 @@ async function boot(): Promise<void> {
       const snapshot = [...stringIds];
       queued.push(() => setStringStyle(board, snapshot, { layer }));
     },
+    /** DESIGN section 3.4's *Delete*. The pins stay; `deleteStrings` deletes
+     *  the string map and nothing else, which is the whole of the rule. */
+    deleteStrings: (stringIds) => {
+      const snapshot = [...stringIds];
+      queued.push(() => deleteStrings(board, snapshot));
+    },
     /**
      * The free pins a dragged or rotated thread carries with it.
      *
@@ -469,6 +478,51 @@ async function boot(): Promise<void> {
     queued.push(() => tools.setTool(next));
   });
 
+  /**
+   * The context menu (DESIGN section 3.4).
+   *
+   * Ambient, like navigation and undo: a right-click means the same thing in
+   * every tool, so it is not the tool machine's. The rows themselves are
+   * `ui/boardmenu.ts`, which is a pure function of ids — this is only the part
+   * that has to happen here, which is the hit test. `stringAt` is the *same*
+   * function the press and the hover highlight go through, so the menu cannot
+   * offer a string a left-click would not have grabbed: a tucked one under a
+   * photograph is not right-clickable through the photograph either.
+   *
+   * `preventDefault` is duplicated with `Navigation`'s blanket one, which stops
+   * the webview menu everywhere on the board including where this opens
+   * nothing. Two calls, deliberately — the menu must not depend on some other
+   * module happening to suppress the native one first.
+   */
+  const menu = new ContextMenu(world.layers.ui);
+  root.addEventListener("contextmenu", (e) => {
+    e.preventDefault();
+    // A right-click on the menu itself, or on the HUD. Chrome takes its own.
+    if (isChromeTarget(e.target)) return;
+
+    const hit = stringAt(scene, camera, hitItem, hitPin, hitString, e.clientX, e.clientY);
+    /**
+     * Right-clicking something already selected acts on the whole selection;
+     * right-clicking something else acts on that one thing and takes the
+     * selection with it.
+     *
+     * The second half is what stops the menu being a trap. Without it, a
+     * right-click on an unselected string would offer verbs against whatever
+     * happened to be selected somewhere off-screen — and the halo, which is the
+     * only thing on the board that says what a verb will hit, would be pointing
+     * at it rather than at the string under the cursor.
+     */
+    const held = hit !== null && selection.hasString(hit.string);
+    const targets = hit === null || held ? [...selection.strings] : [hit.string];
+    const rows = stringMenuRows(scene, writer, targets);
+    if (rows.length === 0) return;
+
+    // Queued to phase 9 with every other consequence of an input, so the halo
+    // and the menu appear on the same frame rather than a frame apart.
+    if (hit !== null && !held) queued.push(() => selection.replaceStrings([hit.string]));
+    menu.openAt(e.clientX, e.clientY, rows);
+  });
+
   const paste = new Paste({
     native,
     board,
@@ -556,6 +610,10 @@ async function boot(): Promise<void> {
     if (camera.version !== cameraVersion) {
       cameraVersion = camera.version;
       dirty.camera = true;
+      // An open menu is anchored to a screen point that meant something when
+      // it opened. Pan or zoom and it is a box of verbs pointing at whatever
+      // has slid underneath it, so the camera moving dismisses it.
+      menu.close();
     }
     // "Call stopCapturing() on pointer-up, tool change and selection change.
     // Explicit boundaries beat time-based grouping" — DATA-MODEL section 11.

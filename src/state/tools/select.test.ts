@@ -26,6 +26,7 @@ type Write =
   | { kind: "poses"; phase: "live" | "final"; poses: Map<string, WritePose> }
   | { kind: "sizes"; phase: "live" | "final"; sizes: Map<string, WriteSize> }
   | { kind: "delete"; ids: string[]; keepPins: boolean }
+  | { kind: "deleteStrings"; stringIds: string[] }
   | { kind: "place"; pinId: string; parent: string | null; x: number; y: number }
   | { kind: "unpin"; ids: string[]; settle: [string, WritePose][] }
   | { kind: "string"; anchors: StringAnchor[]; closed: boolean }
@@ -282,6 +283,10 @@ beforeEach(() => {
       // names one absolute layer for the whole selection.
       setStringLayer: (stringIds, layer) =>
         writes.push({ kind: "layer", stringIds: [...stringIds], layer }),
+      // DESIGN section 3.4's Delete row, and the Delete key on a selected
+      // string — which until now went to `deleteItems` and was dropped.
+      deleteStrings: (stringIds) =>
+        writes.push({ kind: "deleteStrings", stringIds: [...stringIds] }),
       // The free pins a dragged or rotated thread carries with it (DESIGN 3.8).
       movePins: (positions, phase) =>
         writes.push({ kind: "pins", phase, positions: new Map(positions) }),
@@ -923,6 +928,79 @@ describe("deleting", () => {
     move(60, 60);
     key("Delete");
     expect(writes).toEqual([]);
+  });
+
+  /**
+   * `Selection.toArray` is items, and a selected string lives in its own set —
+   * so `Delete` read the item half, deleted it, and cleared the whole thing.
+   * Every string went on existing while the halo saying it was selected
+   * disappeared, which reads as the string having come back rather than as a
+   * delete that missed. Invisible until follow-the-thread made a selection of
+   * every kind at once ordinary, and then it was every double-click.
+   */
+  describe("a selection that is not all items", () => {
+    function span(id: string, y: number): void {
+      putPin(`${id}-a`, null, 0, y);
+      putPin(`${id}-b`, null, 200, y);
+      scene.putString({
+        id,
+        nodes: [
+          { nodeId: `${id}-n0`, pin: `${id}-a`, slackAfter: 0.2 },
+          { nodeId: `${id}-n1`, pin: `${id}-b`, slackAfter: 0.2 },
+        ],
+        color: "#a8322c",
+        thickness: 3,
+        material: "string",
+        layer: "over",
+        closed: false,
+      });
+    }
+
+    beforeEach(() => {
+      selection.clear();
+      span("s", 400);
+    });
+
+    it("deletes a selected string", () => {
+      selection.replaceStrings(["s"]);
+      key("Delete");
+      expect(writes).toEqual([{ kind: "deleteStrings", stringIds: ["s"] }]);
+      expect(selection.isEmpty).toBe(true);
+    });
+
+    /** The one gesture that produces a selection of every kind at once, which
+     *  is what made this bug ordinary rather than theoretical. */
+    it("splits a followed thread into the two writes it actually is", () => {
+      selection.replaceThread(["a"], ["s"], ["s-a"]);
+      key("Delete");
+      expect(writes).toEqual([
+        { kind: "delete", ids: ["a"], keepPins: false },
+        { kind: "deleteStrings", stringIds: ["s"] },
+      ]);
+    });
+
+    /** `Shift` means "keep the pins", which is an *item's* cascade. A string
+     *  has no pins to keep - it references them (D-1) - so the modifier does
+     *  not reach the string write at all. */
+    it("deletes the string on Shift+Delete too", () => {
+      selection.replaceThread(["a"], ["s"], []);
+      key("Delete", { shift: true });
+      expect(writes).toEqual([
+        { kind: "delete", ids: ["a"], keepPins: true },
+        { kind: "deleteStrings", stringIds: ["s"] },
+      ]);
+    });
+
+    /** What `Delete` should mean for a pin - and especially what
+     *  `Shift`+`Delete` should - is a question nothing has answered yet, and
+     *  answering it by accident inside the keystroke that deletes photographs
+     *  is how you lose a board. `Alt`+click removes a pin today. */
+    it("leaves a pin-only selection alone, selection included", () => {
+      selection.replaceThread([], [], ["s-a"]);
+      key("Delete");
+      expect(writes).toEqual([]);
+      expect(selection.pins.has("s-a")).toBe(true);
+    });
   });
 });
 
@@ -2279,93 +2357,6 @@ describe("slack controls", () => {
  * "cannot be grabbed through a photograph it is tucked behind" above has the
  * hit test.
  */
-describe("tucking a string behind the items", () => {
-  const SLACK = 0.2;
-
-  /** A string through two pins, on the layer named. */
-  function span(id: string, y: number, layer = "over"): void {
-    putPin(`${id}-a`, null, 0, y);
-    putPin(`${id}-b`, null, 200, y);
-    scene.putString({
-      id,
-      nodes: [
-        { nodeId: `${id}-n0`, pin: `${id}-a`, slackAfter: SLACK },
-        { nodeId: `${id}-n1`, pin: `${id}-b`, slackAfter: SLACK },
-      ],
-      color: "#a8322c",
-      thickness: 3,
-      material: "string",
-      layer,
-      closed: false,
-    });
-  }
-
-  it("puts a selected string under the items", () => {
-    span("s", 0);
-    selection.replaceStrings(["s"]);
-    key("KeyB");
-    expect(writes).toEqual([{ kind: "layer", stringIds: ["s"], layer: "under" }]);
-  });
-
-  it("brings it back over when it is already under", () => {
-    span("s", 0, "under");
-    selection.replaceStrings(["s"]);
-    key("KeyB");
-    expect(writes).toEqual([{ kind: "layer", stringIds: ["s"], layer: "over" }]);
-  });
-
-  /**
-   * The reason the write carries a layer rather than meaning "invert each of
-   * these": independent flips would turn one mixed selection into a different
-   * mixed selection, and pressing the key again would put it back — a gesture
-   * that never converges on the thing the eye is asking for.
-   */
-  it("puts a mixed selection all the way under, and only then all the way back", () => {
-    span("s0", 0);
-    span("s1", 300, "under");
-    selection.replaceStrings(["s0", "s1"]);
-
-    key("KeyB");
-    expect(writes).toEqual([{ kind: "layer", stringIds: ["s0", "s1"], layer: "under" }]);
-
-    // The write is queued to phase 9 and the scene has not seen it yet, so the
-    // second press is made to look like the frame after it landed.
-    scene.strings.get("s0")!.layer = "under";
-    key("KeyB");
-    expect(writes[1]).toEqual({ kind: "layer", stringIds: ["s0", "s1"], layer: "over" });
-  });
-
-  it("does nothing with no string selected", () => {
-    span("s", 0);
-    put("a", 0, 0);
-    selection.replace(["a"]);
-    key("KeyB");
-    expect(writes).toEqual([]);
-  });
-
-  /** `Ctrl`+`B` is bold in every text field ever built, and `Alt` is the
-   *  whole-string modifier. The machine filters both; a tool that acted on them
-   *  anyway is a bug waiting for the day something else forwards a key. */
-  it("ignores B with Ctrl or Alt held", () => {
-    span("s", 0);
-    selection.replaceStrings(["s"]);
-    key("KeyB", { ctrl: true });
-    key("KeyB", { alt: true });
-    expect(writes).toEqual([]);
-  });
-
-  /** Mid-gesture, like every other key here: a press that arrives while a loop
-   *  is being pulled out of the string is not a second verb. */
-  it("does nothing mid-gesture", () => {
-    span("s", 0);
-    selection.replaceStrings(["s"]);
-    down(100, 0);
-    move(100, 40);
-    key("KeyB");
-    expect(writes.every((w) => w.kind !== "layer")).toBe(true);
-  });
-});
-
 /**
  * > | Follow the thread | Double-click | Selects the entire connected component
  * > of pins, strings and items | — DESIGN section 3.3

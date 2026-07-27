@@ -101,6 +101,7 @@ beforeEach(() => {
     setStringSlack: () => {},
     scaleStringSlack: () => {},
     setStringLayer: () => {},
+    deleteStrings: () => {},
     movePins: () => {},
     },
     hitTest: () => null,
@@ -389,31 +390,6 @@ describe("the 1-9 slack presets", () => {
    * because it is forwarded on the same terms as the digits: bare only, and
    * left alone inside a text field.
    */
-  describe("B, for tuck behind", () => {
-    it("forwards a bare B", () => {
-      key("KeyB");
-      machine.flush(16);
-      expect(codes()).toEqual(["KeyB"]);
-    });
-
-    /** `Ctrl`+`B` is bold in every text field ever built, and the board has no
-     *  business claiming it. */
-    it("leaves the modified ones alone", () => {
-      key("KeyB", { ctrlKey: true });
-      key("KeyB", { altKey: true });
-      key("KeyB", { shiftKey: true });
-      machine.flush(16);
-      expect(codes()).toEqual([]);
-    });
-
-    it("is not board input while someone is writing on a note", () => {
-      const field = document.createElement("input");
-      document.body.append(field);
-      key("KeyB", { target: field });
-      machine.flush(16);
-      expect(codes()).toEqual([]);
-    });
-  });
 });
 
 /**

@@ -245,9 +245,21 @@ export interface BoardWriter {
    * a mixed selection has no single state to flip, and a write that meant
    * "invert whatever each one currently is" would scatter a selection the
    * gesture was trying to make agree. The tool decides the one target layer and
-   * names it; see `SelectTool.onKey`.
+   * names it; see `ui/boardmenu.ts`.
    */
   setStringLayer(stringIds: readonly string[], layer: "over" | "under"): void;
+  /**
+   * > | Cut | Scissors modifier, or context menu → *Delete* | String removed;
+   * > its pins stay where they are — DESIGN section 3.4
+   *
+   * Its own write rather than a branch of `deleteItems`, because a string and
+   * an item are deleted by different rules and only one of them cascades: an
+   * item takes its pins and heals the strings through them (DESIGN section
+   * 3.8), and a string takes nothing at all. Pins outlive the strings that
+   * reference them by construction — D-1, "pins are the primitive" — so there
+   * is no `keepPins` to pass and no decision to get wrong.
+   */
+  deleteStrings(stringIds: readonly string[]): void;
   /**
    * Free pins carried by a group gesture — the leaves of DESIGN section 3.8's
    * "free pins inside the selection have their board coordinates transformed as
