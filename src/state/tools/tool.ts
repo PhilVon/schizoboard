@@ -43,6 +43,16 @@ export interface PointerSample {
   /** `"mouse"`, `"pen"` or `"touch"` — the event's `pointerType`, carried for
    *  the branch above. */
   pointer?: string;
+  /**
+   * The event's own `timeStamp`, in milliseconds.
+   *
+   * The event's and not a clock read here, because these arrive in batches: a
+   * coalesced `pointermove` carries a dozen samples the OS stamped as it took
+   * them, and asking a clock when the batch was *unpacked* would give all twelve
+   * the same instant. Speed derived from that is speed derived from nothing —
+   * which is the flat-line failure `lib/pressure.ts` is about.
+   */
+  time?: number;
 }
 
 export type ToolInput =

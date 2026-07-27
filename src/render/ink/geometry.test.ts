@@ -198,11 +198,13 @@ describe("strokeOptions", () => {
     expect(strokeOptions("marker", 11.5, true)).toMatchObject({ last: true });
   });
 
-  it("leaves the pressure-simulation branch to whoever knows the device", () => {
-    // Absent, deliberately — a default here would quietly pick pen or mouse, and
-    // picking is T-55's job. See `strokeOptions`.
-    expect(strokeOptions("marker", 6, true).simulatePressure).toBeUndefined();
-    expect(strokeOptions("highlighter", 6, true).simulatePressure).toBeUndefined();
+  it("never lets perfect-freehand simulate the pressure itself", () => {
+    // Left on, it overrides the pressure on every sample — throwing away a pen's
+    // real reading and replacing it with a guess derived from the gaps between
+    // points, which on a board that keeps every coalesced sample reads a fast
+    // hand as a slow one. `lib/pressure.ts` does this properly.
+    expect(strokeOptions("marker", 6, true).simulatePressure).toBe(false);
+    expect(strokeOptions("highlighter", 6, true).simulatePressure).toBe(false);
   });
 });
 

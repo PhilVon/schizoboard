@@ -26,6 +26,11 @@
  * Which is AC-76, and it fails harder the faster you draw — so the slow test
  * stroke that everybody tries first is the one that cannot detect it.
  *
+ * The samples carry their own timestamps for a second reason too. Almost nothing
+ * on this board is a pen, so almost every stroke's width comes from how fast the
+ * hand was moving, and the interval between two samples is the only place that
+ * number can come from — see [`MarkerTool.pressureOf`] and `lib/pressure.ts`.
+ *
  * ## Nothing is written down yet
  *
  * The stroke lives while the pointer is down and is gone on release. That is not
@@ -55,6 +60,7 @@ import {
   type InkTool,
   type WetStroke,
 } from "@/lib/ink";
+import { reportsRealPressure, VelocityPressure } from "@/lib/pressure";
 import type { PointerSample, Tool, ToolContext, ToolInput } from "@/state/tools/tool";
 
 export interface MarkerToolOptions {
@@ -69,17 +75,6 @@ export interface MarkerToolOptions {
   onDone?: () => void;
 }
 
-/**
- * What a sample with no usable pressure reading is worth.
- *
- * Exactly what a mouse reports for every sample it ever delivers while a button
- * is down, which makes it the honest stand-in for "this device does not measure
- * this". It is also, on its own, the dead uniform line DESIGN section 6.5 warns
- * about — `perfect-freehand`'s own velocity simulation is what currently saves
- * it, and replacing that with a deliberate branch on `pointer` is T-55.
- */
-const NO_PRESSURE = 0.5;
-
 export class MarkerTool implements Tool {
   readonly id: string;
 
@@ -88,6 +83,9 @@ export class MarkerTool implements Tool {
   /** Board space, oldest first. Empty means no stroke in progress. */
   private samples: InkSample[] = [];
   private drawing = false;
+  /** For the devices that do not measure pressure, which is most of them. Reset
+   *  per stroke, not per tool — see [`VelocityPressure`]. */
+  private readonly velocity = new VelocityPressure();
 
   constructor(options: MarkerToolOptions = {}) {
     this.options = options;
@@ -133,6 +131,9 @@ export class MarkerTool implements Tool {
         // handed the previous one and may still be holding it — see [`wet`].
         this.samples = [];
         this.drawing = true;
+        // Before the first sample, so this stroke starts from rest rather than
+        // from wherever the last one's hand was going.
+        this.velocity.reset();
         this.add(input.at, ctx);
         return;
       case "move":
@@ -166,7 +167,31 @@ export class MarkerTool implements Tool {
 
   private add(at: PointerSample, ctx: ToolContext): void {
     const board = ctx.camera.screenToBoard(at.x, at.y);
-    this.samples.push({ x: board.x, y: board.y, pressure: at.pressure ?? NO_PRESSURE });
+    this.samples.push({ x: board.x, y: board.y, pressure: this.pressureOf(at) });
+  }
+
+  /**
+   * > Pressure branches on pointer type: a real pen reports real pressure, while
+   * > a mouse always reports exactly 0.5, so mouse and touch use velocity-derived
+   * > simulated pressure instead. — DESIGN section 6.5
+   *
+   * The branch is on `pointerType` and not on the reading, because the reading
+   * cannot tell you: a mouse's `0.5` and a pen genuinely held at half force are
+   * the same number. So a pen is believed and everything else is measured.
+   *
+   * The velocity model is fed the **screen** position, before the board
+   * conversion above — it is modelling how fast the hand moved, and the hand
+   * moves across a screen rather than across the cork.
+   *
+   * The one case this gets wrong is a stylus with no force sensor, which reports
+   * `pen` and a constant `0.5`, and will draw a flat line. There is nothing in
+   * the event to distinguish it from a pen resting at half force, and guessing
+   * from the *constancy* of the readings would mean second-guessing a real pen
+   * held deliberately steady. Believing the device is the better failure.
+   */
+  private pressureOf(at: PointerSample): number {
+    if (reportsRealPressure(at.pointer) && at.pressure !== undefined) return at.pressure;
+    return this.velocity.next(at.x, at.y, at.time ?? 0);
   }
 
   /** Nothing eases: the stroke is entirely a function of where the hand has

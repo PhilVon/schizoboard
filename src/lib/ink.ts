@@ -17,8 +17,9 @@
  * `state/tools/tool.ts`'s `PointerSample`, and the difference between the two is
  * the whole reason both exist. That one is what the *event* said, where a missing
  * reading and a meaningless one have to stay distinguishable; this one is what
- * the *stroke* is made of, by which point somebody has had to decide. Deciding
- * well — a pen's real reading, a mouse's velocity-derived stand-in — is T-55.
+ * the *stroke* is made of, by which point somebody has had to decide. The
+ * deciding is `lib/pressure.ts`: a pen's own reading, and for every other device
+ * one derived from how fast the hand was moving.
  *
  * The coordinate space is the producer's: screen pixels for a stroke being drawn,
  * item-local units for one being re-rastered. The geometry is identical either

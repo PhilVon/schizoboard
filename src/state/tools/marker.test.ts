@@ -12,6 +12,7 @@
 import { beforeEach, describe, expect, it } from "vitest";
 
 import { DEFAULT_INK_SIZE, DEFAULT_MARKER_COLOR } from "@/lib/ink";
+import { PRESSURE_NEUTRAL } from "@/lib/pressure";
 import { Camera } from "@/state/camera";
 import { DirtySets } from "@/state/dirty";
 import { Scene } from "@/state/scene";
@@ -26,6 +27,27 @@ let camera: Camera;
 
 function at(x: number, y: number, pressure?: number): PointerSample {
   return { x, y, shift: false, ctrl: false, alt: false, pressure };
+}
+
+/** A sample from a real pen: a pressure reading, and a `pointerType` that says
+ *  the reading means something. */
+function pen(x: number, y: number, pressure: number, time = 0): PointerSample {
+  return { x, y, shift: false, ctrl: false, alt: false, pressure, pointer: "pen", time };
+}
+
+/** A sample from a mouse — which reports `PRESSURE_NEUTRAL` forever, whatever the
+ *  hand is doing, and carries a timestamp that is the only real information. */
+function mouse(x: number, y: number, time: number): PointerSample {
+  return {
+    x,
+    y,
+    shift: false,
+    ctrl: false,
+    alt: false,
+    pressure: PRESSURE_NEUTRAL,
+    pointer: "mouse",
+    time,
+  };
 }
 
 function down(x: number, y: number, pressure?: number): void {
@@ -109,17 +131,6 @@ describe("collecting a stroke", () => {
     expect(last.y).toBeCloseTo(board.y, 6);
   });
 
-  it("stands in for a pressure the device did not measure", () => {
-    down(0, 0);
-    move([at(10, 0, 0.9), at(20, 0)]);
-
-    // A pen's real reading is carried through; a mouse reports nothing and gets
-    // the constant a mouse would have reported anyway. Branching on which device
-    // it was — and simulating from velocity for the ones that cannot measure —
-    // is T-55.
-    expect(samples().map((s) => s.pressure)).toEqual([0.5, 0.9, 0.5]);
-  });
-
   it("ignores a move that arrives with no button down", () => {
     move([at(10, 10), at(20, 20)]);
     expect(tool.wet).toBeNull();
@@ -134,6 +145,84 @@ describe("collecting a stroke", () => {
     move([at(510, 500)]);
 
     expect(samples().map((s) => s.x)).toEqual([500, 510]);
+  });
+});
+
+/**
+ * AC-77, and the whole of DESIGN section 6.5's warning: "a mouse always reports
+ * exactly 0.5, so mouse and touch use velocity-derived simulated pressure
+ * instead. Getting this wrong produces dead, uniform lines."
+ *
+ * Every assertion here would pass with a flat 0.5 in place of the branch, except
+ * the ones that say it varies. Those are the test.
+ */
+describe("how hard the nib is pressed", () => {
+  it("varies down the length of a mouse stroke, though the device never does", () => {
+    // 5 ms apart throughout, and accelerating: 4 px, then 12, then 40.
+    tool.handle({ kind: "down", at: mouse(0, 0, 0) }, ctx);
+    move([mouse(4, 0, 5), mouse(16, 0, 10), mouse(56, 0, 15)]);
+
+    const read = samples().map((s) => s.pressure);
+    // Every one of them arrived as PRESSURE_NEUTRAL and not one of them is it.
+    expect(read).not.toContain(PRESSURE_NEUTRAL);
+    // And the mark thins as the hand speeds up, which is the point.
+    expect(read[1]!).toBeGreaterThan(read[2]!);
+    expect(read[2]!).toBeGreaterThan(read[3]!);
+  });
+
+  it("starts a stroke at full width, because a stroke starts from rest", () => {
+    tool.handle({ kind: "down", at: mouse(0, 0, 0) }, ctx);
+    expect(samples()).toEqual([]);
+    move([mouse(2, 0, 8)]);
+    expect(tool.wet!.samples[0]!.pressure).toBe(1);
+  });
+
+  it("does not carry one stroke's speed into the next", () => {
+    tool.handle({ kind: "down", at: mouse(0, 0, 0) }, ctx);
+    move([mouse(60, 0, 5), mouse(120, 0, 10)]);
+    const fast = tool.wet!.samples[2]!.pressure;
+
+    tool.handle({ kind: "up", at: mouse(120, 0, 15) }, ctx);
+    tool.handle({ kind: "down", at: mouse(500, 500, 100) }, ctx);
+    move([mouse(502, 500, 108)]);
+
+    // A stroke that inherited the last one's speed would start at whatever width
+    // that one finished at.
+    expect(fast).toBeLessThan(0.5);
+    expect(tool.wet!.samples[0]!.pressure).toBe(1);
+  });
+
+  it("believes a pen, and does not measure it", () => {
+    tool.handle({ kind: "down", at: pen(0, 0, 0.2, 0) }, ctx);
+    // Moving fast, which would thin a mouse stroke — and pressing harder, which
+    // is what the pen actually said.
+    move([pen(80, 0, 0.6, 5), pen(160, 0, 0.95, 10)]);
+
+    expect(samples().map((s) => s.pressure)).toEqual([0.2, 0.6, 0.95]);
+  });
+
+  it("measures a pen that reports no pressure at all", () => {
+    tool.handle(
+      { kind: "down", at: { x: 0, y: 0, shift: false, ctrl: false, alt: false, pointer: "pen" } },
+      ctx,
+    );
+    move([{ x: 40, y: 0, shift: false, ctrl: false, alt: false, pointer: "pen", time: 5 }]);
+
+    // `undefined` is not a reading, and defaulting it to the neutral constant
+    // would be the flat line by another route.
+    expect(samples().map((s) => s.pressure)).toEqual([1, expect.any(Number)]);
+    expect(samples()[1]!.pressure).toBeLessThan(1);
+  });
+
+  it("still varies where the timestamps are useless", () => {
+    // Some engines stamp a whole coalesced batch identically. The distance
+    // between samples then has to carry it alone.
+    tool.handle({ kind: "down", at: mouse(0, 0, 0) }, ctx);
+    move([mouse(3, 0, 0), mouse(9, 0, 0), mouse(49, 0, 0)]);
+
+    const read = samples().map((s) => s.pressure);
+    expect(read).not.toContain(PRESSURE_NEUTRAL);
+    expect(read[3]!).toBeLessThan(read[1]!);
   });
 });
 

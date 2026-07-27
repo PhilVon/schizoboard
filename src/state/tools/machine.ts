@@ -88,6 +88,9 @@ function sample(e: PointerEvent | MouseEvent): PointerSample {
     // situations and must not arrive looking the same (see `PointerSample`).
     pressure: pointer.pressure,
     pointer: pointer.pointerType,
+    // The OS's stamp for this sample, which is the only one that means anything
+    // once a batch of them arrives together — see `PointerSample.time`.
+    time: e.timeStamp,
   };
 }
 

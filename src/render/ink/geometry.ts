@@ -96,12 +96,23 @@ const OPTIONS: Readonly<Record<InkTool, StrokeOptions>> = {
  * the outline open and unsmoothed, because more points are coming and committing
  * to an end cap would make the tip of a live stroke jitter as each sample lands.
  *
- * `simulatePressure` is deliberately absent — the caller decides, because that
- * is exactly the pen-versus-mouse branch T-55 owns and a default here would
- * quietly pick one. Until then it is left at perfect-freehand's own default.
+ * `simulatePressure` is **off**, always, and that is the one option here that is
+ * a correctness setting rather than a taste call.
+ *
+ * `perfect-freehand` has a simulation of its own and, left on, it *overrides* the
+ * pressure on every sample it is given — so a pen's real reading would be thrown
+ * away and replaced by a guess. Worse, the guess is derived from the distance
+ * between consecutive points with no reference to time, which on this board is
+ * not a measure of speed at all: `getCoalescedEvents` delivers however many
+ * samples the OS took, so a fast hand arrives as *closely spaced* points and
+ * would be read as slow.
+ *
+ * Every sample reaching here therefore carries a pressure somebody meant —
+ * measured for a pen, derived from real elapsed time for everything else
+ * (`lib/pressure.ts`).
  */
 export function strokeOptions(tool: InkTool, size: number, last: boolean): StrokeOptions {
-  return { ...OPTIONS[tool], size, last };
+  return { ...OPTIONS[tool], size, last, simulatePressure: false };
 }
 
 /** A vertex of the outline polygon, in the samples' own space. */

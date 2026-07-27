@@ -525,9 +525,14 @@ describe("offering a wheel notch to the tool", () => {
     // inside a listener.
     expect(tool.seen).toEqual([]);
     machine.flush(16);
-    expect(tool.seen).toEqual([
-      { kind: "wheel", at: { x: 5, y: 6, shift: false, ctrl: false, alt: false }, dy: -100 },
-    ]);
+    // `toMatchObject` rather than `toEqual`: every sample also carries the
+    // event's timestamp, and the ink fields a wheel has nothing to say about.
+    expect(tool.seen).toHaveLength(1);
+    expect(tool.seen[0]).toMatchObject({
+      kind: "wheel",
+      at: { x: 5, y: 6, shift: false, ctrl: false, alt: false },
+      dy: -100,
+    });
   });
 
   /**
