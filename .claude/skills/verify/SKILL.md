@@ -109,7 +109,86 @@ somebody's browser.
 
 Paste is the primary verb, so it is also the cheapest way to get state onto a
 board: text becomes a note, image bytes become a polaroid. Everything else —
-drag, rotate, marquee — needs real mouse input.
+drag, rotate, marquee, and every context menu — needs real mouse input, below.
+
+## Pointer input
+
+`SetCursorPos` then `mouse_event`. Screen coordinates, so add the window origin
+from `GetWindowRect` — and because `PrintWindow` captures the **whole** window,
+a coordinate read off a screenshot is already in that frame and needs no
+correction for the title bar beyond the origin itself.
+
+Do the same foreground dance as for keys, and **read the pid back before
+pressing a button**: a click that lands in somebody's browser is worse than a
+keystroke, because it can move something.
+
+```powershell
+Add-Type @"
+using System; using System.Runtime.InteropServices;
+public class M {
+  [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr h, out RECT r);
+  [DllImport("user32.dll")] public static extern bool SetCursorPos(int x, int y);
+  [DllImport("user32.dll")] public static extern void mouse_event(uint f, int dx, int dy, uint d, IntPtr e);
+  [StructLayout(LayoutKind.Sequential)] public struct RECT { public int L, T, R, B; }
+}
+"@
+# left 0x0002/0x0004 · right 0x0008/0x0010 · middle 0x0020/0x0040 · wheel 0x0800
+$r = New-Object M+RECT
+[void][M]::GetWindowRect($h, [ref]$r)               # $h from the raise above
+[void][M]::SetCursorPos(($r.L + $x), ($r.T + $y))
+[M]::mouse_event(0x0008, 0, 0, 0, [IntPtr]::Zero)   # right down
+[M]::mouse_event(0x0010, 0, 0, 0, [IntPtr]::Zero)   # right up
+```
+
+Sleep ~60 ms between down and up, and a few hundred after the release before
+screenshotting. That is the cadence these gestures were driven at and it is
+reliable; nothing here has been tested tighter, so treat it as a floor to relax
+deliberately rather than as a measured limit.
+
+A **drag** is down, `SetCursorPos` steps, then up. One jump does start a real
+drag — `select.ts` begins the gesture on the first move more than
+`DRAG_THRESHOLD_PX` (3) from the press — but it lands the whole delta in a
+single frame, which no hand does. Step it whenever the *path* is part of what
+is being tested: the carry lag and scale-up on a moving item, a marquee sweeping
+over things, or anything downstream of the rope solver, all of which are
+functions of how the pointer got there rather than of where it ended up.
+
+> **Wheel down is not `-120`.** The delta is a signed `WHEEL_DELTA` widened into
+> a `DWORD`, so up is `[uint32]120` and down is `[uint32]4294967176`.
+> PowerShell refuses to cast `-120` and throws *inside* the notch loop, so the
+> script still runs to the end and prints its usual success line — scroll-up
+> works, scroll-down silently does nothing, and it reads as the app ignoring the
+> gesture.
+
+> **Keep helper `.ps1` files pure ASCII.** 5.1 reads a BOM-less script as ANSI,
+> so an em-dash in a *comment* turns into two bytes that unbalance the next
+> string — reported as a missing terminator twenty lines below, which reads as a
+> quoting bug in the code.
+
+**Find the target by pixel, not by eye.** Estimating a point on a rope off a
+screenshot misses by the few pixels the hit radius does not cover, and a missed
+right-click opens no menu — after which the *next* click lands on the board
+instead of on the menu row you meant. Scan the frame for the colour instead:
+
+```python
+ys = [y for y in range(y0, y1) if blue(px[x, y])]   # the string at column x
+```
+
+And **re-locate between gestures**. Anything that changes a rope's pose moves it
+out from under coordinates measured one screenshot ago; the same right-click
+point that worked before a material change hit bare cork after it.
+
+**The menu is a fixed offset from the click.** It opens with its top-left corner
+at the cursor, so once the row geometry is measured from one screenshot the
+chips can be clicked without re-cropping: at the time of writing the *Material*
+chips sit at `+28/+59/+90` in x and `+144` in y from the right-click. Re-measure
+if the rows change — that is three numbers, not a lookup table worth trusting.
+
+**Let the simulation settle before measuring.** A restyle that moves a rope
+leaves it awake for a second or two; the HUD's `awake` counter is the signal,
+and a screenshot taken mid-ring reports a pose the string is only passing
+through. Watching a *sequence* of frames is also the only way to tell a paced
+change from a snap.
 
 ## Reading the document on disk
 
