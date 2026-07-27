@@ -64,47 +64,6 @@ function compareStrokes(a: SceneStroke, b: SceneStroke): number {
   return a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
 }
 
-/**
- * What a stroke's own nib adds to the box round its points.
- *
- * `render/ink/geometry.ts`'s `strokeReach` is the exact answer and lives on the
- * other side of a boundary this file may not cross — the scene imports nothing
- * from `render/`. This is the bound instead: `strokeReach` is
- * `size * (0.5 + thinning / 2) + SQRT2` and no tool's thinning exceeds 1, so the
- * nib never reaches further than `size + SQRT2` at any size. A test in
- * `render/ink/geometry.test.ts` holds the two together, which is where a tool
- * with a fatter profile would be caught.
- *
- * Over-estimating is the harmless direction here: it keeps an item in the
- * viewport a few units longer than it strictly needs to be.
- */
-const INK_NIB_BOUND = Math.SQRT2;
-
-/**
- * How far an item's ink reaches from the item's centre, in item-local units.
- *
- * The distance to the furthest corner of any stroke's box, padded by that
- * stroke's own nib — per stroke, like `render/ink/dry.ts`'s `inkBounds` and for
- * the same reason: a 22-unit highlighter beside a 6-unit marker would otherwise
- * pad the marker by the highlighter's nib.
- *
- * Absolute values rather than the box's own corners, because this is a radius
- * about the centre and the box need not contain it — ink drawn entirely off one
- * edge of a photograph reaches from the centre to the *far* side of it.
- */
-function inkReachOf(strokes: readonly SceneStroke[]): number {
-  let reach = 0;
-  for (const stroke of strokes) {
-    if (stroke.samples.length === 0) continue;
-    const pad = stroke.size + INK_NIB_BOUND;
-    const [x0, y0, x1, y1] = stroke.bbox;
-    const dx = Math.max(Math.abs(x0), Math.abs(x1)) + pad;
-    const dy = Math.max(Math.abs(y0), Math.abs(y1)) + pad;
-    reach = Math.max(reach, Math.hypot(dx, dy));
-  }
-  return reach;
-}
-
 /** Cold fields — read when a view is built or rebuilt, not per frame. */
 export interface ItemCold {
   id: string;
@@ -294,25 +253,6 @@ export class Scene {
    */
   lift: Float32Array;
 
-  /**
-   * How far this item's ink reaches from its centre, in item-local units, and 0
-   * for the items that have none — which is most of them.
-   *
-   * Ink is not clipped to the paper it was drawn on: a line drawn off the edge
-   * of a polaroid is one mark on one surface (`state/tools/marker.ts`), and the
-   * canvas it lands on hangs off the item root precisely so that it can overhang
-   * (`render/ink/canvas.ts`). So the ink is part of where the item *is*, and
-   * everything that asks — the culler, the camera's fit — has to be told.
-   *
-   * A radius rather than a box, which is the property that makes it free: it is
-   * measured in the item's own frame and is therefore the same number at every
-   * rotation, so a swinging item never recomputes it. The cost is a little slack
-   * at the corners of a long thin stroke, which errs towards keeping an item
-   * mounted a fraction longer than it strictly must be — the safe direction, and
-   * the same one `CellGrid` errs in.
-   */
-  private inkReach: Float32Array;
-
   private capacity = INITIAL_CAPACITY;
   private readonly slots = new Map<string, number>();
   private readonly ids: (string | null)[] = new Array<string | null>(INITIAL_CAPACITY).fill(null);
@@ -414,7 +354,6 @@ export class Scene {
     this.driftX = new Float32Array(INITIAL_CAPACITY);
     this.driftY = new Float32Array(INITIAL_CAPACITY);
     this.lift = new Float32Array(INITIAL_CAPACITY);
-    this.inkReach = new Float32Array(INITIAL_CAPACITY);
   }
 
   /**
@@ -478,7 +417,6 @@ export class Scene {
     this.driftX = copy(this.driftX);
     this.driftY = copy(this.driftY);
     this.lift = copy(this.lift);
-    this.inkReach = copy(this.inkReach);
     this.ids.length = next;
     this.coldBySlot.length = next;
     this.ids.fill(null, this.capacity);
@@ -503,11 +441,6 @@ export class Scene {
       this.driftX[slot] = 0;
       this.driftY[slot] = 0;
       this.lift[slot] = 0;
-      // An item can arrive after its own ink — an undo restores the strokes map
-      // in the same transaction, and nothing promises the observer sees the two
-      // halves in one order. Measured from whatever is already here rather than
-      // zeroed, so ink that got here first is not forgotten.
-      this.inkReach[slot] = inkReachOf(this.strokes.get(cold.id) ?? EMPTY_STROKES);
     }
     this.coldBySlot[slot] = cold;
     this.x[slot] = pose.x;
@@ -546,7 +479,6 @@ export class Scene {
     this.driftX[slot] = 0;
     this.driftY[slot] = 0;
     this.lift[slot] = 0;
-    this.inkReach[slot] = 0;
     this.freeSlots.push(slot);
     return true;
   }
@@ -578,20 +510,12 @@ export class Scene {
    * painting in the document's own order.
    */
   putStrokes(itemId: string, strokes: readonly SceneStroke[]): void {
-    const slot = this.slots.get(itemId);
     if (strokes.length === 0) {
       this.strokes.delete(itemId);
-      if (slot !== undefined) this.inkReach[slot] = 0;
       return;
     }
     const sorted = [...strokes].sort(compareStrokes);
     this.strokes.set(itemId, sorted);
-    // Here rather than in `boundsAt`, which is asked per candidate per frame
-    // while this is asked once per edit. Grow-only is deliberately *not* the
-    // rule: an erase shrinks it, because unlike the bitmap in
-    // `render/ink/canvas.ts` this is not a cache of anything and a stale radius
-    // keeps an item mounted for ever.
-    if (slot !== undefined) this.inkReach[slot] = inkReachOf(sorted);
   }
 
   /**
@@ -818,13 +742,11 @@ export class Scene {
     const angle = this.rot[slot]! + this.swing[slot]!;
     const cos = Math.abs(Math.cos(angle));
     const sin = Math.abs(Math.sin(angle));
-    // The ink's radius, not padded: `pad` is the shadow's, and a shadow is cast
-    // by the paper rather than by the mark on it. `max` rather than a sum for the
-    // same reason — ink inside the paper's own outline, which is most ink, adds
-    // nothing at all.
-    const reach = this.inkReach[slot]!;
-    const hw = Math.max((this.w[slot]! * cos + this.h[slot]! * sin) / 2 + pad, reach);
-    const hh = Math.max((this.w[slot]! * sin + this.h[slot]! * cos) / 2 + pad, reach);
+    // Ink adds nothing here: it is clipped to the paper (T-136), so an item is
+    // exactly as big as its paper and its shadow. That was not true between
+    // T-133 and T-136, and this is the code that carried the difference.
+    const hw = (this.w[slot]! * cos + this.h[slot]! * sin) / 2 + pad;
+    const hh = (this.w[slot]! * sin + this.h[slot]! * cos) / 2 + pad;
     const cx = this.x[slot]! + this.driftX[slot]!;
     const cy = this.y[slot]! + this.driftY[slot]!;
     out.minX = cx - hw;

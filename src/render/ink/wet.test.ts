@@ -25,20 +25,42 @@ interface Calls {
    *  halves of the highlighter's translucency. */
   alphas: number[];
   composites: string[];
+  /** Straight edges, which on this path only ever come from the paper clip. */
+  lines: Array<[number, number]>;
+  clips: number;
 }
 
 let calls: Calls;
 let camera: Camera;
 let ink: WetInk;
 
+/**
+ * Two kinds of path reach this stub and they must not be confused: the stroke's
+ * outline, which is curves, and the paper clip, which is four straight corners
+ * (T-136). Sorted on `closePath` by whether any straight edge was drawn, so the
+ * outline's points stay the thing every assertion about *where the ink went* is
+ * measuring.
+ */
 class StubPath {
+  private readonly seen: Array<[number, number]> = [];
+  private straight = false;
+
   moveTo(x: number, y: number): void {
-    calls.points.push([x, y]);
+    this.seen.push([x, y]);
+  }
+  lineTo(x: number, y: number): void {
+    this.straight = true;
+    this.seen.push([x, y]);
   }
   quadraticCurveTo(cx: number, cy: number, x: number, y: number): void {
-    calls.points.push([cx, cy], [x, y]);
+    this.seen.push([cx, cy], [x, y]);
   }
-  closePath(): void {}
+  closePath(): void {
+    if (this.straight) calls.lines.push(...this.seen);
+    else calls.points.push(...this.seen);
+    this.seen.length = 0;
+    this.straight = false;
+  }
 }
 
 function stubContext(): CanvasRenderingContext2D {
@@ -73,6 +95,9 @@ function stubContext(): CanvasRenderingContext2D {
     get globalCompositeOperation() {
       return composite;
     },
+    clip: () => {
+      calls.clips++;
+    },
   };
   return ctx as unknown as CanvasRenderingContext2D;
 }
@@ -94,8 +119,10 @@ function glued(samples: readonly InkSample[]): WetStroke {
   return { ...stroke(samples), item: "p" };
 }
 
-function frame(cx: number, cy: number, angle = 0): ItemFrame {
-  return { cx, cy, cos: Math.cos(angle), sin: Math.sin(angle) };
+/** Half-extents big enough that the paper clip is not what these tests are
+ *  about; the clip has its own describe below. */
+function frame(cx: number, cy: number, angle = 0, hw = 1e6, hh = 1e6): ItemFrame {
+  return { cx, cy, cos: Math.cos(angle), sin: Math.sin(angle), hw, hh };
 }
 
 function spreadY(): number {
@@ -104,7 +131,16 @@ function spreadY(): number {
 }
 
 beforeEach(() => {
-  calls = { points: [], fills: 0, forbidden: [], fillStyles: [], alphas: [], composites: [] };
+  calls = {
+    points: [],
+    fills: 0,
+    forbidden: [],
+    fillStyles: [],
+    alphas: [],
+    composites: [],
+    lines: [],
+    clips: 0,
+  };
   (globalThis as { Path2D?: unknown }).Path2D = StubPath;
   camera = new Camera();
   camera.resize(1000, 800);
@@ -261,5 +297,53 @@ describe("the reused screen-space buffer", () => {
 
     const far = camera.boardToScreen(39 * 20, 0).x;
     expect(Math.max(...calls.points.map((p) => p[0]))).toBeGreaterThan(far - 40);
+  });
+});
+
+/**
+ * T-136, the wet half. A stroke that appeared over the cork while the button was
+ * held and then vanished at the release would be a worse lie than either half
+ * alone, so the live stroke is clipped to the same paper the committed one is.
+ */
+describe("the edge of the paper, while the pen is still down", () => {
+  it("clips a glued stroke to the item's four corners", () => {
+    camera.setView(0, 0, 1);
+    ink.draw(stubContext(), camera, glued(straight(4)), frame(0, 0, 0, 50, 30));
+
+    expect(calls.clips).toBe(1);
+    // Four corners of a 100x60 sheet, in screen space, at 1:1 with the camera at
+    // the origin — the same conversion the samples went through.
+    const xs = calls.lines.map((p) => p[0]);
+    const ys = calls.lines.map((p) => p[1]);
+    expect(Math.max(...xs) - Math.min(...xs)).toBeCloseTo(100, 3);
+    expect(Math.max(...ys) - Math.min(...ys)).toBeCloseTo(60, 3);
+  });
+
+  it("turns the clip with the paper", () => {
+    camera.setView(0, 0, 1);
+    ink.draw(stubContext(), camera, glued(straight(4)), frame(0, 0, Math.PI / 2, 50, 30));
+
+    // A quarter turn swaps the extents. A clip that stayed axis-aligned would
+    // cut a turned photograph's ink off along the wrong edges — which looks like
+    // ink missing from the middle of the paper rather than like a clip.
+    const xs = calls.lines.map((p) => p[0]);
+    const ys = calls.lines.map((p) => p[1]);
+    expect(Math.max(...xs) - Math.min(...xs)).toBeCloseTo(60, 3);
+    expect(Math.max(...ys) - Math.min(...ys)).toBeCloseTo(100, 3);
+  });
+
+  it("grows the clip with the zoom, like everything else on this canvas", () => {
+    camera.setView(0, 0, 2);
+    ink.draw(stubContext(), camera, glued(straight(4)), frame(0, 0, 0, 50, 30));
+    const xs = calls.lines.map((p) => p[0]);
+    expect(Math.max(...xs) - Math.min(...xs)).toBeCloseTo(200, 3);
+  });
+
+  it("does not clip a board-space stroke, which has no paper to run off", () => {
+    ink.draw(stubContext(), camera, stroke(straight(4)));
+    // Bare cork is not an item and has no edge. What happens to a cork stroke is
+    // T-61's question, not this one's.
+    expect(calls.clips).toBe(0);
+    expect(calls.lines).toEqual([]);
   });
 });

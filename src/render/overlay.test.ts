@@ -67,6 +67,8 @@ function stubCanvas(): HTMLCanvasElement {
     fill: () => {
       calls.fills++;
     },
+    /** The wet stroke clips to the paper it is being drawn on (T-136). */
+    clip: vi.fn(),
     fillStyle: "",
     strokeStyle: "",
     lineWidth: 0,
@@ -663,6 +665,9 @@ describe("Overlay, hovering a pin lights its threads", () => {
 describe("the stroke in progress", () => {
   class StubPath {
     moveTo(): void {}
+    /** The paper clip the wet stroke is drawn through (T-136) is straight
+     *  edges; the outline is curves. Both land here. */
+    lineTo(): void {}
     quadraticCurveTo(): void {}
     closePath(): void {}
   }

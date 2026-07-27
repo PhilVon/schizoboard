@@ -188,6 +188,7 @@ export function paintStrokes(
   ctx: CanvasRenderingContext2D,
   strokes: readonly SceneStroke[],
   region: InkRegion,
+  paper: InkBox,
 ): boolean {
   // Identity for the clear, because the transform below is in item-local units
   // and the backing store is in device pixels.
@@ -201,6 +202,21 @@ export function paintStrokes(
     -region.ox * region.scale,
     -region.oy * region.scale,
   );
+
+  // The paper, and the pen stops at the edge of it (T-136). A mark that ran off
+  // the side of a photograph used to be drawn in full, hanging over the cork and
+  // travelling with the paper — which reads as a mark stuck to the air rather
+  // than to anything.
+  //
+  // Clipped here as well as by sizing the canvas to the overlap in
+  // `render/ink/canvas.ts`, and the two are not the same guard: the region is
+  // grow-only, so a canvas that was once bigger than the paper it belongs to
+  // still covers cork after a resize, and the clip is what stops ink from being
+  // drawn there.
+  ctx.save();
+  ctx.beginPath();
+  ctx.rect(paper.minX, paper.minY, paper.maxX - paper.minX, paper.maxY - paper.minY);
+  ctx.clip();
 
   let drew = false;
   for (const stroke of strokes) {
@@ -240,7 +256,45 @@ export function paintStrokes(
     ctx.restore();
     drew = true;
   }
+  ctx.restore();
   return drew;
+}
+
+/**
+ * The item's own box, in its local frame — the surface a pen can mark.
+ *
+ * Half-extents about the centre, because that is where an item's local origin is
+ * (DESIGN section 2.5) and it is what both callers already hold: the renderer
+ * has `scene.w`/`scene.h`, and the overlay has the same numbers for the rotated
+ * rect it clips the wet stroke to.
+ */
+export function paperBox(w: number, h: number, out: InkBox): InkBox {
+  out.minX = -w / 2;
+  out.minY = -h / 2;
+  out.maxX = w / 2;
+  out.maxY = h / 2;
+  return out;
+}
+
+/**
+ * The part of the ink that is actually on the paper, or null when none of it is.
+ *
+ * Null is a real case and not a degenerate one: undo an item's resize with ink
+ * drawn near its old edge and every stroke can end up off the paper, at which
+ * point the canvas should go rather than be a blank bitmap kept alive by strokes
+ * nobody can see.
+ */
+export function clipToPaper(box: InkBox, paper: InkBox): InkBox | null {
+  const minX = Math.max(box.minX, paper.minX);
+  const minY = Math.max(box.minY, paper.minY);
+  const maxX = Math.min(box.maxX, paper.maxX);
+  const maxY = Math.min(box.maxY, paper.maxY);
+  if (minX >= maxX || minY >= maxY) return null;
+  box.minX = minX;
+  box.minY = minY;
+  box.maxX = maxX;
+  box.maxY = maxY;
+  return box;
 }
 
 /**

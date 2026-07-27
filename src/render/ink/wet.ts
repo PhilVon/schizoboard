@@ -67,6 +67,10 @@ export interface ItemFrame {
   cy: number;
   cos: number;
   sin: number;
+  /** Half the item's width and height, in board units — the paper the pen is
+   *  allowed to mark. See the clip in [`WetInk.draw`]. */
+  hw: number;
+  hh: number;
 }
 
 export class WetInk {
@@ -139,6 +143,27 @@ export class WetInk {
     if (!traceOutline(outline, path)) return false;
 
     ctx.save();
+    // The pen stops at the edge of the paper (T-136), wet as well as dry — a
+    // stroke that appeared over the cork while the button was down and then
+    // vanished at the release would be a worse lie than either half alone.
+    //
+    // The paper's four corners rather than an axis-aligned box, because the
+    // photograph is drawn at an angle and this clip is in screen space. Same
+    // conversion as the samples above and in the same order, so the two cannot
+    // disagree about where the paper is.
+    if (frame !== null && stroke.item !== null) {
+      const paper = new Path2D();
+      for (let i = 0; i < 4; i++) {
+        const lx = i === 0 || i === 3 ? -frame.hw : frame.hw;
+        const ly = i < 2 ? -frame.hh : frame.hh;
+        rotateOut(lx, ly, frame.cx, frame.cy, frame.cos, frame.sin, this.board);
+        camera.boardToScreen(this.board.x, this.board.y, this.at);
+        if (i === 0) paper.moveTo(this.at.x, this.at.y);
+        else paper.lineTo(this.at.x, this.at.y);
+      }
+      paper.closePath();
+      ctx.clip(paper);
+    }
     ctx.globalAlpha = stroke.opacity;
     ctx.fillStyle = stroke.color;
     // A filled polygon, not a stroked line — the width is in the shape. Nothing

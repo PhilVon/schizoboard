@@ -230,7 +230,7 @@ export class Overlay {
   /** Holds the reused screen-space buffer, so it survives between frames. */
   private readonly wetInk = new WetInk();
   /** Refilled every frame a glued stroke is drawn — see [`Overlay.inkFrame`]. */
-  private readonly ink: ItemFrame = { cx: 0, cy: 0, cos: 1, sin: 0 };
+  private readonly ink: ItemFrame = { cx: 0, cy: 0, cos: 1, sin: 0, hw: 0, hh: 0 };
 
   constructor(canvas: HTMLCanvasElement) {
     this.canvas = canvas;
@@ -484,6 +484,11 @@ export class Overlay {
     this.ink.cy = scene.renderY(slot);
     this.ink.cos = Math.cos(angle);
     this.ink.sin = Math.sin(angle);
+    // The paper the wet stroke is clipped to (T-136). Stored rather than
+    // rendered size: the carry scale is deliberately absent from this frame, for
+    // the reason above, so the clip must not have it either.
+    this.ink.hw = scene.w[slot]! / 2;
+    this.ink.hh = scene.h[slot]! / 2;
     return this.ink;
   }
 

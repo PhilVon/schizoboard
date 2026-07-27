@@ -12,7 +12,6 @@ import type { InkSample } from "@/lib/ink";
 import {
   outlineStroke,
   strokeOptions,
-  strokeReach,
   traceOutline,
   type OutlinePoint,
   type PathSink,
@@ -238,21 +237,3 @@ describe("a fast stroke, measured", () => {
   });
 });
 
-/**
- * The bound `state/scene.ts` pads an item's ink reach by.
- *
- * That file may not import this one — the scene imports nothing from `render/` —
- * so it carries `size + SQRT2` as a stated upper bound on the nib instead. This
- * is the other end of that sentence, and it is what fails if a tool is ever
- * given a thinning above 1: the culler would then unmount an item with the fat
- * edge of a stroke still on screen, which is a bug nobody reproduces on purpose.
- */
-describe("how far the nib reaches past the points", () => {
-  it("never exceeds the size plus a hair, for either tool at any size", () => {
-    for (const tool of ["marker", "highlighter"] as const) {
-      for (const size of [0.5, 1, 6, 22, 64, 400]) {
-        expect(strokeReach(tool, size)).toBeLessThanOrEqual(size + Math.SQRT2);
-      }
-    }
-  });
-});

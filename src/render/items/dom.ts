@@ -510,6 +510,18 @@ export class DomItemLayer implements ItemLayer {
       for (const [id, view] of this.views) if (view.ink.live || scene.hasInk(id)) this.inkPending.add(id);
     } else {
       for (const id of dirty.ink) if (this.views.has(id)) this.inkPending.add(id);
+      // An item that was resized, with ink on it. The canvas is clipped to the
+      // paper (T-136), so a note dragged wider has to give back the ink its old
+      // edge was hiding and one dragged narrower has to stop showing what is now
+      // off it. Asked of the canvas rather than tracked here, and only of items
+      // that changed and already have one — a drag answers false, which is what
+      // keeps this phase asleep while a photograph is being carried.
+      for (const id of dirty.items) {
+        const view = this.views.get(id);
+        const slot = scene.slotOf(id);
+        if (!view || slot === undefined) continue;
+        if (view.ink.staleBox(scene.w[slot]!, scene.h[slot]!)) this.inkPending.add(id);
+      }
     }
     if (this.inkPending.size === 0) return;
 
@@ -518,8 +530,9 @@ export class DomItemLayer implements ItemLayer {
       if (budget === 0) break;
       this.inkPending.delete(id);
       const view = this.views.get(id);
-      if (!view) continue;
-      view.ink.update(scene.strokesOf(id), this.rasterScale);
+      const slot = scene.slotOf(id);
+      if (!view || slot === undefined) continue;
+      view.ink.update(scene.strokesOf(id), this.rasterScale, scene.w[slot]!, scene.h[slot]!);
       budget--;
     }
   }

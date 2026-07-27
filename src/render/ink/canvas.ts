@@ -19,10 +19,18 @@
  *
  * ## It is a child of the item's *root*
  *
- * Not of `.pol-window` or `.paper-surface`: both are `overflow: hidden`, and ink
- * legitimately runs off the edge of the paper it was drawn on. The root
- * deliberately sets `contain: layout style` and not `paint` so that the shadow
- * can overhang, and the ink canvas is the second thing that needs it.
+ * Not of `.pol-window` or `.paper-surface`: both are `overflow: hidden` and both
+ * are *smaller than the item*. A polaroid's white border is part of the card and
+ * is a perfectly good thing to write on, and clipping to the photograph's window
+ * would swallow a caption scrawled underneath it.
+ *
+ * The item's own edge is a different matter, and the pen does stop there: the
+ * canvas is sized to the overlap of the ink and the paper, and `paintStrokes`
+ * clips to the paper as well (T-136). A stroke that runs off the side of a
+ * photograph used to be drawn in full, hanging over the cork and travelling with
+ * the paper, which reads as a mark stuck to the air. What happens to the part
+ * that fell off — lost today, ink on whatever is underneath once board ink
+ * exists — is T-137.
  *
  * Being inside the root also means being inside the item's `rotate()` and its
  * carry `scale()`, which is DESIGN section 6.2's whole claim: the ink follows a
@@ -30,7 +38,15 @@
  * that maths for the paper.
  */
 
-import { inkBounds, paintStrokes, regionFor, type InkBox, type InkRegion } from "@/render/ink/dry";
+import {
+  clipToPaper,
+  inkBounds,
+  paintStrokes,
+  paperBox,
+  regionFor,
+  type InkBox,
+  type InkRegion,
+} from "@/render/ink/dry";
 import type { SceneStroke } from "@/state/scene";
 
 /**
@@ -47,6 +63,11 @@ export class ItemInk {
   private el: HTMLCanvasElement | null = null;
   private ctx: CanvasRenderingContext2D | null = null;
   private region: InkRegion | null = null;
+  /** The paper this canvas was last clipped to — its own, not shared, because
+   *  it outlives the call. */
+  private readonly paper: InkBox = { minX: 0, minY: 0, maxX: 0, maxY: 0 };
+  private boxW = 0;
+  private boxH = 0;
 
   constructor(host: HTMLElement) {
     this.host = host;
@@ -72,8 +93,17 @@ export class ItemInk {
    * rather than only in `release`: an item that stays mounted and loses its last
    * stroke would otherwise keep showing it.
    */
-  update(strokes: readonly SceneStroke[], scale: number): void {
-    const bounds = strokes.length === 0 ? null : inkBounds(strokes, box);
+  update(strokes: readonly SceneStroke[], scale: number, w: number, h: number): void {
+    // Remembered so that a resize re-rasters: the clip below is a function of
+    // the item's size, and a note dragged wider has to give back the ink its old
+    // edge was hiding. `render/items/dom.ts` asks with [`staleBox`].
+    this.boxW = w;
+    this.boxH = h;
+    const paper = paperBox(w, h, this.paper);
+    const inked = strokes.length === 0 ? null : inkBounds(strokes, box);
+    // The overlap, not the ink: the pen stops at the edge of the paper (T-136),
+    // so anything past it is neither drawn nor worth a pixel of backing store.
+    const bounds = inked === null ? null : clipToPaper(inked, paper);
     if (bounds === null) {
       this.release();
       return;
@@ -104,7 +134,19 @@ export class ItemInk {
     // placed either way; phase 6 is not a place to raise.
     if (this.ctx === null) this.ctx = canvas.getContext("2d");
     if (this.ctx === null) return;
-    paintStrokes(this.ctx, strokes, region);
+    paintStrokes(this.ctx, strokes, region, paper);
+  }
+
+  /**
+   * Is the bitmap clipped to a size the item no longer is?
+   *
+   * Asked of every mounted, inked item that changed this frame, which is few:
+   * ink is rare and a change to an inked item is rarer. A drag answers false —
+   * it moves the paper without resizing it — which is what keeps the INK phase
+   * asleep while a photograph is being carried.
+   */
+  staleBox(w: number, h: number): boolean {
+    return this.el !== null && (w !== this.boxW || h !== this.boxH);
   }
 
   /**

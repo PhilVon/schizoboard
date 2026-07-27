@@ -285,22 +285,10 @@ export class Culler {
    * trade for noise.
    */
   update(scene: Scene, dirty: DirtySets, camera: Camera): void {
-    // Rope dirt cannot move an item, so it cannot change the answer.
-    //
-    // Ink dirt can, and that is not a contradiction of `state/dirty.ts`'s "ink
-    // and rope dirt cannot move an item" — a stroke does not move the paper, it
-    // changes how far past the paper the item is drawn, and this is the one
-    // question that cares about the difference (T-133). The price is a viewport
-    // re-query per ink edit, which is a pen-up or an erase, not a frame.
-    if (
-      !dirty.all &&
-      !dirty.camera &&
-      !dirty.culling &&
-      dirty.items.size === 0 &&
-      dirty.ink.size === 0
-    ) {
-      return;
-    }
+    // Ink and rope dirt cannot move an item, so they cannot change the answer.
+    // Ink briefly could, between T-133 and T-136 — a stroke ran off the paper
+    // and the item was drawn bigger than it was. It is clipped to the paper now.
+    if (!dirty.all && !dirty.camera && !dirty.culling && dirty.items.size === 0) return;
 
     // `!built` covers a culler that meets a scene already full of items with
     // nothing but the camera dirty — which is not how `main.ts` wires it, but is
@@ -339,18 +327,6 @@ export class Culler {
       // No slot means the item was deleted this frame. Its entries stay until
       // something inherits the slot; see CellGrid's note on invalidation.
       if (slot === undefined) continue;
-      this.grid.place(slot, scene.boundsAt(slot, SHADOW_PAD, this.item));
-    }
-    // And the ink, because a stroke can run off the edge of the paper it was
-    // drawn on and `Scene.boundsAt` counts it. `dirty.ink` "cannot move an item"
-    // (`state/dirty.ts`) and that is still true — it can only change how far past
-    // the paper the item is *drawn*, which is the same question the grid answers.
-    // Without this the index is a frame behind the mark for a stroke that
-    // overhangs, and the item vanishes at the edge of the viewport with ink still
-    // on screen.
-    for (const id of dirty.ink) {
-      const slot = scene.slotOf(id);
-      if (slot === undefined || dirty.items.has(id)) continue;
       this.grid.place(slot, scene.boundsAt(slot, SHADOW_PAD, this.item));
     }
   }

@@ -15,7 +15,14 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { InkSample } from "@/lib/ink";
-import { inkBounds, MAX_INK_PX, paintStrokes, regionFor, type InkBox } from "@/render/ink/dry";
+import {
+  clipToPaper,
+  inkBounds,
+  MAX_INK_PX,
+  paintStrokes,
+  regionFor,
+  type InkBox,
+} from "@/render/ink/dry";
 import { outlineStroke, strokeOptions, strokeReach } from "@/render/ink/geometry";
 import type { SceneStroke } from "@/state/scene";
 
@@ -26,6 +33,8 @@ interface Calls {
   alphas: number[];
   clears: number;
   transforms: number[][];
+  /** The paper rectangle the painter clipped to, if it did (T-136). */
+  clips: Array<[number, number, number, number]>;
   /** The composite operator each fill went down with — DESIGN 6.5's `multiply`
    *  for the highlighter, and `source-over` for everything else. */
   composites: string[];
@@ -57,6 +66,11 @@ function stubContext(): CanvasRenderingContext2D {
     clearRect: () => {
       calls.clears++;
     },
+    beginPath: () => {},
+    rect: (x: number, y: number, w: number, h: number) => {
+      calls.clips.push([x, y, w, h]);
+    },
+    clip: () => {},
     fill: () => {
       calls.fills++;
       calls.alphas.push(alpha);
@@ -117,6 +131,14 @@ function stroke(over: Partial<SceneStroke> = {}): SceneStroke {
   };
 }
 
+/**
+ * A sheet big enough that nothing in these tests reaches its edge — the clip is
+ * its own describe below, and every other test here is about the region maths.
+ */
+function paper(w = 1e6, h = 1e6): InkBox {
+  return { minX: -w / 2, minY: -h / 2, maxX: w / 2, maxY: h / 2 };
+}
+
 function isPow2(n: number): boolean {
   return n > 0 && (n & (n - 1)) === 0;
 }
@@ -129,6 +151,7 @@ beforeEach(() => {
     alphas: [],
     clears: 0,
     transforms: [],
+    clips: [],
     composites: [],
     forbidden: [],
   };
@@ -236,11 +259,8 @@ describe("the region", () => {
 describe("painting", () => {
   it("clears first, then fills one shape per stroke, in order", () => {
     const region = regionFor({ minX: -10, minY: -10, maxX: 80, maxY: 20 }, 1, null);
-    const drew = paintStrokes(
-      stubContext(),
-      [stroke({ id: "a", color: "#111", z: "a0" }), stroke({ id: "b", color: "#222", z: "a1" })],
-      region,
-    );
+    const drew = paintStrokes(stubContext(),
+      [stroke({ id: "a", color: "#111", z: "a0" }), stroke({ id: "b", color: "#222", z: "a1" })], region, paper());
 
     expect(drew).toBe(true);
     expect(calls.clears).toBe(1);
@@ -252,7 +272,7 @@ describe("painting", () => {
 
   it("puts the item-local origin where the region says it is", () => {
     const region = regionFor({ minX: -100, minY: -50, maxX: 0, maxY: 0 }, 2, null);
-    paintStrokes(stubContext(), [stroke()], region);
+    paintStrokes(stubContext(), [stroke()], region, paper());
 
     // The clear runs under identity; the draw runs under the region's transform.
     expect(calls.transforms[0]).toEqual([1, 0, 0, 1, 0, 0]);
@@ -264,13 +284,13 @@ describe("painting", () => {
 
   it("draws a translucent stroke translucently", () => {
     const region = regionFor({ minX: -10, minY: -10, maxX: 80, maxY: 20 }, 1, null);
-    paintStrokes(stubContext(), [stroke({ opacity: 0.35 })], region);
+    paintStrokes(stubContext(), [stroke({ opacity: 0.35 })], region, paper());
     expect(calls.alphas).toEqual([0.35]);
   });
 
   it("has nothing to draw for an item whose strokes are all empty", () => {
     const region = regionFor({ minX: 0, minY: 0, maxX: 10, maxY: 10 }, 1, null);
-    expect(paintStrokes(stubContext(), [stroke({ samples: [] })], region)).toBe(false);
+    expect(paintStrokes(stubContext(), [stroke({ samples: [] })], region, paper())).toBe(false);
     expect(calls.fills).toBe(0);
     // The clear still happened: a canvas whose last stroke was erased has to end
     // up blank rather than keeping the old mark.
@@ -289,14 +309,11 @@ describe("painting", () => {
    */
   it("lays a highlighter down with multiply, and a marker over the top", () => {
     const region = regionFor({ minX: -10, minY: -10, maxX: 80, maxY: 20 }, 1, null);
-    paintStrokes(
-      stubContext(),
+    paintStrokes(stubContext(),
       [
         stroke({ id: "a", tool: "highlighter", size: 20, opacity: 0.4, z: "a0" }),
         stroke({ id: "b", z: "a1" }),
-      ],
-      region,
-    );
+      ], region, paper());
 
     // Per stroke, and reset for the marker: a highlighter passed over first must
     // not turn the ink drawn after it into a blend of the paper.
@@ -315,7 +332,12 @@ describe("painting", () => {
       [30, 20],
     ]);
     const region = regionFor({ minX: -40, minY: -80, maxX: 100, maxY: 60 }, 1, null);
-    paintStrokes(stubContext(), [stroke({ tool: "highlighter", size: 20, samples: loop })], region);
+    paintStrokes(
+      stubContext(),
+      [stroke({ tool: "highlighter", size: 20, samples: loop })],
+      region,
+      paper(),
+    );
 
     expect(calls.fills).toBe(1);
     expect(calls.composites).toEqual(["multiply"]);
@@ -325,7 +347,7 @@ describe("painting", () => {
     const region = regionFor({ minX: -10, minY: -10, maxX: 80, maxY: 20 }, 1, null);
     // T-62's eraser, arriving before T-62. Visibly wrong beats invisibly
     // missing: the record is in the document either way.
-    expect(paintStrokes(stubContext(), [stroke({ tool: "erase" })], region)).toBe(true);
+    expect(paintStrokes(stubContext(), [stroke({ tool: "erase" })], region, paper())).toBe(true);
   });
 });
 
@@ -383,5 +405,54 @@ describe("the pad", () => {
     // clips every hard-pressed stroke by a quarter of its width.
     expect(strokeReach("marker", 6)).toBeGreaterThan(6 * 0.775);
     expect(strokeReach("highlighter", 20)).toBeGreaterThan(20 * 0.53);
+  });
+});
+
+/**
+ * T-136. The pen stops at the edge of the paper.
+ *
+ * Ink used to be drawn in full wherever the samples went, so a stroke that ran
+ * off the side of a photograph hung over the cork and travelled with the paper —
+ * a mark stuck to the air. Two guards, and they are not the same guard: the
+ * canvas is sized to the overlap so the pixels are not spent, and the painter
+ * clips so that the ones that exist are not filled.
+ */
+describe("the edge of the paper", () => {
+  it("clips every stroke to the item's own box", () => {
+    const region = regionFor({ minX: -10, minY: -10, maxX: 80, maxY: 20 }, 1, null);
+    paintStrokes(stubContext(), [stroke()], region, paper(100, 60));
+
+    // Half-extents about the item's centre, which is where its local origin is.
+    expect(calls.clips).toEqual([[-50, -30, 100, 60]]);
+  });
+
+  it("clips once for the item, not once per stroke", () => {
+    const region = regionFor({ minX: -10, minY: -10, maxX: 80, maxY: 20 }, 1, null);
+    paintStrokes(
+      stubContext(),
+      [stroke({ id: "a" }), stroke({ id: "b" }), stroke({ id: "c" })],
+      region,
+      paper(100, 60),
+    );
+    expect(calls.clips).toHaveLength(1);
+    expect(calls.fills).toBe(3);
+  });
+
+  it("keeps the part of the ink that is on the paper, and drops the rest", () => {
+    // A stroke that starts on a 100-unit sheet and runs 400 units off it.
+    const ink = inkBounds([stroke({ samples: samples([[0, 0], [400, 0]]) })], box)!;
+    const kept = clipToPaper({ ...ink }, paper(100, 100))!;
+
+    expect(kept.maxX).toBe(50);
+    // And the near end is untouched: this is a clip, not a shrink to the paper.
+    expect(kept.minX).toBeCloseTo(ink.minX, 6);
+  });
+
+  it("has nothing to keep for a stroke entirely off the paper", () => {
+    const ink = inkBounds([stroke({ samples: samples([[400, 0], [500, 0]]) })], box)!;
+    // Which is an undo of a resize away: shrink the sheet under ink drawn near
+    // its old edge and every stroke is off it. The canvas should go rather than
+    // stay alive and blank.
+    expect(clipToPaper({ ...ink }, paper(100, 100))).toBeNull();
   });
 });

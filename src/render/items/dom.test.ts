@@ -670,6 +670,49 @@ describe("ink", () => {
    * scales the pixels it has — which is what DESIGN section 9.3 asks for while
    * `paintInk`'s budget works through the board.
    */
+  /**
+   * T-136 in the DOM half: the canvas covers the overlap of the ink and the
+   * paper, so a stroke that ran off the edge costs no pixels for the part that
+   * cannot be drawn — and a resize has to re-raster, because the clip is a
+   * function of a size that just changed.
+   */
+  it("sizes the canvas to the paper, not to ink that ran off it", () => {
+    add("a", {}, { w: 200, h: 200 });
+    drawOn("a", 6, 3000);
+    layer.sync(scene, dirty, null);
+    layer.paintInk(scene, dirty);
+
+    // A 3000-unit stroke on a 200-unit sheet. Sized to the ink, this is a 4096px
+    // backing store; sized to the overlap it is a fraction of that.
+    expect(canvases()[0]!.width).toBeLessThanOrEqual(512);
+  });
+
+  it("re-rasters an inked item that was resized, and only that", () => {
+    add("a", {}, { w: 200, h: 200 });
+    drawOn("a", 6, 1000);
+    layer.sync(scene, dirty, null);
+    layer.paintInk(scene, dirty);
+    const small = canvases()[0]!.width;
+    dirty.clear();
+
+    // Dragged wider: the paper gives back the ink its old edge was hiding.
+    scene.setPose("a", { w: 1200 });
+    dirty.item("a");
+    layer.sync(scene, dirty, null);
+    layer.paintInk(scene, dirty);
+    expect(canvases()[0]!.width).toBeGreaterThan(small);
+
+    // And a move is not a resize: the INK phase stays asleep while a photograph
+    // is carried, which is what the whole per-item canvas buys.
+    dirty.clear();
+    scene.setPose("a", { x: 900 });
+    dirty.item("a");
+    const before = canvases()[0]!.width;
+    layer.sync(scene, dirty, null);
+    layer.paintInk(scene, dirty);
+    expect(canvases()[0]!.width).toBe(before);
+  });
+
   it("spends more device pixels on the same ink when the board zooms in", () => {
     add("a");
     drawOn("a");
