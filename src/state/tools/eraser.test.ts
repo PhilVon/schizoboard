@@ -92,7 +92,6 @@ beforeEach(() => {
     hitTest: () => under,
     hitPin: () => null,
     hitString: () => null,
-    pluck: () => {},
     held: new Set<string>(),
     write: {
       setPoses: () => {},

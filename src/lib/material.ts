@@ -32,7 +32,7 @@
  * 2.0 is a wire they have asked to hang, and it hangs — less than yarn would,
  * which is the whole of what AC-268 asks for.
  *
- * What is *not* bought: a plucked wire should ring longer and higher than yarn,
+ * What is *not* bought: a wire should ring longer and higher than yarn,
  * because damping is a property of the fibre. That is `ROPE_DAMPING`, one
  * global in `tuning.ts`, and per-material damping is a change to `verlet.ts`'s
  * signature rather than to this table. Worth doing; not this task.

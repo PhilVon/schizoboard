@@ -48,7 +48,7 @@
  */
 
 import { rotateIn, rotateOut, type Point } from "@/lib/rotate";
-import { isTaut, presetSlack, toggleTaut } from "@/lib/slack";
+import { presetSlack, toggleTaut } from "@/lib/slack";
 import type { Bounds, Vec2 } from "@/state/camera";
 import {
   chromeFrame,
@@ -907,28 +907,6 @@ export class SelectTool implements Tool {
         if (node) {
           ctx.write.setNodeSlack(hit.string, node.nodeId, toggleTaut(node.slackAfter));
         }
-      } else if (node !== undefined && isTaut(node.slackAfter)) {
-        /**
-         * > | Pluck | Click and release without dragging, on a taut string | A
-         * > travelling wave runs down it and damps out. Purely for joy
-         * > — DESIGN section 3.4
-         *
-         * Which is not in competition with the line four rows above it — "a
-         * plain click without dragging selects the string instead". A click
-         * selects, and a click on a *taut* one also plucks; the two verbs want
-         * different things and neither has to lose.
-         *
-         * Not on the second click of a double, though, because that one is the
-         * taut toggle and its whole job is to stop the segment being taut. A
-         * pluck there would shake a string on its way to going slack, and the
-         * wave would die into the new sag a frame later — a gesture that half
-         * happens.
-         *
-         * Taut by `lib/slack.ts`'s reckoning, which is the same predicate the
-         * toggle uses. Two ideas of taut would have the two gestures disagree
-         * about the same segment.
-         */
-        ctx.pluck(hit.string, hit.x, hit.y);
       }
       this.pendingDouble = false;
       this.phase = "idle";

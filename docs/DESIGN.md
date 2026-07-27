@@ -274,8 +274,17 @@ The critical detail: when the string splits at that point, **the slack must spli
 | Toggle taut | Double-click a segment | Snaps between taut and default slack |
 | Tuck behind | Context menu → *Tuck behind* | Flips `layer`; the string now runs behind items instead of over them |
 | Restyle | Context menu | Colour (red is default — also blue, green, yellow, black, white), thickness, material (string / yarn / wire) |
-| Pluck | Click and release without dragging, on a taut string | A travelling wave runs down it and damps out. Purely for joy |
 | Cut | Scissors modifier, or context menu → *Delete* | String removed; its pins stay where they are |
+
+**There is no pluck.** This table used to carry one — click and release on a
+taut string and a travelling wave ran down it, "purely for joy" — and it was
+built, shipped and then removed. D-24 is the decision record; the short version
+is that solving the rope exactly (D-23, T-147) put the tension up to what the
+analysis says it should be, and a transverse wave travels at the root of
+tension. The same kick then bought a fifth of the swing and turned it round
+inside a single frame, so what a 60 Hz display showed was not a string ringing
+but noise. The kick can be made harder; it cannot be made slower without making
+the rope wrong again, and a correct rope was worth more than the gesture.
 
 **Removing a pin from a string.** A pin in the middle of a run: the two neighbouring segments merge into one, with the slack summed so the total sag is preserved. A pin at either end: that node is dropped. A string left with fewer than two nodes deletes itself. All of it is one undo entry.
 
@@ -456,7 +465,7 @@ Fixed timestep of 1/120 s with an accumulator and a cap of four substeps per fra
 
 **Ropes are seeded analytically, not simulated into place.** On load or creation, solve the catenary for the segment's chord and rest length, evaluate it at the particle positions, and mark the rope **asleep immediately**. A board opens perfectly still. Simulating from a straight line instead produces a whip-crack across every string every time the file opens, which looks like a bug and takes half a second to settle.
 
-**Wake** on: an endpoint moving more than a hair this frame; a topology change; a slack change; a pluck; or an explicit impulse.
+**Wake** on: an endpoint moving more than a hair this frame; a topology change; or a slack change.
 
 **Sleep** when the largest particle movement stays under about 0.05 px for 12 consecutive frames. Cache the pose and stop stepping. A sleeping rope is one polyline draw and no simulation at all.
 

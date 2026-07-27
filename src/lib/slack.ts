@@ -131,10 +131,12 @@ export function presetSlack(preset: number): number {
  * called that a toggle would read as the gesture having failed. Anything the
  * eye would call taut goes back to the default.
  *
- * The predicate is its own function because a second caller wants it: a pluck
- * is offered on a taut string and not on a draped one (DESIGN section 3.4), and
- * two ideas of what taut means would make the two gestures disagree about the
- * same segment.
+ * The predicate is its own function rather than an inline comparison because
+ * "what counts as taut" is a rule about the board and not about this toggle.
+ * It had a second caller until T-148 took the pluck out — that one was offered
+ * on a taut string and not on a draped one, and the two gestures had to agree
+ * about the same segment. Anything that asks the question next should ask it
+ * here for the same reason.
  */
 export function isTaut(slack: number): boolean {
   return clamp(slack) <= MIN_SLACK * 2;

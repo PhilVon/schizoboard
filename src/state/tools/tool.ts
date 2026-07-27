@@ -475,26 +475,6 @@ export interface ToolContext {
    */
   hitString(boardX: number, boardY: number, reach: number): StringHit | null;
   /**
-   * Shake a string, at a board point on it.
-   *
-   * > | Pluck | Click and release without dragging, on a taut string | A
-   * > travelling wave runs down it and damps out. Purely for joy
-   * > — DESIGN section 3.4
-   *
-   * The one thing on this context that is not a question. It is here and not on
-   * `BoardWriter` because it is not a write: nothing about a pluck is durable.
-   *
-   * > Physics never writes to the document. Not particle positions, not swing
-   * > angles, not settled rotations, not sleep flags. — DESIGN section 5.1
-   *
-   * So a peer sees nothing, a reload sees nothing, and undo has nothing to
-   * undo — which is exactly right for a gesture whose entire purpose is that it
-   * felt good for half a second. Injected like the three hit tests above, and
-   * for the same reason: only `sim/` knows where a rope actually hangs, and
-   * `state/tools/` may not import it.
-   */
-  pluck(stringId: string, boardX: number, boardY: number): void;
-  /**
    * Key codes held right now. A level rather than an edge, because `R`+drag
    * and `Ctrl`+drag are asked "is it down?" partway through a gesture, not
    * "was it pressed?" at the start of one.

@@ -149,7 +149,6 @@ beforeEach(() => {
     hitTest: () => null,
     hitPin: () => null,
     hitString: () => null,
-    pluck: () => {},
     suppressed: () => suppressed,
     now: () => now,
   });

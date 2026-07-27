@@ -64,8 +64,6 @@ export interface ToolMachineOptions {
   hitPin: (screenX: number, screenY: number) => string | null;
   /** Board space, and against the rope particles — see `ToolContext.hitString`. */
   hitString: (boardX: number, boardY: number, reach: number) => StringHit | null;
-  /** Board space, and not a question — see `ToolContext.pluck`. */
-  pluck: (stringId: string, boardX: number, boardY: number) => void;
   /** True when navigation owns the pointer — space held, or mid-pan. */
   suppressed?: () => boolean;
   /** Wall clock, injected so the double-click window is testable — the same
@@ -160,7 +158,6 @@ export class ToolMachine {
       hitTest: options.hitTest,
       hitPin: options.hitPin,
       hitString: options.hitString,
-      pluck: options.pluck,
       held: this.heldKeys,
     };
     this.attach();

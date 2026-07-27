@@ -618,10 +618,6 @@ async function boot(): Promise<void> {
     hitTest: hitItem,
     hitPin,
     hitString,
-    // The one thing on the seam that is not a question. `sim/` is the only
-    // thing that knows where a rope hangs, and it is also the only thing that
-    // can shake one — nothing about a pluck reaches the document (DESIGN 5.1).
-    pluck: (id, bx, by) => void ropes.pluck(id, bx, by),
     // Space+drag and middle-drag belong to the camera, not to the board.
     suppressed: () => navigation.panReady,
   });
