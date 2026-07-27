@@ -37,9 +37,9 @@ const INITIAL_CAPACITY = 256;
 /** Reused by `layoutPins`; see the note there. */
 const scratch: Point = { x: 0, y: 0 };
 
-/** Handed back by `pinsOf` for an item nothing holds, so the caller never has
- *  to distinguish "no pins" from "no entry". */
-const EMPTY_PINS: ReadonlySet<string> = new Set<string>();
+/** Handed back by `pinsOf` and `stringsThrough` when the index has no entry, so
+ *  a caller never has to distinguish "none" from "not indexed". */
+const EMPTY_IDS: ReadonlySet<string> = new Set<string>();
 
 /** Cold fields — read when a view is built or rebuilt, not per frame. */
 export interface ItemCold {
@@ -209,6 +209,10 @@ export class Scene {
    * `sim/ropes.ts`, which is transient, local and rebuilt from scratch on
    * load; this map is the durable half, and the split is DESIGN section 5.1's
    * "physics never writes to the document" seen from the other side.
+   *
+   * Read it freely; write it only through `putString`/`removeString`, which
+   * are what keep `byPin` honest — the same arrangement `pins` and `byParent`
+   * have, and for the same reason.
    */
   readonly strings = new Map<string, StringNodes>();
 
@@ -235,6 +239,34 @@ export class Scene {
    * accumulate empty sets.
    */
   private readonly byParent = new Map<string, Set<string>>();
+
+  /**
+   * The reverse of a string's node list: which strings run through each pin.
+   *
+   * The other half of the same idea as `byParent`, and derived in the same
+   * way — the nodes are the only truth, this is a cache of the answer to "what
+   * hangs off this pin", maintained by `putString`/`removeString`.
+   *
+   * > A pin hosting six different strings works — with no special cases,
+   * > because a string just holds pin ids and a pin doesn't know or care how
+   * > many strings reference it. — DESIGN section 2.3
+   *
+   * That is exactly why the index is needed rather than a field on the pin: the
+   * relationship is owned entirely by the string side, so asking a pin what it
+   * hosts means walking every string on the board and every node in it. Two
+   * gestures ask it — hover a pin and its threads light up (DESIGN section
+   * 3.3), double-click one and the whole connected component selects — and the
+   * first of those asks on every frame the cursor moves.
+   *
+   * A pin may appear twice in one run (a loop closed back through it), which
+   * the `Set` absorbs: the entry is the string, not the visit.
+   *
+   * Unlike `byParent`, an entry here does *not* survive its pin. A string
+   * naming a pin that no longer exists is a gap in the run rather than
+   * something to remember — `render/ropes/paint.ts` draws it as one — and the
+   * document deletes a run that falls below two valid nodes anyway.
+   */
+  private readonly byPin = new Map<string, Set<string>>();
 
   constructor() {
     this.x = new Float32Array(INITIAL_CAPACITY);
@@ -492,7 +524,7 @@ export class Scene {
    * it. Read it and let it go; do not keep it across a frame.
    */
   pinsOf(itemId: string): ReadonlySet<string> {
-    return this.byParent.get(itemId) ?? EMPTY_PINS;
+    return this.byParent.get(itemId) ?? EMPTY_IDS;
   }
 
   /**
@@ -508,6 +540,56 @@ export class Scene {
     if (!held || held.size !== 1) return null;
     for (const id of held) return this.pins.get(id) ?? null;
     return null;
+  }
+
+  // --- strings --------------------------------------------------------------
+
+  /**
+   * Insert or replace a string.
+   *
+   * The only way a run's node list may change. The binding re-reads the whole
+   * entity and calls this rather than reaching into `strings` and assigning,
+   * because a node list edited in place would leave `byPin` describing a board
+   * that no longer exists — and a stale reverse index is the kind of wrong that
+   * shows up as a thread that selects one string too many, an afternoon later.
+   */
+  putString(run: StringNodes): void {
+    const existing = this.strings.get(run.id);
+    if (existing) this.unindexString(existing);
+    this.strings.set(run.id, run);
+    for (const node of run.nodes) {
+      let through = this.byPin.get(node.pin);
+      if (!through) this.byPin.set(node.pin, (through = new Set()));
+      through.add(run.id);
+    }
+  }
+
+  removeString(id: string): boolean {
+    const run = this.strings.get(id);
+    if (!run) return false;
+    this.strings.delete(id);
+    this.unindexString(run);
+    return true;
+  }
+
+  private unindexString(run: StringNodes): void {
+    for (const node of run.nodes) {
+      const through = this.byPin.get(node.pin);
+      if (!through) continue;
+      through.delete(run.id);
+      if (through.size === 0) this.byPin.delete(node.pin);
+    }
+  }
+
+  /**
+   * Which strings run through this pin. Empty for a pin nothing hangs off —
+   * never null, so a caller can iterate without asking first.
+   *
+   * Live rather than a copy, like `pinsOf`: the set is the index's own. Read it
+   * and let it go, and never hold it across a `putString`.
+   */
+  stringsThrough(pinId: string): ReadonlySet<string> {
+    return this.byPin.get(pinId) ?? EMPTY_IDS;
   }
 
   // --- geometry -----------------------------------------------------------
@@ -646,6 +728,7 @@ export class Scene {
     this.pins.clear();
     this.strings.clear();
     this.byParent.clear();
+    this.byPin.clear();
     this.ids.fill(null);
     this.coldBySlot.fill(null);
     this.swing.fill(0);

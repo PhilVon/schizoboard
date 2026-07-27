@@ -213,6 +213,58 @@ describe("a string going away", () => {
   });
 });
 
+/**
+ * The pin index, driven through the document rather than by calling the mirror
+ * directly — which is the half `scene.test.ts` cannot cover and the half that
+ * actually breaks. The index is only as good as the binding's discipline about
+ * going through `putString`/`removeString`, and a reach into `scene.strings`
+ * would pass every test in this file except these.
+ */
+describe("which strings run through a pin", () => {
+  it("finds them, and forgets them when the string is cut", () => {
+    const [a, b] = twoPins();
+    const id = createString(board, { pins: [a, b] })!;
+    frame();
+    expect([...scene.stringsThrough(a)]).toEqual([id]);
+
+    deleteStrings(board, [id]);
+    frame();
+    expect(scene.stringsThrough(a).size).toBe(0);
+  });
+
+  /** The hub pin of DESIGN section 2.3: two runs meeting at one pin, which the
+   *  document supports by doing nothing special at all. */
+  it("holds both strings of a hub pin", () => {
+    const [a, hub] = twoPins();
+    const c = createPin(board, { parent: null, lx: 400, ly: 0 });
+    const s0 = createString(board, { pins: [a, hub] })!;
+    const s1 = createString(board, { pins: [hub, c] })!;
+    frame();
+    expect([...scene.stringsThrough(hub)].sort()).toEqual([s0, s1].sort());
+    expect([...scene.stringsThrough(a)]).toEqual([s0]);
+  });
+
+  /**
+   * The case the index exists to get right and the one a write-only index gets
+   * wrong: the run is re-read whole after its middle changed, so the pin that
+   * left the node list has to leave the index with it.
+   */
+  it("drops a pin that was removed from the middle of a run", () => {
+    const [a, b] = twoPins();
+    const mid = createPin(board, { parent: null, lx: 100, ly: 0 });
+    const id = createString(board, { pins: [a, mid, b] })!;
+    frame();
+    expect([...scene.stringsThrough(mid)]).toEqual([id]);
+
+    deletePins(board, [mid]);
+    frame();
+    expect(scene.stringsThrough(mid).size).toBe(0);
+    // The run healed rather than died: it still has two nodes.
+    expect([...scene.stringsThrough(a)]).toEqual([id]);
+    expect([...scene.stringsThrough(b)]).toEqual([id]);
+  });
+});
+
 describe("undo", () => {
   /** The second acceptance criterion: an undo restores the document *and* the
    *  rope, because the rope is derived and the derivation is the same one. */

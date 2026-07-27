@@ -318,7 +318,7 @@ describe("Overlay, strings", () => {
   };
 
   function putString(thickness = 3): void {
-    scene.strings.set("s", {
+    scene.putString({
       id: "s",
       nodes: [
         { nodeId: "n0", pin: "p0", slackAfter: 0.2 },
@@ -426,7 +426,7 @@ describe("Overlay, strings", () => {
     draw();
     const lines = calls.lines.length;
 
-    scene.strings.delete("s");
+    scene.removeString("s");
     dirty.string("s");
     expect(() => draw()).not.toThrow();
     expect(calls.lines).toHaveLength(lines);

@@ -1388,7 +1388,7 @@ describe("pulling a pin out of a string", () => {
     pins: readonly string[],
     { closed = false, layer = "over" }: { closed?: boolean; layer?: string } = {},
   ): void {
-    scene.strings.set(id, {
+    scene.putString({
       id,
       nodes: pins.map((pin, i) => ({ nodeId: `${id}-n${i}`, pin, slackAfter: SLACK })),
       color: "#a8322c",
@@ -1613,7 +1613,7 @@ describe("pulling a pin out of a string", () => {
     up(100, 0);
     expect(selection.strings.size).toBe(1);
 
-    scene.strings.delete("s");
+    scene.removeString("s");
     down(400, 400);
     up(400, 400);
     expect(selection.strings.size).toBe(0);
@@ -1674,7 +1674,7 @@ describe("pulling a pin out of a string", () => {
   it("is no gesture at all when the string went away before the pointer moved", () => {
     taut();
     down(100, 0);
-    scene.strings.delete("s");
+    scene.removeString("s");
     move(100, 20);
     up(100, 20);
     expect(writes).toEqual([]);
@@ -1898,7 +1898,7 @@ describe("slack controls", () => {
   function run(...slacks: number[]): void {
     const count = Math.max(2, slacks.length);
     for (let i = 0; i < count; i++) putPin(`p${i}`, null, i * 200, 0);
-    scene.strings.set("s", {
+    scene.putString({
       id: "s",
       nodes: Array.from({ length: count }, (_, i) => ({
         nodeId: `n${i}`,
@@ -2067,7 +2067,7 @@ describe("slack controls", () => {
       selection.replaceStrings(["s"]);
       wheel(100, 0, -100);
       moveStringAway();
-      scene.strings.delete("s");
+      scene.removeString("s");
       expect(wheel(100, 0, -100)).toBe(false);
     });
 
@@ -2281,7 +2281,7 @@ describe("tucking a string behind the items", () => {
   function span(id: string, y: number, layer = "over"): void {
     putPin(`${id}-a`, null, 0, y);
     putPin(`${id}-b`, null, 200, y);
-    scene.strings.set(id, {
+    scene.putString({
       id,
       nodes: [
         { nodeId: `${id}-n0`, pin: `${id}-a`, slackAfter: SLACK },

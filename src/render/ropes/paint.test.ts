@@ -96,7 +96,7 @@ function pin(id: string, x: number, y: number): void {
 /** A string in both the scene mirror and the rope set, the way the binding
  *  and `RopeSet.sync` between them would leave it. */
 function string(id: string, a: string, b: string, style: Partial<StringNodes> = {}): void {
-  scene.strings.set(id, {
+  scene.putString({
     id,
     nodes: [
       { nodeId: `${id}-n0`, pin: a, slackAfter: 0.2 },

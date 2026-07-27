@@ -6,7 +6,7 @@
 import { describe, expect, it } from "vitest";
 
 import { DirtySets } from "@/state/dirty";
-import { Scene, type ItemCold, type ItemPose } from "@/state/scene";
+import { Scene, type ItemCold, type ItemPose, type StringNodes } from "@/state/scene";
 
 function cold(id: string, over: Partial<ItemCold> = {}): ItemCold {
   return {
@@ -241,6 +241,96 @@ describe("the reverse pin index", () => {
     scene.putPin(pin("p", "a"));
     scene.clear();
     expect(scene.pinCount("a")).toBe(0);
+  });
+});
+
+/**
+ * The other direction: which strings run through a pin.
+ *
+ * > A pin hosting six different strings works — with no special cases, because
+ * > a string just holds pin ids and a pin doesn't know or care how many strings
+ * > reference it. — DESIGN section 2.3
+ *
+ * Which is exactly why the index has to exist: the relationship is recorded
+ * entirely on the string side, so the question "what hangs off this pin" has no
+ * cheap answer without one — and hovering a pin asks it on every frame the
+ * cursor moves.
+ */
+describe("the reverse string index", () => {
+  const run = (id: string, ...pins: string[]): StringNodes => ({
+    id,
+    nodes: pins.map((p, i) => ({ nodeId: `${id}-n${i}`, pin: p, slackAfter: 0.2 })),
+    color: "#a8322c",
+    thickness: 3,
+    material: "string",
+    layer: "over",
+    closed: false,
+  });
+
+  it("answers which strings run through a pin", () => {
+    const scene = new Scene();
+    scene.putString(run("s0", "p0", "p1"));
+    scene.putString(run("s1", "p1", "p2"));
+    expect([...scene.stringsThrough("p0")]).toEqual(["s0"]);
+    expect([...scene.stringsThrough("p1")].sort()).toEqual(["s0", "s1"]);
+    expect([...scene.stringsThrough("p2")]).toEqual(["s1"]);
+  });
+
+  /** The hub pin of DESIGN section 2.3, which is the case the whole index is
+   *  for and which needs no special handling anywhere. */
+  it("holds a hub pin hosting six strings", () => {
+    const scene = new Scene();
+    for (let i = 0; i < 6; i++) scene.putString(run(`s${i}`, "hub", `p${i}`));
+    expect(scene.stringsThrough("hub").size).toBe(6);
+  });
+
+  /**
+   * The failure this index exists to avoid, and the one a plain
+   * `scene.strings.set` would reintroduce: a run re-read by the binding after a
+   * pin was pulled out of its middle still names the old pin in the old node
+   * list, and an index that only ever *adds* would go on claiming the string
+   * runs through a pin it no longer touches.
+   */
+  it("drops the pins a re-read run no longer names", () => {
+    const scene = new Scene();
+    scene.putString(run("s", "p0", "gone", "p1"));
+    expect([...scene.stringsThrough("gone")]).toEqual(["s"]);
+
+    scene.putString(run("s", "p0", "p1"));
+    expect(scene.stringsThrough("gone").size).toBe(0);
+    expect([...scene.stringsThrough("p0")]).toEqual(["s"]);
+  });
+
+  it("forgets a deleted string, and says whether there was one", () => {
+    const scene = new Scene();
+    scene.putString(run("s0", "p", "q"));
+    scene.putString(run("s1", "p", "r"));
+    expect(scene.removeString("s0")).toBe(true);
+    expect(scene.removeString("s0")).toBe(false);
+    expect([...scene.stringsThrough("p")]).toEqual(["s1"]);
+  });
+
+  /** A loop closed back through the pin it started at names that pin twice.
+   *  The entry is the string, not the visit — and removing it must not leave
+   *  half an entry behind. */
+  it("counts a pin named twice by one run once", () => {
+    const scene = new Scene();
+    scene.putString(run("s", "p", "q", "p"));
+    expect([...scene.stringsThrough("p")]).toEqual(["s"]);
+    scene.removeString("s");
+    expect(scene.stringsThrough("p").size).toBe(0);
+  });
+
+  it("hands a bare pin an empty set rather than nothing", () => {
+    const scene = new Scene();
+    expect(scene.stringsThrough("nobody").size).toBe(0);
+  });
+
+  it("empties with the scene", () => {
+    const scene = new Scene();
+    scene.putString(run("s", "p", "q"));
+    scene.clear();
+    expect(scene.stringsThrough("p").size).toBe(0);
   });
 });
 

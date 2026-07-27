@@ -149,10 +149,10 @@ export class Binding {
   private syncString(id: string, map: YMap): void {
     const fields = readString(id, map);
     if (!fields || fields.nodes.length < 2) {
-      if (this.scene.strings.delete(id)) this.dirty.string(id);
+      if (this.scene.removeString(id)) this.dirty.string(id);
       return;
     }
-    this.scene.strings.set(id, {
+    this.scene.putString({
       id,
       nodes: fields.nodes.map((node) => ({
         nodeId: node.nodeId,
@@ -208,8 +208,9 @@ export class Binding {
         for (const [id, change] of event.changes.keys) {
           if (change.action === "delete") {
             // The pins stay exactly where they are — a string owns nothing but
-            // references (DESIGN section 3.4).
-            this.scene.strings.delete(id);
+            // references (DESIGN section 3.4). What goes is the run and its
+            // entries in the pin index, which is what `removeString` is for.
+            this.scene.removeString(id);
             this.dirty.string(id);
           } else {
             const map = this.board.strings.get(id);
