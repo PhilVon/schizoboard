@@ -20,6 +20,21 @@ pub const MSG_AWARENESS: u64 = 1;
 pub const MSG_AUTH: u64 = 2;
 pub const MSG_QUERY_AWARENESS: u64 = 3;
 
+/// Asset transfer, which is ours. Four is the first number y-websocket has not
+/// spent, and a stock server drops a type it does not know — so a board hosted
+/// on one syncs its document and simply never trades bytes, rather than
+/// breaking (D-28).
+///
+/// ```text
+/// [ MSG_ASSET ][ from : varUint ][ to : varUint ][ opaque tail ]
+/// ```
+///
+/// The tail is HAVE / WANT / DATA / DONE / NACK and is encoded only in
+/// `crdt/sync/assets.ts`. Nothing in Rust parses it: the relay routes on the two
+/// ids and forwards the rest untouched, which is what keeps the surface these
+/// two files have to agree on by hand down to one constant.
+pub const MSG_ASSET: u64 = 4;
+
 /// Sync sub-messages, from the y-protocols sync protocol.
 pub const SYNC_STEP1: u64 = 0;
 pub const SYNC_STEP2: u64 = 1;
@@ -102,6 +117,15 @@ impl<'a> Reader<'a> {
         let slice = self.bytes.get(self.at..end).ok_or(WireError::Truncated)?;
         self.at = end;
         Ok(slice)
+    }
+
+    /// Everything not yet read, as it lies.
+    ///
+    /// For a payload this side is forwarding rather than understanding: an asset
+    /// sub-message is length-prefixed by the WebSocket frame that carries it and
+    /// by nothing else, so there is no length to trust and none needed.
+    pub fn rest(&self) -> &'a [u8] {
+        self.bytes.get(self.at..).unwrap_or(&[])
     }
 
     pub fn var_string(&mut self) -> Result<String, WireError> {

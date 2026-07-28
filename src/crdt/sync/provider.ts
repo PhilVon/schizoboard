@@ -67,6 +67,8 @@ export interface SyncEvents {
   error: unknown;
   /** The peer refused us, with its reason. No further attempt is made. */
   denied: string;
+  /** An asset sub-message, and the client id the relay says it came from. */
+  asset: { from: number; tail: Uint8Array };
 }
 
 export interface SyncProvider {
@@ -76,6 +78,15 @@ export interface SyncProvider {
   connect(): void;
   disconnect(): void;
   destroy(): void;
+  /**
+   * Put a frame on the wire, if there is one.
+   *
+   * Returns whether it went. There is deliberately no outbound queue in this
+   * provider, and this is the one caller that has to care: a `WANT` dropped
+   * because the socket was reconnecting is a photograph that never arrives, so
+   * `exchange.ts` re-asks rather than assuming.
+   */
+  send(frame: Uint8Array): boolean;
   on<K extends keyof SyncEvents>(event: K, listener: (value: SyncEvents[K]) => void): Unlisten;
 }
 
@@ -303,6 +314,7 @@ export class WireProvider implements SyncProvider {
         this.emit("denied", reason);
       },
       onError: (error) => this.emit("error", error),
+      onAsset: (from, tail) => this.emit("asset", { from, tail }),
     });
 
     if (reply !== null) this.write(reply);
@@ -412,6 +424,13 @@ export class WireProvider implements SyncProvider {
   };
 
   // --- plumbing ------------------------------------------------------------
+
+  /** See `SyncProvider.send`. The boolean is the whole reason it is public. */
+  send(frame: Uint8Array): boolean {
+    if (!this.open || this.transport === null) return false;
+    this.transport.send(frame);
+    return true;
+  }
 
   private write(bytes: Uint8Array): void {
     if (!this.open || this.transport === null) return;

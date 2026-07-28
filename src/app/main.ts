@@ -35,6 +35,7 @@ import {
 } from "@/crdt/ops";
 import { Origin } from "@/crdt/origins";
 import { Persistence } from "@/crdt/persistence";
+import { AssetExchange, Priority } from "@/crdt/sync/exchange";
 import { WireProvider } from "@/crdt/sync/provider";
 import { UndoHistory } from "@/crdt/undo";
 import { noteSizeFor } from "@/app/ingest";
@@ -121,6 +122,16 @@ async function boot(): Promise<void> {
    */
   const showable = new Set<string>();
   /**
+   * Fetches the bytes `showable` is waiting for, once there is a wire (T-74).
+   *
+   * Declared here and assigned with the provider a long way below, because the
+   * two things that drive it are at opposite ends of this function: an item
+   * being drawn is what says an asset is wanted *now*, and that happens in
+   * `assetUrl` a few lines down. Null on a board with no relay, where every
+   * asset that is not already on this disk is simply not coming.
+   */
+  let exchange: AssetExchange | null = null;
+  /**
    * Which stored variant serves an item that is about to be drawn `screenPx`
    * across.
    *
@@ -135,8 +146,16 @@ async function boot(): Promise<void> {
    * The choice itself is `variantFor`, over in `platform/`, because this module
    * is wiring and nothing tests it.
    */
-  const assetUrl = (sha256: string, screenPx: number): string =>
-    showable.has(sha256) ? native.assetUrl(sha256, variantFor(screenPx)) : "";
+  const assetUrl = (sha256: string, screenPx: number): string => {
+    if (showable.has(sha256)) return native.assetUrl(sha256, variantFor(screenPx));
+    // Asked for a photograph we do not have the bytes of, which means an item
+    // wearing it is being drawn — and culling only binds what is on screen, so
+    // this *is* "an asset whose item is in or near the viewport" (ARCHITECTURE
+    // section 5.2). No viewport arithmetic of its own: the layer that already
+    // decides what to mount is a better answer than a second opinion about it.
+    exchange?.want(sha256, Priority.VISIBLE);
+    return "";
+  };
   const items = new DomItemLayer(world.layers.world, assetUrl);
   /** Ink on the bare cork — its own layer, under the string and under the paper
    *  (T-61). Nothing else on this board draws below the items. */
@@ -157,6 +176,11 @@ async function boot(): Promise<void> {
   await native.on("asset:ready", ({ sha256 }) => {
     showable.add(sha256);
     refreshAsset(sha256);
+    // We are now somebody who has it, whether it was pasted here or fetched
+    // from a peer. Saying so immediately rather than waiting for a periodic
+    // sweep is what makes a photograph dropped on one machine appear on the
+    // other one while the person who dropped it is still looking at it.
+    exchange?.announce([sha256]);
   });
   const overlay = new Overlay(world.layers.overlay);
   /**
@@ -861,6 +885,8 @@ async function boot(): Promise<void> {
       docMeasuredAt = now;
       docBytes = encodedSize(board);
     }
+    // A board with no wire wants nothing, because nothing could bring it.
+    const transfers = exchange?.stats() ?? { wanted: 0, inFlight: 0, percent: 0 };
     return {
       zoom: camera.zoom,
       cameraX: camera.x + camera.width / (2 * camera.zoom),
@@ -878,6 +904,9 @@ async function boot(): Promise<void> {
       // on the board — leaving it out would be the one omission that matters.
       janitorPending: janitor.pending,
       janitorSwept: swept,
+      assetsWanted: transfers.wanted,
+      assetsInFlight: transfers.inFlight,
+      assetsPercent: transfers.percent,
       inked: items.inked + boardInk.mounted,
       inkPixels: items.inkPixels + boardInk.pixels,
     };
@@ -934,6 +963,20 @@ async function boot(): Promise<void> {
   else console.info(`[sync] ${plan.config.mode} · ${address}`);
   provider?.on("error", (error) => console.warn("[sync] error", error));
   provider?.on("denied", (reason) => console.warn(`[sync] denied: ${reason}`));
+
+  /**
+   * The bytes behind the document (T-74).
+   *
+   * The document syncs an item saying "a 4032x3024 JPEG, sha256 abc…"; nothing
+   * in it says what the pixels are, so without this a fully synced board is a
+   * wall of empty frames.
+   */
+  if (provider !== null) {
+    exchange = new AssetExchange(provider, native, {
+      onUnavailable: (sha256) =>
+        console.warn(`[sync] nobody on this board has ${sha256.slice(0, 8)}`),
+    });
+  }
 
   /**
    * What this client tells everybody else, every other frame (T-71).
@@ -1525,7 +1568,7 @@ async function boot(): Promise<void> {
   // second launch of a board every photograph on it would sit undeveloped
   // forever. Ask the store what it has once the document is loaded, and let the
   // answer stand in for the events that already happened.
-  void (async () => {
+  const reconcileAssets = async (): Promise<void> => {
     const referenced = new Set<string>();
     for (const id of scene.itemIds()) {
       const asset = scene.cold(id)?.assetId;
@@ -1535,11 +1578,27 @@ async function boot(): Promise<void> {
     const hashes = [...referenced];
     const present = await native.assetHas(hashes);
     hashes.forEach((sha256, i) => {
-      if (!present[i]) return;
+      if (!present[i]) {
+        // The backfill tier: an item somewhere on this board whose photograph
+        // is not on this disk. Asked for at idle priority, so it queues behind
+        // anything the person is actually looking at, which `assetUrl` raises
+        // as it is drawn.
+        exchange?.want(sha256);
+        return;
+      }
       showable.add(sha256);
       refreshAsset(sha256);
     });
-  })();
+  };
+  void reconcileAssets();
+
+  // Again on every (re)connection. A peer that joined an hour after this window
+  // opened brought a document full of photographs with it, and nothing else
+  // walks the board to notice them — `assetUrl` catches only the ones that are
+  // on screen.
+  provider?.on("status", (status) => {
+    if (status === "synced") void reconcileAssets();
+  });
 
   const hint = document.createElement("div");
   hint.className = "hint";

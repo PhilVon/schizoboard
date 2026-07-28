@@ -40,11 +40,24 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { openBoardDoc, type BoardDoc } from "@/crdt/doc";
 import { createItems } from "@/crdt/ops";
 import { readItem } from "@/crdt/schema";
+import { AssetExchange } from "@/crdt/sync/exchange";
 import { WireProvider } from "@/crdt/sync/provider";
+import { CHUNK_BYTES } from "@/platform/types";
+import { MockPlatform } from "@/platform/mock";
 
 interface Server {
   readonly name: string;
   start(port: number): ChildProcess;
+  /**
+   * Whether it forwards the asset message type (T-74).
+   *
+   * Ours does; the reference server drops a type it does not know, silently and
+   * without hurting the connection. That difference is *specified* rather than
+   * tolerated — D-28 chose message type 4 precisely so that a board hosted on a
+   * stock server keeps syncing its document and simply never trades bytes — so
+   * both halves of it are asserted below rather than one being skipped.
+   */
+  readonly routesAssets: boolean;
 }
 
 const reference: Server = {
@@ -54,6 +67,7 @@ const reference: Server = {
       env: { ...process.env, PORT: String(port), HOST: "127.0.0.1" },
       stdio: "ignore",
     }),
+  routesAssets: false,
 };
 
 /**
@@ -86,6 +100,7 @@ function buildRelay(): Server | null {
         env: { ...process.env, PORT: String(port), HOST: "127.0.0.1" },
         stdio: "ignore",
       }),
+    routesAssets: true,
   };
 }
 
@@ -141,6 +156,21 @@ function at(target: BoardDoc, id: string): { x: number; y: number } | null {
 }
 
 /**
+ * Bytes standing in for a photograph, big enough to take several chunks.
+ *
+ * Not a real image, and deliberately not compressible: the transfer under test
+ * is a byte pipe, and the one property that matters is that it is longer than
+ * one `CHUNK_BYTES` so the chunk loop is actually a loop. A run of zeroes would
+ * still be several chunks but would hide an off-by-one in the offsets, since
+ * every chunk would be identical.
+ */
+function photograph(): Uint8Array {
+  const bytes = new Uint8Array(CHUNK_BYTES * 2 + 4_321);
+  for (let i = 0; i < bytes.length; i += 1) bytes[i] = (i * 31 + (i >> 8)) & 0xff;
+  return bytes;
+}
+
+/**
  * Present *and* introduced. `Awareness` gives every client an empty object the
  * moment it is constructed, so "is in the room" arrives well before "is Phil".
  */
@@ -152,6 +182,7 @@ describe.each(servers)("against $name", (server) => {
   let port = 0;
   let process_: ChildProcess | null = null;
   const running: WireProvider[] = [];
+  const exchanges: AssetExchange[] = [];
 
   /** Poll until the port is listening, or until it is not. */
   async function portIs(listening: boolean, timeoutMs = 20_000): Promise<void> {
@@ -192,6 +223,7 @@ describe.each(servers)("against $name", (server) => {
   }, 40_000);
 
   afterAll(() => {
+    for (const exchange of exchanges.splice(0)) exchange.destroy();
     for (const provider of running.splice(0)) provider.destroy();
     process_?.kill();
   });
@@ -215,6 +247,55 @@ describe.each(servers)("against $name", (server) => {
       user: { name: "Phil" },
     });
   }, 40_000);
+
+  it("carries a photograph between two peers, or says nothing at all", async () => {
+    const a = board();
+    const b = board();
+    const holder = new MockPlatform();
+    const seeker = new MockPlatform();
+    const bytes = photograph();
+    const { sha256 } = await holder.assetIngestBytes(bytes);
+
+    const seeding = new AssetExchange(a.provider, holder);
+    const fetching = new AssetExchange(b.provider, seeker);
+    exchanges.push(seeding, fetching);
+    await until(() => a.provider.synced && b.provider.synced);
+
+    // The order a real board does it in: the item exists, and its bytes are
+    // asked for afterwards by whatever tries to draw it.
+    const item = polaroid(a.board, 40, 50);
+    await until(() => at(b.board, item) !== null);
+    fetching.want(sha256);
+
+    if (!server.routesAssets) {
+      // The documented degradation (D-28), asserted rather than assumed: a
+      // stock server drops message type 4 and the *rest* of the board carries
+      // on. If that ever stops being true this row fails, which is the only
+      // warning there would be.
+      await pause(2_000);
+      expect(await seeker.assetHas([sha256])).toEqual([false]);
+      const after = polaroid(a.board, 60, 70);
+      await until(() => at(b.board, after) !== null);
+      return;
+    }
+
+    await until(() => fetching.stats().wanted === 0, 30_000);
+    expect(await seeker.assetHas([sha256])).toEqual([true]);
+
+    // Byte for byte, read back the way a third peer would read it — which also
+    // means the receiver can now seed it onwards.
+    const chunks: Uint8Array[] = [];
+    for (let index = 0; ; index += 1) {
+      const chunk = await seeker.assetChunk(sha256, index);
+      if (chunk.length === 0) break;
+      chunks.push(chunk);
+    }
+    const received = new Uint8Array(chunks.reduce((n, chunk) => n + chunk.length, 0));
+    chunks.reduce((at, chunk) => (received.set(chunk, at), at + chunk.length), 0);
+    expect(chunks.length).toBe(3);
+    expect(received).toEqual(bytes);
+    expect(await seeker.peerHaveSummary()).toContain(sha256);
+  }, 60_000);
 
   it("tells the room when a board's socket goes", async () => {
     const a = board();

@@ -125,6 +125,23 @@ export interface SyncStatus {
   url: string | null;
 }
 
+/**
+ * How much of an original one `assetChunk` is: 256 KB, from ARCHITECTURE
+ * section 5.2.
+ *
+ * It lives here rather than with the protocol because it is what
+ * `assetChunk(sha, index)` *means* — index two is the bytes at half a megabyte —
+ * so every implementation of `Platform` has to cut at the same places, and the
+ * sender's chunk count has to match the receiver's idea of one. Rust holds the
+ * same number; it is the third and last thing the two languages agree on by
+ * hand, after the message type and the frame.
+ *
+ * Large enough that a 12 MB photograph is fifty messages rather than three
+ * thousand, small enough that one crossing IPC is not a visible stall in the
+ * receiver's frame loop.
+ */
+export const CHUNK_BYTES = 256 * 1024;
+
 /** Rust -> frontend. ARCHITECTURE section 4.4. */
 export interface PlatformEvents {
   "asset:ready": { sha256: string };
@@ -209,7 +226,54 @@ export interface Platform {
   syncStart(config: SyncConfig): Promise<void>;
   syncStop(): Promise<void>;
   syncStatus(): Promise<SyncStatus>;
-  peerWant(sha256: string, priority: number): Promise<void>;
+
+  // --- asset transfer: the bytes behind HAVE / WANT / DATA / DONE ----------
+  //
+  // `crdt/sync/exchange.ts` decides what to ask for and who to ask; these five
+  // are everything it needs from the store, and none of them lets it read a
+  // chunk. ARCHITECTURE section 5.2 puts chunking, verification and the commit
+  // in Rust, so a payload leaves `assetChunk` and enters `assetReceive` without
+  // JavaScript ever looking at it — which is also what keeps a 12 MB original
+  // out of the renderer's heap.
+  //
+  // ARCHITECTURE section 4.4 also lists `peer_want(sha256, priority)`. It is
+  // gone, and D-28 says why: it puts the queue in Rust, and Rust has no socket
+  // to the relay — the connection belongs to the webview.
+
+  /**
+   * Every hash this machine holds bytes for, for the `HAVE` announcement.
+   *
+   * Full hashes rather than the prefixes that go on the wire, so that the
+   * prefix length stays a fact about the protocol and does not become a third
+   * constant Rust and TypeScript have to agree on by hand.
+   */
+  peerHaveSummary(): Promise<string[]>;
+
+  /** The original's size in bytes, or 0 for an asset this machine does not hold. */
+  assetSize(sha256: string): Promise<number>;
+
+  /**
+   * One `CHUNK_BYTES` chunk of an original, to put on the wire.
+   *
+   * Empty when the asset has gone — collected, or never here — which the caller
+   * treats as "stop", not as an error.
+   */
+  assetChunk(sha256: string, index: number): Promise<Uint8Array>;
+
+  /** Put a received chunk where the commit will find it. Nothing is verified yet. */
+  assetReceive(sha256: string, index: number, total: number, bytes: Uint8Array): Promise<void>;
+
+  /**
+   * Hash everything received and, only if it matches, commit it to the store.
+   *
+   * `false` means it did not match and nothing was written — the one outcome
+   * that must never be confused with a failure to try, because a peer sending
+   * bytes that are not the asset it named is exactly what verification is for.
+   */
+  assetCommit(sha256: string): Promise<boolean>;
+
+  /** Throw away a partial transfer. Safe to call for one that does not exist. */
+  assetAbort(sha256: string): Promise<void>;
 
   // --- events ------------------------------------------------------------
   on<K extends keyof PlatformEvents>(

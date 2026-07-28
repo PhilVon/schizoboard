@@ -170,8 +170,40 @@ export class TauriPlatform implements Platform {
     return invoke<SyncStatus>("sync_status");
   }
 
-  peerWant(sha256: string, priority: number): Promise<void> {
-    return invoke<void>("peer_want", { sha256, priority });
+  peerHaveSummary(): Promise<string[]> {
+    return invoke<string[]>("peer_have_summary");
+  }
+
+  assetSize(sha256: string): Promise<number> {
+    return invoke<number>("asset_size", { sha256 });
+  }
+
+  // Raw both ways, for the same reason `assetIngestBytes` is: a 256 KB chunk as
+  // a JSON array of numbers is about six times the bytes and a parse stall on
+  // every one of them. Tauri hands a raw response back as an ArrayBuffer.
+  async assetChunk(sha256: string, index: number): Promise<Uint8Array> {
+    const bytes = await invoke<ArrayBuffer | Uint8Array>("asset_chunk", { sha256, index });
+    return bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes);
+  }
+
+  // The chunk is the whole payload, so the three things Rust needs to file it
+  // ride on headers — the same trick `asset_ingest_bytes` plays with the mime.
+  assetReceive(sha256: string, index: number, total: number, bytes: Uint8Array): Promise<void> {
+    return invoke<void>("asset_receive", bytes, {
+      headers: {
+        "x-asset-sha256": sha256,
+        "x-asset-index": String(index),
+        "x-asset-total": String(total),
+      },
+    });
+  }
+
+  assetCommit(sha256: string): Promise<boolean> {
+    return invoke<boolean>("asset_commit", { sha256 });
+  }
+
+  assetAbort(sha256: string): Promise<void> {
+    return invoke<void>("asset_abort", { sha256 });
   }
 
   async on<K extends keyof PlatformEvents>(

@@ -58,6 +58,21 @@ export interface HudStats {
    */
   janitorPending: number;
   janitorSwept: number;
+
+  /**
+   * Assets this board refers to and has no bytes for, how many are being
+   * fetched from a peer right now, and how far through those are —
+   * `crdt/sync/exchange.ts`.
+   *
+   * Here for the janitor's reason. An asset that is still arriving, one whose
+   * holder has gone quiet, and one nobody on the board has, are the same
+   * picture from outside: an empty frame. `wanted` falling to zero is the
+   * transfer finishing; `wanted` sitting still with nothing in flight is it
+   * having failed, and there is no other way to tell those apart.
+   */
+  assetsWanted: number;
+  assetsInFlight: number;
+  assetsPercent: number;
 }
 
 /**
@@ -169,6 +184,20 @@ export class Hud {
     // collected — so the row appears exactly when there is something to say.
     if (s.janitorPending > 0 || s.janitorSwept > 0) {
       rows.push(this.stat("janitor", `${s.janitorPending} · ${s.janitorSwept} swept`));
+    }
+    // Same rule: a board whose photographs are all here has nothing to say.
+    if (s.assetsWanted > 0) {
+      rows.push(
+        this.stat(
+          "assets",
+          s.assetsInFlight === 0
+            ? `${s.assetsWanted} missing`
+            : `${s.assetsWanted} missing · ${s.assetsInFlight} in flight ${s.assetsPercent}%`,
+          // Wanted, and nobody fetching them. Either no peer has advertised the
+          // hash or every one that did has failed — and both are stuck.
+          s.assetsInFlight === 0,
+        ),
+      );
     }
 
     this.el.innerHTML = rows.join("");

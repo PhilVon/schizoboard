@@ -55,6 +55,25 @@ export const MessageType = {
   AUTH: 2,
   /** "Tell me every awareness state you hold." Carries no payload. */
   QUERY_AWARENESS: 3,
+  /**
+   * Asset transfer, which is ours rather than `y-websocket`'s — four is the
+   * first number it has not spent.
+   *
+   * ```
+   * [ ASSET ][ from : varUint ][ to : varUint ][ opaque tail ]
+   * ```
+   *
+   * The ids are Yjs client ids, because those are what a peer can name: every
+   * peer sees every other's through awareness. `to = 0` is everybody else in
+   * the room, which only `HAVE` uses; anything carrying bytes is addressed.
+   *
+   * The tail is `assets.ts`'s business and nothing else's. Rust routes on the
+   * two ids and forwards the rest untouched, which is what keeps the surface
+   * `wire.rs` and this file have to agree on by hand down to one constant
+   * (D-28). A stock `y-websocket` server drops the type it does not know, so a
+   * board hosted on one syncs and simply never trades bytes.
+   */
+  ASSET: 4,
 } as const;
 
 export type MessageTypeValue = (typeof MessageType)[keyof typeof MessageType];
@@ -108,6 +127,22 @@ export function encodeQueryAwareness(): Uint8Array {
   return encoding.toUint8Array(encoder);
 }
 
+/**
+ * One asset sub-message, addressed to a peer — or to the room, with `to = 0`.
+ *
+ * `from` is written as zero and is not ours to fill in: the relay replaces it
+ * with the client id it knows this connection by, so that a peer cannot send a
+ * frame in somebody else's name (D-28). Anything written here is discarded.
+ */
+export function encodeAsset(to: number, tail: Uint8Array): Uint8Array {
+  const encoder = encoding.createEncoder();
+  encoding.writeVarUint(encoder, MessageType.ASSET);
+  encoding.writeVarUint(encoder, 0);
+  encoding.writeVarUint(encoder, to);
+  encoding.writeUint8Array(encoder, tail);
+  return encoding.toUint8Array(encoder);
+}
+
 /** A refusal, with a reason a human can read. What a relay sends, not a client. */
 export function encodePermissionDenied(reason: string): Uint8Array {
   const encoder = encoding.createEncoder();
@@ -137,6 +172,14 @@ export interface MessageSink {
   onDenied?(reason: string): void;
   /** A frame did not decode, or an update did not apply. */
   onError?(error: unknown): void;
+  /**
+   * An asset sub-message from `from`, still encoded.
+   *
+   * Handed over rather than decoded here because this file is the frame and
+   * `assets.ts` is the conversation inside it — and because the exchange is the
+   * one part of sync that a board without a provider does not have at all.
+   */
+  onAsset?(from: number, tail: Uint8Array): void;
 }
 
 /**
@@ -167,6 +210,15 @@ export function readMessage(bytes: Uint8Array, sink: MessageSink): Uint8Array | 
         return null;
       case MessageType.QUERY_AWARENESS:
         return encodeAwareness(sink.awareness, [...sink.awareness.getStates().keys()]);
+      case MessageType.ASSET: {
+        const from = decoding.readVarUint(decoder);
+        // `to` is read and dropped. Routing already happened — the relay would
+        // not have sent this frame here if it were for somebody else, and a
+        // second opinion about that from the receiver is a way to disagree.
+        decoding.readVarUint(decoder);
+        sink.onAsset?.(from, decoding.readTailAsUint8Array(decoder));
+        return null;
+      }
       default:
         // A peer from the future. Say so once, at the call site's discretion,
         // and carry on.

@@ -22,8 +22,8 @@ use yrs::{Doc, ReadTxn, StateVector, Transact, Update};
 
 use crate::sync::awareness::Awareness;
 use crate::sync::wire::{
-    write_var_bytes, write_var_uint, Reader, MSG_AWARENESS, MSG_QUERY_AWARENESS, MSG_SYNC,
-    SYNC_STEP1, SYNC_STEP2, SYNC_UPDATE,
+    write_var_bytes, write_var_uint, Reader, MSG_ASSET, MSG_AWARENESS, MSG_QUERY_AWARENESS,
+    MSG_SYNC, SYNC_STEP1, SYNC_STEP2, SYNC_UPDATE,
 };
 
 /// Who a frame is for.
@@ -35,6 +35,11 @@ pub enum Target {
     Others,
     /// Everybody, including the one that spoke. Used when nobody spoke.
     All,
+    /// One named connection, and nobody else.
+    ///
+    /// A megabyte of photograph has exactly one peer that asked for it, and
+    /// `Others` would hand it to everybody on the board (D-28).
+    Peer(u64),
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -151,10 +156,71 @@ impl Room {
                     frame: awareness_frame(&self.awareness.encode(&present)),
                 }]
             }
+            MSG_ASSET => self.receive_asset(from, &mut reader),
             // `AUTH` is ours to send and not ours to receive, and anything else
             // is a peer from the future.
             _ => Vec::new(),
         }
+    }
+
+    /// Forward one asset frame, without looking inside it.
+    ///
+    /// The relay holds no bytes and answers no `WANT`; the peers do that between
+    /// themselves and this is the wire they do it over (D-28). So the two client
+    /// ids are read, the rest is a tail, and the tail is copied.
+    ///
+    /// **The sender's id is not taken from the frame.** Whatever it wrote there
+    /// is discarded and replaced with the id this connection has spoken awareness
+    /// for, which makes `from` a fact rather than a claim — a peer cannot answer
+    /// `NACK` in somebody else's name, and the requester's bookkeeping does not
+    /// have to be sceptical about who replied.
+    ///
+    /// The price is that a connection which has not published awareness yet has
+    /// no id to substitute, and its frame is dropped. That is why the exchange
+    /// opens on `synced` rather than on the socket: by then the provider has
+    /// published, and the relay knows who is asking.
+    fn receive_asset(&mut self, from: u64, reader: &mut Reader<'_>) -> Vec<Outbound> {
+        let (Ok(_claimed), Ok(to)) = (reader.var_uint(), reader.var_uint()) else {
+            return Vec::new();
+        };
+        let Some(sender) = self.client_of(from) else {
+            return Vec::new();
+        };
+        let frame = asset_frame(sender, to, reader.rest());
+
+        if to == 0 {
+            return vec![Outbound {
+                target: Target::Others,
+                frame,
+            }];
+        }
+        // Addressed to somebody who is not here — a peer that closed the tab
+        // between asking and being answered. The requester's own timeout is what
+        // recovers from this; there is nobody to tell.
+        let Some(connection) = self.connection_holding(to) else {
+            return Vec::new();
+        };
+        vec![Outbound {
+            target: Target::Peer(connection),
+            frame,
+        }]
+    }
+
+    /// The awareness client id a connection speaks as.
+    ///
+    /// The lowest, when there is more than one. A socket carries one document
+    /// and so normally controls exactly one client; the tie-break exists so that
+    /// two frames from the same connection can never disagree about who sent
+    /// them, which a `HashSet` iteration order would otherwise allow.
+    fn client_of(&self, connection: u64) -> Option<u64> {
+        self.peers.get(&connection)?.controls.iter().min().copied()
+    }
+
+    fn connection_holding(&self, client: u64) -> Option<u64> {
+        self.peers
+            .iter()
+            .find(|(_, peer)| peer.controls.contains(&client))
+            .map(|(id, _)| *id)
     }
 
     fn receive_sync(&mut self, _from: u64, reader: &mut Reader<'_>) -> Vec<Outbound> {
@@ -235,6 +301,117 @@ fn sync_frame(sub: u64, payload: &[u8]) -> Vec<u8> {
     write_var_uint(&mut out, MSG_SYNC);
     write_var_uint(&mut out, sub);
     write_var_bytes(&mut out, payload);
+    out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::sync::wire::write_var_string;
+
+    /// A room with two connections, each having spoken awareness for one client.
+    /// 10 and 20 are the connections; 101 and 201 are the client ids they gave.
+    fn two_peers() -> Room {
+        let mut room = Room::new();
+        room.join(10);
+        room.join(20);
+        room.receive(10, &awareness_from(101));
+        room.receive(20, &awareness_from(201));
+        room
+    }
+
+    fn awareness_from(client: u64) -> Vec<u8> {
+        let mut payload = Vec::new();
+        write_var_uint(&mut payload, 1);
+        write_var_uint(&mut payload, client);
+        write_var_uint(&mut payload, 1);
+        write_var_string(&mut payload, r#"{"user":{}}"#);
+        awareness_frame(&payload)
+    }
+
+    /// `[MSG_ASSET][from][to]` and a tail this side never interprets.
+    fn asset(from: u64, to: u64, tail: &[u8]) -> Vec<u8> {
+        asset_frame(from, to, tail)
+    }
+
+    fn parse(frame: &[u8]) -> (u64, u64, Vec<u8>) {
+        let mut reader = Reader::new(frame);
+        assert_eq!(reader.var_uint(), Ok(MSG_ASSET));
+        let from = reader.var_uint().expect("from");
+        let to = reader.var_uint().expect("to");
+        (from, to, reader.rest().to_vec())
+    }
+
+    #[test]
+    fn an_addressed_frame_goes_to_one_connection() {
+        let mut room = two_peers();
+        let out = room.receive(10, &asset(0, 201, b"chunk"));
+
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].target, Target::Peer(20));
+        assert_eq!(parse(&out[0].frame), (101, 201, b"chunk".to_vec()));
+    }
+
+    #[test]
+    fn a_frame_addressed_to_zero_is_for_the_room() {
+        // Which is HAVE, and only HAVE. Anything carrying bytes is addressed.
+        let mut room = two_peers();
+        let out = room.receive(10, &asset(0, 0, b"have"));
+
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].target, Target::Others);
+        assert_eq!(parse(&out[0].frame), (101, 0, b"have".to_vec()));
+    }
+
+    #[test]
+    fn the_sender_cannot_choose_who_the_frame_is_from() {
+        // The whole reason `from` is worth trusting downstream: a peer writing
+        // somebody else's client id into it gets its own back out.
+        let mut room = two_peers();
+        let out = room.receive(10, &asset(201, 201, b"nack"));
+
+        assert_eq!(parse(&out[0].frame).0, 101);
+    }
+
+    #[test]
+    fn a_connection_that_has_not_spoken_yet_cannot_trade() {
+        // It has no client id for the relay to substitute, so there is nothing
+        // honest to forward. The exchange opens on `synced` to stay clear of it.
+        let mut room = Room::new();
+        room.join(10);
+        room.join(20);
+        room.receive(20, &awareness_from(201));
+
+        assert!(room.receive(10, &asset(0, 201, b"want")).is_empty());
+    }
+
+    #[test]
+    fn a_frame_for_a_peer_who_left_is_dropped_rather_than_broadcast() {
+        // The failure that matters: falling back to `Others` here would hand a
+        // megabyte of photograph to every peer on the board.
+        let mut room = two_peers();
+        room.leave(20);
+
+        assert!(room.receive(10, &asset(0, 201, b"chunk")).is_empty());
+    }
+
+    #[test]
+    fn a_truncated_asset_frame_is_dropped_rather_than_panicking() {
+        let mut room = two_peers();
+        let mut short = Vec::new();
+        write_var_uint(&mut short, MSG_ASSET);
+        write_var_uint(&mut short, 0);
+
+        assert!(room.receive(10, &short).is_empty());
+    }
+}
+
+fn asset_frame(from: u64, to: u64, tail: &[u8]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(tail.len() + 8);
+    write_var_uint(&mut out, MSG_ASSET);
+    write_var_uint(&mut out, from);
+    write_var_uint(&mut out, to);
+    out.extend_from_slice(tail);
     out
 }
 

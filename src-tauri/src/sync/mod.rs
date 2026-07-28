@@ -84,6 +84,7 @@ impl Rooms {
                 Target::Sender => self.send_one(sender, frame),
                 Target::Others => self.send_room(board, Some(sender), frame),
                 Target::All => self.send_room(board, None, frame),
+                Target::Peer(id) => self.send_one(id, frame),
             }
         }
     }

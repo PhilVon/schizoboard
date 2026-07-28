@@ -24,18 +24,19 @@
  * it is stated here rather than discovered.
  */
 
-import type {
-  AssetMeta,
-  AssetVariant,
-  ClipboardKind,
-  ClipboardManifest,
-  ClipboardPayload,
-  DocState,
-  Platform,
-  PlatformEvents,
-  SyncConfig,
-  SyncStatus,
-  Unlisten,
+import {
+  CHUNK_BYTES,
+  type AssetMeta,
+  type AssetVariant,
+  type ClipboardKind,
+  type ClipboardManifest,
+  type ClipboardPayload,
+  type DocState,
+  type Platform,
+  type PlatformEvents,
+  type SyncConfig,
+  type SyncStatus,
+  type Unlisten,
 } from "@/platform/types";
 
 /**
@@ -71,12 +72,30 @@ async function sha256Hex(bytes: Uint8Array): Promise<string> {
 interface StoredAsset {
   meta: AssetMeta;
   url: string;
+  /**
+   * Kept, where the shell keeps a file instead.
+   *
+   * The blob URL alone would be enough to *show* an asset, and was, until this
+   * machine had to be able to *serve* one: a peer asking for a chunk is asking
+   * for bytes, and reading them back out of a blob URL is a fetch. Holding the
+   * original doubles the mock's memory for a board of photographs, which is a
+   * fair price for the browser dev loop being able to exercise a transfer at
+   * all — under Tauri this is a file on disk and costs nothing.
+   */
+  bytes: Uint8Array;
+}
+
+/** A transfer in progress: the chunks so far, and how many are expected. */
+interface Partial {
+  total: number;
+  chunks: (Uint8Array | undefined)[];
 }
 
 export class MockPlatform implements Platform {
   readonly kind = "mock" as const;
 
   private readonly assets = new Map<string, StoredAsset>();
+  private readonly partials = new Map<string, Partial>();
   private readonly updates: Uint8Array[] = [];
   private snapshot: Uint8Array | null = null;
   private readonly bus = new EventTarget();
@@ -106,7 +125,7 @@ export class MockPlatform implements Platform {
     }
 
     const meta: AssetMeta = { sha256, w, h, mime: type, size: bytes.byteLength };
-    this.assets.set(sha256, { meta, url: URL.createObjectURL(blob) });
+    this.assets.set(sha256, { meta, url: URL.createObjectURL(blob), bytes });
     // Natively this arrives once the variants are generated; here the bytes
     // are already resolved, so it fires on the next turn to keep the same
     // ordering guarantees callers will get in the shell.
@@ -197,7 +216,76 @@ export class MockPlatform implements Platform {
     return { connected: false, peers: [], mode: null, url: null };
   }
 
-  async peerWant(): Promise<void> {}
+  // --- asset transfer -----------------------------------------------------
+  //
+  // Implemented rather than stubbed, and it is the one part of the mock that
+  // earns its keep beyond "the frontend runs in a plain browser": two browser
+  // windows on `?relay=` are how multiplayer is actually driven (T-72, T-151),
+  // so a no-op here would mean the transfer could not be watched happening
+  // until somebody built the Rust half and launched two shells. The chunking
+  // and the hash check are real; only the store underneath them is a Map.
+
+  async peerHaveSummary(): Promise<string[]> {
+    return [...this.assets.keys()];
+  }
+
+  async assetSize(sha256: string): Promise<number> {
+    return this.assets.get(sha256)?.meta.size ?? 0;
+  }
+
+  async assetChunk(sha256: string, index: number): Promise<Uint8Array> {
+    const asset = this.assets.get(sha256);
+    if (asset === undefined) return new Uint8Array(0);
+    const at = index * CHUNK_BYTES;
+    return asset.bytes.subarray(at, Math.min(at + CHUNK_BYTES, asset.bytes.length));
+  }
+
+  async assetReceive(
+    sha256: string,
+    index: number,
+    total: number,
+    bytes: Uint8Array,
+  ): Promise<void> {
+    let partial = this.partials.get(sha256);
+    if (partial === undefined || partial.total !== total) {
+      partial = { total, chunks: new Array<Uint8Array | undefined>(total) };
+      this.partials.set(sha256, partial);
+    }
+    if (index < total) partial.chunks[index] = bytes.slice();
+  }
+
+  /**
+   * Hash what arrived before believing any of it.
+   *
+   * A missing chunk and a corrupted one are the same answer — `false`, and the
+   * partial thrown away — because both mean the bytes are not the asset that
+   * was asked for, and there is nothing to be gained by telling them apart.
+   */
+  async assetCommit(sha256: string): Promise<boolean> {
+    const partial = this.partials.get(sha256);
+    this.partials.delete(sha256);
+    if (partial === undefined || partial.chunks.some((chunk) => chunk === undefined)) return false;
+
+    const size = partial.chunks.reduce((n, chunk) => n + (chunk?.length ?? 0), 0);
+    const whole = new Uint8Array(size);
+    let at = 0;
+    for (const chunk of partial.chunks) {
+      if (chunk === undefined) return false;
+      whole.set(chunk, at);
+      at += chunk.length;
+    }
+    if ((await sha256Hex(whole)) !== sha256) return false;
+
+    // Through ingestion rather than straight into the map, so that a received
+    // asset and a pasted one land by exactly the same path — dimensions, mime
+    // and the `asset:ready` that makes the item show all come out of it.
+    await this.assetIngestBytes(whole);
+    return true;
+  }
+
+  async assetAbort(sha256: string): Promise<void> {
+    this.partials.delete(sha256);
+  }
 
   async on<K extends keyof PlatformEvents>(
     event: K,

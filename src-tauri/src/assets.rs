@@ -45,7 +45,7 @@
 use std::borrow::Cow;
 use std::collections::HashSet;
 use std::fs::{self, File};
-use std::io::{self, BufReader, Read, Write};
+use std::io::{self, BufReader, Read, Seek, SeekFrom, Write};
 use std::net::{IpAddr, SocketAddr, ToSocketAddrs};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -89,6 +89,14 @@ const TEMP_TTL: Duration = Duration::from_secs(60 * 60);
 /// Read in one go rather than streamed, above which the caller is doing
 /// something other than putting a photograph on a corkboard.
 const MAX_ASSET_BYTES: u64 = 512 * 1024 * 1024;
+
+/// How much of an original one chunk of a peer transfer is — ARCHITECTURE
+/// section 5.2, and the same number as `CHUNK_BYTES` in `platform/types.ts`.
+///
+/// Both sides cut at the same offsets or the receiver assembles a file that
+/// hashes to nothing. It is the third and last thing the two languages agree on
+/// by hand, after the message type and the frame (D-28).
+pub const CHUNK_BYTES: u64 = 256 * 1024;
 
 /// Redirect hops [`AssetStore::ingest_url`] will follow, checking each one.
 const MAX_REDIRECTS: u8 = 3;
@@ -566,6 +574,171 @@ impl AssetStore {
 
     pub fn has(&self, sha256: &str) -> bool {
         valid_hash(sha256) && self.original_path(sha256).is_file()
+    }
+
+    // --- transfer -----------------------------------------------------------
+    //
+    // The store half of the peer exchange (ARCHITECTURE section 5.2). The
+    // frontend decides what to ask for and who to ask; everything below is the
+    // part it is deliberately not allowed to do — cut the original into chunks,
+    // put the arriving ones somewhere, and refuse to commit any of it until the
+    // hash says it is what was asked for.
+
+    /// The original's size, or `None` for an asset this machine does not hold.
+    pub fn size(&self, sha256: &str) -> Option<u64> {
+        if !valid_hash(sha256) {
+            return None;
+        }
+        fs::metadata(self.original_path(sha256)).ok().map(|m| m.len())
+    }
+
+    /// Every hash there are bytes for here, for the `HAVE` announcement.
+    ///
+    /// The originals only. A machine holding a display variant and not the
+    /// original cannot serve the asset — the variants are a local cache, not a
+    /// thing to hand to a peer who asked for a photograph.
+    pub fn hashes(&self) -> Result<Vec<String>> {
+        let trash = self.trash_dir();
+        let mut out = Vec::new();
+        for entry in walk_files(&self.root)? {
+            if entry.starts_with(&trash) {
+                continue;
+            }
+            let Some(name) = entry.file_name().and_then(|n| n.to_str()) else {
+                continue;
+            };
+            // Exactly the hash and nothing after it: `<sha>.display.jpg` and a
+            // half-received `<sha>.part-recv` both start with one.
+            if valid_hash(name) {
+                out.push(name.to_string());
+            }
+        }
+        Ok(out)
+    }
+
+    /// One chunk of an original, to put on the wire.
+    ///
+    /// Empty for an asset that is not here, or an index past the end. Not an
+    /// error: an asset collected between the `WANT` and this call is an ordinary
+    /// race, and the peer waiting is served better by a stream that stops than
+    /// by a failure it has no way to act on.
+    pub fn chunk(&self, sha256: &str, index: u64) -> Result<Vec<u8>> {
+        if !valid_hash(sha256) {
+            return Err(Error::BadHash);
+        }
+        let Some(at) = index.checked_mul(CHUNK_BYTES) else {
+            return Ok(Vec::new());
+        };
+        let Ok(mut file) = File::open(self.original_path(sha256)) else {
+            return Ok(Vec::new());
+        };
+        if file.seek(SeekFrom::Start(at)).is_err() {
+            return Ok(Vec::new());
+        }
+        let mut buffer = vec![0u8; CHUNK_BYTES as usize];
+        let mut filled = 0usize;
+        // `read` is allowed to return less than asked for without being at the
+        // end, and a short chunk in the middle of a transfer would be a hole in
+        // the file at the other end that only the hash check would ever notice.
+        while filled < buffer.len() {
+            match file.read(&mut buffer[filled..]) {
+                Ok(0) => break,
+                Ok(n) => filled += n,
+                Err(ref e) if e.kind() == io::ErrorKind::Interrupted => {}
+                Err(e) => return Err(Error::Io(e)),
+            }
+        }
+        buffer.truncate(filled);
+        Ok(buffer)
+    }
+
+    /// Where a transfer accumulates. `.part` in the name, so `gc` sweeps an
+    /// abandoned one the same way it sweeps an interrupted write.
+    fn partial_path(&self, sha256: &str) -> PathBuf {
+        self.original_path(sha256).with_extension("part-recv")
+    }
+
+    /// File one arriving chunk. Nothing here is trusted yet.
+    ///
+    /// Written at its own offset rather than appended, so the order chunks
+    /// arrive in does not matter and a repeat costs nothing. A gap left by a
+    /// chunk that never came reads back as zeroes, which is a file that does
+    /// not hash to its name — so the missing-chunk case needs no bookkeeping of
+    /// its own, and cannot be got wrong separately from the corruption case.
+    pub fn receive_chunk(&self, sha256: &str, index: u64, total: u64, bytes: &[u8]) -> Result<()> {
+        if !valid_hash(sha256) {
+            return Err(Error::BadHash);
+        }
+        // Everything a peer sends is a claim about how big a file it is about to
+        // make us create, and `seek` past the end of a file is how a sparse one
+        // of any size at all gets made.
+        if index >= total || bytes.len() as u64 > CHUNK_BYTES {
+            return Err(Error::BadHash);
+        }
+        let Some(at) = index.checked_mul(CHUNK_BYTES) else {
+            return Err(Error::TooLarge(u64::MAX));
+        };
+        let end = at.saturating_add(bytes.len() as u64);
+        if end > MAX_ASSET_BYTES {
+            return Err(Error::TooLarge(end));
+        }
+
+        fs::create_dir_all(self.dir_for(sha256))?;
+        let mut file = fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(self.partial_path(sha256))?;
+        file.seek(SeekFrom::Start(at))?;
+        file.write_all(bytes)?;
+        Ok(())
+    }
+
+    /// Hash what arrived, and commit it only if it is what was asked for.
+    ///
+    /// **This is the only place the bytes from another machine become an
+    /// asset**, and the hash is checked before they are anywhere they could be
+    /// served or rendered from. `false` is "that was not the asset" — a
+    /// collision on the `HAVE` prefix, a truncated transfer, a peer with a
+    /// corrupted store — and it is not a failure, so the caller retries
+    /// somebody else rather than reporting anything.
+    ///
+    /// The digest is taken here and then again inside `ingest_bytes`. Thirty
+    /// milliseconds on a twelve megabyte photograph, in exchange for a received
+    /// asset landing by exactly the same path as a pasted one: the trash
+    /// restore, the mime sniff, the dimensions and the atomic rename are all
+    /// written once, and a transfer cannot drift away from them.
+    pub fn commit_received(&self, sha256: &str) -> Result<bool> {
+        if !valid_hash(sha256) {
+            return Err(Error::BadHash);
+        }
+        let partial = self.partial_path(sha256);
+        let size = fs::metadata(&partial).map(|m| m.len()).unwrap_or(0);
+        if size == 0 || size > MAX_ASSET_BYTES {
+            let _ = fs::remove_file(&partial);
+            return Ok(false);
+        }
+
+        let bytes = fs::read(&partial)?;
+        let _ = fs::remove_file(&partial);
+        if hex(&Sha256::digest(&bytes)) != sha256 {
+            return Ok(false);
+        }
+        self.ingest_bytes(&bytes, None)?;
+        Ok(true)
+    }
+
+    /// Throw away a partial transfer. Absent is success — the caller aborts on
+    /// a socket closing, and there may never have been a file.
+    pub fn abort_received(&self, sha256: &str) -> Result<()> {
+        if !valid_hash(sha256) {
+            return Err(Error::BadHash);
+        }
+        match fs::remove_file(self.partial_path(sha256)) {
+            Ok(()) => Ok(()),
+            Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(()),
+            Err(e) => Err(Error::Io(e)),
+        }
     }
 
     // --- ingestion ----------------------------------------------------------
@@ -1572,5 +1745,181 @@ mod tests {
         assert_eq!(Variant::parse(Some("original")), Variant::Original);
         assert_eq!(Variant::parse(Some("nonsense")), Variant::Display);
         assert_eq!(Variant::parse(None), Variant::Display);
+    }
+
+    // --- transfer -----------------------------------------------------------
+
+    /// Send an asset from one store to another the way the exchange would.
+    /// Returns what `commit_received` said.
+    fn transfer(from: &AssetStore, to: &AssetStore, sha256: &str) -> bool {
+        let size = from.size(sha256).expect("the sender should hold it");
+        let total = size.div_ceil(CHUNK_BYTES).max(1);
+        for index in 0..total {
+            let chunk = from.chunk(sha256, index).unwrap();
+            to.receive_chunk(sha256, index, total, &chunk).unwrap();
+        }
+        to.commit_received(sha256).unwrap()
+    }
+
+    /// Bigger than one chunk, so the loop above is a loop. A gradient rather
+    /// than a flat colour, because a quarter of a megabyte of one colour
+    /// compresses to nothing and the test would silently become a single-chunk
+    /// one.
+    fn big_png() -> Vec<u8> {
+        let mut image = RgbImage::new(700, 700);
+        for (x, y, pixel) in image.enumerate_pixels_mut() {
+            *pixel = image::Rgb([(x % 256) as u8, (y % 256) as u8, ((x * y) % 256) as u8]);
+        }
+        let mut out = Vec::new();
+        DynamicImage::ImageRgb8(image)
+            .write_to(&mut io::Cursor::new(&mut out), ImageFormat::Png)
+            .unwrap();
+        out
+    }
+
+    #[test]
+    fn a_photograph_crosses_between_two_stores() {
+        let (_a, sender) = store();
+        let (_b, receiver) = store();
+        let bytes = big_png();
+        let meta = sender.ingest_bytes(&bytes, None).unwrap();
+        assert!(meta.size > CHUNK_BYTES, "should take more than one chunk");
+
+        assert!(transfer(&sender, &receiver, &meta.sha256));
+        assert!(receiver.has(&meta.sha256));
+        assert_eq!(fs::read(receiver.original_path(&meta.sha256)).unwrap(), bytes);
+        // Through the ingest path, so the dimensions came out too.
+        assert_eq!(receiver.size(&meta.sha256), Some(meta.size));
+    }
+
+    #[test]
+    fn chunks_may_arrive_in_any_order() {
+        let (_a, sender) = store();
+        let (_b, receiver) = store();
+        let meta = sender.ingest_bytes(&big_png(), None).unwrap();
+        let total = meta.size.div_ceil(CHUNK_BYTES);
+        assert!(total >= 3, "wanted a few chunks, got {total}");
+
+        for index in (0..total).rev() {
+            let chunk = sender.chunk(&meta.sha256, index).unwrap();
+            receiver
+                .receive_chunk(&meta.sha256, index, total, &chunk)
+                .unwrap();
+        }
+        assert!(receiver.commit_received(&meta.sha256).unwrap());
+    }
+
+    #[test]
+    fn a_missing_chunk_commits_nothing() {
+        // The case with no bookkeeping behind it: the gap reads back as zeroes,
+        // and zeroes do not hash to the name the file is waiting under.
+        let (_a, sender) = store();
+        let (_b, receiver) = store();
+        let meta = sender.ingest_bytes(&big_png(), None).unwrap();
+        let total = meta.size.div_ceil(CHUNK_BYTES);
+
+        for index in 1..total {
+            let chunk = sender.chunk(&meta.sha256, index).unwrap();
+            receiver
+                .receive_chunk(&meta.sha256, index, total, &chunk)
+                .unwrap();
+        }
+        assert!(!receiver.commit_received(&meta.sha256).unwrap());
+        assert!(!receiver.has(&meta.sha256));
+    }
+
+    #[test]
+    fn bytes_that_are_not_the_asset_are_refused() {
+        // A peer answering a `HAVE` prefix collision with a different
+        // photograph, or one whose store has rotted. Nothing may be committed,
+        // and in particular it must not be committed under its *own* hash — the
+        // receiver asked for one asset, not for whatever this turned out to be.
+        let (_a, receiver) = store();
+        let wanted = "0".repeat(64);
+        let impostor = png(4, 4);
+
+        receiver.receive_chunk(&wanted, 0, 1, &impostor).unwrap();
+        assert!(!receiver.commit_received(&wanted).unwrap());
+        assert!(!receiver.has(&wanted));
+        assert_eq!(receiver.hashes().unwrap(), Vec::<String>::new());
+    }
+
+    #[test]
+    fn a_transfer_leaves_nothing_behind_when_it_fails() {
+        let (dir, receiver) = store();
+        let wanted = "1".repeat(64);
+        receiver.receive_chunk(&wanted, 0, 1, b"not a photograph").unwrap();
+        assert!(!receiver.commit_received(&wanted).unwrap());
+
+        let leftovers = walk_files(&dir.path().join("assets")).unwrap();
+        assert!(leftovers.is_empty(), "left {leftovers:?}");
+    }
+
+    #[test]
+    fn an_abandoned_transfer_can_be_thrown_away() {
+        let (_dir, receiver) = store();
+        let wanted = "2".repeat(64);
+        receiver.receive_chunk(&wanted, 0, 2, b"half of it").unwrap();
+
+        receiver.abort_received(&wanted).unwrap();
+        assert!(!receiver.partial_path(&wanted).is_file());
+        // Absent is success: the socket can close before a byte ever arrives.
+        assert!(receiver.abort_received(&wanted).is_ok());
+    }
+
+    #[test]
+    fn a_peer_cannot_make_us_write_an_enormous_sparse_file() {
+        // `seek` past the end creates a file as big as the offset. The index is
+        // a number off the network, so this is the one arithmetic in the
+        // transfer path that an attacker chooses.
+        let (_dir, receiver) = store();
+        let wanted = "3".repeat(64);
+        let far = MAX_ASSET_BYTES / CHUNK_BYTES + 1;
+
+        assert!(receiver.receive_chunk(&wanted, far, far + 1, b"x").is_err());
+        assert!(receiver.receive_chunk(&wanted, u64::MAX, u64::MAX, b"x").is_err());
+        // And an index outside the total it claims for itself.
+        assert!(receiver.receive_chunk(&wanted, 5, 2, b"x").is_err());
+        assert!(!receiver.partial_path(&wanted).is_file());
+    }
+
+    #[test]
+    fn a_hash_that_is_not_a_hash_gets_nowhere() {
+        let (_dir, store) = store();
+        for bad in ["../../etc/passwd", "", &"z".repeat(64)] {
+            assert!(store.chunk(bad, 0).is_err());
+            assert!(store.receive_chunk(bad, 0, 1, b"x").is_err());
+            assert!(store.commit_received(bad).is_err());
+            assert!(store.abort_received(bad).is_err());
+            assert_eq!(store.size(bad), None);
+        }
+    }
+
+    #[test]
+    fn asking_for_an_asset_we_do_not_have_is_empty_rather_than_an_error() {
+        let (_dir, store) = store();
+        let absent = "4".repeat(64);
+        assert_eq!(store.chunk(&absent, 0).unwrap(), Vec::<u8>::new());
+        assert_eq!(store.size(&absent), None);
+    }
+
+    #[test]
+    fn reading_past_the_end_of_an_asset_is_empty() {
+        let (_dir, store) = store();
+        let meta = store.ingest_bytes(&png(8, 8), None).unwrap();
+        assert!(!store.chunk(&meta.sha256, 0).unwrap().is_empty());
+        assert!(store.chunk(&meta.sha256, 1).unwrap().is_empty());
+    }
+
+    #[test]
+    fn the_summary_names_originals_and_not_variants_or_partials() {
+        let (_dir, store) = store();
+        let meta = store.ingest_bytes(&png(80, 60), None).unwrap();
+        store.build_variants(&meta.sha256).unwrap();
+        store.receive_chunk(&"5".repeat(64), 0, 2, b"partial").unwrap();
+
+        // A machine holding a display variant cannot serve the photograph, and
+        // one holding half of a transfer certainly cannot.
+        assert_eq!(store.hashes().unwrap(), vec![meta.sha256]);
     }
 }

@@ -296,6 +296,118 @@ async fn asset_has(app: AppHandle, hashes: Vec<String>) -> Result<Vec<bool>, Str
     .await
 }
 
+// --- asset transfer ---------------------------------------------------------
+//
+// The store half of the peer exchange. `crdt/sync/exchange.ts` owns the
+// conversation — who has what, what to ask for next, who to ask — because the
+// socket to the relay belongs to the webview and Rust has no way to speak on
+// it. These five are what it needs from the disk, and none of them lets it read
+// a chunk it is carrying (D-28).
+
+#[tauri::command]
+async fn peer_have_summary(app: AppHandle) -> Result<Vec<String>, String> {
+    blocking(move || -> assets::Result<Vec<String>> {
+        store_of(&app).map_err(assets::Error::Unavailable)?.hashes()
+    })
+    .await
+}
+
+#[tauri::command]
+async fn asset_size(app: AppHandle, sha256: String) -> Result<u64, String> {
+    blocking(move || -> assets::Result<u64> {
+        let store = store_of(&app).map_err(assets::Error::Unavailable)?;
+        Ok(store.size(&sha256).unwrap_or(0))
+    })
+    .await
+}
+
+/// One chunk, as a **raw response** — an ArrayBuffer in the webview, not a JSON
+/// array of a quarter of a million numbers.
+///
+/// The frontend hands this straight to `encodeData` without reading it. That is
+/// the whole arrangement: the bytes cross JavaScript, because the WebSocket is
+/// there, but nothing in JavaScript interprets them.
+#[tauri::command]
+async fn asset_chunk(
+    app: AppHandle,
+    sha256: String,
+    index: u64,
+) -> Result<tauri::ipc::Response, String> {
+    let bytes = blocking(move || {
+        store_of(&app)
+            .map_err(assets::Error::Unavailable)?
+            .chunk(&sha256, index)
+    })
+    .await?;
+    Ok(tauri::ipc::Response::new(bytes))
+}
+
+/// A chunk arriving from a peer. Raw body, with the filing details on headers —
+/// the same shape as `asset_ingest_bytes`, and for the same reason.
+#[tauri::command]
+async fn asset_receive(app: AppHandle, request: tauri::ipc::Request<'_>) -> Result<(), String> {
+    let InvokeBody::Raw(bytes) = request.body() else {
+        return Err("asset_receive expects a raw body".into());
+    };
+    let bytes = bytes.clone();
+    let header = |name: &str| -> Option<String> {
+        request
+            .headers()
+            .get(name)
+            .and_then(|v| v.to_str().ok())
+            .map(str::to_string)
+    };
+    let (Some(sha256), Some(index), Some(total)) = (
+        header("x-asset-sha256"),
+        header("x-asset-index").and_then(|v| v.parse::<u64>().ok()),
+        header("x-asset-total").and_then(|v| v.parse::<u64>().ok()),
+    ) else {
+        return Err("asset_receive wants a hash, an index and a total".into());
+    };
+
+    blocking(move || {
+        store_of(&app)
+            .map_err(assets::Error::Unavailable)?
+            .receive_chunk(&sha256, index, total, &bytes)
+    })
+    .await
+}
+
+/// Verify a completed transfer and commit it, or throw it away.
+///
+/// `false` is an ordinary answer — the bytes did not hash to the name they came
+/// under — and the caller's response to it is to ask a different peer. Only a
+/// rejection means something went wrong with the disk.
+#[tauri::command]
+async fn asset_commit(app: AppHandle, sha256: String) -> Result<bool, String> {
+    let handle = app.clone();
+    let hash = sha256.clone();
+    let committed = blocking(move || {
+        store_of(&handle)
+            .map_err(assets::Error::Unavailable)?
+            .commit_received(&hash)
+    })
+    .await?;
+
+    // The same tail as every other way an asset arrives: build the variants off
+    // the main thread and announce it, which is what makes the item stop being
+    // an empty frame.
+    if committed {
+        schedule_variants(&app, sha256);
+    }
+    Ok(committed)
+}
+
+#[tauri::command]
+async fn asset_abort(app: AppHandle, sha256: String) -> Result<(), String> {
+    blocking(move || {
+        store_of(&app)
+            .map_err(assets::Error::Unavailable)?
+            .abort_received(&sha256)
+    })
+    .await
+}
+
 /// Copy an original out to somewhere the user picked.
 ///
 /// **The destination does not cross the IPC boundary, and that is the whole
@@ -485,6 +597,12 @@ pub fn run() {
             asset_has,
             asset_export,
             asset_gc,
+            peer_have_summary,
+            asset_size,
+            asset_chunk,
+            asset_receive,
+            asset_commit,
+            asset_abort,
             doc_append_update,
             doc_load,
             doc_compact,
