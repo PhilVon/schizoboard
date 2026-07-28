@@ -1,0 +1,15 @@
+{
+  /*
+   * Node-side integration tests — the ones that spawn a process or open a
+   * socket, rather than exercising webview code in place.
+   *
+   * A third project purely so that `tsconfig.json` can keep saying "no Node
+   * types in src/". Adding `node` there would make `process.env` typecheck
+   * inside a renderer, which is exactly the mistake that guard exists to catch.
+   */
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "types": ["node", "vite/client"]
+  },
+  "include": ["tests"]
+}
