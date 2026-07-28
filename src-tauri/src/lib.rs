@@ -104,6 +104,16 @@ async fn sync_start(app: AppHandle, config: SyncConfig) -> Result<(), String> {
     *hosting.url.lock().expect("hosting lock") = config.url.clone();
     *hosting.board.lock().expect("hosting lock") = Some(config.board_id.clone());
 
+    // A secret that arrived from outside — an invite link, or `?secret=` — is
+    // this board's from now on (Q-75). Kept before the mode branch because it is
+    // true in both: a relay-mode window that was invited still holds the secret
+    // for when it later hosts the same board itself.
+    if let Some(given) = config.secret.as_deref() {
+        if let Err(error) = app.state::<sync::secret::SecretStore>().remember(&config.board_id, given) {
+            eprintln!("[sync] this board's secret is not being kept: {error}");
+        }
+    }
+
     // Relay mode: somebody else is hosting, and the webview's own provider
     // dials them. There is nothing for this side to start — but the secret is
     // still kept, because it is what says which advertised board is ours.
@@ -111,6 +121,18 @@ async fn sync_start(app: AppHandle, config: SyncConfig) -> Result<(), String> {
         *hosting.secret.lock().expect("hosting lock") = config.secret;
         return Ok(());
     }
+    // Whoever opens the board first invents its secret; every launch after that
+    // finds the same one on disk (Q-75). A caller that arrived holding one — a
+    // second window told to join, an invite link — has just had it written
+    // above, so `ensure` hands that same one straight back.
+    //
+    // Resolved *before* the comparison below rather than after it, which is the
+    // change persistence makes to this decision: an ordinary reload used to be
+    // "asked for nothing in particular, so keep what is running", and is now
+    // "asked for the secret the relay is already hosting". Same answer, arrived
+    // at by knowing rather than by not knowing.
+    let secret = app.state::<sync::secret::SecretStore>().ensure(&config.board_id);
+
     // Already hosting — but of *what*? A reload that asks for the same board
     // wants the relay it already has; one that asks for a different secret is
     // somebody joining a different board, and that is not a request that can be
@@ -120,16 +142,16 @@ async fn sync_start(app: AppHandle, config: SyncConfig) -> Result<(), String> {
     // both silently kept the secret they had made up on their first load a
     // moment earlier. Each then advertised a fingerprint the other could not
     // match, so two peers on one board never saw each other and the failure
-    // looked exactly like mDNS being broken. The invite link, when it lands,
-    // arrives by the same route — a window that is already up being told to go
-    // somewhere else — so this is its path too, not a testing quirk.
+    // looked exactly like mDNS being broken. The invite link arrives by the same
+    // route — a window that is already up being told to go somewhere else — so
+    // this is its path too, not a testing quirk.
     //
     // The lock guards are dropped before the await below, which is what keeps
     // this command's future `Send`.
     {
         let hosted = hosting.secret.lock().expect("hosting lock").clone();
         let running = hosting.relay.lock().expect("hosting lock").is_some();
-        match hosting_change(running, hosted.as_deref(), config.secret.as_deref()) {
+        match hosting_change(running, hosted.as_deref(), &secret) {
             HostingChange::Keep => return Ok(()),
             HostingChange::Restart => {
                 // Stopped rather than left beside the new one: the old board's
@@ -141,11 +163,6 @@ async fn sync_start(app: AppHandle, config: SyncConfig) -> Result<(), String> {
             HostingChange::Start => {}
         }
     }
-
-    // Whoever opens the board first invents its secret. A caller that already
-    // has one — a second window told to join, an invite link — keeps it, or the
-    // two would host two boards that cannot talk to each other.
-    let secret = config.secret.unwrap_or_else(sync::secret::generate);
 
     // Port zero: the operating system picks, and `sync_status` reports back.
     // A fixed port is one more thing to collide with on a machine somebody is
@@ -243,18 +260,21 @@ enum HostingChange {
 /// match, so two peers who should have found each other never do — and the
 /// symptom is indistinguishable from mDNS not working at all.
 ///
-/// A caller asking for no secret in particular is content with what is running:
-/// that is an ordinary reload, and re-hosting on a new port for it would break
-/// every peer already connected.
-fn hosting_change(running: bool, hosted: Option<&str>, wanted: Option<&str>) -> HostingChange {
+/// An ordinary reload lands on `Keep`, which is what matters for everybody
+/// already connected: re-hosting on a fresh port would drop every one of them.
+/// It gets there by *agreeing* — the reload resolves the same persisted secret
+/// the relay is hosting (Q-75). Before persistence there was a third arm here
+/// for a caller that asked for no secret at all, and it kept the relay for want
+/// of a reason not to; there is now always a secret to compare, so the answer is
+/// the same and the guess is gone.
+fn hosting_change(running: bool, hosted: Option<&str>, wanted: &str) -> HostingChange {
     if !running {
         return HostingChange::Start;
     }
-    match wanted {
-        None => HostingChange::Keep,
-        Some(secret) if hosted == Some(secret) => HostingChange::Keep,
-        Some(_) => HostingChange::Restart,
+    if hosted == Some(wanted) {
+        return HostingChange::Keep;
     }
+    HostingChange::Restart
 }
 
 /// A name for this board's advertisement, unique on the network.
@@ -771,6 +791,11 @@ pub fn run() {
             let data = data_root(app.path().app_data_dir()?);
             app.manage(AssetStore::new(data.join("assets"))?);
             app.manage(DocStore::new(data.join("doc"))?);
+            // Beside the document rather than inside it, which is what Q-75
+            // settled: the secret is about who may reach this board, not about
+            // what is on it, and a document handed to somebody as a bundle
+            // (T-84) must not carry the key to the board it came from.
+            app.manage(sync::secret::SecretStore::new(data.join("secrets"))?);
             app.manage(Hosting::default());
             if let Some(window) = app.get_webview_window("main") {
                 clipboard::forward_drops(&window, app.handle());
@@ -831,17 +856,16 @@ mod tests {
 
     #[test]
     fn nothing_running_means_start() {
-        assert_eq!(hosting_change(false, None, None), HostingChange::Start);
-        assert_eq!(hosting_change(false, None, Some("abc")), HostingChange::Start);
+        assert_eq!(hosting_change(false, None, "abc"), HostingChange::Start);
     }
 
     #[test]
     fn an_ordinary_reload_keeps_the_relay_it_has() {
-        // A reload asking for no secret in particular is content with what is
-        // running, and re-hosting on a fresh port for it would drop every peer
+        // Since Q-75 a reload resolves the *persisted* secret, which is the one
+        // the relay is already hosting — so this arrives as an agreement rather
+        // than as an absence. Re-hosting on a fresh port would drop every peer
         // already connected.
-        assert_eq!(hosting_change(true, Some("abc"), None), HostingChange::Keep);
-        assert_eq!(hosting_change(true, Some("abc"), Some("abc")), HostingChange::Keep);
+        assert_eq!(hosting_change(true, Some("abc"), "abc"), HostingChange::Keep);
     }
 
     #[test]
@@ -851,7 +875,7 @@ mod tests {
         // relay standing answers for the wrong board — advertising a
         // fingerprint no peer can match, which looks exactly like mDNS being
         // broken.
-        assert_eq!(hosting_change(true, Some("abc"), Some("def")), HostingChange::Restart);
-        assert_eq!(hosting_change(true, None, Some("def")), HostingChange::Restart);
+        assert_eq!(hosting_change(true, Some("abc"), "def"), HostingChange::Restart);
+        assert_eq!(hosting_change(true, None, "def"), HostingChange::Restart);
     }
 }
