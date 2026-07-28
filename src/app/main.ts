@@ -51,13 +51,14 @@ import { DomItemLayer, type AssetView } from "@/render/items/dom";
 import { FrameLoop } from "@/render/loop";
 import { Overlay, type PendingRun } from "@/render/overlay";
 import { Janitor } from "@/crdt/janitor";
-import { Peers } from "@/render/presence/peers";
+import { Peers, readPeer } from "@/render/presence/peers";
 import { PinLayer } from "@/render/pins/dom";
 import { RopeLayer } from "@/render/ropes/paint";
 import { World } from "@/render/world";
 import { RopeSet, type RopeHit } from "@/sim/ropes";
 import { Torsion } from "@/sim/torsion";
 import { AssetStates } from "@/state/assets";
+import { MissingAssets } from "@/state/missing";
 import { Camera } from "@/state/camera";
 import { DirtySets } from "@/state/dirty";
 import { chromeFrame, emptyFrame, handleAt, handleCursor } from "@/state/handles";
@@ -78,7 +79,18 @@ import { StringTool } from "@/state/tools/string";
 import type { BoardWriter, WritePose } from "@/state/tools/tool";
 import { itemMenuRows, penMenuRows, pinMenuRows, stringMenuRows } from "@/ui/boardmenu";
 import { Hud, type HudStats } from "@/ui/hud";
+import { Notice } from "@/ui/notice";
 import { ContextMenu, type MenuEntry } from "@/ui/menu";
+
+/**
+ * How often the missing-photograph notice checks that what it is counting is
+ * still on the board.
+ *
+ * Half a second, which is far slower than anything a person can delete and far
+ * faster than they can wonder why the count is wrong. The sweep is a scene walk,
+ * and it only runs at all while something is missing.
+ */
+const NOTICE_SWEEP_MS = 500;
 
 async function boot(): Promise<void> {
   const native = await initPlatform();
@@ -126,6 +138,17 @@ async function boot(): Promise<void> {
    * them are allowed to win.
    */
   const assets = new AssetStates();
+  /**
+   * And whose laptop the ones nobody here has are on (T-75, DESIGN 7.5).
+   *
+   * Separate from `assets` because it answers a different question and lives on
+   * a different timescale: `assets` says which of five states a hash is in and
+   * is read by the renderer every frame; this says who claimed a hash we then
+   * failed to get, and it keeps peers' names after they leave — which is the
+   * only reason it can answer at all, since by the time anything is unavailable
+   * the holder has almost always gone and awareness has dropped them.
+   */
+  const missing = new MissingAssets();
   /**
    * Fetches the bytes `assets` is waiting for, once there is a wire (T-74).
    *
@@ -896,6 +919,19 @@ async function boot(): Promise<void> {
   await paste.attach();
 
   const hud = new Hud(world.layers.ui, loop, () => stats());
+  /**
+   * The board-level half of DESIGN 7.5 — how many photographs nobody here has,
+   * and whose they are. Silent, and touching no DOM at all, until there is one.
+   */
+  const notice = new Notice(world.layers.ui);
+  /**
+   * When the notice last checked that what it is counting is still on the board.
+   *
+   * The check is a scene walk, so it is throttled and — more to the point — only
+   * runs at all once something is actually missing. A healthy board never pays
+   * for it.
+   */
+  let noticeSweptAt = 0;
   let docBytes = 0;
   let docMeasuredAt = 0;
   const stats = (): HudStats => {
@@ -995,9 +1031,20 @@ async function boot(): Promise<void> {
    */
   if (provider !== null) {
     exchange = new AssetExchange(provider, native, {
-      onProgress: (sha256, received, total) => assets.transferring(sha256, received, total),
-      onUnavailable: (sha256) => {
+      onProgress: (sha256, received, total) => {
+        assets.transferring(sha256, received, total);
+        // Bytes are moving, so whatever the notice said about this hash is over.
+        // On `transferring` rather than on `ready` for the reason `assets` also
+        // clears its sticky `unavailable` there: somebody who holds it has
+        // turned up, and that is the news, not the last chunk.
+        missing.arrived(sha256);
+      },
+      onUnavailable: (sha256, tried) => {
         assets.unavailable(sha256);
+        // Who claimed it and could not produce it, kept so the board can say so
+        // (DESIGN 7.5). This is the only moment those ids exist — the exchange
+        // drops the want, and the set with it, on the line after this call.
+        missing.unavailable(sha256, tried);
         console.warn(`[sync] nobody on this board has ${sha256.slice(0, 8)}`);
       },
     });
@@ -1034,6 +1081,17 @@ async function boot(): Promise<void> {
    * Our own state is skipped. It is in `getStates()` like everyone else's, and
    * interpolating our own drag would fight the gesture making it.
    */
+  /**
+   * Remember a peer's name, for the notice about photographs only they have.
+   *
+   * `readPeer` is the same validation the cursors are drawn through, so the name
+   * in the notice and the label on the cursor cannot disagree - and a state with
+   * no `user` in it is skipped by both.
+   */
+  const nameFor = (client: number, state: unknown): void => {
+    const peer = readPeer(state);
+    if (peer !== null) missing.seen(client, peer.name, peer.color);
+  };
   provider?.awareness.on(
     "change",
     ({ added, updated, removed }: { added: number[]; updated: number[]; removed: number[] }) => {
@@ -1043,17 +1101,23 @@ async function boot(): Promise<void> {
         const state = states.get(client);
         remote.observe(client, state, arrived);
         peers.observe(client, state);
+        nameFor(client, state);
       }
       for (const client of updated) {
         const state = states.get(client);
         remote.observe(client, state, arrived);
         peers.observe(client, state);
+        nameFor(client, state);
       }
       // Awareness drops a peer's state on disconnect by design, and this is the
       // only notice of it there is.
       for (const client of removed) {
         remote.forget(client);
         peers.forget(client);
+        // Not a matching `forget`. A peer who has gone is the ordinary reason a
+        // photograph is unavailable, so this is exactly when their name becomes
+        // worth having (DESIGN 7.5) - `missing` keeps it and marks them absent.
+        missing.left(client);
       }
     },
   );
@@ -1436,6 +1500,19 @@ async function boot(): Promise<void> {
       provider === null ? null : peers,
     );
     hud.update(frame.now);
+    if (missing.count > 0 && frame.now - noticeSweptAt > NOTICE_SWEEP_MS) {
+      noticeSweptAt = frame.now;
+      // An item wearing a missing photograph can just be deleted, and nothing
+      // announces that. This is the cheap way to notice, and it is behind the
+      // count so a board with nothing missing never walks anything.
+      const referenced = new Set<string>();
+      for (const id of scene.itemIds()) {
+        const asset = scene.cold(id)?.assetId;
+        if (asset) referenced.add(asset);
+      }
+      missing.retain(referenced);
+    }
+    notice.update(missing.notice());
   });
 
   /**

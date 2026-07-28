@@ -278,6 +278,26 @@ describe("the asset exchange", () => {
     expect(exchange.stats().wanted).toBe(0);
   });
 
+  it("says which peers it asked, because nothing else will ever know", async () => {
+    // DESIGN 7.5 wants the board to name "who to ask", and this is the only
+    // moment the answer exists: the want is dropped as it gives up, and the
+    // set of peers it tried goes with it.
+    const tried: number[][] = [];
+    const asking = new AssetExchange(wire as unknown as SyncProvider, store as unknown as Platform, {
+      onUnavailable: (_sha, peers) => tried.push([...peers]),
+    });
+    await vi.waitFor(() => expect(wire.sent.length).toBeGreaterThan(0));
+
+    wire.hear(PEER_A, encodeHave([hash]));
+    wire.hear(PEER_B, encodeHave([hash]));
+    asking.want(hash);
+    wire.hear(wire.wants()[0]!.to, encodeNack(hash));
+    wire.hear(wire.wants()[1]!.to, encodeNack(hash));
+
+    expect(tried).toHaveLength(1);
+    expect([...tried[0]!].sort()).toEqual([PEER_A, PEER_B].sort());
+  });
+
   it("asks again after a peer that failed re-announces", async () => {
     wire.hear(PEER_A, encodeHave([hash]));
     exchange.want(hash);

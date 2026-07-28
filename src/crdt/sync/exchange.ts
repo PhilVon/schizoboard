@@ -95,8 +95,16 @@ interface InFlight {
 export interface ExchangeOptions {
   /** Told about every transfer's progress, for the per-asset render state (T-95). */
   onProgress?: (sha256: string, received: number, total: number) => void;
-  /** A transfer that has run out of peers to ask. Renders as unavailable (T-75). */
-  onUnavailable?: (sha256: string) => void;
+  /**
+   * A transfer that has run out of peers to ask. Renders as unavailable (T-75).
+   *
+   * `tried` is every peer that advertised the hash and then failed to produce
+   * it, and this call is the only place it is ever visible: the want is dropped
+   * as we give up, so nothing afterwards can be asked who was asked. DESIGN 7.5
+   * wants the board to name "who to ask", and these client ids are the only
+   * thing on this side that knows.
+   */
+  onUnavailable?: (sha256: string, tried: readonly number[]) => void;
 }
 
 export class AssetExchange {
@@ -408,8 +416,9 @@ export class AssetExchange {
       // to be told, or the item shows an empty frame with no explanation.
       if (peer === null) {
         if (want.tried.size > 0) {
+          // Read before the delete, because the delete is what destroys it.
           this.wanted.delete(sha256);
-          this.options.onUnavailable?.(sha256);
+          this.options.onUnavailable?.(sha256, [...want.tried]);
         }
         continue;
       }

@@ -413,3 +413,54 @@ body {
   text-shadow: 0 1px 2px rgba(var(--shadow-warm), 0.6);
 }
 
+
+/* --- the missing-photograph notice, DESIGN 7.5 ----------------------------- */
+
+/*
+ * Top left, which is the one corner of this board nothing else uses: the dev
+ * HUD is top right and the hint line is bottom left.
+ *
+ * `pointer-events: none` is load-bearing rather than tidy. Two overlays on this
+ * board have already swallowed board presses, and each read as the application
+ * ignoring an interaction rather than as a rectangle being in the way.
+ */
+.notice {
+  position: absolute;
+  left: 14px;
+  top: 12px;
+  display: none;
+  align-items: center;
+  gap: 7px;
+  padding: 5px 10px 5px 8px;
+  border-radius: 3px;
+  font-family: var(--ui-mono);
+  font-size: 11px;
+  pointer-events: none;
+  /* Written on something, like everything else here — a slip of paper pinned in
+   * the corner rather than a toast floating over the board. */
+  color: rgba(58, 44, 30, 0.86);
+  background: linear-gradient(#f6f1e6 0%, #e8dfcd 100%);
+  box-shadow: 0 2px 6px rgba(var(--shadow-warm), 0.4);
+}
+
+.notice.is-live {
+  display: flex;
+}
+
+.notice-swatches {
+  display: flex;
+  gap: 3px;
+}
+
+/* The colour their cursor is drawn in, so the name and the person agree. */
+.notice-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  box-shadow: inset 0 -1px 1px rgba(var(--shadow-warm), 0.45);
+}
+
+/* Gone, and the dot says so before the sentence does. */
+.notice-dot.is-gone {
+  opacity: 0.4;
+}
