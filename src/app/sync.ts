@@ -47,6 +47,24 @@ import type { Platform, SyncConfig } from "@/platform/types";
  */
 const BOARD_NAME = /^[A-Za-z0-9_-]{1,64}$/;
 
+/**
+ * Whether a string could be a board name.
+ *
+ * Exported because the invite link (`app/invite.ts`) builds and reads the same
+ * two values, and a link that spelled a board differently from the query string
+ * would be a second rule to keep in step by hand. `sync/secret.rs`'s
+ * `board_file` is the third copy and cannot share this one, being in another
+ * language — it says so, and says why it is stricter still.
+ */
+export function isBoardName(value: string): boolean {
+  return BOARD_NAME.test(value);
+}
+
+/** Whether a string could be a board secret. See [`SECRET`]. */
+export function isSecret(value: string): boolean {
+  return SECRET.test(value);
+}
+
 /** What a board is called when nobody said. Matches the relay's own default. */
 const DEFAULT_BOARD = "board";
 
