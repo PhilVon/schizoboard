@@ -2,10 +2,10 @@ import { beforeEach, describe, expect, it } from "vitest";
 import * as Y from "yjs";
 
 import { initialiseBoard, openBoardDoc, type BoardDoc } from "@/crdt/doc";
-import { unrepairableStrings } from "@/crdt/invariants";
+import { checkInvariants, compactableStrings, unrepairableStrings } from "@/crdt/invariants";
 import { CHECK_MS, elected, Janitor, SETTLE_MS } from "@/crdt/janitor";
 import { createItems, createPin, createStringThrough, deletePins } from "@/crdt/ops";
-import { collectStrings } from "@/crdt/ops/janitor";
+import { compactStrings } from "@/crdt/ops/janitor";
 import { isTracked, Origin } from "@/crdt/origins";
 import { readString, type YMap } from "@/crdt/schema";
 
@@ -78,11 +78,11 @@ describe("elected", () => {
   });
 });
 
-describe("collectStrings", () => {
+describe("compactStrings", () => {
   it("deletes a string that is beyond repair", () => {
     const { p1, p2 } = furnish();
     const id = strand(p1, p2);
-    expect(collectStrings(a, [id])).toEqual([id]);
+    expect(compactStrings(a, [id])).toEqual({ collected: [id], pruned: [] });
     expect(a.strings.has(id)).toBe(false);
   });
 
@@ -104,7 +104,7 @@ describe("collectStrings", () => {
     const revived = createPin(a, { parent: item, lx: 50, ly: 0 });
     (a.strings.get(id)!.get("nodes") as Y.Array<YMap>).get(orphaned).set("pin", revived);
 
-    expect(collectStrings(a, [id])).toEqual([]);
+    expect(compactStrings(a, [id])).toEqual({ collected: [], pruned: [] });
     expect(a.strings.has(id)).toBe(true);
   });
 
@@ -115,7 +115,7 @@ describe("collectStrings", () => {
     // is aimed squarely at this, and a janitor that deleted what it could not
     // read would be a forward-compatibility bug that surfaces as data loss.
     a.strings.get(id)!.set("nodes", "some future shape");
-    expect(collectStrings(a, [id])).toEqual([]);
+    expect(compactStrings(a, [id])).toEqual({ collected: [], pruned: [] });
     expect(a.strings.has(id)).toBe(true);
   });
 
@@ -124,7 +124,7 @@ describe("collectStrings", () => {
     const id = strand(p1, p2);
     const origins: unknown[] = [];
     a.doc.on("afterTransaction", (tx: Y.Transaction) => origins.push(tx.origin));
-    collectStrings(a, [id]);
+    compactStrings(a, [id]);
     expect(origins).toContain(Origin.JANITOR);
     expect(isTracked(Origin.JANITOR)).toBe(false);
   });
@@ -134,12 +134,100 @@ describe("collectStrings", () => {
     const id = strand(p1, p2);
     // Both peers decide independently — which is what the election makes rare
     // and cannot make impossible, since presence lags.
-    expect(collectStrings(a, [id])).toEqual([id]);
-    expect(collectStrings(b, [id])).toEqual([id]);
+    expect(compactStrings(a, [id]).collected).toEqual([id]);
+    expect(compactStrings(b, [id]).collected).toEqual([id]);
     merge(a, b);
     expect(a.strings.has(id)).toBe(false);
     expect(b.strings.has(id)).toBe(false);
     expect(unrepairableStrings(a)).toEqual([]);
+  });
+});
+
+/**
+ * The second kind of decay: a string that still draws, carrying a node that
+ * resolves to nothing.
+ *
+ * Nothing else on the board will ever touch it. It is not a violation —
+ * invariant 4 permits it, `sim/ropes.ts` steps over it and the run closes up —
+ * so it is invisible, and it arrives once per pin deletion that raced an edit to
+ * the same run.
+ */
+describe("pruning a dead node", () => {
+  /** A three-pin run that loses its middle pin to a peer, the way `strand`
+   *  loses an end one: B's cascade cannot see a string it does not have. */
+  function stranded3(): { id: string; live: [string, string]; dead: string } {
+    const { item } = { item: createItems(a, [{ type: "note", x: 0, y: 0, w: 400, h: 100, withPin: false }])[0]!.itemId };
+    const p1 = createPin(a, { parent: item, lx: -150, ly: 0 });
+    const mid = createPin(a, { parent: item, lx: 0, ly: 0 });
+    const p3 = createPin(a, { parent: item, lx: 150, ly: 0 });
+    merge(a, b);
+    const id = createStringThrough(a, [{ pin: p1 }, { pin: mid }, { pin: p3 }])!;
+    deletePins(b, [mid]);
+    merge(a, b);
+    return { id, live: [p1, p3], dead: mid };
+  }
+
+  it("is on the work list even though the string is perfectly renderable", () => {
+    const { id } = stranded3();
+    // Not a violation, and not beyond repair — which is why nothing collected
+    // it before and why it needed its own list.
+    expect(unrepairableStrings(a)).toEqual([]);
+    expect(checkInvariants(a)).toEqual([]);
+    expect(compactableStrings(a)).toEqual([id]);
+  });
+
+  it("drops the node and keeps the string", () => {
+    const { id, live } = stranded3();
+    expect(compactStrings(a, [id])).toEqual({ collected: [], pruned: [id] });
+    expect(a.strings.has(id)).toBe(true);
+    expect(readString(id, a.strings.get(id) as YMap)!.nodes.map((n) => n.pin)).toEqual(live);
+    expect(compactableStrings(a)).toEqual([]);
+  });
+
+  /**
+   * The gap the survivors hang from is the one the renderer was already
+   * drawing, so the write moves nothing. `sim/ropes.ts` gives a spanning gap the
+   * slack of the node it *starts* at and merges nothing into it, and this has to
+   * agree exactly or compaction would be seen as a twitch.
+   */
+  it("leaves the surviving nodes' slack exactly alone", () => {
+    const { id } = stranded3();
+    const before = readString(id, a.strings.get(id) as YMap)!.nodes;
+    compactStrings(a, [id]);
+    const after = readString(id, a.strings.get(id) as YMap)!.nodes;
+    expect(after.map((n) => n.slackAfter)).toEqual([before[0]!.slackAfter, before[2]!.slackAfter]);
+  });
+
+  it("is idempotent, so two clients pruning at once converge", () => {
+    const { id, live } = stranded3();
+    expect(compactStrings(a, [id]).pruned).toEqual([id]);
+    expect(compactStrings(b, [id]).pruned).toEqual([id]);
+    merge(a, b);
+    for (const board of [a, b]) {
+      expect(readString(id, board.strings.get(id) as YMap)!.nodes.map((n) => n.pin)).toEqual(live);
+    }
+  });
+
+  /**
+   * A malformed node is not a dangling one. `readStringNodes` drops it, so its
+   * index is not the array's — pruning by an index off that list would take a
+   * live node out of somebody's string.
+   */
+  it("does not miscount past a node it cannot read", () => {
+    const { id, live } = stranded3();
+    const nodes = a.strings.get(id)!.get("nodes") as Y.Array<YMap>;
+    // A fourth node, first in the run, from a build that wrote no `pin`.
+    const alien = new Y.Map<unknown>();
+    a.doc.transact(() => {
+      nodes.insert(0, [alien as unknown as YMap]);
+      alien.set("nodeId", "n-alien");
+      alien.set("slackAfter", 0.2);
+    });
+
+    compactStrings(a, [id]);
+
+    const survivors = (nodes.toArray() as YMap[]).map((n) => n.get("pin"));
+    expect(survivors).toEqual([undefined, ...live]);
   });
 });
 
@@ -261,5 +349,72 @@ describe("Janitor", () => {
     const janitor = new Janitor(a);
     expect(run(janitor, [1], SETTLE_MS * 4)).toEqual([]);
     expect(janitor.pending).toBe(0);
+  });
+
+  /** A dead node inside a live string is on the same clock, for the same
+   *  reason: on a fresh connection every node on the board looks like one. */
+  it("prunes a dead node once it has stayed dead", () => {
+    const item = createItems(a, [{ type: "note", x: 0, y: 0, w: 400, h: 100, withPin: false }])[0]!.itemId;
+    const p1 = createPin(a, { parent: item, lx: -150, ly: 0 });
+    const mid = createPin(a, { parent: item, lx: 0, ly: 0 });
+    const p3 = createPin(a, { parent: item, lx: 150, ly: 0 });
+    merge(a, b);
+    const id = createStringThrough(a, [{ pin: p1 }, { pin: mid }, { pin: p3 }])!;
+    deletePins(b, [mid]);
+    merge(a, b);
+    const janitor = new Janitor(a);
+
+    expect(run(janitor, [1, 2], SETTLE_MS - CHECK_MS * 2)).toEqual([]);
+    expect(readString(id, a.strings.get(id) as YMap)!.nodes).toHaveLength(3);
+
+    expect(run(janitor, [1, 2], CHECK_MS * 3, SETTLE_MS - CHECK_MS)).toEqual([id]);
+    expect(readString(id, a.strings.get(id) as YMap)!.nodes.map((n) => n.pin)).toEqual([p1, p3]);
+  });
+});
+
+/**
+ * DATA-MODEL section 5.4's advisory lock, read for the first time on this board
+ * (Q-88). The distinction it has to keep is between waiting and enforcing: this
+ * *waits*, so a hint that is wrong costs a second of tidying and never a write
+ * that should have gone through.
+ */
+describe("a string somebody has hold of", () => {
+  it("is left alone while the claim stands, and swept the moment it goes", () => {
+    const { p1, p2 } = furnish();
+    const id = strand(p1, p2);
+    const janitor = new Janitor(a);
+    const held = (stringId: string): boolean => stringId === id;
+
+    // Ripe several times over, and untouched every time.
+    for (let t = 0; t <= SETTLE_MS * 3; t += CHECK_MS) {
+      expect(janitor.tick(t, [1], held)).toEqual([]);
+    }
+    expect(a.strings.has(id)).toBe(true);
+    // Still on the clock — it has been beyond repair continuously, and the
+    // claim says nothing about that.
+    expect(janitor.pending).toBe(1);
+
+    // They let go. No fresh settle period: the wait was courtesy, not doubt.
+    expect(janitor.tick(SETTLE_MS * 3 + CHECK_MS, [1])).toEqual([id]);
+    expect(a.strings.has(id)).toBe(false);
+  });
+
+  it("does not hold up the strings nobody is in", () => {
+    const { item, p1, p2 } = furnish();
+    const p3 = createPin(a, { parent: item, lx: -60, ly: 0 });
+    const p4 = createPin(a, { parent: item, lx: 60, ly: 0 });
+    merge(a, b);
+    const free = strand(p1, p2);
+    const claimed = strand(p3, p4);
+    const janitor = new Janitor(a);
+    const held = (id: string): boolean => id === claimed;
+
+    // Well past ripe, with the claim standing the whole time.
+    const swept: string[] = [];
+    for (let t = 0; t <= SETTLE_MS * 2; t += CHECK_MS) {
+      swept.push(...janitor.tick(t, [1], held));
+    }
+    expect(swept).toEqual([free]);
+    expect(a.strings.has(claimed)).toBe(true);
   });
 });

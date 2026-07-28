@@ -67,6 +67,7 @@ import {
   checkConverged,
   checkInvariants,
   describe as explain,
+  compactableStrings,
   unrepairableStrings,
 } from "@/crdt/invariants";
 import { CHECK_MS, Janitor, SETTLE_MS } from "@/crdt/janitor";
@@ -679,6 +680,22 @@ function fuzz(seed: number, rounds: number, opsPerRound: number): Run {
       clock += CHECK_MS;
 
       const context = `seed ${seed}, round ${round} of ${rounds}\n${log.slice(-40).join("\n")}`;
+
+      // Nothing decayed survives a pass. Invariant 3 below covers the strings
+      // that draw nothing; this covers the other half, which is not a violation
+      // and so has nothing below to catch it — a live string carrying a node
+      // that resolves to nothing (invariant 4 permits it, `sim/ropes.ts` steps
+      // over it, and before T-77 nothing ever removed it).
+      for (const board of [a, b]) {
+        const left = compactableStrings(board);
+        if (left.length > 0) {
+          const side = board === a ? "A" : "B";
+          throw new Error(
+            `${side} still has ${left.length} string(s) the janitor should have compacted: ` +
+              `${left.join(", ")}\n\n${context}`,
+          );
+        }
+      }
       const broken = [
         ...checkInvariants(a).map((v) => ({ ...v, path: `A:${v.path}` })),
         ...checkInvariants(b).map((v) => ({ ...v, path: `B:${v.path}` })),

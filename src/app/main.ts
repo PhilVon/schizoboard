@@ -1133,6 +1133,21 @@ async function boot(): Promise<void> {
   const janitor = new Janitor(board);
   /** How many records it has collected this session, for the dev HUD. */
   let swept = 0;
+  /**
+   * Whether a collaborator has hold of a segment of this string — DATA-MODEL
+   * section 5.4's advisory lock, which the janitor waits on rather than obeys.
+   *
+   * A walk of everybody's claims, which is a handful of peers holding almost
+   * always nothing, and it is asked only about a string that is already ripe.
+   * The lock lives in `render/presence/peers.ts` because it is drawn; the
+   * janitor may not reach for it, so it is handed over.
+   */
+  const heldByAPeer = (stringId: string): boolean => {
+    for (const peer of peers.peers()) {
+      for (const lock of peer.locks) if (lock.string === stringId) return true;
+    }
+    return false;
+  };
 
   // The address bar, or the invite that launched this window — see
   // `openingPlan`. Cold arrivals cost nothing here: there is no provider yet, so
@@ -1902,6 +1917,7 @@ async function boot(): Promise<void> {
         provider === null
           ? [board.doc.clientID]
           : [board.doc.clientID, ...provider.awareness.getStates().keys()],
+        heldByAPeer,
       ).length;
     }
 

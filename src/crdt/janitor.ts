@@ -18,16 +18,26 @@
  *
  * ## What it collects, and why nothing else can
  *
- * Strings that are well-formed and have fewer than two nodes resolving to a pin
- * — `crdt/invariants.ts`'s `unrepairableStrings`. T-76's fuzz harness showed why
- * no cascade will ever get to them: a guard evaluated against one document
- * cannot constrain the union of two. Two peers each reduce a string to the legal
- * minimum, both are right, and the merge leaves it below. Or a string is tied to
- * a pin somebody else is deleting, and the pin cascade heals every string it can
- * see — which cannot include one that does not exist on that peer yet.
+ * Two shapes of the same decay, `crdt/invariants.ts`'s `compactableStrings`:
+ *
+ *   - **A string with fewer than two nodes resolving to a pin.** Nothing draws
+ *     it at all, and it is deleted.
+ *   - **A live string carrying a node that resolves to nothing.** It draws
+ *     perfectly well — the run steps over the dead node and closes up around it
+ *     (`sim/ropes.ts`) — and the dead reference is dropped.
+ *
+ * T-76's fuzz harness showed why no cascade will ever get to either: a guard
+ * evaluated against one document cannot constrain the union of two. Two peers
+ * each reduce a string to the legal minimum, both are right, and the merge
+ * leaves it below. Or a string is tied to a pin somebody else is deleting, and
+ * the pin cascade heals every string it can see — which cannot include one that
+ * does not exist on that peer yet.
  *
  * Both leave a record that is invisible (nothing draws it) and permanent
- * (nothing removes it). Collecting them is this module's only job.
+ * (nothing removes it). The second kind is the one that *accumulates*: it costs
+ * a pin deletion that raced a concurrent edit, and the string goes on looking
+ * and behaving exactly right while carrying the reference for the life of the
+ * board.
  *
  * ## The delay is not politeness
  *
@@ -38,29 +48,33 @@
  * pins it names. For that window **every string on the board is unrepairable**.
  * A janitor that acted on one observation would empty a board on connect.
  *
- * So a string is collected only if it has been beyond repair *continuously*
- * across [`SETTLE_MS`], re-examined every [`CHECK_MS`]. Anything that flickers —
- * which is exactly what an out-of-order arrival looks like — is dropped from the
- * list and starts again from nothing if it ever comes back.
+ * So a string is compacted only if it has been decayed *continuously* across
+ * [`SETTLE_MS`], re-examined every [`CHECK_MS`]. Anything that flickers — which
+ * is exactly what an out-of-order arrival looks like — is dropped from the list
+ * and starts again from nothing if it ever comes back.
  *
  * ## The one thing it cannot protect
  *
  * Undo restores a deleted pin, and a pin coming back can make a collected string
  * repairable again — but the collection happened under `Origin.JANITOR`, which
  * `TRACKED_ORIGINS` deliberately excludes, so undo will not bring the string
- * with it. The pin returns and the string does not.
+ * with it. The pin returns and the string does not. The same is true one node at
+ * a time: undo the deletion and the pin comes back with no string through it,
+ * because the node that named it has been dropped.
  *
  * That is inherent to section 8.1 rather than a bug in this file: a maintenance
  * write that undo *did* track is exactly the "makes undo incoherent" the section
  * rules out, and it would put a compaction nobody performed into a user's undo
- * stack. What bounds the damage is the delay — a string has to have been
+ * stack. What bounds the damage is the delay — the record has to have been
  * invisible for [`SETTLE_MS`] before it is eligible at all, so what is lost is
- * never something anyone could still see.
+ * never something anyone could still see. A pruned node in particular drew
+ * nothing before and the string draws exactly the same thing after; the loss is
+ * entirely in a future the user has [`SETTLE_MS`] to ask for.
  */
 
 import type { BoardDoc } from "@/crdt/doc";
-import { unrepairableStrings } from "@/crdt/invariants";
-import { collectStrings } from "@/crdt/ops/janitor";
+import { compactableStrings } from "@/crdt/invariants";
+import { compactStrings } from "@/crdt/ops/janitor";
 
 /**
  * How long a string must be beyond repair, continuously, before it is collected.
@@ -78,7 +92,7 @@ export const SETTLE_MS = 5000;
 /**
  * How often the document is examined at all.
  *
- * `unrepairableStrings` reads every string on the board, which is tens to
+ * `compactableStrings` reads every string on the board, which is tens to
  * hundreds of `readString` calls — nothing, once a second, and not something to
  * do in a frame. The tick is driven from the frame loop because that is the
  * clock the application already has, so this is the rate limit that keeps it off
@@ -90,6 +104,22 @@ export interface JanitorOptions {
   settleMs?: number;
   checkMs?: number;
 }
+
+/**
+ * Whether a peer has hold of this string right now — DATA-MODEL section 5.4's
+ * advisory lock, as `render/presence/peers.ts` reads it.
+ *
+ * A predicate rather than a set, and asked rather than given, because it is
+ * consulted only for a string that is *ripe*, which is almost never. A set
+ * built every frame to answer a question posed once a second at most, about
+ * nothing, would be the whole cost of this feature.
+ *
+ * The lock arrives here as a parameter for the same reason `present` does: who
+ * is holding what is an awareness question and awareness is not the document.
+ */
+export type Held = (stringId: string) => boolean;
+
+const NOBODY: Held = () => false;
 
 /**
  * Whether this client is the one that compacts.
@@ -146,9 +176,23 @@ export class Janitor {
    *
    * `present` is every client id on the board including this one — from
    * `Awareness.getStates()` plus our own, which is the only place that answer
-   * exists. Returns the strings actually collected, which is almost always none.
+   * exists. Returns the strings it changed, deleted or merely tidied alike,
+   * which is almost always none.
+   *
+   * ## Why a held string is left alone
+   *
+   * `held` is section 5.4's advisory lock, and reading one at all wanted
+   * deciding rather than assuming: a claim is explicitly a hint that nothing may
+   * treat as correctness, and code that skips work because of one is treating it
+   * as something. The line is what happens when the hint is wrong. A split that
+   * consulted a lock and refused would be enforcing it — two people splitting
+   * the same segment is a case 5.4 accepts and must go on accepting. This
+   * refuses nothing: it *waits*, and a maintenance pass with a five second
+   * settle period behind it can afford to wait a tick. A stale lock costs a
+   * second of tidying; a missing one costs nothing at all, because the string
+   * stays on the clock either way and the transaction re-checks regardless.
    */
-  tick(now: number, present: Iterable<number>): readonly string[] {
+  tick(now: number, present: Iterable<number>, held: Held = NOBODY): readonly string[] {
     if (this.lastCheck !== null && now - this.lastCheck < this.checkMs) return EMPTY;
     this.lastCheck = now;
 
@@ -162,13 +206,13 @@ export class Janitor {
       return EMPTY;
     }
 
-    const beyondRepair = unrepairableStrings(this.board);
-    if (beyondRepair.length === 0) {
+    const decayed = compactableStrings(this.board);
+    if (decayed.length === 0) {
       this.since.clear();
       return EMPTY;
     }
 
-    const current = new Set(beyondRepair);
+    const current = new Set(decayed);
     for (const id of this.since.keys()) if (!current.has(id)) this.since.delete(id);
 
     const ripe: string[] = [];
@@ -178,16 +222,22 @@ export class Janitor {
         this.since.set(id, now);
         continue;
       }
-      if (now - first >= this.settleMs) ripe.push(id);
+      if (now - first < this.settleMs) continue;
+      // Ripe, but somebody is in it. Left on the clock rather than dropped from
+      // it: it has been decayed continuously all the same, and the hint says
+      // nothing about that — only that this second is a discourteous one.
+      if (held(id)) continue;
+      ripe.push(id);
     }
     if (ripe.length === 0) return EMPTY;
 
     // The op re-checks each one inside its transaction, so a string saved
     // between here and there survives — and comes back on the next tick's
     // reading as repaired, which drops it from the clock.
-    const collected = collectStrings(this.board, ripe);
-    for (const id of collected) this.since.delete(id);
-    return collected;
+    const swept = compactStrings(this.board, ripe);
+    const touched = [...swept.collected, ...swept.pruned];
+    for (const id of touched) this.since.delete(id);
+    return touched;
   }
 }
 

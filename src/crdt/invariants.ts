@@ -322,6 +322,44 @@ export function unrepairableStrings(board: BoardDoc): string[] {
   return out;
 }
 
+/**
+ * Everything the janitor has work to do on: the strings above, *and* the ones
+ * that still draw perfectly well while carrying a node that resolves to
+ * nothing.
+ *
+ * The second kind is invariant 4's, and it is deliberately not a violation —
+ * "a dangling node is *allowed*", because section 8.1 has the renderer step
+ * over it and the run close up around it (`sim/ropes.ts`). So nothing is wrong
+ * with such a string and nothing will ever remove the node either: it is
+ * invisible and it is permanent, and it arrives once per pin deletion that
+ * raced a concurrent edit to the same run. A board that is edited by two people
+ * for long enough accretes them.
+ *
+ * Which is exactly what a maintenance pass under an untracked origin is for,
+ * and why this is one list rather than two: both kinds want the same settle
+ * period, for the same reason. On a fresh connection a peer receives strings
+ * before the pins they name, so for a moment *every* node on the board dangles
+ * and every string looks beyond repair. Neither can be acted on until it has
+ * held still.
+ *
+ * What the janitor then does with each differs — delete the string, or drop the
+ * node — and that decision is made inside the transaction rather than here, so
+ * that a string saved in between is judged on the state that is actually
+ * written to. See `crdt/ops/janitor.ts`.
+ */
+export function compactableStrings(board: BoardDoc): string[] {
+  const pinIds = new Set(board.pins.keys());
+  const out: string[] = [];
+  for (const [id, map] of board.strings.entries()) {
+    const read = readString(id, map as YMap);
+    if (read === null) continue;
+    if (!isRenderableString(read.nodes, pinIds) || read.nodes.some((node) => !pinIds.has(node.pin))) {
+      out.push(id);
+    }
+  }
+  return out;
+}
+
 // --- 5 ---------------------------------------------------------------------
 
 /**
