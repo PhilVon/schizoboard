@@ -230,12 +230,24 @@ const DATA_DIR_ENV: &str = "SCHIZOBOARD_DATA_DIR";
 /// Split from the setup hook so the choice can be tested, and taking the
 /// default by value so the test never has to build an `AppHandle`.
 fn data_root(default: PathBuf) -> PathBuf {
+    data_dir_override().unwrap_or(default)
+}
+
+/// Where this process was told to keep its board, if it was told.
+///
+/// Two callers now, and they must agree: `data_root` puts the board there, and
+/// `run` reads the *presence* of an override as "this process is deliberately a
+/// separate peer" and skips the single-instance plugin for it. If those two ever
+/// disagreed about what counts as being set, an instance would get its own board
+/// and then be killed for having one.
+///
+/// An empty value is somebody exporting the variable without setting it, which
+/// is much more likely to be a script bug than a request to keep the board in
+/// the current directory.
+fn data_dir_override() -> Option<PathBuf> {
     match std::env::var_os(DATA_DIR_ENV) {
-        // An empty value is somebody exporting the variable without setting it,
-        // which is much more likely to be a script bug than a request to keep
-        // the board in the current directory.
-        Some(path) if !path.is_empty() => PathBuf::from(path),
-        _ => default,
+        Some(path) if !path.is_empty() => Some(PathBuf::from(path)),
+        _ => None,
     }
 }
 
@@ -816,28 +828,53 @@ async fn doc_compact(app: AppHandle, request: tauri::ipc::Request<'_>) -> Result
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    tauri::Builder::default()
-        // T-163, and it must be first. `single-instance` decides whether this
-        // process is going to live at all, and everything registered before it
-        // is set up in a process that is about to hand over its arguments and
-        // exit. The callback runs in the *original* instance, which is the one
-        // with the board open — so this is the warm path: an invite clicked
-        // while Schizoboard is already running.
-        //
-        // `argv` rather than a parsed link, because on Windows and Linux that is
-        // genuinely all the operating system gives us: it re-launched the
-        // application with the URL as a command-line argument. The
-        // `deep-link` feature on this plugin is what turns that argument back
-        // into an `on_open_url` event, which is why the two are one dependency
-        // decision and not two.
-        .plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
+    let mut builder = tauri::Builder::default();
+
+    // T-163, and it must be first. `single-instance` decides whether this
+    // process is going to live at all, and everything registered before it is
+    // set up in a process that is about to hand over its arguments and exit. The
+    // callback runs in the *original* instance, which is the one with the board
+    // open — so this is the warm path: an invite clicked while Schizoboard is
+    // already running.
+    //
+    // `argv` rather than a parsed link, because on Windows and Linux that is
+    // genuinely all the operating system gives us: it re-launched the
+    // application with the URL as a command-line argument. The `deep-link`
+    // feature on this plugin is what turns that argument back into an
+    // `on_open_url` event, which is why the two are one dependency decision and
+    // not two.
+    //
+    // ## Unless this process was told to keep its board somewhere else
+    //
+    // Found by launching two peers a minute after this plugin landed: the second
+    // one exited instantly, and the whole two-instance arrangement T-70 built —
+    // `SCHIZOBOARD_DATA_DIR`, a devtools port each, the multiplayer half of
+    // `.claude/skills/verify/SKILL.md` — stopped working. Two features that were
+    // each right and were wrong together, which is not something the test suite
+    // can see: neither of them is reachable from a unit test.
+    //
+    // The override is exactly the right thing to key on, because it already
+    // means what is needed here. `DATA_DIR_ENV` exists for one reason — "two
+    // peers on one machine need two boards" (Q-73) — so a process that has been
+    // given one has *said* it is a separate peer. Single-instancing it would be
+    // taking that back.
+    //
+    // What it costs: a `schizo://` click while such an instance is running goes
+    // to whichever peer is the singleton rather than to it. That is the correct
+    // trade — the override is a development affordance, an installed
+    // Schizoboard never sets it, and every user-facing path keeps the plugin.
+    if data_dir_override().is_none() {
+        builder = builder.plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
             // Whatever the user just clicked, they meant to look at. A window
             // that stays behind the browser they clicked it in reads as nothing
             // having happened.
             if let Some(window) = app.get_webview_window("main") {
                 let _ = window.set_focus();
             }
-        }))
+        }));
+    }
+
+    builder
         .plugin(tauri_plugin_deep_link::init())
         .plugin(tauri_plugin_opener::init())
         // T-94, and Rust-side only. `capabilities/default.json` grants the
@@ -882,6 +919,28 @@ pub fn run() {
             // same code and only `PendingInvite` tells them apart.
             {
                 use tauri_plugin_deep_link::DeepLinkExt;
+
+                // The link that launched this process, if one did.
+                //
+                // Separate from `on_open_url` below, and it has to be: on
+                // Windows and Linux a cold click does not arrive as an event at
+                // all — the operating system re-launches the binary with the URL
+                // as `argv[1]`, and `get_current` is what reads it back.
+                // `on_open_url` fires for the *handoff* (a link clicked while an
+                // instance is already up) and on macOS, where the system really
+                // does deliver an event.
+                //
+                // Found by driving it, not by reading: with only the handler
+                // registered, a peer launched with an invite on its command line
+                // came up on its own board and never joined, which looks exactly
+                // like mDNS failing to find anybody. Both tests passed
+                // throughout — neither of these paths is reachable from one.
+                if let Ok(Some(urls)) = app.deep_link().get_current() {
+                    if let Some(url) = urls.last() {
+                        invite_arrived(app.handle(), url.to_string());
+                    }
+                }
+
                 let handle = app.handle().clone();
                 app.deep_link().on_open_url(move |event| {
                     // One link, even when several arrive: the last is where the
@@ -956,6 +1015,9 @@ mod tests {
 
         std::env::remove_var(DATA_DIR_ENV);
         assert_eq!(data_root(usual.clone()), usual);
+        // The same answer drives whether this process is single-instanced
+        // (T-166), so the two must never disagree about what "set" means.
+        assert!(data_dir_override().is_none());
 
         // An empty value is a script exporting the variable without setting it,
         // not a request to keep the board in the current directory.
