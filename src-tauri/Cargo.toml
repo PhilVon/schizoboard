@@ -51,6 +51,29 @@ kamadak-exif = "0.6"
 # thread — the alternative is a second async HTTP stack in the binary.
 ureq = "3"
 
+# --- the embedded relay (T-69) ----------------------------------------------
+# The relay holds a real document, because a y-websocket server has to answer a
+# state vector with the difference — and because ARCHITECTURE section 5.1 wants
+# "the identical binary on a small server as an always-on, always-seeding
+# peer", which cannot seed what it does not hold.
+#
+# This does not reopen the "start frontend-driven" note in section 4: `yrs`
+# gives us the CRDT, not the schema. The relay never looks inside a document —
+# no items, no pins, no strings — so there are not two implementations of
+# anything that has to agree. Headless compaction of *meaning* would be, and
+# still is not being done here.
+yrs = "0.27"
+# The WebSocket half. Tungstenite is the protocol; this is its tokio binding.
+tokio-tungstenite = "0.30"
+# Tauri already runs a tokio reactor, but the relay asks for more of it than
+# Tauri's own feature set enables, so it is declared rather than borrowed.
+#
+# No `macros`. The feature wants a `tokio-macros` that is not on the index at
+# the version tokio is locked to, and all it buys is `#[tokio::main]` — which
+# a library that is handed a runtime has no use for anyway.
+tokio = { version = "1", features = ["rt-multi-thread", "net", "sync", "time"] }
+futures-util = { version = "0.3.33", default-features = false, features = ["sink", "std"] }
+
 # --- the clipboard's SourceURL (T-97) ---------------------------------------
 # CF_HTML carries the page a fragment was copied from, in a header the webview
 # strips before the `paste` event ever sees it. Reading it needs the raw Win32

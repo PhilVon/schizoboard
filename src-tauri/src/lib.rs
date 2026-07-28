@@ -22,6 +22,7 @@ mod assets;
 mod clipboard;
 mod docstore;
 mod protocol;
+pub mod sync;
 
 use std::collections::HashSet;
 use std::path::PathBuf;
