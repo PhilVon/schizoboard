@@ -12,6 +12,7 @@ import { describe, expect, it } from "vitest";
 import { DEFAULT_INK_SIZE, type InkSample, type WetStroke } from "@/lib/ink";
 import { INK_STEPS_PER_UNIT, PRESSURE_STEPS } from "@/lib/strokepack";
 import { PeerInk, readWet } from "@/render/presence/wetpeer";
+import { Scene } from "@/state/scene";
 import { WET_WINDOW, WetWire } from "@/state/wetwire";
 
 /** A readable wire run, for the tests that are about one field being wrong. */
@@ -305,6 +306,12 @@ describe("what it holds on to", () => {
     expect(held.length).toBeLessThanOrEqual(16);
     // The oldest go: their records are the longest overdue anyway.
     expect(held.at(-1)).toBe("r39");
+
+    // And they stay gone. An eviction that only deleted would be undone by the
+    // next message naming the same run, and the cap would be a per-message
+    // churn rather than a ceiling on what a stranger can make this client hold.
+    ink.splice(readWet([wire({ id: "r0" })]));
+    expect([...ink.ids()]).not.toContain("r0");
   });
 
   it("bounds a single run, and keeps the numbering true while it does", () => {
@@ -334,6 +341,237 @@ describe("what it holds on to", () => {
     // One point is a press that has not moved. `render/ink/wet.ts` declines it
     // at either end of the wire, and `any` has to agree with `drawable`.
     expect([...ink.drawable()]).toHaveLength(0);
+    expect(ink.any).toBe(false);
+  });
+});
+
+describe("the handoff — section 9.2", () => {
+  /** The document holds nothing at all, which is every frame of a live stroke. */
+  const nothing = (): boolean => false;
+  /** The document holds these, and their canvases are showing them. */
+  const landed =
+    (...ids: string[]) =>
+    (id: string): boolean =>
+      ids.includes(id);
+
+  it("keeps the ghost up while the pen is down and the document is empty", () => {
+    const ink = new PeerInk();
+    ink.splice(readWet([wire()]));
+    // A whole second of frames. Nothing here is a timer: the pen is down, and a
+    // stroke being drawn has no record to wait for yet.
+    for (let i = 0; i < 60; i += 1) expect(ink.retire(16, nothing)).toBe(false);
+    expect([...ink.drawable()]).toHaveLength(1);
+  });
+
+  it("retires the ghost the frame the record reaches the canvas", () => {
+    const ink = new PeerInk();
+    ink.splice(readWet([wire()]));
+    // The document has it, but that surface's canvas has not rastered it —
+    // `awaitingInk` is still true, so the ghost is the only thing holding the
+    // mark up and going now would open a hole.
+    expect(ink.retire(16, nothing)).toBe(false);
+    expect(ink.retire(16, landed("run-1"))).toBe(true);
+    expect([...ink.drawable()]).toHaveLength(0);
+  });
+
+  it("does not start the grace on a run that only fell off the wire", () => {
+    const ink = new PeerInk();
+    ink.splice(readWet([wire({ id: "a" }), wire({ id: "b" })]));
+    // `WET_MAX_RUNS` caps the payload, so a gesture across enough surfaces drops
+    // its oldest run while the hand is still moving — and the whole gesture
+    // commits in one go at pen-up, so that record is seconds away. The message
+    // is not empty, so no pen came up and no clock starts.
+    for (let i = 0; i < 60; i += 1) {
+      ink.splice(readWet([wire({ id: "b" })]));
+      ink.retire(16, nothing);
+    }
+    expect([...ink.ids()]).toEqual(["a", "b"]);
+  });
+
+  it("retires a run that never reaches the document, once the pen is up", () => {
+    const ink = new PeerInk();
+    ink.splice(readWet([wire()]));
+    // The pen came up and this client's copy is all that is left of the mark:
+    // the ink op refused it, or the paper left the board mid-stroke.
+    ink.splice(readWet([]));
+    // Right up to the line, and over it on the next millisecond — the grace is
+    // 250 ms and not 250 ms plus whatever a frame happened to be.
+    expect(ink.retire(249, nothing)).toBe(false);
+    expect([...ink.drawable()]).toHaveLength(1);
+    expect(ink.retire(1, nothing)).toBe(true);
+    expect([...ink.drawable()]).toHaveLength(0);
+  });
+
+  it("cannot have its grace put back by a state from before the release", () => {
+    const ink = new PeerInk();
+    ink.splice(readWet([wire()]));
+    ink.splice(readWet([]));
+    // Awareness re-delivers whatever it holds on a resync, and what it holds can
+    // be older than what has already been seen. A clock that restarted here
+    // would leave a stranger's stroke on the board for as long as they kept
+    // reconnecting.
+    for (let i = 0; i < 5; i += 1) {
+      ink.splice(readWet([wire()]));
+      ink.retire(50, nothing);
+    }
+    expect([...ink.drawable()]).toHaveLength(0);
+
+    // And the other half of the same clause: a peer sitting with the pen up
+    // republishes an empty field, and each of those has to leave the clock
+    // where it is rather than setting it back to nought.
+    const idle = new PeerInk();
+    idle.splice(readWet([wire()]));
+    for (let i = 0; i < 4; i += 1) {
+      idle.splice(readWet([]));
+      expect(idle.retire(50, nothing)).toBe(false);
+    }
+    // Two hundred milliseconds have passed on a ghost whose pen came up, and
+    // fifty more are all it has left — not another two hundred and fifty.
+    expect(idle.retire(49, nothing)).toBe(false);
+    expect(idle.retire(1, nothing)).toBe(true);
+    expect([...idle.drawable()]).toHaveLength(0);
+  });
+
+  it("cannot be resurrected by a message naming a retired run", () => {
+    const ink = new PeerInk();
+    ink.splice(readWet([wire()]));
+    ink.retire(16, landed("run-1"));
+    // The ordinary case, not an odd one: the sender goes on publishing a run it
+    // has committed until its *own* overlay copy retires, so the very next
+    // message still names it. Putting it back would draw the ghost on top of
+    // the record that replaced it — the frame section 9.2 exists to prevent.
+    expect(ink.splice(readWet([wire()]))).toBe(false);
+    expect([...ink.ids()]).toEqual([]);
+    expect(ink.any).toBe(false);
+  });
+
+  it("is correct with the record first, and with the awareness clear first", () => {
+    // Both orderings, because that is the whole claim: "no flash, no
+    // double-draw" has to hold whichever channel wins the race.
+    const first = new PeerInk();
+    first.splice(readWet([wire()]));
+    // Record first. The ghost is up until it rasters, and goes on that frame —
+    // and the awareness clear that follows finds nothing to do.
+    expect(first.retire(16, landed("run-1"))).toBe(true);
+    expect(first.splice(readWet([]))).toBe(false);
+    expect(first.any).toBe(false);
+
+    const second = new PeerInk();
+    second.splice(readWet([wire()]));
+    // Clear first. The grace is running, but the mark stays on the screen for
+    // every frame of it — this is the ordering that would flash.
+    second.splice(readWet([]));
+    for (let i = 0; i < 10; i += 1) {
+      expect(second.retire(16, nothing)).toBe(false);
+      expect(second.any).toBe(true);
+    }
+    expect(second.retire(16, landed("run-1"))).toBe(true);
+    expect(second.any).toBe(false);
+  });
+
+  it("does not call a run nobody could see going a change", () => {
+    const ink = new PeerInk();
+    // One point is a press that has not moved, and was never drawn. Retiring it
+    // must not bump the store's version, because the version is what restrokes
+    // a full-viewport canvas.
+    ink.splice(readWet([wire({ pts: [0, 0, 128] })]));
+    ink.splice(readWet([]));
+    expect(ink.retire(500, nothing)).toBe(false);
+    expect([...ink.ids()]).toEqual([]);
+  });
+
+  it("costs nothing on a peer holding no pen, which is nearly all of them", () => {
+    expect(new PeerInk().retire(16, nothing)).toBe(false);
+  });
+
+  it("does not remember every id a peer ever drew", () => {
+    const ink = new PeerInk();
+    // A session is thousands of strokes long, and the set that stops a ghost
+    // coming back only has to outlive the messages still describing it. An
+    // uncapped one would be the longest-lived thing this client holds about a
+    // stranger — so far enough back, a run may be taken at face value again.
+    for (let i = 0; i < 200; i += 1) {
+      ink.splice(readWet([wire({ id: `r${i}` })]));
+      ink.retire(16, () => true);
+    }
+    expect([...ink.ids()]).toEqual([]);
+    ink.splice(readWet([wire({ id: "r0" })]));
+    expect([...ink.ids()]).toEqual(["r0"]);
+  });
+
+  /**
+   * A real `WetWire` publishing into a real `PeerInk`, handed over against a
+   * real `Scene` — the same three objects `app/main.ts` wires together, and the
+   * predicate below is that file's `inkLanded` written out.
+   *
+   * The one stand-in is the layer's "has the canvas caught up" set, because a
+   * `DomItemLayer` wants a document to mount into; what it answers with is an
+   * `inkPending` set exactly like this one, and `DomItemLayer.awaitingInk` is
+   * its own tests' subject.
+   */
+  it("finds the record where the document filed it, not under where the ghost sits", () => {
+    const sender = new WetWire();
+    const scene = new Scene();
+    const ink = new PeerInk();
+    /** The surfaces whose canvases are behind their strokes. */
+    const behind = new Set<string>();
+    // `app/main.ts`, four lines of it.
+    const inkLanded = (id: string): boolean => {
+      const surface = scene.strokeSurface(id);
+      if (surface === null) return false;
+      return !behind.has(surface.kind === "item" ? surface.id : surface.key);
+    };
+
+    // One long mark on the bare cork, a hundred board units to the sample —
+    // well past the six-pixel decimation, so every sample is committed and the
+    // sender's sequence is 129 points long.
+    const samples: InkSample[] = [];
+    for (let i = 0; i <= 128; i += 1) samples.push({ x: i * 100, y: 0, pressure: 0.5 });
+    sender.update([run("mark", samples)], 1);
+
+    // A peer that arrived in the middle of it. The window is 64 points, so what
+    // is held is the last half of the mark and nothing before it.
+    ink.splice(readWet(sender.payload()));
+    const held = xs(ink);
+    expect(held).toEqual([...Array(64)].map((_, i) => 6500 + i * 100));
+
+    // Which is the whole point of this test. A board stroke is filed by the
+    // bounding-box centre of *all* its points — 6400, in tile 3 — and the piece
+    // this client is holding has its own centre at 9650, in tile 4. Any
+    // predicate that worked the tile out from the ghost would look in the wrong
+    // one forever, and the ghost would sit on the board until its grace expired
+    // and then blink out over a mark that had been there all along.
+    const filed = "3,0";
+    expect(Math.floor(9650 / 2048)).toBe(4);
+    scene.putBoardStrokes(filed, [
+      {
+        id: "mark",
+        tool: "marker",
+        color: "#1f1b17",
+        size: DEFAULT_INK_SIZE,
+        opacity: 1,
+        seed: 1,
+        z: "a0",
+        bbox: [0, 0, 12800, 0],
+        samples,
+      },
+    ]);
+
+    // The record is in the document but that tile's canvas has not been
+    // repainted yet: the ghost is still the only thing holding the mark up.
+    behind.add(filed);
+    expect(ink.retire(16, inkLanded)).toBe(false);
+    expect(ink.any).toBe(true);
+
+    // And the frame the raster lands.
+    behind.delete(filed);
+    expect(ink.retire(16, inkLanded)).toBe(true);
+    expect(ink.any).toBe(false);
+
+    // The sender is still publishing it — its own overlay copy has not retired
+    // yet — and that must not put the ghost back over the record.
+    sender.update([run("mark", samples)], 1);
+    expect(ink.splice(readWet(sender.payload()))).toBe(false);
     expect(ink.any).toBe(false);
   });
 });

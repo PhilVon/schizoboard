@@ -30,7 +30,7 @@
  * hand. If that ever stops being true the change is this file and nothing else.
  */
 
-import type { InkSample } from "@/lib/ink";
+import type { InkSample, InkSurface } from "@/lib/ink";
 import { rotateOut, type Point } from "@/lib/rotate";
 
 const INITIAL_CAPACITY = 256;
@@ -328,6 +328,32 @@ export class Scene {
   private readonly boardInk = new Map<string, BoardInkTile>();
 
   /**
+   * Which surface each stroke is filed on — the reverse of the two maps above.
+   *
+   * Derived, never authoritative, and maintained by `putStrokes`,
+   * `putBoardStrokes` and `removeItem` the way `byParent` is maintained by
+   * `putPin`/`removePin`. Every one of those already walks the list it is
+   * replacing, so the index costs a map write per stroke on an edit that was
+   * already O(strokes) — and nothing per frame.
+   *
+   * It exists for one question, and the question cannot be answered any other
+   * way: **"does this board hold the stroke a peer is drawing?"** — section
+   * 9.2's handoff, asked of a run id that arrived over awareness. For a run
+   * glued to an item the caller could walk `strokesOf` instead, but for one on
+   * the bare cork it could not: a board stroke is filed by the bounding-box
+   * centre of *all* its points (DATA-MODEL section 2), and a receiver holds a
+   * possibly-shorter piece of the mark (`render/presence/wetpeer.ts`), so the
+   * tile it would compute is not reliably the tile the sender filed it under.
+   * The alternative is a walk of every stroke on the board, once a frame, per
+   * ghost.
+   *
+   * One [`InkSurface`] object per surface per put, shared by all its strokes:
+   * the answer is about the surface, not about the stroke, and a fresh object
+   * each would allocate per stroke on every ink edit.
+   */
+  private readonly strokeAt = new Map<string, InkSurface>();
+
+  /**
    * The reverse of `PinNode.parent`: which pins hold each item.
    *
    * Derived, never authoritative. `pin.parent` is the only source of truth
@@ -506,6 +532,7 @@ export class Scene {
     // inside the item's map and cannot outlive it. Nothing has to remember the
     // strokes for undo either: an item that comes back brings its ink with it
     // through the observer, in the same entry.
+    this.unfile(this.strokes.get(id));
     this.strokes.delete(id);
     this.slots.delete(id);
     this.ids[slot] = null;
@@ -545,12 +572,18 @@ export class Scene {
    * painting in the document's own order.
    */
   putStrokes(itemId: string, strokes: readonly SceneStroke[]): void {
+    // Before the replace, and of the *old* list: an erase is a shorter list
+    // arriving, and the ids it dropped are only nameable from what is still
+    // here. Filing the new one afterwards puts back every id that survived.
+    this.unfile(this.strokes.get(itemId));
     if (strokes.length === 0) {
       this.strokes.delete(itemId);
       return;
     }
     const sorted = [...strokes].sort(compareStrokes);
     this.strokes.set(itemId, sorted);
+    const surface: InkSurface = { kind: "item", id: itemId };
+    for (const stroke of sorted) this.strokeAt.set(stroke.id, surface);
   }
 
   /**
@@ -580,6 +613,7 @@ export class Scene {
    * `Infinity` and nothing to draw.
    */
   putBoardStrokes(key: string, strokes: readonly SceneStroke[]): void {
+    this.unfile(this.boardInk.get(key)?.strokes);
     if (strokes.length === 0) {
       this.boardInk.delete(key);
       return;
@@ -595,11 +629,35 @@ export class Scene {
       if (x1 > maxX) maxX = x1;
       if (y1 > maxY) maxY = y1;
     }
-    this.boardInk.set(key, {
-      key,
-      strokes: [...strokes].sort(compareStrokes),
-      bbox: [minX, minY, maxX, maxY],
-    });
+    const sorted = [...strokes].sort(compareStrokes);
+    this.boardInk.set(key, { key, strokes: sorted, bbox: [minX, minY, maxX, maxY] });
+    const surface: InkSurface = { kind: "tile", key };
+    for (const stroke of sorted) this.strokeAt.set(stroke.id, surface);
+  }
+
+  /** Take a replaced list out of [`strokeAt`]. Undefined for a surface that had
+   *  no ink, which is the common case on the first stroke drawn anywhere. */
+  private unfile(strokes: readonly SceneStroke[] | undefined): void {
+    if (strokes === undefined) return;
+    for (const stroke of strokes) this.strokeAt.delete(stroke.id);
+  }
+
+  /**
+   * The surface the document has this stroke on, or null if it has not got it.
+   *
+   * The document's half of DATA-MODEL section 9.2's handoff: a peer's wet run
+   * carries the id the record will be filed under (minted at pen-down, T-167),
+   * and this is how a client asks whether that record has arrived. The surface
+   * rather than a bare yes/no, because the other half of the same handoff is
+   * "and has that surface's canvas rastered it", which is a question for
+   * whichever layer owns it.
+   *
+   * Null for a stroke on an item that has since been deleted — the ink went
+   * with the item (see [`removeItem`]), which is the document's answer and not
+   * an omission here.
+   */
+  strokeSurface(id: string): InkSurface | null {
+    return this.strokeAt.get(id) ?? null;
   }
 
   /** One tile, or undefined for a cell nobody has drawn in — which is almost
@@ -978,6 +1036,7 @@ export class Scene {
     this.strings.clear();
     this.strokes.clear();
     this.boardInk.clear();
+    this.strokeAt.clear();
     this.byParent.clear();
     this.byPin.clear();
     this.ids.fill(null);

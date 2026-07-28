@@ -472,6 +472,27 @@ export class Peers implements PeerSource {
   }
 
   /**
+   * DATA-MODEL section 9.2's handoff, for every peer's ink at once.
+   *
+   * Called once a frame from the INK phase — see [`PeerInk.retire`], which is
+   * where the rule and the reasons are. This is only the walk and the version
+   * bump: the store owns [`version`], and a ghost that came off the canvas
+   * without one would stay drawn until something else happened to move.
+   *
+   * `landed` is asked per run rather than handed a set, because the two things
+   * it consults are a map lookup and a layer's own pending set — building a set
+   * of every stroke on the board once a frame to answer a question about three
+   * of them would be the expensive way round.
+   */
+  retire(dtMs: number, landed: (id: string) => boolean): void {
+    let changed = false;
+    for (const peer of this.live.values()) {
+      if (peer.ink.retire(dtMs, landed)) changed = true;
+    }
+    if (changed) this.ver += 1;
+  }
+
+  /**
    * Advance every cursor towards where its peer last said it was.
    *
    * Called once a frame from the overlay phase, before the canvas is drawn, so

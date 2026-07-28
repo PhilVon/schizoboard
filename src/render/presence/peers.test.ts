@@ -345,4 +345,34 @@ describe("a peer's wet ink", () => {
     const drawn = [...peers.peers()].map((peer) => [...peer.ink.drawable()].length);
     expect(drawn.sort()).toEqual([0, 1]);
   });
+
+  it("bumps its version the frame a ghost is handed over, and only then", () => {
+    peers.observe(9, state({ wet: [run()] }));
+    const up = peers.version;
+
+    // Every frame the record is not here yet. The handoff is asked once a frame
+    // on a board where somebody is drawing, so a version bump per frame would
+    // restroke a full-viewport canvas sixty times a second for nothing.
+    peers.retire(16, () => false);
+    peers.retire(16, () => false);
+    expect(peers.version).toBe(up);
+
+    peers.retire(16, (id) => id === "run-1");
+    // Without this the mark stays on the canvas until something else happens to
+    // move — the store owns the version, and nothing else knows a ghost went.
+    expect(peers.version).toBe(up + 1);
+    expect(peers.inked).toBe(false);
+  });
+
+  it("hands over every peer's ink, not just the first one holding some", () => {
+    peers.observe(9, state({ wet: [run({ id: "mine" })] }));
+    peers.observe(10, state({ user: { id: "8", name: "Green", color: "#4a8a4f" }, wet: [run({ id: "theirs" })] }));
+    expect(peers.inked).toBe(true);
+
+    // Both, in one pass. A walk that stopped at the first peer that changed
+    // would leave the second person's mark up for as long as they stayed quiet.
+    peers.retire(16, () => true);
+    expect(peers.inked).toBe(false);
+    expect([...peers.peers()].every((peer) => [...peer.ink.ids()].length === 0)).toBe(true);
+  });
 });

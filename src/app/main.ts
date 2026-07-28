@@ -1656,7 +1656,28 @@ async function boot(): Promise<void> {
    * this one never — which is the whole of what "ink inside the item's
    * transform" buys (DESIGN section 6.2).
    */
-  loop.on("ink", () => {
+  /**
+   * Whether the document has this stroke *and* the canvas it belongs on is
+   * showing it — the whole of DATA-MODEL section 9.2's handoff, asked of a run
+   * id that arrived over awareness.
+   *
+   * Deliberately the same two questions the local wet/dry handoff below asks,
+   * of the same two objects: a peer's mark and ours land on the same surfaces
+   * through the same layers, and a ghost that retired on a weaker test than our
+   * own would blink for exactly the frames the local one was written to cover.
+   * The only extra step is `strokeSurface`, because a peer's run says which
+   * *item* it is on and never which board tile — that is the sender's
+   * bounding-box centre, and this client may hold a shorter piece of the mark.
+   */
+  const inkLanded = (id: string): boolean => {
+    const surface = scene.strokeSurface(id);
+    if (surface === null) return false;
+    return surface.kind === "item"
+      ? !items.awaitingInk(surface.id)
+      : !boardInk.awaitingTile(surface.key);
+  };
+
+  loop.on("ink", (frame) => {
     items.paintInk(scene, dirty);
     // The cork's ink, in the same phase and for the same reason: it is a bitmap
     // filled for the few tiles somebody drew in, not a transform written for
@@ -1706,6 +1727,13 @@ async function boot(): Promise<void> {
       drying = null;
       dried();
     }
+    // And everybody else's, by the same rule in the same phase — section 9.2 is
+    // one sentence about both pens. Not folded into the block above because the
+    // two are the opposite way round: ours waits on a list of surfaces this
+    // client committed to and then drops every overlay copy together, and
+    // theirs asks per run, since a peer's ghosts arrive and land independently
+    // and there is no gesture here to keep whole.
+    if (provider !== null) peers.retire(frame.dt, inkLanded);
   });
 
   /**

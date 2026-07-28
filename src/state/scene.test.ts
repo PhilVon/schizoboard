@@ -7,7 +7,13 @@ import { describe, expect, it } from "vitest";
 
 import { Torsion } from "@/sim/torsion";
 import { DirtySets } from "@/state/dirty";
-import { Scene, type ItemCold, type ItemPose, type StringNodes } from "@/state/scene";
+import {
+  Scene,
+  type ItemCold,
+  type ItemPose,
+  type SceneStroke,
+  type StringNodes,
+} from "@/state/scene";
 
 function cold(id: string, over: Partial<ItemCold> = {}): ItemCold {
   return {
@@ -503,5 +509,93 @@ describe("DirtySets", () => {
     expect(dirty.culling).toBe(true);
     dirty.clear();
     expect(dirty.all).toBe(false);
+  });
+});
+
+/**
+ * The reverse index behind DATA-MODEL section 9.2's handoff: a peer's wet run
+ * carries the id its record will be filed under, and this is how a client asks
+ * whether that record has arrived — and on which surface, since only the layer
+ * that owns the surface can say whether its canvas is showing it yet.
+ */
+describe("Scene stroke surfaces", () => {
+  function stroke(id: string, over: Partial<SceneStroke> = {}): SceneStroke {
+    return {
+      id,
+      tool: "marker",
+      color: "#1f1b17",
+      size: 4,
+      opacity: 1,
+      seed: 1,
+      z: "a0",
+      bbox: [0, 0, 10, 10],
+      samples: [
+        { x: 0, y: 0, pressure: 0.5 },
+        { x: 10, y: 10, pressure: 0.5 },
+      ],
+      ...over,
+    };
+  }
+
+  it("names the item a stroke is glued to", () => {
+    const scene = new Scene();
+    scene.putStrokes("note", [stroke("s1"), stroke("s2")]);
+    expect(scene.strokeSurface("s1")).toEqual({ kind: "item", id: "note" });
+    expect(scene.strokeSurface("s2")).toEqual({ kind: "item", id: "note" });
+  });
+
+  it("names the tile a board stroke was filed in", () => {
+    const scene = new Scene();
+    // The one the caller could not work out for itself: a board stroke is
+    // bucketed by the bounding-box centre of *all* its points, and a peer
+    // watching it be drawn may hold a shorter piece of the mark.
+    scene.putBoardStrokes("0,0", [stroke("s1")]);
+    expect(scene.strokeSurface("s1")).toEqual({ kind: "tile", key: "0,0" });
+  });
+
+  it("says nothing about a stroke this board has never held", () => {
+    expect(new Scene().strokeSurface("nope")).toBeNull();
+  });
+
+  it("forgets a stroke an erase took out", () => {
+    const scene = new Scene();
+    scene.putStrokes("note", [stroke("s1"), stroke("s2")]);
+    // An erase arrives as a shorter list, so the id it dropped is nameable only
+    // from the list being replaced. An index that filed the new one without
+    // unfiling the old would go on telling a ghost that its record is still
+    // there — and the mark would never come back on the overlay either.
+    scene.putStrokes("note", [stroke("s2")]);
+    expect(scene.strokeSurface("s1")).toBeNull();
+    expect(scene.strokeSurface("s2")).toEqual({ kind: "item", id: "note" });
+
+    scene.putBoardStrokes("0,0", [stroke("b1"), stroke("b2")]);
+    scene.putBoardStrokes("0,0", [stroke("b2")]);
+    expect(scene.strokeSurface("b1")).toBeNull();
+    expect(scene.strokeSurface("b2")).toEqual({ kind: "tile", key: "0,0" });
+  });
+
+  it("forgets the ink of an item that left the board", () => {
+    const scene = new Scene();
+    scene.putItem(cold("note"), pose());
+    scene.putStrokes("note", [stroke("s1")]);
+    scene.removeItem("note");
+    // The ink went with the item, which is the document's answer and not an
+    // omission — so a ghost still up for that stroke waits out its grace and
+    // goes, rather than being told the record is on a surface that is gone.
+    expect(scene.strokeSurface("s1")).toBeNull();
+  });
+
+  it("forgets everything a tile or an item emptied", () => {
+    const scene = new Scene();
+    scene.putStrokes("note", [stroke("s1")]);
+    scene.putBoardStrokes("0,0", [stroke("b1")]);
+    scene.putStrokes("note", []);
+    scene.putBoardStrokes("0,0", []);
+    expect(scene.strokeSurface("s1")).toBeNull();
+    expect(scene.strokeSurface("b1")).toBeNull();
+
+    scene.putStrokes("note", [stroke("s1")]);
+    scene.clear();
+    expect(scene.strokeSurface("s1")).toBeNull();
   });
 });

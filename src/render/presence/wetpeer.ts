@@ -90,6 +90,41 @@ const MAX_RUN_POINTS = 2048;
  */
 const MAX_RUNS = 16;
 
+/**
+ * How long a ghost is kept after its peer's pen came up and the record never
+ * arrived.
+ *
+ * > hold the awareness pose until the document position matches within epsilon,
+ * > or a 250 ms grace period expires. — docs/DATA-MODEL.md section 9.2
+ *
+ * Section 9.2's own number, and the same one `state/remote.ts` holds a released
+ * item at its awareness pose for. It is a backstop and not a schedule: the
+ * document update and the awareness clear travel over one ordered socket
+ * (`crdt/sync/protocol.ts`), and the sender goes on publishing a committed run
+ * until its *own* overlay copy retires, so on any healthy connection the record
+ * is already here by the time this clock starts. What reaches the grace is a
+ * run the document was never going to hold — a click the ink op refused, paper
+ * that left the board with the pen down, a peer that committed while
+ * disconnected (there is no outbound queue, by design).
+ *
+ * Which is also why expiry is the honest answer rather than a longer wait. The
+ * asymmetry with the drag is real — a drag that gives up still shows the item,
+ * where this takes a mark off the screen — but a mark nobody's board holds is
+ * not a mark, and leaving it up would be this client inventing one.
+ */
+const HANDOFF_GRACE_MS = 250;
+
+/**
+ * How many retired run ids are remembered per peer.
+ *
+ * See [`PeerInk.retire`] for why any are. This wants to outlive the messages
+ * still describing a run that has already been replaced by its record, which is
+ * a handful — and sixty-four is sixty-four more strokes from that one peer
+ * before the oldest is forgotten, by which time no message anywhere still
+ * mentions it.
+ */
+const MAX_RETIRED = 64;
+
 /** One run as it came off the wire, once it is known to be readable. */
 export interface PeerWetRun {
   readonly id: string;
@@ -198,6 +233,16 @@ class RemoteRun implements WetStroke {
    */
   origin: number;
   readonly samples: InkSample[] = [];
+  /**
+   * How long this peer's pen has been up, in milliseconds — or null while it is
+   * still down, which is every run of a live gesture.
+   *
+   * Latched rather than recomputed: it is set on the message that says the pen
+   * is up and is never cleared, so a resync that re-delivers a state from
+   * before the release cannot put the clock back and hold the ghost up forever.
+   * Section 9.2's grace, counted in [`PeerInk.retire`].
+   */
+  freed: number | null = null;
 
   constructor(run: PeerWetRun) {
     this.id = run.id;
@@ -290,6 +335,15 @@ export class PeerInk {
   private readonly runs = new Map<string, RemoteRun>();
 
   /**
+   * Run ids that have been taken down and must not go back up.
+   *
+   * Insertion-ordered and capped at [`MAX_RETIRED`]; see [`retire`] for why it
+   * is needed at all, and it is the ordinary case rather than a guard against
+   * an odd one.
+   */
+  private readonly retired = new Set<string>();
+
+  /**
    * Take this peer's whole `wet` field.
    *
    * Returns whether the drawn result changed, which is what `Peers` turns into
@@ -299,11 +353,19 @@ export class PeerInk {
    * caps how many it publishes, and section 9.2 has the ghost staying up until
    * the document holds that id; forgetting a run the moment it fell off the
    * wire would take half of a gesture off the screen while the hand was still
-   * moving. [`forget`] is how one goes.
+   * moving. [`retire`] is what takes one down, and this is where the fact that
+   * the pen came up at all is noticed.
    */
   splice(runs: readonly PeerWetRun[]): boolean {
     let changed = false;
     for (const run of runs) {
+      // Already handed over. The sender publishes a run it has committed for as
+      // long as its own overlay copy is up (`state/tools/marker.ts`'s drying
+      // slot), and awareness re-delivers whatever state it holds on a resync —
+      // so a message naming a retired run is the *normal* case, not a strange
+      // one, and taking it at face value would put the ghost back on top of the
+      // record that replaced it. Section 9.2 forbids exactly that frame.
+      if (this.retired.has(run.id)) continue;
       let held = this.runs.get(run.id);
       if (held === undefined) {
         held = new RemoteRun(run);
@@ -312,28 +374,114 @@ export class PeerInk {
       }
       if (held.splice(run)) changed = true;
     }
+
+    // Nothing at all in the field: this peer is holding no pen, so every ghost
+    // still up is a mark whose record is on its way (or is never coming), and
+    // section 9.2's grace can start.
+    //
+    // *Empty*, rather than "not mentioned in this message", and the difference
+    // is a real gesture. `WET_MAX_RUNS` caps what one message carries, so a
+    // scribble across five notes drops its first run off the wire while the
+    // hand is still moving, and the whole gesture commits in one go at pen-up —
+    // so that record is seconds away, not frames. Starting a clock on it would
+    // blink the beginning of a mark out while the end of it was still being
+    // drawn. A run that has fallen off the cap keeps
+    // `freed` null until the pen actually comes up, which is what this reads.
+    if (runs.length === 0) {
+      for (const held of this.runs.values()) held.freed ??= 0;
+    }
+
     // A stranger cannot be allowed to grow this without end. The oldest go, and
     // `Map` iterates in insertion order, so those are the runs whose records
     // are longest overdue anyway.
     while (this.runs.size > MAX_RUNS) {
       const oldest = this.runs.keys().next();
       if (oldest.done === true) break;
-      this.runs.delete(oldest.value);
-      changed = true;
+      // Through `forget`, so an evicted run is retired rather than merely
+      // dropped: the next message still names it, and one that came straight
+      // back would make the cap a per-message churn instead of a ceiling.
+      if (this.forget(oldest.value)) changed = true;
     }
     return changed;
   }
 
   /**
-   * Stop drawing this run — the document has it now, or the gesture is over.
+   * DATA-MODEL section 9.2's handoff, once a frame.
    *
-   * Separate from [`splice`] on purpose. *When* a ghost may go is DATA-MODEL
-   * section 9.2's handoff rule and is T-170's to decide; this file only knows
-   * how to put one up and take one down, so the policy can change without the
-   * splice being touched.
+   * > Keep rendering the ghost, keyed by stroke id, until the document contains
+   * > that stroke id. Correct in both orderings — no flash, no double-draw.
+   *
+   * `landed` is that sentence plus the clause the local pen's handoff already
+   * carries: the *canvas* has to have the record on it, not merely the
+   * document, or the frame the ghost goes is a frame with a hole in it where
+   * the mark was. `app/main.ts` builds it out of `Scene.strokeSurface` and
+   * whichever layer owns the answer (`DomItemLayer.awaitingInk`,
+   * `BoardInkLayer.awaitingTile`) — the same two questions, asked of the same
+   * two objects, as the local wet/dry handoff four lines above the call.
+   *
+   * Called from the INK phase after both re-rasters and before the overlay, for
+   * the reason that handoff gives: the frame that finally puts a committed
+   * stroke on its surface's canvas is the frame that may stop drawing the wet
+   * copy of it, and neither an earlier nor a later phase is both.
+   *
+   * **Both orderings, and neither draws twice.** The document first: the ghost
+   * stays up until this call sees the record rastered, and goes on the same
+   * frame it does. The awareness clear first: `freed` starts, the ghost stays
+   * up through the grace, and the record retires it the moment it lands. What
+   * makes the second one safe is [`retired`] — the sender keeps publishing a
+   * run it has already committed, so without it every message would put the
+   * ghost straight back over the record.
+   *
+   * Returns whether the drawn result changed, which `Peers` turns into a
+   * version bump. A run nobody could see going is not a change: retiring a
+   * one-point run must not restroke a full-viewport canvas.
+   */
+  retire(dtMs: number, landed: (id: string) => boolean): boolean {
+    if (this.runs.size === 0) return false;
+    const dt = Math.max(0, dtMs);
+    let changed = false;
+    // Deleting while iterating a `Map` is defined, and the keys still to come
+    // are unaffected — the same property `splice`'s eviction leans on.
+    for (const [id, held] of this.runs) {
+      if (landed(id)) {
+        if (this.forget(id)) changed = true;
+        continue;
+      }
+      // Still down: nothing to count. This is every frame of every live stroke.
+      if (held.freed === null) continue;
+      held.freed += dt;
+      if (held.freed < HANDOFF_GRACE_MS) continue;
+      if (this.forget(id)) changed = true;
+    }
+    return changed;
+  }
+
+  /**
+   * Stop drawing this run, for good — the document has it now, or it was given
+   * up on.
+   *
+   * Separate from [`retire`] on purpose, and the split is the one T-169 left
+   * this file with: *when* a ghost may go is section 9.2's policy and lives in
+   * `retire`; *how* one goes is here, and it is one line plus the thing that
+   * makes it stick.
+   *
+   * Returns whether anything a person would see is different — false for a run
+   * that was never drawable and for one that was not here.
    */
   forget(id: string): boolean {
-    return this.runs.delete(id);
+    const held = this.runs.get(id);
+    if (held === undefined) return false;
+    this.runs.delete(id);
+    this.retired.add(id);
+    // Ids are minted per run and never reused (T-167), so nothing that goes in
+    // here is ever legitimately wanted back and this set only ever needs to
+    // outlive the messages still describing it.
+    while (this.retired.size > MAX_RETIRED) {
+      const oldest = this.retired.keys().next();
+      if (oldest.done === true) break;
+      this.retired.delete(oldest.value);
+    }
+    return held.drawable;
   }
 
   /** Every run with a line in it, oldest first. The live objects, not copies —
@@ -354,8 +502,8 @@ export class PeerInk {
     return false;
   }
 
-  /** Every run id being drawn — what section 9.2's handoff has to check against
-   *  the document (T-170). */
+  /** Every run id being drawn. [`retire`] is what checks them against the
+   *  document; this is for a readout and for tests. */
   ids(): Iterable<string> {
     return this.runs.keys();
   }
