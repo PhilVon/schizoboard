@@ -76,6 +76,27 @@ export function keyBelow(lowest: string | null): string {
   return keyBetween(null, lowest);
 }
 
+/**
+ * Whether `fractional-indexing` would accept this key.
+ *
+ * The first half of invariant 9, and "valid" means exactly this rather than
+ * anything about the character set: a key the library refuses is one nothing can
+ * ever be inserted next to, so the next `bringToFront` against it throws in the
+ * middle of a transaction. Asked by generating above it, which is the cheapest
+ * call that runs the library's own validation.
+ *
+ * Here rather than in `crdt/invariants.ts` so the dependency stays in the one
+ * module this file's header argues for it in.
+ */
+export function isOrderKey(z: string): boolean {
+  try {
+    generateKeyBetween(z, null);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 export interface Ordered {
   z: string;
   clientId: number;
