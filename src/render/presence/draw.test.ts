@@ -94,7 +94,9 @@ function peer(over: Partial<DrawnPeer> = {}): DrawnPeer {
 function source(...list: DrawnPeer[]): PeerSource {
   return {
     version: 1,
-    chromed: list.some((p) => p.items.length + p.strings.length + p.pins.length > 0),
+    chromed: list.some(
+      (p) => p.items.length + p.strings.length + p.pins.length + p.locks.length > 0,
+    ),
     peers: () => list,
   };
 }
@@ -261,6 +263,10 @@ describe("PeerPainter strings", () => {
     visit(id: string, fn: (at: number, count: number) => void): void {
       if (id === "s1") fn(0, 3);
     },
+    /** One gap, `p0` to `p1`, on the one string this fixture has. */
+    segment(id: string, a: string, b: string, fn: (at: number, count: number) => void): void {
+      if (id === "s1" && a === "p0" && b === "p1") fn(0, 3);
+    },
   };
 
   it("outlines the string by laying a colour down and taking the middle back out", () => {
@@ -291,5 +297,94 @@ describe("PeerPainter strings", () => {
       painter.strings(ctx, camera, scene, ropes, source(peer({ strings: ["s1"] })), clear),
     ).toBe(false);
     expect(calls.cleared).toBe(0);
+  });
+});
+
+/**
+ * The advisory lock of DATA-MODEL section 5.4, drawn — T-130, Q-83.
+ *
+ * It says "somebody has hold of this", which is the sentence the rest of the
+ * peer chrome speaks, so it speaks it in the same words: their colour, laid
+ * down and punched through, the same fringe a selected string gets. What tells
+ * the two apart is the extent — a whole string lit is a selection, one gap lit
+ * is somebody about to cut there.
+ */
+describe("PeerPainter locks", () => {
+  const ropes = {
+    positions: new Float64Array([0, 0, 50, 10, 100, 0]),
+    visit(id: string, fn: (at: number, count: number) => void): void {
+      if (id === "s1") fn(0, 3);
+    },
+    segment(id: string, a: string, b: string, fn: (at: number, count: number) => void): void {
+      if (id === "s1" && a === "p0" && b === "p1") fn(0, 3);
+    },
+  };
+
+  const HELD = { string: "s1", a: "p0", b: "p1" };
+
+  function run(): void {
+    scene.putString({
+      id: "s1",
+      nodes: [],
+      color: "#a8322c",
+      thickness: 3,
+      material: "cotton",
+      layer: "over",
+      closed: false,
+    });
+  }
+
+  it("does nothing for a peer holding nothing, which is nearly all of them", () => {
+    run();
+    expect(painter.locks(ctx, camera, scene, ropes, source(peer()), clear)).toBe(false);
+    expect(calls.cleared).toBe(0);
+  });
+
+  it("lays the peer's colour down and takes the middle back out", () => {
+    run();
+    expect(
+      painter.locks(ctx, camera, scene, ropes, source(peer({ color: "#2c5aa8", locks: [HELD] })), clear),
+    ).toBe(true);
+
+    expect(calls.strokes).toHaveLength(2);
+    expect(calls.strokes[0]!.style).toBe("#2c5aa8");
+    expect(calls.strokes[0]!.op).toBe("source-over");
+    expect(calls.strokes[1]!.op).toBe("destination-out");
+    expect(calls.strokes[1]!.width).toBeLessThan(calls.strokes[0]!.width);
+  });
+
+  /** Along the rope where it actually hangs, not along the chord between the
+   *  two pins — a segment with drape in it is nowhere near its own chord. */
+  it("walks the rope particles of that one gap", () => {
+    run();
+    painter.locks(ctx, camera, scene, ropes, source(peer({ locks: [HELD] })), clear);
+
+    expect(calls.lines).toHaveLength(3);
+    expect(calls.lines[1]![1]).not.toBe(calls.lines[0]![1]);
+  });
+
+  it("skips a string this board no longer has", () => {
+    expect(
+      painter.locks(ctx, camera, scene, ropes, source(peer({ locks: [HELD] })), clear),
+    ).toBe(false);
+    expect(calls.cleared).toBe(0);
+  });
+
+  /** A gap this rope does not have — a pin removed under them, or a claim from
+   *  a board further ahead than this one. Nothing to light, and their cursor is
+   *  still sitting on it. */
+  it("draws nothing for a gap the rope cannot find", () => {
+    run();
+    expect(
+      painter.locks(
+        ctx,
+        camera,
+        scene,
+        ropes,
+        source(peer({ locks: [{ string: "s1", a: "p7", b: "p8" }] })),
+        clear,
+      ),
+    ).toBe(false);
+    expect(calls.strokes).toHaveLength(0);
   });
 });

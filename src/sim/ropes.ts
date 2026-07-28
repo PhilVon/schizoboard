@@ -466,6 +466,27 @@ export class RopeSet {
   }
 
   /**
+   * One segment, named by the two pins it runs between.
+   *
+   * For the advisory lock of DATA-MODEL section 5.4 (T-130): somebody else is
+   * mid-split on a gap and their claim has to be drawn along the rope where it
+   * actually hangs. [`visit`] cannot answer it — it hands over every segment in
+   * run order and skips the ones with no particles, so counting callbacks
+   * against the run's node array goes wrong at exactly the moment a segment is
+   * undrawable, which is the note above.
+   *
+   * A walk of the string's own segment list, which is a handful, on the frames
+   * somebody is holding one — a gesture, not a session. Calls `fn` once per
+   * match rather than stopping at the first: a run that visits the same pair
+   * twice has two gaps between them and both are claimed by the same name.
+   */
+  segment(id: string, a: string, b: string, fn: (at: number, count: number) => void): void {
+    for (const segment of this.byString.get(id) ?? []) {
+      if (segment.count > 0 && segment.a === a && segment.b === b) fn(segment.at, segment.count);
+    }
+  }
+
+  /**
    * The board-space box a string occupies, sag included, or `null` if it has
    * no drawable segments.
    *

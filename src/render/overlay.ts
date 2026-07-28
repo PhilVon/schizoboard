@@ -212,6 +212,13 @@ export interface PendingRun {
 export interface RopeGeometry {
   readonly positions: Float64Array;
   visit(id: string, fn: (at: number, count: number) => void): void;
+  /**
+   * One segment, named by the two pins at its ends — for a peer's advisory lock
+   * (DATA-MODEL section 5.4). `visit` cannot answer it: it skips the segments
+   * with no particles, so its arrival order and the run's node array disagree
+   * exactly when one is undrawable.
+   */
+  segment(id: string, a: string, b: string, fn: (at: number, count: number) => void): void;
 }
 
 /**
@@ -499,6 +506,15 @@ export class Overlay {
       peers !== null &&
       ropes !== null &&
       this.painter.strings(ctx, camera, scene, ropes, peers, this.clearOnce);
+    // In the same slot and for the same reason — it composites the same way.
+    // A segment somebody else is mid-split on (DATA-MODEL section 5.4).
+    if (
+      peers !== null &&
+      ropes !== null &&
+      this.painter.locks(ctx, camera, scene, ropes, peers, this.clearOnce)
+    ) {
+      drew = true;
+    }
     // The halo next, so every other piece of chrome lands on top of it rather
     // than being washed out by it.
     if (wantsStrings && this.drawStrings(ctx, camera, scene, selection, ropes)) drew = true;

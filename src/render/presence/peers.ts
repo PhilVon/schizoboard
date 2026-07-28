@@ -98,13 +98,6 @@ export interface PeerPoint {
 }
 
 /**
- * One peer, ready to draw.
- *
- * The three selection arrays are by kind, matching `PresenceSelection` — a peer
- * can select pins and strings as well as items (T-119, T-121), and each gets
- * different chrome.
- */
-/**
  * A segment somebody else is in the middle of splitting — DATA-MODEL section
  * 5.4, and `state/presence.ts`'s `PresenceLock` for why it is named by its two
  * pins rather than by the node it starts at.
@@ -119,6 +112,13 @@ export interface PeerLock {
   readonly b: string;
 }
 
+/**
+ * One peer, ready to draw.
+ *
+ * The three selection arrays are by kind, matching `PresenceSelection` — a peer
+ * can select pins and strings as well as items (T-119, T-121), and each gets
+ * different chrome.
+ */
 export interface DrawnPeer {
   readonly id: string;
   readonly name: string;
@@ -308,6 +308,11 @@ export class Peers implements PeerSource {
   get chromed(): boolean {
     for (const peer of this.live.values()) {
       if (peer.items.length > 0 || peer.strings.length > 0 || peer.pins.length > 0) return true;
+      // A claimed segment is chrome like the rest of it, and it hangs off a
+      // rope that sags and settles — so a board where the only peer activity is
+      // somebody holding a gap still has a canvas that goes stale every frame
+      // the rope moves.
+      if (peer.locks.length > 0) return true;
     }
     return false;
   }

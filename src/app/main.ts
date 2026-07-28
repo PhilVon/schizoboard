@@ -1876,6 +1876,17 @@ async function boot(): Promise<void> {
        * what was supposed to be on the canvas at the time.
        */
       flashes,
+      /**
+       * Everybody else, as this board has them — the store the overlay draws
+       * from, cursors and hold-chrome and claimed segments alike.
+       *
+       * Here for the same reason `flashes` is: what a peer has hold of is often
+       * off screen, or is a fringe five pixels wide on a rope, and a screenshot
+       * cannot say whether the claim arrived or merely was not drawn. This can.
+       * Empty rather than absent on a board with no wire, which is the honest
+       * answer for a board that is alone.
+       */
+      peers,
       loop,
       ops,
       tools,

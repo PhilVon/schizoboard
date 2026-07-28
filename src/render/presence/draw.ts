@@ -192,6 +192,81 @@ export class PeerPainter {
   }
 
   /**
+   * The segments somebody else is in the middle of splitting — DATA-MODEL
+   * section 5.4's advisory lock.
+   *
+   * **Must be drawn in the same slot as [`strings`], before any other chrome**,
+   * and for the same reason: it composites with `destination-out`.
+   *
+   * The same fringe a peer's selected string gets, along one segment instead of
+   * along the whole run. That is deliberate — the claim says *I have hold of
+   * this*, which is the sentence the rest of the peer chrome already speaks, so
+   * it speaks it in the same words and the extent is what tells the two apart:
+   * a whole string lit is a selection, one gap lit is somebody about to cut
+   * there.
+   *
+   * It is a hint and nothing else. Nothing in this application reads a lock to
+   * decide whether a split may go ahead — 5.4 asks for the lock and rules that
+   * out in the same sentence, and accepts what happens when two people split
+   * one segment.
+   */
+  locks(
+    ctx: CanvasRenderingContext2D,
+    camera: Camera,
+    scene: Scene,
+    ropes: RopeGeometry,
+    peers: PeerSource,
+    clear: () => void,
+  ): boolean {
+    const pool = ropes.positions;
+    const zoom = camera.zoom;
+    const camX = camera.x;
+    const camY = camera.y;
+    let drew = false;
+
+    for (const peer of peers.peers()) {
+      for (const held of peer.locks) {
+        // A peer can claim a segment of a string somebody else has since
+        // deleted. Their awareness state is not pruned by anything on this
+        // machine, so this check is the whole of it — the same argument as in
+        // [`strings`].
+        const style = scene.strings.get(held.string);
+        if (style === undefined) continue;
+
+        let any = false;
+        ctx.beginPath();
+        ropes.segment(held.string, held.a, held.b, (at, count) => {
+          ctx.moveTo((pool[at]! - camX) * zoom, (pool[at + 1]! - camY) * zoom);
+          for (let i = 1; i < count; i++) {
+            const j = at + i * 2;
+            ctx.lineTo((pool[j]! - camX) * zoom, (pool[j + 1]! - camY) * zoom);
+          }
+          any = true;
+        });
+        // Nothing to light: the gap they named is not one this rope has, which
+        // is a pin removed under them or a claim from a board further ahead
+        // than this one. Their cursor is still on it, and that is the fallback.
+        if (!any) continue;
+
+        clear();
+        ctx.save();
+        ctx.lineCap = "round";
+        ctx.lineJoin = "round";
+        const drawn = bodyWidth(style.thickness, style.material);
+        ctx.lineWidth = drawn + PEER_STRING_WIDEN;
+        ctx.strokeStyle = peer.color;
+        ctx.stroke();
+        ctx.globalCompositeOperation = "destination-out";
+        ctx.lineWidth = drawn + PEER_STRING_CLEAR;
+        ctx.stroke();
+        ctx.restore();
+        drew = true;
+      }
+    }
+    return drew;
+  }
+
+  /**
    * The boxes and rings: a peer's selected items and pins.
    *
    * Drawn after our own chrome rather than before it, so that on something both

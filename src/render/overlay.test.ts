@@ -362,6 +362,9 @@ describe("Overlay, strings", () => {
     visit: (id: string, fn: (at: number, count: number) => void): void => {
       if (id === "s") fn(0, 3);
     },
+    segment: (id: string, a: string, b: string, fn: (at: number, count: number) => void): void => {
+      if (id === "s" && a === "p0" && b === "p1") fn(0, 3);
+    },
   };
 
   function putString(thickness = 3): void {
@@ -596,6 +599,9 @@ describe("Overlay, hovering a pin lights its threads", () => {
     visit: (id: string, fn: (at: number, count: number) => void): void => {
       if (id === "s0") fn(0, 3);
       if (id === "s1") fn(6, 3);
+    },
+    segment: (id: string, a: string, b: string, fn: (at: number, count: number) => void): void => {
+      if (id === "s0" && a === "p0" && b === "p1") fn(0, 3);
     },
   };
 
@@ -928,6 +934,9 @@ describe("Overlay, the undo flash", () => {
     positions: pool,
     visit: (id: string, fn: (at: number, count: number) => void): void => {
       if (id === "s") fn(0, 3);
+    },
+    segment: (id: string, a: string, b: string, fn: (at: number, count: number) => void): void => {
+      if (id === "s" && a === "p0" && b === "p1") fn(0, 3);
     },
   };
 

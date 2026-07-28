@@ -249,3 +249,21 @@ describe("a peer's claimed segments", () => {
     expect(peers.version).toBeGreaterThan(held);
   });
 });
+
+/**
+ * A held segment is chrome, and it hangs off a rope that sags and settles — so
+ * a board whose only peer activity is somebody holding a gap must still report
+ * a canvas the overlay will restroke as the rope moves.
+ */
+describe("a claimed segment counts as chrome", () => {
+  it("is chromed while a segment is held, and not once it is let go", () => {
+    peers.observe(1, state());
+    expect(peers.chromed).toBe(false);
+
+    peers.observe(1, state({ locks: { segments: [{ string: "s1", a: "p1", b: "p2" }] } }));
+    expect(peers.chromed).toBe(true);
+
+    peers.observe(1, state({ locks: { segments: [] } }));
+    expect(peers.chromed).toBe(false);
+  });
+});
