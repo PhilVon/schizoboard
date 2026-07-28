@@ -39,8 +39,17 @@ export function buildPin(board: BoardDoc, input: CreatePinInput): { id: string; 
   const id = freshId(board.pins);
   const map = new Y.Map<unknown>();
   map.set("parent", input.parent);
-  map.set("lx", input.lx);
-  map.set("ly", input.ly);
+  // Invariant 1, at the one pin path that was not already checking (T-155).
+  //
+  // **Coerced, where `createItems` skips.** Two of the four callers are string
+  // ops building the pin a run hangs from, and a pin that refused to exist
+  // while its node was still written is precisely the dangling reference the
+  // janitor was built to collect — so refusing here would manufacture the
+  // failure it is meant to prevent. The parent's origin is somewhere real: the
+  // pin is visible, draggable and deletable, which none of those is true of
+  // `NaN`.
+  map.set("lx", Number.isFinite(input.lx) ? input.lx : 0);
+  map.set("ly", Number.isFinite(input.ly) ? input.ly : 0);
   map.set("kind", input.kind ?? "pushpin");
   map.set("color", input.color ?? "#c8352f");
   map.set("createdBy", board.doc.clientID);

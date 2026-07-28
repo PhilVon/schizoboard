@@ -46,13 +46,16 @@
  *
  * ## What it deliberately does not do
  *
- * Feed the ops `NaN`, `Infinity` or ids that were never minted. Section 13's
- * sentence is about "randomised concurrent operation sequences" — the adversary
- * is concurrency, not a malformed caller. Several ops would take a non-finite
- * coordinate straight into the document (`createItems` does no finiteness check
- * and `Math.max(1, NaN)` is `NaN`), so a harness that fed them one would fail
- * invariant 1 on the first round, every round, and drown everything the merge
- * has to say. That gap is real and it is its own task.
+ * Feed the ops ids that were never minted. Section 13's sentence is about
+ * "randomised concurrent operation sequences" — the adversary here is
+ * concurrency, not a malformed caller, and a harness that spent its rounds on
+ * arguments no caller produces would drown out what the merge has to say.
+ *
+ * It *does* now feed them `NaN` and `Infinity`, in a test of its own below
+ * rather than in the weighted mix. That was the exception the ops themselves
+ * could not survive until T-155 — `createItems` did no finiteness check, and
+ * `Math.max(1, NaN)` is `NaN` — so invariant 1 failed on the first round of
+ * every run. It is a property of the ops now, and this is what says so.
  */
 
 import { describe, expect, it } from "vitest";
@@ -824,5 +827,51 @@ describe("fuzz — two documents, concurrent operations, all nine invariants", (
     } finally {
       restore();
     }
+  });
+
+  it("keeps invariant 1 against a caller that hands it nonsense", () => {
+    // The gap T-155 closed, and the reason this used to be a paragraph in the
+    // header instead of a test: creation took a non-finite coordinate straight
+    // into the document, so the whole harness had to steer around it.
+    //
+    // Invariant 1 is a walk of every number in the document, so it does not
+    // matter which field the poison reaches — only that none of it lands.
+    const board = openBoardDoc();
+    initialiseBoard(board);
+    const poison = [NaN, Infinity, -Infinity];
+
+    for (const bad of poison) {
+      createItems(board, [{ type: "polaroid", x: bad, y: 0, w: 100, h: 100 }]);
+      createItems(board, [{ type: "polaroid", x: 0, y: bad, w: 100, h: 100 }]);
+      createItems(board, [{ type: "note", x: 0, y: 0, w: bad, h: 100 }]);
+      createItems(board, [{ type: "note", x: 0, y: 0, w: 100, h: bad }]);
+      createItems(board, [{ type: "scrap", x: 0, y: 0, w: 100, h: 100, rot: bad }]);
+      createItems(board, [
+        {
+          type: "polaroid",
+          x: 0,
+          y: 0,
+          w: 100,
+          h: 100,
+          assetId: "a".repeat(64),
+          asset: { w: bad, h: bad, mime: "image/png", size: bad },
+        },
+      ]);
+      createPin(board, { parent: null, lx: bad, ly: 0 });
+      createPin(board, { parent: null, lx: 0, ly: bad });
+    }
+
+    expect(checkInvariants(board)).toEqual([]);
+
+    // And the refusals are the *right* refusals, rather than nothing having
+    // run: no item survived a bad number, and every pin did — coerced, because
+    // a string node pointing at a pin that declined to exist is the dangling
+    // reference the janitor is for.
+    // Only the one whose *asset* was the bad part survives, since a bad asset
+    // record does not make the item unrepresentable.
+    expect(board.items.size).toBe(poison.length);
+    // The two explicit pins per round, plus the pin each surviving item is
+    // created hanging from.
+    expect(board.pins.size).toBe(poison.length * 2 + board.items.size);
   });
 });

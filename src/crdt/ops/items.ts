@@ -66,6 +66,11 @@ export interface CreatedItem {
   pinId: string | null;
 }
 
+/** A number that can go in the document, or zero. */
+function finite(value: number): number {
+  return Number.isFinite(value) ? value : 0;
+}
+
 /**
  * Create items. **One transaction for the whole batch**, so that pasting
  * twenty photographs is one undo entry (DESIGN section 3.1) and one update on
@@ -86,6 +91,20 @@ export function createItems(
 
     for (const input of inputs) {
       const seed = input.seed ?? newSeed();
+      const rot = input.rot ?? scatterAngle(seed);
+      // Invariant 1 — every number in the document is finite — is a property of
+      // these ops and not of everybody who calls them (T-155). Every *update*
+      // path here already refuses a non-finite coordinate before its
+      // transaction; creation was the exception, and `Math.max(1, NaN)` is NaN,
+      // so a single client with no concurrency at all could put one in.
+      //
+      // Skipped rather than coerced, because nothing refers to an item that
+      // does not exist yet — so refusing costs only the item. That is not true
+      // of a pin, and `buildPin` does the opposite for exactly that reason.
+      // Both callers already read the returned array rather than assuming it
+      // matches the input one for one.
+      if (![input.x, input.y, rot, input.w, input.h].every(Number.isFinite)) continue;
+
       const w = Math.max(1, input.w);
       const h = Math.max(1, input.h);
       const itemId = freshId(board.items);
@@ -95,7 +114,7 @@ export function createItems(
       item.set("type", input.type);
       item.set("x", input.x);
       item.set("y", input.y);
-      item.set("rot", input.rot ?? scatterAngle(seed));
+      item.set("rot", rot);
       item.set("w", w);
       item.set("h", h);
       item.set("z", z);
@@ -116,10 +135,15 @@ export function createItems(
       // first, so re-registering it would be churn on the wire for no change.
       if (input.assetId && input.asset && !board.assets.has(input.assetId)) {
         const asset = new Y.Map<unknown>();
-        asset.set("w", input.asset.w);
-        asset.set("h", input.asset.h);
+        // Zero rather than skipped: `readAsset` already returns null for a
+        // non-positive dimension, so an unusable record reads as absent — and
+        // absent is a state the item renders (DESIGN section 7.5). A record
+        // that is merely missing would be too, but this way the hash is still
+        // registered and a peer can still be asked for the bytes.
+        asset.set("w", finite(input.asset.w));
+        asset.set("h", finite(input.asset.h));
         asset.set("mime", input.asset.mime);
-        asset.set("size", input.asset.size);
+        asset.set("size", finite(input.asset.size));
         asset.set("origName", input.asset.origName ?? null);
         asset.set("addedBy", board.doc.clientID);
         asset.set("addedAt", now);
