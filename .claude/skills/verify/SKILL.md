@@ -33,6 +33,51 @@ useful way to get a second session against the same disk.
 Run it in the background and wait for `Running \`target\debug\schizoboard.exe\``
 in the log, then give the webview a few seconds more.
 
+## Two instances, for anything multiplayer
+
+`SCHIZOBOARD_DATA_DIR` per process. **Not `APPDATA`** — Tauri resolves the
+roaming folder through `SHGetKnownFolderPath(FOLDERID_RoamingAppData)`, which
+does not read the variable. Setting `APPDATA` separates the WebView2 profiles
+and nothing else, so both instances open the *human's real board*, write to it,
+and converge through the disk — which looks exactly like the network working
+and is the most misleading result a multiplayer test can produce. It has
+happened; the repair was truncating `log.bin` at a frame boundary.
+
+Each instance also needs its own devtools port, which is how the webview is
+driven without touching the foreground:
+
+```powershell
+$psi.EnvironmentVariables["SCHIZOBOARD_DATA_DIR"] = $data
+$psi.EnvironmentVariables["WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS"] = "--remote-debugging-port=$Port"
+$psi.EnvironmentVariables["WEBVIEW2_USER_DATA_FOLDER"] = (Join-Path $data "webview")
+[System.Diagnostics.Process]::Start($psi)
+```
+
+Then CDP over `http://127.0.0.1:<port>/json/list` → `Runtime.evaluate`. This is
+far better than SendKeys for anything that is not testing input itself: no
+foreground raise, no scan codes, and it can read state the pixels do not show —
+`window.__TAURI_INTERNALS__.invoke("sync_status")` is the whole of what a peer
+is connected to.
+
+There is **no query string on the first load**, since the window opens on the
+bare `devUrl`. `window.location.replace(url)` from CDP is how a running window
+is put on `?board=…&secret=…`; the shell re-hosts when the secret changes.
+
+Paste without the clipboard, so two instances do not fight over it:
+
+```js
+const dt = new DataTransfer();
+dt.setData("text/plain", "hello");
+window.dispatchEvent(new ClipboardEvent("paste", { clipboardData: dt, bubbles: true, cancelable: true }));
+```
+
+**Sync evidence needs a negative control.** Two peers agreeing proves nothing
+on its own — they may be agreeing through a shared disk, or showing what they
+each loaded at boot. Send one of them to a *different* `?secret=`, write on the
+other, and check that nothing arrives; then restore the secret and check that
+it does. Peer counts from `sync_status` come from the relay rather than the
+document, so they are the one reading a shared store cannot fake.
+
 ## Screenshotting
 
 `user32!PrintWindow(hwnd, hdc, 2)` — `PW_RENDERFULLCONTENT`, which WebView2

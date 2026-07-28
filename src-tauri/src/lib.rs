@@ -191,6 +191,37 @@ async fn sync_start(app: AppHandle, config: SyncConfig) -> Result<(), String> {
     Ok(())
 }
 
+/// Where to keep this instance's board, overriding the usual place.
+///
+/// Exists because **two peers on one machine need two boards**, and there was
+/// no way to say so. Multiplayer cannot be watched with one window, and the
+/// obvious trick for separating two instances does not work: Tauri resolves the
+/// application data directory through the platform's own known-folder API — on
+/// Windows `SHGetKnownFolderPath(FOLDERID_RoamingAppData)` — which does not read
+/// the `APPDATA` environment variable. Setting `APPDATA` per process therefore
+/// separates the WebView2 profiles and nothing else, and both instances quietly
+/// open the same document.
+///
+/// That is not a theoretical failure. It happened: two shells launched with
+/// separate `APPDATA` values opened the same real board, wrote to it, and
+/// converged through the disk — which looks exactly like the network working
+/// and is the most misleading result a multiplayer test could produce.
+const DATA_DIR_ENV: &str = "SCHIZOBOARD_DATA_DIR";
+
+/// The directory `assets/` and `doc/` live in.
+///
+/// Split from the setup hook so the choice can be tested, and taking the
+/// default by value so the test never has to build an `AppHandle`.
+fn data_root(default: PathBuf) -> PathBuf {
+    match std::env::var_os(DATA_DIR_ENV) {
+        // An empty value is somebody exporting the variable without setting it,
+        // which is much more likely to be a script bug than a request to keep
+        // the board in the current directory.
+        Some(path) if !path.is_empty() => PathBuf::from(path),
+        _ => default,
+    }
+}
+
 /// What to do about a relay that may already be running.
 #[derive(Debug, PartialEq, Eq)]
 enum HostingChange {
@@ -737,7 +768,7 @@ pub fn run() {
             });
         })
         .setup(|app| {
-            let data = app.path().app_data_dir()?;
+            let data = data_root(app.path().app_data_dir()?);
             app.manage(AssetStore::new(data.join("assets"))?);
             app.manage(DocStore::new(data.join("doc"))?);
             app.manage(Hosting::default());
@@ -777,6 +808,26 @@ pub fn run() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The environment is process-wide, so these run one after another rather
+    /// than in parallel with each other.
+    #[test]
+    fn the_board_goes_where_it_is_told() {
+        let usual = PathBuf::from("C:/Users/somebody/AppData/Roaming/com.philw.schizoboard");
+
+        std::env::remove_var(DATA_DIR_ENV);
+        assert_eq!(data_root(usual.clone()), usual);
+
+        // An empty value is a script exporting the variable without setting it,
+        // not a request to keep the board in the current directory.
+        std::env::set_var(DATA_DIR_ENV, "");
+        assert_eq!(data_root(usual.clone()), usual);
+
+        std::env::set_var(DATA_DIR_ENV, "D:/scratch/peer-a");
+        assert_eq!(data_root(usual.clone()), PathBuf::from("D:/scratch/peer-a"));
+
+        std::env::remove_var(DATA_DIR_ENV);
+    }
 
     #[test]
     fn nothing_running_means_start() {
