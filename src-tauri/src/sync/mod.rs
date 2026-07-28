@@ -164,6 +164,16 @@ impl Relay {
         self.rooms.lock().expect("relay lock").outbound.len()
     }
 
+    /// Connection ids, as strings, for `sync_status`.
+    ///
+    /// Connection ids rather than awareness client ids: the relay knows which
+    /// sockets are attached, and who is on the other end of one is the
+    /// document's business, not the shell's.
+    pub fn peer_ids(&self) -> Vec<String> {
+        let rooms = self.rooms.lock().expect("relay lock");
+        rooms.outbound.keys().map(u64::to_string).collect()
+    }
+
     pub fn boards(&self) -> Vec<String> {
         let rooms = self.rooms.lock().expect("relay lock");
         rooms.open.keys().cloned().collect()

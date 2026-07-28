@@ -194,7 +194,7 @@ export class MockPlatform implements Platform {
   async syncStop(): Promise<void> {}
 
   async syncStatus(): Promise<SyncStatus> {
-    return { connected: false, peers: [], mode: null };
+    return { connected: false, peers: [], mode: null, url: null };
   }
 
   async peerWant(): Promise<void> {}

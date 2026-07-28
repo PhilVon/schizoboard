@@ -113,6 +113,16 @@ export interface SyncStatus {
   connected: boolean;
   peers: string[];
   mode: SyncConfig["mode"] | null;
+  /**
+   * Where the embedded relay is listening, when this client is the one hosting
+   * (T-69). `null` in relay mode, where somebody else is.
+   *
+   * It has to come back out rather than go in, because the relay binds port
+   * zero and is told its address by the operating system. A fixed port would
+   * be one more thing to collide with on a machine somebody is working on, and
+   * mDNS (T-70) carries whatever this says.
+   */
+  url: string | null;
 }
 
 /** Rust -> frontend. ARCHITECTURE section 4.4. */

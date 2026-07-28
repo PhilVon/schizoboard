@@ -35,6 +35,120 @@ use tauri_plugin_dialog::DialogExt;
 use assets::{AssetMeta, AssetStore};
 use docstore::DocStore;
 
+// --- sync (T-69) -----------------------------------------------------------
+
+/// The relay this client is hosting, if it is hosting one.
+#[derive(Default)]
+struct Hosting {
+    relay: std::sync::Mutex<Option<sync::Relay>>,
+    mode: std::sync::Mutex<Option<String>>,
+    /// Relay mode's address, as the frontend gave it to us.
+    url: std::sync::Mutex<Option<String>>,
+    board: std::sync::Mutex<Option<String>>,
+}
+
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SyncConfig {
+    mode: String,
+    /// Relay mode: where somebody else's relay is. The webview dials it, not
+    /// us — this is here so the shell can report what it was told.
+    url: Option<String>,
+    /// Which board. Carried for `sync_status` and for T-70's advertisement.
+    board_id: String,
+}
+
+#[derive(Serialize)]
+struct SyncStatus {
+    connected: bool,
+    peers: Vec<String>,
+    mode: Option<String>,
+    url: Option<String>,
+}
+
+/// Start hosting, in the mode asked for.
+///
+/// ## Loopback, deliberately
+///
+/// The relay binds `127.0.0.1` even in LAN mode, and LAN mode is therefore not
+/// yet reachable from another machine. That is not an oversight to be tidied up
+/// later by widening the bind address: the relay has no authentication at all —
+/// the protocol has an `AUTH` message and nothing ever sends one — so binding
+/// every interface would put a read-write board on whatever network this
+/// machine is attached to, for anybody who guesses a board name.
+///
+/// ARCHITECTURE section 5.1 names authentication as part of the price of
+/// self-hosting and it has not been paid yet. T-70 is where it starts to
+/// matter, because that is where the board becomes discoverable rather than
+/// merely reachable, and Q-59 asks how far it should go.
+#[tauri::command]
+async fn sync_start(app: AppHandle, config: SyncConfig) -> Result<(), String> {
+    let hosting = app.state::<Hosting>();
+    *hosting.mode.lock().expect("hosting lock") = Some(config.mode.clone());
+    *hosting.url.lock().expect("hosting lock") = config.url.clone();
+    *hosting.board.lock().expect("hosting lock") = Some(config.board_id);
+
+    // Relay mode: somebody else is hosting, and the webview's own provider
+    // dials them. There is nothing for this side to start.
+    if config.mode != "lan" {
+        return Ok(());
+    }
+    // Already hosting. The guard is dropped before the await below, which is
+    // what keeps this command's future `Send`.
+    if hosting.relay.lock().expect("hosting lock").is_some() {
+        return Ok(());
+    }
+
+    // Port zero: the operating system picks, and `sync_status` reports back.
+    // A fixed port is one more thing to collide with on a machine somebody is
+    // working on, and T-70 advertises whatever this turns out to be.
+    let relay = sync::Relay::start(([127, 0, 0, 1], 0).into())
+        .await
+        .map_err(|error| format!("the relay could not start: {error}"))?;
+    *hosting.relay.lock().expect("hosting lock") = Some(relay);
+    Ok(())
+}
+
+/// Stop hosting. Dropping the relay closes the port and every connection on it.
+#[tauri::command]
+async fn sync_stop(app: AppHandle) -> Result<(), String> {
+    let hosting = app.state::<Hosting>();
+    hosting.relay.lock().expect("hosting lock").take();
+    *hosting.mode.lock().expect("hosting lock") = None;
+    *hosting.url.lock().expect("hosting lock") = None;
+    *hosting.board.lock().expect("hosting lock") = None;
+    Ok(())
+}
+
+#[tauri::command]
+async fn sync_status(app: AppHandle) -> SyncStatus {
+    let hosting = app.state::<Hosting>();
+    let mode = hosting.mode.lock().expect("hosting lock").clone();
+    let relay = hosting.relay.lock().expect("hosting lock");
+    let board = hosting.board.lock().expect("hosting lock").clone();
+
+    match relay.as_ref() {
+        Some(running) => SyncStatus {
+            connected: true,
+            peers: running.peer_ids(),
+            mode,
+            // The address a peer should dial, board and all, so nothing else
+            // has to know how a relay URL is spelled.
+            url: Some(format!(
+                "ws://{}/{}",
+                running.addr(),
+                board.unwrap_or_else(|| "board".to_string())
+            )),
+        },
+        None => SyncStatus {
+            connected: false,
+            peers: Vec::new(),
+            mode,
+            url: hosting.url.lock().expect("hosting lock").clone(),
+        },
+    }
+}
+
 /// What shell the frontend is actually running inside. Consumed by the boot
 /// panel now and by the dev HUD (T-14) later.
 #[derive(Serialize)]
@@ -354,6 +468,7 @@ pub fn run() {
             let data = app.path().app_data_dir()?;
             app.manage(AssetStore::new(data.join("assets"))?);
             app.manage(DocStore::new(data.join("doc"))?);
+            app.manage(Hosting::default());
             if let Some(window) = app.get_webview_window("main") {
                 clipboard::forward_drops(&window, app.handle());
             }
@@ -361,6 +476,9 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             app_info,
+            sync_start,
+            sync_stop,
+            sync_status,
             asset_ingest_bytes,
             asset_ingest_path,
             asset_ingest_url,
