@@ -174,6 +174,29 @@ async function boot(): Promise<void> {
    * The choice itself is `variantFor`, over in `platform/`, because this module
    * is wiring and nothing tests it.
    */
+  /**
+   * The bytes are on this disk.
+   *
+   * Both things, always, because they are one fact. The exchange clears a want
+   * when a transfer commits, which covers every photograph that *arrived* - and
+   * misses the much more common one that was never absent. Boot mounts items and
+   * `assetUrl` asks for every photograph it cannot yet show, and that happens
+   * before `reconcileAssets` has finished asking the store whether they are
+   * already here; the answer comes back yes, and the want stays.
+   *
+   * Left alone it never goes: nothing removes a want but bytes landing, and no
+   * bytes are coming for a file that was already there. So a board where every
+   * photograph is present reads "N missing" in the HUD's alert colour for the
+   * whole session - which is the row a person would look at to tell whether
+   * transfers are stuck - and we broadcast WANT to every peer for photographs we
+   * are holding, which is a message per asset per peer saying something untrue
+   * about us.
+   */
+  const holdsAsset = (sha256: string): void => {
+    assets.ready(sha256);
+    exchange?.forget(sha256);
+  };
+
   const assetUrl = (sha256: string, screenPx: number): AssetView => {
     if (assets.isReady(sha256)) {
       return { url: native.assetUrl(sha256, variantFor(screenPx)), phase: "ready", fraction: 0 };
@@ -219,7 +242,7 @@ async function boot(): Promise<void> {
   // strand that one photograph undeveloped for the session while every later
   // one worked.
   await native.on("asset:ready", ({ sha256 }) => {
-    assets.ready(sha256);
+    holdsAsset(sha256);
     // We are now somebody who has it, whether it was pasted here or fetched
     // from a peer. Saying so immediately rather than waiting for a periodic
     // sweep is what makes a photograph dropped on one machine appear on the
@@ -1709,13 +1732,17 @@ async function boot(): Promise<void> {
           // `assetUrl` sees a missing photograph but not whether it is missing
           // because it is late or because it was never here.
           assets.unavailable(sha256);
+          // And nobody to name, which is a notice in its own right (DESIGN 7.5):
+          // this board has no wire, so the count is the whole of what can be
+          // said about it.
+          missing.unavailable(sha256);
           return;
         }
         exchange.want(sha256);
         assets.requesting(sha256);
         return;
       }
-      assets.ready(sha256);
+      holdsAsset(sha256);
     });
   };
   void reconcileAssets();
