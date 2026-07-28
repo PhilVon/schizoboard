@@ -28,6 +28,8 @@ import { carryScale } from "@/lib/carry";
 import type { WetStroke } from "@/lib/ink";
 import { rotateOut } from "@/lib/rotate";
 import { type ItemFrame, WetInk } from "@/render/ink/wet";
+import { PeerPainter } from "@/render/presence/draw";
+import type { PeerSource } from "@/render/presence/peers";
 import { pinHitRadius } from "@/render/pins/dom";
 import { bodyWidth } from "@/render/ropes/paint";
 import type { Bounds, Camera, Vec2 } from "@/state/camera";
@@ -231,8 +233,22 @@ export class Overlay {
   private hadWet = false;
   /** Reset at the top of every `draw` â€” see [`Overlay.clear`]. */
   private cleared = false;
+  /** What the peers on the canvas were drawn from — see [`PeerSource.version`]. */
+  private peersVersion = -1;
   /** Holds the reused screen-space buffer, so it survives between frames. */
   private readonly wetInk = new WetInk();
+  /** Everybody else. Holds its own scratch point, like [`WetInk`] above. */
+  private readonly painter = new PeerPainter();
+  /**
+   * Handed to [`PeerPainter`], whose entry points cannot know whether this frame
+   * has cleared yet and must not clear a frame that turns out to draw nothing.
+   *
+   * Bound once rather than rebuilt per frame: this is phase 8 of every frame
+   * anything moves on.
+   */
+  private readonly clearOnce = (): void => {
+    if (this.ctx) this.clear(this.ctx);
+  };
   /** Refilled every frame a glued stroke is drawn — see [`Overlay.inkFrame`]. */
   private readonly ink: ItemFrame = { cx: 0, cy: 0, cos: 1, sin: 0, hw: 0, hh: 0 };
 
@@ -301,6 +317,15 @@ export class Overlay {
      * it is a mark being made on the board rather than a thing said about it.
      */
     wet: readonly WetStroke[] = EMPTY_WET,
+    /**
+     * Everybody else on the board — their cursors, and what they have hold of.
+     *
+     * Null when this client has no wire at all, which is a plain browser with no
+     * `?relay=` and is most of the time in development. Nothing is allocated,
+     * compared or walked in that case: presence costs a null check per frame on
+     * a board that is alone.
+     */
+    peers: PeerSource | null = null,
   ): void {
     const ctx = this.ctx;
     if (!ctx) return;
@@ -314,6 +339,13 @@ export class Overlay {
     // withholds it — but a one-sample run that arrives here after a crossing is
     // the continuation of a mark and is drawn.
     const wantsWet = wet.length > 0 && wet.some((run) => run.samples.length >= 2);
+    // A peer's outlines ride whatever they are drawn round, and none of it is
+    // ours: a collaborator's selected photograph is moved by *them*, which
+    // touches neither our camera nor our selection. Broad on purpose, and the
+    // same breadth the selected-string check above settles for — the alternative
+    // is a per-peer reverse index rebuilt on every awareness message, to save
+    // work on the frames where something is already moving.
+    const wantsPeerChrome = peers !== null && peers.chromed;
     const stale =
       wantsMarquee ||
       wantsPending ||
@@ -340,9 +372,21 @@ export class Overlay {
       // nothing else changed â€” dragging a marquee across empty cork and letting
       // go never touches the selection.
       this.hadMarquee ||
+      // A cursor that moved, a peer who joined or left, a selection of theirs
+      // that changed. One integer, and it is the *drawn* cursor rather than the
+      // published one, so a peer's spring settling is a change and a peer
+      // sitting still is not (`render/presence/peers.ts`).
+      (peers !== null && peers.version !== this.peersVersion) ||
+      (wantsPeerChrome &&
+        (dirty.all ||
+          dirty.items.size > 0 ||
+          dirty.pins.size > 0 ||
+          dirty.ropes.size > 0 ||
+          dirty.strings.size > 0)) ||
       camera.version !== this.cameraVersion ||
       selection.version !== this.selectionVersion ||
       this.selectedMoved(selection, scene, dirty);
+    if (peers !== null) this.peersVersion = peers.version;
     this.hadMarquee = wantsMarquee;
     this.hadPending = wantsPending;
     this.hadStringHover = stringHover !== null;
@@ -360,14 +404,26 @@ export class Overlay {
     // blank canvas to arrive at a blank canvas is the cost this module exists
     // to not pay.
     this.cleared = false;
-    // The halo first, so every other piece of chrome lands on top of it rather
+    // Before even our own halo, because a peer's string outline composites with
+    // `destination-out` and would erase anything already on the canvas — see
+    // [`PeerPainter.strings`].
+    let drew =
+      peers !== null &&
+      ropes !== null &&
+      this.painter.strings(ctx, camera, scene, ropes, peers, this.clearOnce);
+    // The halo next, so every other piece of chrome lands on top of it rather
     // than being washed out by it.
-    let drew = wantsStrings && this.drawStrings(ctx, camera, scene, selection, ropes);
+    if (wantsStrings && this.drawStrings(ctx, camera, scene, selection, ropes)) drew = true;
     // Straight after the halo and before every other piece of chrome, so a
     // string that is both hovered and selected still reads as selected first.
     if (wantsThreads && this.drawThreads(ctx, camera, scene, ropes, hoveredPin)) drew = true;
     if (this.drawSelection(ctx, camera, scene, selection)) drew = true;
     if (this.drawPins(ctx, camera, scene, selection)) drew = true;
+    // A peer's boxes and rings, after our own and outside them, so that on
+    // something both of us have hold of ours is the outline in front.
+    if (peers !== null && this.painter.chrome(ctx, camera, scene, peers, this.clearOnce)) {
+      drew = true;
+    }
     // The rotation handle. `chromeFrame` is what decides that one item has one
     // and a group does not, and the select tool asks the same function where the
     // knob is â€” so what is drawn and what is grabbable cannot drift apart.
@@ -387,6 +443,11 @@ export class Overlay {
     // painted on top of the line you are drawing would read as the line going
     // *under* the photograph it is being drawn on.
     if (wantsWet && this.drawWet(ctx, camera, scene, wet)) drew = true;
+    // And over even the ink. A pointer is not part of the picture the board is
+    // making — it is the thing pointing at it, and one that can be hidden behind
+    // a mark somebody is drawing is a pointer you lose exactly when two people
+    // are working in the same place.
+    if (peers !== null && this.painter.cursors(ctx, camera, peers, this.clearOnce)) drew = true;
     // Nothing to draw, but last frame there was â€” so the clear is the work.
     if (!drew && this.inked) this.clear(ctx);
     this.inked = drew;

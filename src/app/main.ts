@@ -49,6 +49,7 @@ import { BoardInkLayer } from "@/render/ink/board";
 import { DomItemLayer } from "@/render/items/dom";
 import { FrameLoop } from "@/render/loop";
 import { Overlay, type PendingRun } from "@/render/overlay";
+import { Peers } from "@/render/presence/peers";
 import { PinLayer } from "@/render/pins/dom";
 import { RopeLayer } from "@/render/ropes/paint";
 import { World } from "@/render/world";
@@ -186,13 +187,20 @@ async function boot(): Promise<void> {
   /**
    * Phase 2: every other peer's in-flight drag, rendered 100 ms in the past.
    *
-   * Nothing feeds it yet — no provider is constructed and no awareness state
-   * reaches this file, which is T-150 — so today this steps an empty map of
-   * peers. Wired now for the reason `ropes` above was wired before anything could
-   * make a string: the phase ordering is the part that is expensive to get wrong,
-   * and settling it while there is nothing to get wrong with is free.
+   * Fed from the awareness subscription below, which is also where its arrival
+   * times come from. Empty and free on a board with no wire.
    */
   const remote = new RemoteMotion();
+  /**
+   * Phase 8: the same peers, as a picture — where they are pointing and what
+   * they have hold of.
+   *
+   * The other half of the same awareness state. `remote` takes the `grab`, which
+   * moves items and is therefore a write into the scene; this takes the cursor
+   * and the selection, which are never anything but chrome on the overlay. One
+   * subscription, split by what the payload is *for*.
+   */
+  const peers = new Peers();
   const loop = new FrameLoop();
   const selection = new Selection();
   // Both annotated, and they have to be: `offerWheel` below reaches forward to
@@ -947,14 +955,28 @@ async function boot(): Promise<void> {
     ({ added, updated, removed }: { added: number[]; updated: number[]; removed: number[] }) => {
       const arrived = performance.now();
       const states = provider.awareness.getStates();
-      for (const client of added) remote.observe(client, states.get(client), arrived);
-      for (const client of updated) remote.observe(client, states.get(client), arrived);
+      for (const client of added) {
+        const state = states.get(client);
+        remote.observe(client, state, arrived);
+        peers.observe(client, state);
+      }
+      for (const client of updated) {
+        const state = states.get(client);
+        remote.observe(client, state, arrived);
+        peers.observe(client, state);
+      }
       // Awareness drops a peer's state on disconnect by design, and this is the
       // only notice of it there is.
-      for (const client of removed) remote.forget(client);
+      for (const client of removed) {
+        remote.forget(client);
+        peers.forget(client);
+      }
     },
   );
-  if (provider !== null) remote.ignore(board.doc.clientID);
+  if (provider !== null) {
+    remote.ignore(board.doc.clientID);
+    peers.ignore(board.doc.clientID);
+  }
 
   const resize = (): void => {
     const { innerWidth: w, innerHeight: h } = window;
@@ -1285,6 +1307,10 @@ async function boot(): Promise<void> {
   });
 
   loop.on("overlay", (frame) => {
+    // Before the draw, not after: a peer's cursor is sprung towards where they
+    // last said it was, and the frame that moves it is the frame that has to
+    // find the canvas stale (`render/presence/peers.ts`).
+    if (provider !== null) peers.step(frame.dt);
     // Selection chrome is drawn here, not on the item nodes, so its width is in
     // screen pixels at every zoom (T-91). `dirty` comes along only so it can tell
     // "a selected photograph is being dragged" from "nothing has changed".
@@ -1320,6 +1346,10 @@ async function boot(): Promise<void> {
       // hole it just made — the exact "visibly wrong" the erase tool spent a
       // task avoiding.
       wetPen()?.runsInFlight ?? [],
+      // Everybody else: their cursors, and the chrome for what they have hold
+      // of. Null on a board with no wire, which costs the overlay one null check
+      // and no walk at all.
+      provider === null ? null : peers,
     );
     hud.update(frame.now);
   });

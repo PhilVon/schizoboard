@@ -9,6 +9,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { Overlay } from "@/render/overlay";
+import type { DrawnPeer } from "@/render/presence/peers";
 import { Camera } from "@/state/camera";
 import { DirtySets } from "@/state/dirty";
 import { Scene, type ItemCold, type ItemPose } from "@/state/scene";
@@ -30,6 +31,8 @@ interface Calls {
   strokeWidths: number[];
   /** Wet ink is the one thing on this canvas that is filled from a `Path2D`. */
   fills: number;
+  /** Peer names, which are the only text this canvas draws. */
+  text: string[];
 }
 
 let calls: Calls;
@@ -58,6 +61,9 @@ function stubCanvas(): HTMLCanvasElement {
       calls.lineWidths.push(ctx.lineWidth);
     },
     beginPath: vi.fn(),
+    closePath: vi.fn(),
+    strokeText: (value: string) => calls.text.push(value),
+    fillText: (value: string) => calls.text.push(value),
     moveTo: (...args: [number, number]) => calls.lines.push(args),
     lineTo: (...args: [number, number]) => calls.lines.push(args),
     arc: (x: number, y: number, r: number) => calls.arcs.push([x, y, r]),
@@ -112,6 +118,7 @@ beforeEach(() => {
     lines: [],
     strokeWidths: [],
     fills: 0,
+    text: [],
   };
   camera = new Camera();
   camera.resize(1000, 800);
@@ -738,5 +745,144 @@ describe("the stroke in progress", () => {
     // samples in, and the origin is not a reasonable guess at one.
     draw(4, "gone");
     expect(calls.fills).toBe(0);
+  });
+});
+
+
+/**
+ * The overlay's half of T-151. What a peer *looks* like is
+ * `render/presence/draw.test.ts`; this is the part the overlay owns — whether
+ * a peer makes the canvas stale, and whether one sitting still costs anything.
+ */
+describe("Overlay and its peers", () => {
+  /** A `PeerSource` whose version this test moves by hand, like a real one. */
+  class Fake {
+    version = 0;
+    list: DrawnPeer[] = [];
+    get chromed(): boolean {
+      return this.list.some((p) => p.items.length + p.strings.length + p.pins.length > 0);
+    }
+    peers(): Iterable<DrawnPeer> {
+      return this.list;
+    }
+    set(list: DrawnPeer[]): void {
+      this.list = list;
+      this.version += 1;
+    }
+  }
+
+  let fake: Fake;
+
+  function one(over: Partial<DrawnPeer> = {}): DrawnPeer {
+    return {
+      id: "7",
+      name: "Blue peer",
+      color: "#2c5aa8",
+      cursor: null,
+      items: [],
+      strings: [],
+      pins: [],
+      ...over,
+    };
+  }
+
+  /** The OVERLAY phase with peers on the board and nothing else happening. */
+  function withPeers(): void {
+    overlay.draw(
+      camera,
+      scene,
+      selection,
+      null,
+      dirty,
+      null,
+      null,
+      null,
+      null,
+      null,
+      [],
+      fake,
+    );
+  }
+
+  beforeEach(() => {
+    fake = new Fake();
+  });
+
+  it("draws a peer's cursor, and names them", () => {
+    fake.set([one({ cursor: { x: 100, y: 50 } })]);
+    withPeers();
+    // Outlined then filled, so the name is painted twice.
+    expect(calls.text).toEqual(["Blue peer", "Blue peer"]);
+    expect(calls.clearRect).toBe(1);
+  });
+
+  /**
+   * The whole point of the version. A board where one collaborator is sitting
+   * still would otherwise clear and restroke a full-viewport canvas sixty times
+   * a second to arrive at the identical picture.
+   */
+  it("costs nothing while a peer is not moving", () => {
+    fake.set([one({ cursor: { x: 100, y: 50 } })]);
+    withPeers();
+    const drawn = calls.clearRect;
+    withPeers();
+    withPeers();
+    expect(calls.clearRect).toBe(drawn);
+  });
+
+  it("clears the cursor on the frame after a peer leaves", () => {
+    fake.set([one({ cursor: { x: 100, y: 50 } })]);
+    withPeers();
+    expect(calls.clearRect).toBe(1);
+
+    fake.set([]);
+    withPeers();
+    expect(calls.clearRect).toBe(2);
+    // And then stops, because there is nothing left to take away.
+    withPeers();
+    expect(calls.clearRect).toBe(2);
+  });
+
+  it("outlines what a peer has selected, outside our own chrome", () => {
+    add("a");
+    fake.set([one({ items: ["a"] })]);
+    withPeers();
+    expect(calls.strokeRect).toHaveLength(1);
+    // Ours would be 3.25 px out; a peer's is four further.
+    expect(calls.strokeRect[0]![2]).toBeCloseTo(100 + 2 * (3.25 + 4), 6);
+  });
+
+  /**
+   * A collaborator's selected photograph is moved by *them*, which touches
+   * neither our camera nor our selection — so without the dirty check the
+   * outline would stay behind on the cork while the item walked out from under
+   * it.
+   */
+  it("follows a peer's selected item when somebody else drags it", () => {
+    add("a");
+    fake.set([one({ items: ["a"] })]);
+    withPeers();
+    // The box is stroked about a translated origin, so where the outline *is*
+    // is the translate rather than the rect.
+    const first = calls.translate[0]![0];
+
+    scene.setPose("a", { x: 300 });
+    dirty.item("a");
+    withPeers();
+    expect(calls.strokeRect).toHaveLength(2);
+    expect(calls.translate[1]![0]).toBeCloseTo(first + 300, 6);
+  });
+
+  /** The same dirt with nobody selecting anything is not a reason to redraw. */
+  it("ignores a moving item that no peer has hold of", () => {
+    add("a");
+    fake.set([one({ cursor: { x: 0, y: 0 } })]);
+    withPeers();
+    const drawn = calls.clearRect;
+
+    scene.setPose("a", { x: 300 });
+    dirty.item("a");
+    withPeers();
+    expect(calls.clearRect).toBe(drawn);
   });
 });
