@@ -600,6 +600,20 @@ describe("more than one of them", () => {
     expect(at("b").x).toBeCloseTo(200, 6);
   });
 
+  it("ignores this client's own state", () => {
+    // Our own state is in `getStates()` like everybody else's. Interpolating our
+    // own drag would put a pose from 100 ms ago on top of the gesture making it,
+    // and the item would trail the cursor by exactly the buffer.
+    remote.ignore(PEER);
+    send(0, 0, 0);
+    send(100, 100, 0);
+
+    apply(150);
+
+    expect(remote.heldBy(PEER).size).toBe(0);
+    expect(at().x).toBe(0);
+  });
+
   it("forgets a peer that disconnected", () => {
     send(0, 0, 0);
     send(100, 100, 0);

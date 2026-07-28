@@ -35,9 +35,11 @@ import {
 } from "@/crdt/ops";
 import { Origin } from "@/crdt/origins";
 import { Persistence } from "@/crdt/persistence";
+import { WireProvider } from "@/crdt/sync/provider";
 import { UndoHistory } from "@/crdt/undo";
 import { noteSizeFor } from "@/app/ingest";
 import { Paste } from "@/app/paste";
+import { dialAddress, identityFor, planSync } from "@/app/sync";
 import { DEFAULT_ERASER_SIZE, type InkSurface } from "@/lib/ink";
 import { initPlatform } from "@/platform";
 import { variantFor } from "@/platform/types";
@@ -57,6 +59,7 @@ import { DirtySets } from "@/state/dirty";
 import { chromeFrame, emptyFrame, handleAt, handleCursor } from "@/state/handles";
 import { isChromeTarget, isTextTarget } from "@/state/input";
 import { Navigation } from "@/state/navigation";
+import { Presence } from "@/state/presence";
 import { RemoteMotion } from "@/state/remote";
 import { Scene } from "@/state/scene";
 import { Selection } from "@/state/selection";
@@ -885,6 +888,74 @@ async function boot(): Promise<void> {
     dirty.everything();
   });
 
+  // --- sync ----------------------------------------------------------------
+  /**
+   * The wire, if there is one.
+   *
+   * Everything above this line is a board that works alone; everything Phase 7
+   * builds needs a provider to exist, and until now nothing constructed one.
+   * `app/sync.ts` owns the decision of what to connect to — that part has cases
+   * and is tested — and this owns the wiring, which does not.
+   *
+   * `provider` is null on a plain browser with no `?relay=`, which is the fast
+   * dev loop working as designed rather than a failure: `platform/mock.ts`
+   * refuses `syncStart` and the board is simply local. Every use below is
+   * therefore guarded, and none of them is on a hot path.
+   */
+  const plan = planSync(window.location.search);
+  if (plan.complaint !== null) console.warn(`[sync] ignored: ${plan.complaint}`);
+  const address = await dialAddress(native, plan.config);
+  const provider = address === null ? null : new WireProvider(board.doc, address);
+  if (provider === null) console.info("[sync] local board — no relay to dial");
+  else console.info(`[sync] ${plan.config.mode} · ${address}`);
+  provider?.on("error", (error) => console.warn("[sync] error", error));
+  provider?.on("denied", (reason) => console.warn(`[sync] denied: ${reason}`));
+
+  /**
+   * What this client tells everybody else, every other frame (T-71).
+   *
+   * The scene is handed over as the pose source for the `grab` field: a drag is
+   * published as where the held items *are*, which is a question only the scene
+   * can answer, and `state/presence.ts` is what decides how much of that answer
+   * reaches the wire.
+   */
+  const presence =
+    provider === null
+      ? null
+      : new Presence(
+          provider.awareness,
+          camera,
+          selection,
+          scene,
+          identityFor(board.doc.clientID),
+        );
+
+  /**
+   * Everybody else's states, as they arrive.
+   *
+   * The arrival *time* is the reason this is a subscription rather than a poll of
+   * `getStates()` in phase 2: `state/remote.ts` needs to know when a sample
+   * landed, and only the moment it lands knows that. `change` rather than
+   * `update` because `Awareness` bumps its own clock every fifteen seconds
+   * whether anything changed or not, and a heartbeat is not a sample.
+   *
+   * Our own state is skipped. It is in `getStates()` like everyone else's, and
+   * interpolating our own drag would fight the gesture making it.
+   */
+  provider?.awareness.on(
+    "change",
+    ({ added, updated, removed }: { added: number[]; updated: number[]; removed: number[] }) => {
+      const arrived = performance.now();
+      const states = provider.awareness.getStates();
+      for (const client of added) remote.observe(client, states.get(client), arrived);
+      for (const client of updated) remote.observe(client, states.get(client), arrived);
+      // Awareness drops a peer's state on disconnect by design, and this is the
+      // only notice of it there is.
+      for (const client of removed) remote.forget(client);
+    },
+  );
+  if (provider !== null) remote.ignore(board.doc.clientID);
+
   const resize = (): void => {
     const { innerWidth: w, innerHeight: h } = window;
     camera.resize(w, h);
@@ -1253,7 +1324,28 @@ async function boot(): Promise<void> {
     hud.update(frame.now);
   });
 
-  loop.on("flush", () => {
+  /**
+   * Whether a gesture was holding anything on the frame before.
+   *
+   * `select.heldItems` empties on release, so the release itself is a *transition*
+   * and cannot be read off the current state. One boolean, and it is what makes
+   * the `final` grab go out — the message a peer needs to start section 9.2's
+   * handoff, and the one thing a grab that merely vanished would not tell it.
+   */
+  let wasGrabbing = false;
+  loop.on("flush", (frame) => {
+    if (presence !== null) {
+      const cursor = cursorBoard();
+      if (cursor === null) presence.pointerGone();
+      else presence.pointerAt(cursor.x, cursor.y, tools.active.id);
+      const holding = select.heldItems.size > 0;
+      if (holding) presence.grabbing(select.heldItems);
+      else if (wasGrabbing) presence.released();
+      wasGrabbing = holding;
+      // Last, so it sends what the three lines above just staged. Every other
+      // frame at most, and only when something changed (T-71).
+      presence.flush(frame.index);
+    }
     // Everything downstream has consumed this frame's changes.
     dirty.clear();
     // Then, and only then, the document writes this frame's input asked for.

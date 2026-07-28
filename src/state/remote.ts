@@ -337,12 +337,28 @@ export function criticallyDamped(
  */
 export class RemoteMotion {
   private readonly peers = new Map<number, Peer>();
+  private self: number | null = null;
+
+  /**
+   * This client's own id, to be dropped on arrival.
+   *
+   * Our own state is in `getStates()` like everybody else's, and interpolating
+   * our own drag would put a pose from 100 ms ago on top of the gesture that is
+   * making it — the item would trail the cursor by exactly the buffer. Told to
+   * this object rather than filtered by the caller because "whose samples are
+   * these" is a question about the receive path.
+   */
+  ignore(clientId: number): void {
+    this.self = clientId;
+    this.peers.delete(clientId);
+  }
 
   /**
    * A peer's awareness state arrived. `receivedAt` is on the same clock as the
    * `now` handed to `apply` — `performance.now()`, which is the frame's clock.
    */
   observe(clientId: number, state: unknown, receivedAt: number): void {
+    if (clientId === this.self) return;
     const grab = readGrab(state);
     const peer = this.peers.get(clientId);
 
