@@ -113,6 +113,65 @@ const PIN_RING_UNDER = "rgba(34, 21, 10, 0.55)";
 const PIN_RING_OVER = "rgba(255, 244, 214, 0.95)";
 
 /**
+ * What an undo just changed — DESIGN section 7.6's "flash-highlight what
+ * changed so it's never silent", and `state/flash.ts` for why it is needed.
+ *
+ * Amber, and that is the one colour decision here that carries weight. Every
+ * other mark on this canvas is either the warm dark of the selection family or
+ * the pale cream of the cork's own highlight, and a flash that landed in either
+ * would read as "you have selected this" — which is exactly the wrong sentence
+ * for a thing that has just moved without being asked. Amber belongs to neither
+ * family, sits well clear of the cotton red of a string, and is the one hue that
+ * is legible on cork, on an off-white polaroid frame and on a photograph.
+ *
+ * Dark under pale over, like the candidate ring and the selected-pin ring, for
+ * the reason those are: no single colour survives all three surfaces, and this
+ * mark gets under a second to be seen.
+ */
+const FLASH_UNDER = "rgba(30, 18, 6, 0.7)";
+const FLASH_OVER = "rgba(255, 186, 74, 0.95)";
+const FLASH_WIDTH = 2.5;
+/**
+ * How far the outline stands off the thing it lights, at the start of the fade
+ * and at the end of it. A ring that opens outwards as it goes reads as a pulse
+ * leaving the item; one that held still would read as a second, blinking
+ * selection.
+ */
+const FLASH_PAD = 4;
+const FLASH_SPREAD = 10;
+/**
+ * The fade holds near full for the first third and falls away over the rest.
+ * A straight linear ramp spends most of its life at an alpha too low to see and
+ * reads as a much shorter flash than it is.
+ */
+const FLASH_HOLD = 1.5;
+/**
+ * A string is lit rather than outlined — a band outside the cotton and a wash
+ * inside it, both well short of opaque. See [`STRING_HALO`] for what happens to
+ * a string covered by a solid pale stroke.
+ */
+const FLASH_STRING_GLOW = 0.4;
+const FLASH_STRING_CORE = 0.85;
+
+/** Full for the first third of the life, then away. See [`FLASH_HOLD`]. */
+function alphaOf(life: number): number {
+  return Math.min(1, life * FLASH_HOLD);
+}
+
+/**
+ * The lives of the things an undo just touched — `state/flash.ts`. Structural
+ * rather than the class, like [`RopeGeometry`] and for the same reason: this
+ * canvas draws what it is handed and has no opinion about how it decays.
+ */
+export interface FlashSource {
+  /** Item id -> life, 1 the moment it changed and 0 when the flash is over. */
+  readonly items: ReadonlyMap<string, number>;
+  readonly pins: ReadonlyMap<string, number>;
+  readonly strings: ReadonlyMap<string, number>;
+  readonly isEmpty: boolean;
+}
+
+/**
  * The string run being drawn. The cotton red of a real string, so the run
  * reads as the thing it is about to become rather than as UI chrome — but
  * thinner and flat, with no shadow and no highlight, because it is not string
@@ -228,6 +287,9 @@ export class Overlay {
    *  curve that nothing else on this canvas knows about, so it is its own
    *  flag — the frame it disappears is a frame that has to clear. */
   private hadStringHover = false;
+  /** Was an undo's flash on the canvas last frame? Like the wet-ink flag, the
+   *  frame it expires is a frame that has to clear and changes nothing else. */
+  private hadFlash = false;
   /** The pin whose threads were lit last frame. Like the candidate ring, it
    *  changes with nothing else: moving the cursor from one pin to the next
    *  touches no camera, no selection and no item. */
@@ -330,6 +392,12 @@ export class Overlay {
      * a board that is alone.
      */
     peers: PeerSource | null = null,
+    /**
+     * What the last undo changed, fading — DESIGN section 7.6. Null in every
+     * test that is not about it, and on any board where nothing has been undone
+     * it is an empty source that costs one boolean per frame.
+     */
+    flashes: FlashSource | null = null,
   ): void {
     const ctx = this.ctx;
     if (!ctx) return;
@@ -350,8 +418,16 @@ export class Overlay {
     // is a per-peer reverse index rebuilt on every awareness message, to save
     // work on the frames where something is already moving.
     const wantsPeerChrome = peers !== null && peers.chromed;
+    // A flash fades, so every frame of one is a different picture — and unlike
+    // everything else here it is stale on frames where the board is otherwise
+    // completely still, which is the usual case: you press Ctrl+Z and nothing
+    // else on the board is moving at all.
+    const wantsFlash = flashes !== null && !flashes.isEmpty;
     const stale =
       wantsMarquee ||
+      wantsFlash ||
+      // The frame the last one expires on still has it on the canvas.
+      this.hadFlash ||
       wantsPending ||
       // Every frame of a stroke, and the frame after the last one — a stroke that
       // grew by one sample is a different picture, and a release leaves a mark on
@@ -394,6 +470,7 @@ export class Overlay {
     this.hadMarquee = wantsMarquee;
     this.hadPending = wantsPending;
     this.hadStringHover = stringHover !== null;
+    this.hadFlash = wantsFlash;
     this.hadWet = wantsWet;
     this.hoveredPin = hoveredPin;
     this.highlighted = highlight;
@@ -421,6 +498,10 @@ export class Overlay {
     // Straight after the halo and before every other piece of chrome, so a
     // string that is both hovered and selected still reads as selected first.
     if (wantsThreads && this.drawThreads(ctx, camera, scene, ropes, hoveredPin)) drew = true;
+    // Under the selection outline rather than over it: a flash is transient and
+    // the selection is a fact, and an amber ring painted across the outline of
+    // something you have hold of would make the two read as one confused mark.
+    if (wantsFlash && this.drawFlashes(ctx, camera, scene, flashes, ropes)) drew = true;
     if (this.drawSelection(ctx, camera, scene, selection)) drew = true;
     if (this.drawPins(ctx, camera, scene, selection)) drew = true;
     // A peer's boxes and rings, after our own and outside them, so that on
@@ -824,6 +905,135 @@ export class Overlay {
       ctx.stroke();
     }
     return true;
+  }
+
+  /**
+   * The amber pulse round everything the last undo touched — DESIGN section
+   * 7.6, and `state/flash.ts` for the argument.
+   *
+   * Three shapes for the three kinds of thing, and each borrows the chrome
+   * already proven for that kind: a box round an item, a ring round a pin, and
+   * a light along a string. That is not economy of code — the point is that a
+   * flash reads as *this thing changed*, so it has to be the shape of the
+   * thing, and a box drawn round a string would be a box drawn round the
+   * rectangle two pins happen to span.
+   *
+   * `globalAlpha` rather than a per-life `rgba()` string: this runs on every
+   * frame of every flash, and building two colour strings per lit object per
+   * frame is an allocation in the middle of phase 8.
+   */
+  private drawFlashes(
+    ctx: CanvasRenderingContext2D,
+    camera: Camera,
+    scene: Scene,
+    flashes: FlashSource,
+    ropes: RopeGeometry | null,
+  ): boolean {
+    let drew = false;
+
+    for (const [id, life] of flashes.items) {
+      const slot = scene.slotOf(id);
+      // The binding removes an item the moment a collaborator deletes it, and
+      // a flash outlives its own frame — so this is the ordinary case here,
+      // not the defensive one.
+      if (slot === undefined) continue;
+
+      const pad = FLASH_PAD + (1 - life) * FLASH_SPREAD;
+      const scale = carryScale(scene.lift[slot]!);
+      const hw = (scene.w[slot]! * camera.zoom * scale) / 2 + pad;
+      const hh = (scene.h[slot]! * camera.zoom * scale) / 2 + pad;
+      const centre = camera.boardToScreen(scene.renderX(slot), scene.renderY(slot), this.a);
+      const reach = Math.hypot(hw, hh);
+      if (centre.x + reach < 0 || centre.x - reach > camera.width) continue;
+      if (centre.y + reach < 0 || centre.y - reach > camera.height) continue;
+
+      this.clear(ctx);
+      drew = true;
+      ctx.save();
+      ctx.globalAlpha = alphaOf(life);
+      ctx.translate(centre.x, centre.y);
+      // `rot + swing`, like the selection outline: a photograph knocked back
+      // into place by an undo is still settling on its pin while it flashes.
+      ctx.rotate(scene.rot[slot]! + scene.swing[slot]!);
+      ctx.strokeStyle = FLASH_UNDER;
+      ctx.lineWidth = FLASH_WIDTH + 2;
+      ctx.strokeRect(-hw, -hh, hw * 2, hh * 2);
+      ctx.strokeStyle = FLASH_OVER;
+      ctx.lineWidth = FLASH_WIDTH;
+      ctx.strokeRect(-hw, -hh, hw * 2, hh * 2);
+      ctx.restore();
+    }
+
+    const head = pinHitRadius(camera.zoom);
+    for (const [id, life] of flashes.pins) {
+      const pin = scene.pins.get(id);
+      if (pin === undefined) continue;
+      const radius = head + FLASH_PAD + (1 - life) * FLASH_SPREAD;
+      const at = camera.boardToScreen(pin.wx, pin.wy, this.a);
+      if (at.x + radius < 0 || at.x - radius > camera.width) continue;
+      if (at.y + radius < 0 || at.y - radius > camera.height) continue;
+
+      this.clear(ctx);
+      drew = true;
+      ctx.save();
+      ctx.globalAlpha = alphaOf(life);
+      ctx.beginPath();
+      ctx.arc(at.x, at.y, radius, 0, Math.PI * 2);
+      ctx.strokeStyle = FLASH_UNDER;
+      ctx.lineWidth = FLASH_WIDTH + 2;
+      ctx.stroke();
+      ctx.strokeStyle = FLASH_OVER;
+      ctx.lineWidth = FLASH_WIDTH;
+      ctx.stroke();
+      ctx.restore();
+    }
+
+    if (ropes === null || flashes.strings.size === 0) return drew;
+    const pool = ropes.positions;
+    const zoom = camera.zoom;
+    const camX = camera.x;
+    const camY = camera.y;
+    for (const [id, life] of flashes.strings) {
+      const style = scene.strings.get(id);
+      if (style === undefined) continue;
+
+      let any = false;
+      ctx.beginPath();
+      ropes.visit(id, (at, count) => {
+        ctx.moveTo((pool[at]! - camX) * zoom, (pool[at + 1]! - camY) * zoom);
+        for (let i = 1; i < count; i++) {
+          const j = at + i * 2;
+          ctx.lineTo((pool[j]! - camX) * zoom, (pool[j + 1]! - camY) * zoom);
+        }
+        any = true;
+      });
+      // A string whose pins have gone has no particles to walk, and there is
+      // nothing to light along a curve that does not exist.
+      if (!any) continue;
+
+      this.clear(ctx);
+      drew = true;
+      const alpha = alphaOf(life);
+      const drawn = bodyWidth(style.thickness, style.material);
+      ctx.save();
+      ctx.lineCap = "round";
+      ctx.lineJoin = "round";
+      ctx.strokeStyle = FLASH_OVER;
+      // A soft band outside the cotton and a wash inside it, both amber and
+      // neither opaque. The pale outline a selected string gets is deliberately
+      // not reused: at 0.85 of near-white it makes a string read as *faded*
+      // (see [`STRING_HALO`]), which is why that one punches its own middle
+      // back out — and a `destination-out` pass here would take the halo and
+      // the lit threads underneath with it.
+      ctx.globalAlpha = alpha * FLASH_STRING_GLOW;
+      ctx.lineWidth = drawn + FLASH_SPREAD * (1 - life) + FLASH_WIDTH * 2;
+      ctx.stroke();
+      ctx.globalAlpha = alpha * FLASH_STRING_CORE;
+      ctx.lineWidth = drawn;
+      ctx.stroke();
+      ctx.restore();
+    }
+    return drew;
   }
 
   /** True if it put anything on the canvas. */

@@ -31,6 +31,9 @@ interface Calls {
   strokeWidths: number[];
   /** Wet ink is the one thing on this canvas that is filled from a `Path2D`. */
   fills: number;
+  /** The `globalAlpha` in force at each `strokeRect`/`stroke`. The undo flash
+   *  is the only chrome that fades, and its fade *is* its alpha. */
+  alphas: number[];
   /** Peer names, which are the only text this canvas draws. */
   text: string[];
 }
@@ -46,9 +49,28 @@ function stubCanvas(): HTMLCanvasElement {
   const canvas = document.createElement("canvas");
   canvas.width = 1000;
   canvas.height = 800;
+  const stack: {
+    globalAlpha: number;
+    lineWidth: number;
+    strokeStyle: string;
+    fillStyle: string;
+  }[] = [];
   const ctx = {
-    save: vi.fn(),
-    restore: vi.fn(),
+    // Real save/restore, not spies: the flash fades by `globalAlpha` and
+    // restores it, and a stub that let one draw's alpha leak into the next
+    // would report every later piece of chrome as faded too.
+    save: () => {
+      stack.push({
+        globalAlpha: ctx.globalAlpha,
+        lineWidth: ctx.lineWidth,
+        strokeStyle: ctx.strokeStyle,
+        fillStyle: ctx.fillStyle,
+      });
+    },
+    restore: () => {
+      const was = stack.pop();
+      if (was) Object.assign(ctx, was);
+    },
     setTransform: vi.fn(),
     translate: (...args: [number, number]) => calls.translate.push(args),
     rotate: (angle: number) => calls.rotate.push(angle),
@@ -59,6 +81,7 @@ function stubCanvas(): HTMLCanvasElement {
     strokeRect: (...args: [number, number, number, number]) => {
       calls.strokeRect.push(args);
       calls.lineWidths.push(ctx.lineWidth);
+      calls.alphas.push(ctx.globalAlpha);
     },
     beginPath: vi.fn(),
     closePath: vi.fn(),
@@ -69,6 +92,7 @@ function stubCanvas(): HTMLCanvasElement {
     arc: (x: number, y: number, r: number) => calls.arcs.push([x, y, r]),
     stroke: () => {
       calls.strokeWidths.push(ctx.lineWidth);
+      calls.alphas.push(ctx.globalAlpha);
     },
     fill: () => {
       calls.fills++;
@@ -78,6 +102,7 @@ function stubCanvas(): HTMLCanvasElement {
     fillStyle: "",
     strokeStyle: "",
     lineWidth: 0,
+    globalAlpha: 1,
   };
   canvas.getContext = (() => ctx) as unknown as HTMLCanvasElement["getContext"];
   return canvas;
@@ -118,6 +143,7 @@ beforeEach(() => {
     lines: [],
     strokeWidths: [],
     fills: 0,
+    alphas: [],
     text: [],
   };
   camera = new Camera();
@@ -884,5 +910,198 @@ describe("Overlay and its peers", () => {
     dirty.item("a");
     withPeers();
     expect(calls.clearRect).toBe(drawn);
+  });
+});
+
+/**
+ * The undo flash — DESIGN section 7.6's "flash-highlight what changed so it's
+ * never silent", drawn from the lives `state/flash.ts` keeps.
+ *
+ * What matters on this canvas is that it *fades* and then *goes*: a highlight
+ * that never expires is a second selection, and one whose last frame is never
+ * cleared leaves an amber box round a photograph for the rest of the session.
+ */
+describe("Overlay, the undo flash", () => {
+  const pool = new Float64Array([0, 0, 100, 40, 200, 0]);
+  const ropes = {
+    positions: pool,
+    visit: (id: string, fn: (at: number, count: number) => void): void => {
+      if (id === "s") fn(0, 3);
+    },
+  };
+
+  function flash(
+    items: [string, number][] = [],
+    pins: [string, number][] = [],
+    strings: [string, number][] = [],
+  ): {
+    items: Map<string, number>;
+    pins: Map<string, number>;
+    strings: Map<string, number>;
+    isEmpty: boolean;
+  } {
+    return {
+      items: new Map(items),
+      pins: new Map(pins),
+      strings: new Map(strings),
+      isEmpty: items.length + pins.length + strings.length === 0,
+    };
+  }
+
+  type Flash = ReturnType<typeof flash>;
+
+  function draw(lit: Flash): void {
+    overlay.draw(
+      camera,
+      scene,
+      selection,
+      null,
+      dirty,
+      null,
+      null,
+      ropes,
+      null,
+      null,
+      undefined,
+      null,
+      lit,
+    );
+  }
+
+  it("draws nothing at all when nothing has been undone", () => {
+    add("a");
+    draw(flash());
+    draw(flash());
+    expect(calls.clearRect).toBe(0);
+    expect(calls.strokeRect).toHaveLength(0);
+  });
+
+  /** Two strokes, dark under pale — the same pair the candidate ring uses, and
+   *  for the same reason: no one colour is legible on cork *and* on a polaroid. */
+  it("rings a changed item twice, in screen pixels", () => {
+    add("a");
+    camera.centreOn(0, 0);
+    draw(flash([["a", 1]]));
+    expect(calls.strokeRect).toHaveLength(2);
+    const [under, over] = calls.lineWidths;
+    expect(under).toBeGreaterThan(over!);
+  });
+
+  it("fades with the life it is handed", () => {
+    add("a");
+    camera.centreOn(0, 0);
+
+    draw(flash([["a", 1]]));
+    const full = calls.alphas[0]!;
+    calls.alphas.length = 0;
+
+    draw(flash([["a", 0.2]]));
+    expect(calls.alphas[0]!).toBeLessThan(full);
+    expect(calls.alphas[0]!).toBeGreaterThan(0);
+  });
+
+  /** The pulse opens outwards as it goes, so it reads as something leaving the
+   *  item rather than as a box blinking on it. */
+  it("stands further off the item the further the flash has gone", () => {
+    add("a");
+    camera.centreOn(0, 0);
+
+    draw(flash([["a", 1]]));
+    const early = calls.strokeRect[0]![2];
+    calls.strokeRect.length = 0;
+
+    draw(flash([["a", 0.1]]));
+    expect(calls.strokeRect[0]![2]).toBeGreaterThan(early!);
+  });
+
+  it("clears the canvas on the frame the last flash expires, and then stops", () => {
+    add("a");
+    camera.centreOn(0, 0);
+    draw(flash([["a", 0.4]]));
+    expect(calls.clearRect).toBe(1);
+
+    // Gone: one clear to take the amber off...
+    draw(flash());
+    expect(calls.clearRect).toBe(2);
+    // ...and nothing at all after that.
+    draw(flash());
+    expect(calls.clearRect).toBe(2);
+  });
+
+  /** A still board is the usual case for an undo: nothing else on it moved. */
+  it("redraws on a frame where nothing else changed", () => {
+    add("a");
+    camera.centreOn(0, 0);
+    draw(flash([["a", 1]]));
+    draw(flash([["a", 0.5]]));
+    expect(calls.strokeRect).toHaveLength(4);
+  });
+
+  it("rings a changed pin rather than boxing it", () => {
+    scene.putPin({
+      id: "p",
+      parent: null,
+      lx: 0,
+      ly: 0,
+      kind: "pin",
+      color: "#a8322c",
+      wx: 0,
+      wy: 0,
+    });
+    camera.centreOn(0, 0);
+    draw(flash([], [["p", 1]]));
+    expect(calls.strokeRect).toHaveLength(0);
+    // One circle, stroked twice — dark under pale, like every other ring here.
+    expect(calls.arcs).toHaveLength(1);
+    expect(calls.strokeWidths).toHaveLength(2);
+    expect(calls.strokeWidths[0]!).toBeGreaterThan(calls.strokeWidths[1]!);
+    // Centred on the pin, which the camera puts in the middle of the viewport.
+    expect(calls.arcs[0]![0]).toBeCloseTo(500, 6);
+    expect(calls.arcs[0]![1]).toBeCloseTo(400, 6);
+  });
+
+  it("lights a changed string along the rope, not across the chord", () => {
+    scene.putString({
+      id: "s",
+      nodes: [
+        { nodeId: "n0", pin: "p0", slackAfter: 0.2 },
+        { nodeId: "n1", pin: "p1", slackAfter: 0.2 },
+      ],
+      color: "#a8322c",
+      thickness: 3,
+      material: "string",
+      layer: "over",
+      closed: false,
+    });
+    camera.centreOn(100, 20);
+    draw(flash([], [], [["s", 1]]));
+
+    // Three particles walked, sag and all — a chord would be two points.
+    expect(calls.lines).toHaveLength(3);
+    expect(calls.lines[1]![1]).not.toBe(calls.lines[0]![1]);
+    // A band outside the cotton and a wash inside it, neither opaque.
+    expect(calls.strokeWidths).toHaveLength(2);
+    expect(calls.strokeWidths[0]!).toBeGreaterThan(calls.strokeWidths[1]!);
+    for (const alpha of calls.alphas) expect(alpha).toBeLessThan(1);
+  });
+
+  /**
+   * An undo's flash outlives the frame it was raised on, and a collaborator can
+   * delete the thing it is lighting in between. The renderer must not walk a
+   * scene slot that has gone.
+   */
+  it("skips an id the scene no longer holds", () => {
+    camera.centreOn(0, 0);
+    expect(() => draw(flash([["gone", 1]], [["nope", 1]], [["vanished", 1]]))).not.toThrow();
+    expect(calls.clearRect).toBe(0);
+  });
+
+  /** The item's own box, so a lit photograph turns with the one it lights. */
+  it("turns with the item, swing included", () => {
+    add("a", { rot: 0.3 });
+    scene.swing[scene.slotOf("a")!] = 0.1;
+    camera.centreOn(0, 0);
+    draw(flash([["a", 1]]));
+    expect(calls.rotate[0]).toBeCloseTo(0.4, 6);
   });
 });

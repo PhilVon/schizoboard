@@ -63,6 +63,7 @@ import { AssetStates } from "@/state/assets";
 import { MissingAssets } from "@/state/missing";
 import { Camera } from "@/state/camera";
 import { DirtySets } from "@/state/dirty";
+import { Flashes } from "@/state/flash";
 import { chromeFrame, emptyFrame, handleAt, handleCursor } from "@/state/handles";
 import { isChromeTarget, isTextTarget } from "@/state/input";
 import { Navigation } from "@/state/navigation";
@@ -114,6 +115,14 @@ async function boot(): Promise<void> {
   const dirty = new DirtySets();
   const binding = new Binding(board, scene, dirty);
   binding.start();
+  /**
+   * What the last undo changed, fading — DESIGN section 7.6.
+   *
+   * Next to the dirty sets because that is where it reads from: an undo is a
+   * transaction like any other, and the binding above has already turned its
+   * events into the ids of the things that moved.
+   */
+  const flashes = new Flashes();
 
   // --- presentation --------------------------------------------------------
   const camera = new Camera();
@@ -626,7 +635,16 @@ async function boot(): Promise<void> {
     e.preventDefault();
     // Held down, the key repeats and each repeat is another step back. That is
     // the point of holding it.
-    queued.push(intent === "undo" ? () => undo.undo() : () => undo.redo());
+    //
+    // Wrapped in `flashes.around` so that whatever the step turns out to move
+    // is lit for a moment: undo is origin-scoped, so it can put back a value a
+    // collaborator has since changed, in a corner of the board nobody is
+    // looking at (DESIGN section 7.6, `state/flash.ts`).
+    queued.push(
+      intent === "undo"
+        ? () => flashes.around(dirty, scene, () => undo.undo())
+        : () => flashes.around(dirty, scene, () => undo.redo()),
+    );
   });
 
   const select = new SelectTool();
@@ -1636,6 +1654,10 @@ async function boot(): Promise<void> {
     // last said it was, and the frame that moves it is the frame that has to
     // find the canvas stale (`render/presence/peers.ts`).
     if (provider !== null) peers.step(frame.dt);
+    // Likewise before the draw, and for the same reason: a flash that faded
+    // this frame is a different picture, and the frame it reaches zero on is the
+    // frame the canvas has to clear it off.
+    flashes.step(frame.dt);
     // Selection chrome is drawn here, not on the item nodes, so its width is in
     // screen pixels at every zoom (T-91). `dirty` comes along only so it can tell
     // "a selected photograph is being dragged" from "nothing has changed".
@@ -1675,6 +1697,9 @@ async function boot(): Promise<void> {
       // of. Null on a board with no wire, which costs the overlay one null check
       // and no walk at all.
       provider === null ? null : peers,
+      // What the last Ctrl+Z moved, so an undo that reached somewhere you were
+      // not looking is never silent (DESIGN section 7.6).
+      flashes,
     );
     hud.update(frame.now);
     if (missing.count > 0 && frame.now - noticeSweptAt > NOTICE_SWEEP_MS) {
