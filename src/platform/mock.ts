@@ -216,6 +216,15 @@ export class MockPlatform implements Platform {
     return { connected: false, peers: [], mode: null, url: null, secret: null };
   }
 
+  /**
+   * Never. A browser has no `schizo://` handler and nothing registered one —
+   * `?secret=` on the address bar is how a board is joined here, and is what the
+   * invite link exists to replace everywhere an address bar does not exist.
+   */
+  async syncTakeInvite(): Promise<string | null> {
+    return null;
+  }
+
   // --- asset transfer -----------------------------------------------------
   //
   // Implemented rather than stubbed, and it is the one part of the mock that

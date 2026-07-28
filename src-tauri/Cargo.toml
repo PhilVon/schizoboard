@@ -33,6 +33,22 @@ tauri-plugin-opener = "2"
 # unreachable from the webview until a capability lists them, and neither
 # plugin appears in ours.
 tauri-plugin-dialog = "2"
+
+# T-163. The `schizo://` invite link, which ARCHITECTURE section 5.1 has budgeted
+# since the start. Like `dialog` above, neither of these appears in
+# `capabilities/` — the webview never calls them. Rust catches the link and
+# forwards the string; what a link *means* stays in `app/invite.ts`, because
+# Rust owns bytes and no schema (ARCHITECTURE section 4).
+tauri-plugin-deep-link = "2"
+# Not optional, and not really a second feature. On Windows and Linux the
+# operating system answers a `schizo://` click by *launching this application
+# again*. Without this plugin that second process opens a second window on the
+# same document and the running one never hears about the link; with it, the
+# second process hands its arguments to the first and exits, which is the only
+# arrangement in which clicking an invite while the board is open does anything
+# at all.
+tauri-plugin-single-instance = { version = "2", features = ["deep-link"] }
+
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 

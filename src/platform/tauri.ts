@@ -170,6 +170,10 @@ export class TauriPlatform implements Platform {
     return invoke<SyncStatus>("sync_status");
   }
 
+  syncTakeInvite(): Promise<string | null> {
+    return invoke<string | null>("sync_take_invite");
+  }
+
   peerHaveSummary(): Promise<string[]> {
     return invoke<string[]>("peer_have_summary");
   }

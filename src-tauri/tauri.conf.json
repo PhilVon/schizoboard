@@ -27,6 +27,13 @@
       "csp": null
     }
   },
+  "plugins": {
+    "deep-link": {
+      "desktop": {
+        "schemes": ["schizo"]
+      }
+    }
+  },
   "bundle": {
     "active": true,
     "targets": "all",

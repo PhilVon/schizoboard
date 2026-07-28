@@ -301,6 +301,59 @@ struct PeerFound {
     instance: String,
 }
 
+// --- the invite link (T-163) ------------------------------------------------
+
+/// The last `schizo://` link the operating system handed us, until somebody
+/// takes it.
+///
+/// Held as well as emitted, and that is not belt-and-braces — it is the two
+/// genuinely different ways a link arrives, and only one of them is an event:
+///
+/// **Cold.** A click on an invite launches the application. The link is known
+/// before there is a webview, let alone a frontend listening on it, so an
+/// `emit` at that moment goes nowhere. It is kept here and the frontend asks
+/// for it at boot.
+///
+/// **Warm.** The board is already open. The frontend has been listening for
+/// minutes, and an event is exactly right.
+///
+/// A single `Option` covers both because a second link supersedes a first: two
+/// invites clicked in a row means the second one is where the user wants to be,
+/// and joining the first on the way would be a board flashing past.
+#[derive(Default)]
+struct PendingInvite(std::sync::Mutex<Option<String>>);
+
+/// The link that brought us here, once. `None` when there wasn't one.
+///
+/// Taken rather than read, so a reload does not re-join a board the user has
+/// since left. The frontend calls this at boot; the `sync:invite` event covers
+/// every link that arrives after that.
+#[tauri::command]
+async fn sync_take_invite(app: AppHandle) -> Option<String> {
+    app.state::<PendingInvite>().0.lock().expect("invite lock").take()
+}
+
+/// A link on its way to the frontend.
+#[derive(Clone, Serialize)]
+struct DeepLink {
+    url: String,
+}
+
+/// Remember a link and tell the frontend, in that order.
+///
+/// The order matters: emitting first leaves a window in which the frontend
+/// answers the event by calling `sync_take_invite` and finds nothing there.
+///
+/// `deeplink:open` rather than a name of this feature's own, because
+/// `platform/types.ts` has carried that event since the platform layer was
+/// written and nothing had ever emitted it. It is also the better name: it says
+/// a link arrived, not what the link meant. What it means is `app/invite.ts`'s
+/// business, and that file already anticipates a second verb.
+fn invite_arrived(app: &AppHandle, url: String) {
+    *app.state::<PendingInvite>().0.lock().expect("invite lock") = Some(url.clone());
+    let _ = app.emit("deeplink:open", DeepLink { url });
+}
+
 /// Stop hosting. Dropping the relay closes the port and every connection on it.
 #[tauri::command]
 async fn sync_stop(app: AppHandle) -> Result<(), String> {
@@ -764,6 +817,28 @@ async fn doc_compact(app: AppHandle, request: tauri::ipc::Request<'_>) -> Result
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        // T-163, and it must be first. `single-instance` decides whether this
+        // process is going to live at all, and everything registered before it
+        // is set up in a process that is about to hand over its arguments and
+        // exit. The callback runs in the *original* instance, which is the one
+        // with the board open — so this is the warm path: an invite clicked
+        // while Schizoboard is already running.
+        //
+        // `argv` rather than a parsed link, because on Windows and Linux that is
+        // genuinely all the operating system gives us: it re-launched the
+        // application with the URL as a command-line argument. The
+        // `deep-link` feature on this plugin is what turns that argument back
+        // into an `on_open_url` event, which is why the two are one dependency
+        // decision and not two.
+        .plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
+            // Whatever the user just clicked, they meant to look at. A window
+            // that stays behind the browser they clicked it in reads as nothing
+            // having happened.
+            if let Some(window) = app.get_webview_window("main") {
+                let _ = window.set_focus();
+            }
+        }))
+        .plugin(tauri_plugin_deep_link::init())
         .plugin(tauri_plugin_opener::init())
         // T-94, and Rust-side only. `capabilities/default.json` grants the
         // webview none of this plugin's commands, so the save dialog inside
@@ -797,8 +872,46 @@ pub fn run() {
             // (T-84) must not carry the key to the board it came from.
             app.manage(sync::secret::SecretStore::new(data.join("secrets"))?);
             app.manage(Hosting::default());
+            app.manage(PendingInvite::default());
             if let Some(window) = app.get_webview_window("main") {
                 clipboard::forward_drops(&window, app.handle());
+            }
+
+            // T-163. One handler for both arrivals — the plugin delivers the
+            // launch URL here as well as later clicks, so cold and warm are the
+            // same code and only `PendingInvite` tells them apart.
+            {
+                use tauri_plugin_deep_link::DeepLinkExt;
+                let handle = app.handle().clone();
+                app.deep_link().on_open_url(move |event| {
+                    // One link, even when several arrive: the last is where the
+                    // user wants to be, and joining the others on the way would
+                    // be boards flashing past.
+                    if let Some(url) = event.urls().last() {
+                        invite_arrived(&handle, url.to_string());
+                    }
+                });
+
+                // Register the scheme with the operating system at runtime.
+                //
+                // Debug only, and that asymmetry is the whole point: an
+                // *installed* Schizoboard gets `schizo://` from its installer,
+                // out of `tauri.conf.json`, which is the correct and permanent
+                // route. A development build has no installer, so without this
+                // there is no way to click an invite on a machine you are
+                // building on — and a feature that cannot be driven is a feature
+                // nobody can check.
+                //
+                // It writes to the current user's registry on Windows (HKCU, not
+                // HKLM) and to a `.desktop` entry on Linux, so it needs no
+                // elevation and touches nobody else's account. It also means the
+                // last `npm run tauri dev` to run wins the scheme, which is
+                // exactly what you want while working on it and worth knowing
+                // if an invite ever opens a build you had forgotten about.
+                #[cfg(debug_assertions)]
+                if let Err(error) = app.deep_link().register_all() {
+                    eprintln!("[sync] schizo:// links will not open this build: {error}");
+                }
             }
             Ok(())
         })
@@ -807,6 +920,7 @@ pub fn run() {
             sync_start,
             sync_stop,
             sync_status,
+            sync_take_invite,
             asset_ingest_bytes,
             asset_ingest_path,
             asset_ingest_url,

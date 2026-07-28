@@ -165,6 +165,17 @@ export interface PlatformEvents {
   "asset:progress": { sha256: string; received: number; total: number };
   "files:dropped": { paths: string[]; x: number; y: number };
   "doc:persist-error": { message: string };
+  /**
+   * The operating system handed us a `schizo://` link (T-163).
+   *
+   * This is the *warm* arrival: the board is already open and somebody clicked
+   * an invite. The cold one — a click that launched the application — cannot be
+   * an event, because it happens before there is a frontend to hear it, and is
+   * `syncTakeInvite` instead.
+   *
+   * A URL and nothing else, deliberately. What a link means is `app/invite.ts`'s
+   * business; the shell's job is to notice one arrived.
+   */
   "deeplink:open": { url: string };
   "sync:peer-joined": { peer: string };
   "sync:peer-left": { peer: string };
@@ -252,6 +263,20 @@ export interface Platform {
   syncStart(config: SyncConfig): Promise<void>;
   syncStop(): Promise<void>;
   syncStatus(): Promise<SyncStatus>;
+
+  /**
+   * The `schizo://` link that launched this window, once (T-163).
+   *
+   * *Take*, not read: the link is cleared as it is handed over, so a reload does
+   * not re-join a board the user has since left. Null is the ordinary answer —
+   * almost every launch is somebody opening their own board.
+   *
+   * This exists alongside `deeplink:open` because a cold arrival cannot be an
+   * event. A click on an invite starts the application, so the link is known
+   * before there is a frontend listening, and an emit at that moment reaches
+   * nobody.
+   */
+  syncTakeInvite(): Promise<string | null>;
 
   // --- asset transfer: the bytes behind HAVE / WANT / DATA / DONE ----------
   //
