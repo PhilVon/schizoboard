@@ -111,10 +111,35 @@ async fn sync_start(app: AppHandle, config: SyncConfig) -> Result<(), String> {
         *hosting.secret.lock().expect("hosting lock") = config.secret;
         return Ok(());
     }
-    // Already hosting. The guard is dropped before the await below, which is
-    // what keeps this command's future `Send`.
-    if hosting.relay.lock().expect("hosting lock").is_some() {
-        return Ok(());
+    // Already hosting — but of *what*? A reload that asks for the same board
+    // wants the relay it already has; one that asks for a different secret is
+    // somebody joining a different board, and that is not a request that can be
+    // met by the relay standing.
+    //
+    // Found by driving it: two windows were sent to `?secret=…` after boot, and
+    // both silently kept the secret they had made up on their first load a
+    // moment earlier. Each then advertised a fingerprint the other could not
+    // match, so two peers on one board never saw each other and the failure
+    // looked exactly like mDNS being broken. The invite link, when it lands,
+    // arrives by the same route — a window that is already up being told to go
+    // somewhere else — so this is its path too, not a testing quirk.
+    //
+    // The lock guards are dropped before the await below, which is what keeps
+    // this command's future `Send`.
+    {
+        let hosted = hosting.secret.lock().expect("hosting lock").clone();
+        let running = hosting.relay.lock().expect("hosting lock").is_some();
+        match hosting_change(running, hosted.as_deref(), config.secret.as_deref()) {
+            HostingChange::Keep => return Ok(()),
+            HostingChange::Restart => {
+                // Stopped rather than left beside the new one: the old board's
+                // advertisement would otherwise stay on the network naming a
+                // port this window no longer answers on.
+                hosting.relay.lock().expect("hosting lock").take();
+                hosting.discovery.lock().expect("hosting lock").take();
+            }
+            HostingChange::Start => {}
+        }
     }
 
     // Whoever opens the board first invents its secret. A caller that already
@@ -164,6 +189,41 @@ async fn sync_start(app: AppHandle, config: SyncConfig) -> Result<(), String> {
         Err(error) => eprintln!("[sync] the board is not being advertised: {error}"),
     }
     Ok(())
+}
+
+/// What to do about a relay that may already be running.
+#[derive(Debug, PartialEq, Eq)]
+enum HostingChange {
+    /// Nothing is up. Start one.
+    Start,
+    /// One is up and it is hosting the board being asked for.
+    Keep,
+    /// One is up and it is hosting a *different* board. Stop it first.
+    Restart,
+}
+
+/// Whether a `sync_start` in LAN mode can be answered by the relay already
+/// running.
+///
+/// The case that matters is the third one, and it was found by driving rather
+/// than by reading: a window that boots with no secret makes one up, and if it
+/// is then sent to a board whose secret it *was* given, the relay standing
+/// answers for the wrong board. It advertises a fingerprint nobody else can
+/// match, so two peers who should have found each other never do — and the
+/// symptom is indistinguishable from mDNS not working at all.
+///
+/// A caller asking for no secret in particular is content with what is running:
+/// that is an ordinary reload, and re-hosting on a new port for it would break
+/// every peer already connected.
+fn hosting_change(running: bool, hosted: Option<&str>, wanted: Option<&str>) -> HostingChange {
+    if !running {
+        return HostingChange::Start;
+    }
+    match wanted {
+        None => HostingChange::Keep,
+        Some(secret) if hosted == Some(secret) => HostingChange::Keep,
+        Some(_) => HostingChange::Restart,
+    }
 }
 
 /// A name for this board's advertisement, unique on the network.
@@ -712,4 +772,35 @@ pub fn run() {
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn nothing_running_means_start() {
+        assert_eq!(hosting_change(false, None, None), HostingChange::Start);
+        assert_eq!(hosting_change(false, None, Some("abc")), HostingChange::Start);
+    }
+
+    #[test]
+    fn an_ordinary_reload_keeps_the_relay_it_has() {
+        // A reload asking for no secret in particular is content with what is
+        // running, and re-hosting on a fresh port for it would drop every peer
+        // already connected.
+        assert_eq!(hosting_change(true, Some("abc"), None), HostingChange::Keep);
+        assert_eq!(hosting_change(true, Some("abc"), Some("abc")), HostingChange::Keep);
+    }
+
+    #[test]
+    fn a_different_secret_is_a_different_board() {
+        // The one found by driving: a window that booted with no secret invents
+        // one, and if it is then sent to a board whose secret it was given, the
+        // relay standing answers for the wrong board — advertising a
+        // fingerprint no peer can match, which looks exactly like mDNS being
+        // broken.
+        assert_eq!(hosting_change(true, Some("abc"), Some("def")), HostingChange::Restart);
+        assert_eq!(hosting_change(true, None, Some("def")), HostingChange::Restart);
+    }
 }
