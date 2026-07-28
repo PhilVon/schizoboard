@@ -57,6 +57,7 @@ import { DirtySets } from "@/state/dirty";
 import { chromeFrame, emptyFrame, handleAt, handleCursor } from "@/state/handles";
 import { isChromeTarget, isTextTarget } from "@/state/input";
 import { Navigation } from "@/state/navigation";
+import { RemoteMotion } from "@/state/remote";
 import { Scene } from "@/state/scene";
 import { Selection } from "@/state/selection";
 import { ToolMachine } from "@/state/tools/machine";
@@ -179,6 +180,16 @@ async function boot(): Promise<void> {
   /** Phase 3, the other half. Empty until something makes a string (T-41), and
    *  free while it is — a rope set with no ropes steps nothing. */
   const ropes = new RopeSet();
+  /**
+   * Phase 2: every other peer's in-flight drag, rendered 100 ms in the past.
+   *
+   * Nothing feeds it yet — no provider is constructed and no awareness state
+   * reaches this file, which is T-150 — so today this steps an empty map of
+   * peers. Wired now for the reason `ropes` above was wired before anything could
+   * make a string: the phase ordering is the part that is expensive to get wrong,
+   * and settling it while there is nothing to get wrong with is free.
+   */
+  const remote = new RemoteMotion();
   const loop = new FrameLoop();
   const selection = new Selection();
   // Both annotated, and they have to be: `offerWheel` below reaches forward to
@@ -933,7 +944,22 @@ async function boot(): Promise<void> {
     }
   });
 
-  // 2 PRESENCE  T-72
+  /**
+   * Phase 2. Where everybody else's hands are.
+   *
+   * > PRESENCE — apply interpolated remote poses at (now − 100 ms)
+   * > — ARCHITECTURE section 3
+   *
+   * Before phase 3, and that is the whole of AC-84: `RopeSet` pulls its anchors
+   * out of the scene itself (`scene.layoutPin`), so a pose written here is the
+   * anchor a rope swings from this frame, and a pose written any later would not
+   * be. After phase 1, for the same reason the swing is: a remote peer's drag and
+   * a local gesture both move items, and the sim has to see one frame's worth of
+   * both rather than a mixture of this frame and last.
+   */
+  loop.on("presence", (frame) => {
+    remote.apply(frame.now, frame.dt, scene, dirty);
+  });
 
   /**
    * Phase 3. Two things move on their own — the swing of a single-pinned item

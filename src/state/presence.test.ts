@@ -29,12 +29,33 @@ class Channel {
 
 const PHIL = { id: "u1", name: "Phil", color: "#c85" };
 
-function setUp(options?: { everyNthFrame?: number }) {
+/**
+ * Stands in for the Scene. A plain map of poses, so a test about what goes on
+ * the wire never has to build a board to say what a drag is holding.
+ */
+class Poses {
+  private readonly poses = new Map<string, { x: number; y: number; rot: number }>();
+
+  put(id: string, x: number, y: number, rot = 0): void {
+    this.poses.set(id, { x, y, rot });
+  }
+
+  drop(id: string): void {
+    this.poses.delete(id);
+  }
+
+  poseOf(id: string): { x: number; y: number; rot: number } | null {
+    return this.poses.get(id) ?? null;
+  }
+}
+
+function setUp(options?: { everyNthFrame?: number; now?: () => number }) {
   const channel = new Channel();
   const camera = new Camera();
   const selection = new Selection();
-  const presence = new Presence(channel, camera, selection, PHIL, options);
-  return { channel, camera, selection, presence };
+  const poses = new Poses();
+  const presence = new Presence(channel, camera, selection, poses, PHIL, options);
+  return { channel, camera, selection, poses, presence };
 }
 
 describe("how often it speaks", () => {
@@ -85,7 +106,13 @@ describe("what it says", () => {
 
     // Key-set equality, not a subset check. The point of this test is to fail
     // the day somebody adds a field by handing an object to a setter.
-    expect(Object.keys(channel.last).sort()).toEqual(["cam", "cursor", "selection", "user"]);
+    expect(Object.keys(channel.last).sort()).toEqual([
+      "cam",
+      "cursor",
+      "grab",
+      "selection",
+      "user",
+    ]);
   });
 
   it("survives the round trip through JSON", () => {
@@ -228,5 +255,172 @@ describe("leaving", () => {
     presence.flush(2);
     presence.flush(4);
     expect(channel.states).toHaveLength(2);
+  });
+});
+
+describe("the grab", () => {
+  it("carries a pose for every held item, absolute and rounded", () => {
+    const { channel, poses, presence } = setUp();
+    poses.put("a", 100.4, -20.7, 0.123456);
+    poses.put("b", 500, 500, 0);
+
+    presence.grabbing(["a", "b"]);
+    presence.flush(0);
+
+    const grab = channel.last.grab;
+    expect(grab?.kind).toBe("items");
+    expect(grab?.ids).toEqual(["a", "b"]);
+    // Whole board units, and a ten-thousandth of a radian. A board unit is about
+    // half a millimetre of the thing being dragged.
+    expect(grab?.poses).toEqual([
+      { x: 100, y: -21, rot: 0.1235 },
+      { x: 500, y: 500, rot: 0 },
+    ]);
+    expect(grab?.phase).toBe("live");
+  });
+
+  it("is null when nothing is held", () => {
+    const { channel, presence } = setUp();
+    presence.flush(0);
+    expect(channel.last.grab).toBeNull();
+  });
+
+  it("does not republish while a held item stays where it is", () => {
+    const { channel, poses, presence } = setUp();
+    poses.put("a", 100, 100);
+    presence.grabbing(["a"]);
+    presence.flush(0);
+    expect(channel.states).toHaveLength(1);
+
+    // A hand that is not quite still, on an item three hundred units across.
+    poses.put("a", 100.3, 99.8);
+    presence.grabbing(["a"]);
+    presence.flush(2);
+
+    expect(channel.states).toHaveLength(1);
+  });
+
+  it("republishes as soon as the item has moved a unit", () => {
+    const { channel, poses, presence } = setUp();
+    poses.put("a", 100, 100);
+    presence.grabbing(["a"]);
+    presence.flush(0);
+
+    poses.put("a", 104, 100);
+    presence.grabbing(["a"]);
+    presence.flush(2);
+
+    expect(channel.states).toHaveLength(2);
+    expect(channel.last.grab?.poses[0]).toEqual({ x: 104, y: 100, rot: 0 });
+  });
+
+  it("counts up, so a receiver can drop a re-delivered state", () => {
+    const { channel, poses, presence } = setUp();
+    poses.put("a", 0, 0);
+    presence.grabbing(["a"]);
+    presence.flush(0);
+    const first = channel.last.grab?.seq ?? -1;
+
+    poses.put("a", 40, 0);
+    presence.grabbing(["a"]);
+    presence.flush(2);
+
+    expect(channel.last.grab?.seq).toBe(first + 1);
+  });
+
+  it("stamps the sender's clock, which only intervals mean anything about", () => {
+    let clock = 1000;
+    const { channel, poses, presence } = setUp({ now: () => clock });
+    poses.put("a", 0, 0);
+    presence.grabbing(["a"]);
+    presence.flush(0);
+    expect(channel.last.grab?.t).toBe(1000);
+
+    clock = 1033;
+    poses.put("a", 40, 0);
+    presence.grabbing(["a"]);
+    presence.flush(2);
+    expect(channel.last.grab?.t).toBe(1033);
+  });
+
+  it("sends a final on release even though nothing moved", () => {
+    const { channel, poses, presence } = setUp();
+    poses.put("a", 100, 100);
+    presence.grabbing(["a"]);
+    presence.flush(0);
+    expect(channel.states).toHaveLength(1);
+
+    presence.released();
+    presence.flush(2);
+
+    // The release is a state transition, not a movement, so it cannot be
+    // discovered by comparing poses — and a receiver needs it to know when to
+    // start waiting for the document (DATA-MODEL section 9.2).
+    expect(channel.states).toHaveLength(2);
+    expect(channel.last.grab?.phase).toBe("final");
+    expect(channel.last.grab?.poses[0]).toEqual({ x: 100, y: 100, rot: 0 });
+  });
+
+  it("carries the released pose, not the one from the last publishing frame", () => {
+    const { channel, poses, presence } = setUp();
+    poses.put("a", 100, 100);
+    presence.grabbing(["a"]);
+    presence.flush(0);
+
+    // Moved on an odd frame, which publishes nothing, and let go on the same one.
+    poses.put("a", 260, 100);
+    presence.released();
+    presence.flush(2);
+
+    expect(channel.last.grab?.poses[0]).toEqual({ x: 260, y: 100, rot: 0 });
+  });
+
+  it("clears the grab after the final, so nothing stale is left in awareness", () => {
+    const { channel, poses, presence } = setUp();
+    poses.put("a", 100, 100);
+    presence.grabbing(["a"]);
+    presence.flush(0);
+    presence.released();
+    presence.flush(2);
+
+    presence.flush(4);
+
+    // Awareness keeps the last state it was handed. A `final` left sitting there
+    // is a pose the next peer to connect would arrive and hold.
+    expect(channel.states).toHaveLength(3);
+    expect(channel.last.grab).toBeNull();
+  });
+
+  it("releases an item that was deleted mid-gesture, with an empty id list", () => {
+    const { channel, poses, presence } = setUp();
+    poses.put("a", 100, 100);
+    presence.grabbing(["a"]);
+    presence.flush(0);
+
+    poses.drop("a");
+    presence.released();
+    presence.flush(2);
+
+    expect(channel.last.grab?.phase).toBe("final");
+    expect(channel.last.grab?.ids).toEqual([]);
+  });
+
+  it("drops an id the scene does not know rather than publishing it at the origin", () => {
+    const { channel, poses, presence } = setUp();
+    poses.put("a", 100, 100);
+
+    presence.grabbing(["a", "ghost"]);
+    presence.flush(0);
+
+    expect(channel.last.grab?.ids).toEqual(["a"]);
+  });
+
+  it("survives the round trip through JSON", () => {
+    const { channel, poses, presence } = setUp();
+    poses.put("a", 100, 100, 0.5);
+    presence.grabbing(["a"]);
+    presence.flush(0);
+
+    expect(JSON.parse(JSON.stringify(channel.last))).toEqual(channel.last);
   });
 });

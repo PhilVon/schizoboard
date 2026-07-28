@@ -28,9 +28,9 @@
  * selection with its methods — can arrive on the wire because somebody handed
  * one to a setter.
  *
- * `grab`, `wet`, `impulse` and `locks` from section 9 are absent because the
- * work that produces them has not happened: remote drag poses are T-72, wet ink
- * is T-73, segment locks are T-130. Each adds its own field and its own test.
+ * `wet`, `impulse` and `locks` from section 9 are absent because the work that
+ * produces them has not happened: wet ink is T-73, segment locks are T-130.
+ * Each adds its own field and its own test.
  */
 
 import type { Camera } from "@/state/camera";
@@ -76,16 +76,91 @@ export interface PresenceSelection {
   readonly pins: readonly string[];
 }
 
+/**
+ * One item's pose inside a grab. Position and angle only — `w`/`h` are a resize,
+ * which is a document write and not a motion anybody has to smooth.
+ */
+export interface PresenceGrabPose {
+  x: number;
+  y: number;
+  /** Radians, and unbounded, exactly as the scene stores it. */
+  rot: number;
+}
+
+/**
+ * What this client has hold of *right now*, so that a peer can move it before
+ * the document has said anything.
+ *
+ * > `grab: null | { kind, ids, pose, seq, t, phase }` — docs/DATA-MODEL.md
+ * > section 9
+ *
+ * ## Absolute poses, not a delta
+ *
+ * `poses` is the schema's `pose`, one per entry in `ids`, and each is the item's
+ * whole position rather than an offset from where the gesture started. A delta
+ * would be one triple regardless of how many items are held, which is tempting
+ * for a fifty-item marquee — and wrong here, because awareness is
+ * last-write-wins with no history (section 9). A delta needs a baseline, the
+ * baseline can only be established by the frame that opens the gesture, and
+ * that is precisely the frame a dropped update loses forever. Every absolute
+ * sample stands on its own: a receiver that joins mid-drag, or misses six in a
+ * row, is still exactly right on the seventh.
+ */
+export interface PresenceGrab {
+  /** What sort of thing is held. Items today; a dragged pin is its own kind. */
+  kind: "items";
+  ids: readonly string[];
+  /** Parallel to `ids`, and the same length. A receiver must check that. */
+  poses: readonly PresenceGrabPose[];
+  /**
+   * Rises by one on every published grab, for the life of this client.
+   *
+   * A receiver's duplicate and out-of-order filter. `t` cannot do that job: two
+   * publishes a frame apart can carry the same millisecond.
+   */
+  seq: number;
+  /**
+   * The sender's clock when the poses were read.
+   *
+   * Its epoch is this client's `performance.now()`, which means nothing on
+   * another machine — only the *intervals* between two of these do, and that is
+   * all a receiver uses them for (`state/remote.ts`).
+   */
+  t: number;
+  /**
+   * `final` is the release: the last pose of the gesture, and the document write
+   * that agrees with it is already on its way.
+   *
+   * The same two words `BoardWriter.setPoses` uses, for the same distinction —
+   * one drag produces a run of `live` and exactly one `final`. A receiver needs
+   * the `final` to know when to stop extrapolating and start waiting for the
+   * document (section 9.2), which a grab that simply vanished would not tell it.
+   */
+  phase: "live" | "final";
+}
+
 export interface PresenceState {
   user: PresenceUser;
   cam: PresenceCam | null;
   cursor: PresenceCursor | null;
   selection: PresenceSelection;
+  grab: PresenceGrab | null;
 }
 
 /** The narrow slice of `Awareness` this needs. Keeps the tests free of Yjs. */
 export interface PresenceChannel {
   setLocalState(state: Record<string, unknown> | null): void;
+}
+
+/**
+ * Where a held item's pose is read from — `state/scene.ts`, in practice.
+ *
+ * Narrow and injected for the reason `PresenceChannel` is: so that the rule
+ * about what may reach the wire stays a property of this file, and so the tests
+ * need neither a Scene nor Yjs.
+ */
+export interface PresencePoses {
+  poseOf(id: string): { x: number; y: number; rot: number } | null;
 }
 
 export interface PresenceOptions {
@@ -95,6 +170,11 @@ export interface PresenceOptions {
    * anything else changing.
    */
   everyNthFrame?: number;
+  /**
+   * The clock stamped onto a grab. Injected so the tests can hand out the times
+   * they want to reason about rather than the ones a real clock happens to give.
+   */
+  now?: () => number;
 }
 
 /**
@@ -112,10 +192,41 @@ function roundZoom(value: number): number {
   return Math.round(value * 1000) / 1000;
 }
 
+/**
+ * Radians. A ten-thousandth is a third of an arcminute, which across a
+ * three-hundred-unit photograph is a twentieth of a board unit at the corner —
+ * beneath the position rounding above, so it cannot be the coarser of the two.
+ */
+function roundAngle(value: number): number {
+  return Math.round(value * 10000) / 10000;
+}
+
+/**
+ * Whether a grab is different from the one already on the wire.
+ *
+ * Both sides are already rounded, so this is exact equality on integers and
+ * ten-thousandths — and rounding is what makes it useful: an item held
+ * perfectly still by a hand that is not quite still produces no messages.
+ */
+function grabMoved(
+  now: { ids: readonly string[]; poses: readonly PresenceGrabPose[] },
+  sent: { ids: readonly string[]; poses: readonly PresenceGrabPose[] },
+): boolean {
+  if (now.ids.length !== sent.ids.length) return true;
+  for (let i = 0; i < now.ids.length; i += 1) {
+    if (now.ids[i] !== sent.ids[i]) return true;
+    const a = now.poses[i]!;
+    const b = sent.poses[i]!;
+    if (a.x !== b.x || a.y !== b.y || a.rot !== b.rot) return true;
+  }
+  return false;
+}
+
 export class Presence {
   private readonly channel: PresenceChannel;
   private readonly camera: Camera;
   private readonly selection: Selection;
+  private readonly poses: PresencePoses;
   private readonly user: PresenceUser;
   private readonly everyNthFrame: number;
 
@@ -137,18 +248,42 @@ export class Presence {
   private pointer: PresenceCursor | null = null;
   private stopped = false;
 
+  private readonly now: () => number;
+  /**
+   * The grab as it stands, rebuilt by `grabbing` and published from here.
+   *
+   * `seq` and `t` are not on it: those are stamped at the flush that sends it,
+   * so a grab that is staged twice between two publishing frames goes out once,
+   * with one sequence number.
+   */
+  private grab: { kind: "items"; ids: string[]; poses: PresenceGrabPose[] } | null = null;
+  /**
+   * A release must go out even though it says nothing new about position, so it
+   * cannot be discovered by comparing poses. This is the one-shot that carries
+   * it: set by `released`, consumed by the next flush.
+   */
+  private releasing = false;
+  private grabSeq = 0;
+  /** What the last published grab said, for the same reason `cam` is kept. */
+  private sent: { ids: string[]; poses: PresenceGrabPose[] } | null = null;
+  /** The grab as it will go out, stamped at the flush that sends it. */
+  private grabWire: PresenceGrab | null = null;
+
   constructor(
     channel: PresenceChannel,
     camera: Camera,
     selection: Selection,
+    poses: PresencePoses,
     user: PresenceUser,
     options: PresenceOptions = {},
   ) {
     this.channel = channel;
     this.camera = camera;
     this.selection = selection;
+    this.poses = poses;
     this.user = user;
     this.everyNthFrame = Math.max(1, Math.floor(options.everyNthFrame ?? 2));
+    this.now = options.now ?? (() => performance.now());
   }
 
   /**
@@ -171,6 +306,55 @@ export class Presence {
   }
 
   /**
+   * These items are being dragged, and here is where they are this frame.
+   *
+   * Called every frame a gesture is holding something; what actually goes out is
+   * the flush cadence's business, and an item that has not moved a whole board
+   * unit since the last publish is not a change (`changed` below). Ids the pose
+   * source does not know are dropped rather than published as an item at the
+   * origin — a receiver cannot tell the difference.
+   */
+  grabbing(ids: Iterable<string>): void {
+    const kept: string[] = [];
+    const poses: PresenceGrabPose[] = [];
+    for (const id of ids) {
+      const pose = this.poses.poseOf(id);
+      if (pose === null) continue;
+      if (!Number.isFinite(pose.x) || !Number.isFinite(pose.y) || !Number.isFinite(pose.rot)) {
+        continue;
+      }
+      kept.push(id);
+      poses.push({ x: round(pose.x), y: round(pose.y), rot: roundAngle(pose.rot) });
+    }
+    this.grab = kept.length === 0 ? null : { kind: "items", ids: kept, poses };
+  }
+
+  /**
+   * The gesture let go.
+   *
+   * Publishes one last grab, marked `final`, carrying the poses the document
+   * write made at the same moment will settle on. A receiver holds that pose
+   * until the document agrees or a grace period expires (DATA-MODEL section
+   * 9.2), and it is this message — not the grab merely disappearing — that tells
+   * it to start counting. So it is sent even when nothing moved on the last
+   * frame, which is why `releasing` exists rather than being inferred.
+   *
+   * The poses are re-read here rather than taken from the last staged grab: the
+   * release lands in phase 1 and the flush in phase 9, and between them sit the
+   * phases that put a released item where it hangs.
+   */
+  released(): void {
+    if (this.grab === null && this.sent === null) return;
+    const ids = this.grab?.ids ?? this.sent?.ids ?? [];
+    this.grabbing(ids);
+    // `grabbing` clears the grab when it can no longer find any of the items —
+    // deleted mid-gesture, or the release itself removed them. There is still a
+    // release to announce, and an empty `ids` says exactly that.
+    this.grab ??= { kind: "items", ids: [], poses: [] };
+    this.releasing = true;
+  }
+
+  /**
    * Publish, if this is a publishing frame and anything is different.
    *
    * Takes the frame index rather than the frame, so that nothing in `state/`
@@ -188,6 +372,31 @@ export class Presence {
     this.cursor = cursor;
     this.selected = this.selection.snapshot();
     this.selectionVersion = this.selection.version;
+
+    const final = this.releasing;
+    this.releasing = false;
+    // Field by field, from values `grabbing` narrowed and rounded. `ids` and
+    // `poses` are handed over rather than copied because `grabbing` builds fresh
+    // arrays every time and nothing else holds these two.
+    this.grabWire =
+      this.grab === null
+        ? null
+        : {
+            kind: "items",
+            ids: this.grab.ids,
+            poses: this.grab.poses,
+            seq: (this.grabSeq += 1),
+            t: this.now(),
+            phase: final ? "final" : "live",
+          };
+    this.sent = this.grab === null ? null : { ids: this.grab.ids, poses: this.grab.poses };
+    // A `final` is the last word about this gesture, so the grab goes away with
+    // it. Awareness keeps whatever it was last told until it is told otherwise,
+    // and a `final` left sitting there is a trap for the next peer to connect:
+    // it would arrive, read a grab, and hold a pose for a gesture that ended
+    // minutes ago. The next flush publishes `grab: null` and clears it.
+    if (final) this.grab = null;
+
     this.published = true;
     this.publish();
   }
@@ -228,6 +437,10 @@ export class Presence {
         strings: this.selected.strings,
         pins: this.selected.pins,
       },
+      // Built in `flush`, from values `grabbing` narrowed. Same argument as
+      // `selection` above: naming the fields again here would copy an object
+      // this module has just made and nobody else can reach.
+      grab: this.grabWire,
     };
     this.channel.setLocalState(state as unknown as Record<string, unknown>);
   }
@@ -242,6 +455,10 @@ export class Presence {
 
   private changed(cam: PresenceCam, cursor: PresenceCursor | null): boolean {
     if (this.cam === null) return true;
+    // A release says nothing new about position and still has to go out.
+    if (this.releasing) return true;
+    if ((this.grab === null) !== (this.sent === null)) return true;
+    if (this.grab !== null && this.sent !== null && grabMoved(this.grab, this.sent)) return true;
     if (cam.x !== this.cam.x || cam.y !== this.cam.y || cam.zoom !== this.cam.zoom) return true;
 
     if ((cursor === null) !== (this.cursor === null)) return true;
