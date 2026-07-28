@@ -71,7 +71,7 @@ Stated plainly, because each is a thing someone will eventually ask for and the 
 | A presentation tool | Boards are for thinking in, not for showing. Export exists for taking a picture of your thinking; it is not a slide deck. |
 | A document editor | Note text is short-form. No tables, no headings, no styles beyond a handful of paper and pen choices. |
 | A web app | It's a desktop app. This buys the filesystem, the native clipboard, real image decoding and LAN peer discovery — see §8. |
-| An alignment tool | No axis-lock modifier, no snapping, no guides — "mess is a feature" (§1.3) and the only thing an axis lock is ever used for is lining things up. The single `Ctrl`+drag on the board keeps a pin in its item (§3.3); it does not constrain a direction. |
+| An alignment tool | No axis lock, no rotation steps, no aspect-ratio lock, no snapping, no guides — "mess is a feature" (§1.3), and the only thing any of them is ever used for is lining things up. The single `Ctrl`+drag on the board keeps a pin in its item (§3.3); it does not constrain a direction. |
 | Infinitely scalable | Designed for boards of hundreds to a few thousand items. A board with 50,000 items is a database, and you should use one. |
 
 ### 1.5 The test
@@ -210,7 +210,7 @@ Drag an item to move it. Drag its rotation handle, or hold `R` and drag, to rota
 
 Nothing snaps to anything. There is no grid, no alignment guide, no distribution tool. This is deliberate and it is not a missing feature.
 
-**And no axis lock.** There is no modifier that holds a drag to the horizontal or the vertical. The only `Ctrl`+drag on the board is the pin one in §3.3, which keeps a pin in the item it is already in and has nothing to do with alignment. See §1.4.
+**And no held-modifier constraints.** No modifier holds a drag to an axis, a rotation to fixed steps, or a resize to its aspect ratio. All three are the same request — make my hand tidier than it is — and the answer to all three is the one above. The only `Ctrl`+drag on the board is the pin one in §3.3, which keeps a pin in the item it is already in and has nothing to do with alignment. See §1.4.
 
 While an item is dragged, its shadow lifts and softens, it scales up by about 2%, and it gains a slight lag-and-catch-up rotation in the direction of travel — the item is being *carried*, not teleported. On release it settles. If it has exactly one pin, it swings (§5.5).
 
