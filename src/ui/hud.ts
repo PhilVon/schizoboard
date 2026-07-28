@@ -73,6 +73,16 @@ export interface HudStats {
   assetsWanted: number;
   assetsInFlight: number;
   assetsPercent: number;
+  /**
+   * Hashes this board refers to that nobody on it has — `state/assets.ts`.
+   *
+   * Not derivable from the three above, and that is the point: the exchange
+   * drops a hash from `wanted` at the instant it gives up on it, so a
+   * photograph nobody has and a photograph everybody has both read as zero
+   * wanted. Giving up is the one asset outcome that leaves no trace anywhere
+   * else, and until T-75 draws it there is nothing on screen to see either.
+   */
+  assetsUnavailable: number;
 }
 
 /**
@@ -186,16 +196,18 @@ export class Hud {
       rows.push(this.stat("janitor", `${s.janitorPending} · ${s.janitorSwept} swept`));
     }
     // Same rule: a board whose photographs are all here has nothing to say.
-    if (s.assetsWanted > 0) {
+    if (s.assetsWanted > 0 || s.assetsUnavailable > 0) {
+      const gone = s.assetsUnavailable > 0 ? ` · ${s.assetsUnavailable} nobody has` : "";
       rows.push(
         this.stat(
           "assets",
           s.assetsInFlight === 0
-            ? `${s.assetsWanted} missing`
-            : `${s.assetsWanted} missing · ${s.assetsInFlight} in flight ${s.assetsPercent}%`,
+            ? `${s.assetsWanted} missing${gone}`
+            : `${s.assetsWanted} missing · ${s.assetsInFlight} in flight ${s.assetsPercent}%${gone}`,
           // Wanted, and nobody fetching them. Either no peer has advertised the
-          // hash or every one that did has failed — and both are stuck.
-          s.assetsInFlight === 0,
+          // hash or every one that did has failed — and both are stuck. Given
+          // up on is stuck too, and more finally.
+          s.assetsInFlight === 0 || s.assetsUnavailable > 0,
         ),
       );
     }

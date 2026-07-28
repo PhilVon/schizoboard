@@ -57,6 +57,7 @@ import { RopeLayer } from "@/render/ropes/paint";
 import { World } from "@/render/world";
 import { RopeSet, type RopeHit } from "@/sim/ropes";
 import { Torsion } from "@/sim/torsion";
+import { AssetStates } from "@/state/assets";
 import { Camera } from "@/state/camera";
 import { DirtySets } from "@/state/dirty";
 import { chromeFrame, emptyFrame, handleAt, handleCursor } from "@/state/handles";
@@ -104,14 +105,14 @@ async function boot(): Promise<void> {
   const world = new World(root);
   const cork = new Cork(world.layers.cork, boardSeed(board));
   /**
-   * Which assets this machine can actually show.
+   * What this machine can show of each photograph, and how far off the rest are.
    *
    * `platform/types.ts` says `assetUrl` "returns an empty string for an asset
    * this process has never seen, which the item renders as its `unknown` state
    * rather than as an error" — and under the shell it cannot keep that promise
    * on its own, because building the URL is pure string work that knows
    * nothing about what is on disk. So the knowledge lives here, and this is
-   * the local per-asset state DATA-MODEL section 9 says is never in the
+   * the local per-asset state DATA-MODEL section 10 says is never in the
    * document.
    *
    * It matters more than a contract detail. Without it an item points an
@@ -119,10 +120,14 @@ async function boot(): Promise<void> {
    * standing between the user and a broken-image icon is an error handler. With
    * it, an item with no photograph yet is simply an item with no photograph
    * yet — undeveloped film, which is what DESIGN section 7.5 asks for.
+   *
+   * This module is wiring for it and nothing else: every transition below is one
+   * line next to the event that causes it, and `state/assets.ts` owns which of
+   * them are allowed to win.
    */
-  const showable = new Set<string>();
+  const assets = new AssetStates();
   /**
-   * Fetches the bytes `showable` is waiting for, once there is a wire (T-74).
+   * Fetches the bytes `assets` is waiting for, once there is a wire (T-74).
    *
    * Declared here and assigned with the provider a long way below, because the
    * two things that drive it are at opposite ends of this function: an item
@@ -147,13 +152,20 @@ async function boot(): Promise<void> {
    * is wiring and nothing tests it.
    */
   const assetUrl = (sha256: string, screenPx: number): string => {
-    if (showable.has(sha256)) return native.assetUrl(sha256, variantFor(screenPx));
+    if (assets.isReady(sha256)) return native.assetUrl(sha256, variantFor(screenPx));
     // Asked for a photograph we do not have the bytes of, which means an item
     // wearing it is being drawn — and culling only binds what is on screen, so
     // this *is* "an asset whose item is in or near the viewport" (ARCHITECTURE
     // section 5.2). No viewport arithmetic of its own: the layer that already
     // decides what to mount is a better answer than a second opinion about it.
-    exchange?.want(sha256, Priority.VISIBLE);
+    //
+    // Only a board with a wire is *requesting* anything. Without one there is
+    // nobody to ask, so saying so here would be a promise this process cannot
+    // keep; `reconcileAssets` is what calls that case what it is, once it has
+    // asked the store and knows the bytes are genuinely not here.
+    if (exchange === null) return "";
+    exchange.want(sha256, Priority.VISIBLE);
+    assets.requesting(sha256);
     return "";
   };
   const items = new DomItemLayer(world.layers.world, assetUrl);
@@ -168,14 +180,17 @@ async function boot(): Promise<void> {
       if (scene.cold(id)?.assetId === sha256) dirty.item(id);
     }
   };
+  // One subscription rather than a `refreshAsset` beside every transition. A
+  // state that changed and did not redraw is the bug this makes impossible, and
+  // there are five places that change one.
+  assets.onChange(refreshAsset);
 
   // Awaited, not fired and forgotten: `listen` is itself a round trip, and an
   // `asset:ready` emitted before it resolves is simply lost — which would
   // strand that one photograph undeveloped for the session while every later
   // one worked.
   await native.on("asset:ready", ({ sha256 }) => {
-    showable.add(sha256);
-    refreshAsset(sha256);
+    assets.ready(sha256);
     // We are now somebody who has it, whether it was pasted here or fetched
     // from a peer. Saying so immediately rather than waiting for a periodic
     // sweep is what makes a photograph dropped on one machine appear on the
@@ -907,6 +922,7 @@ async function boot(): Promise<void> {
       assetsWanted: transfers.wanted,
       assetsInFlight: transfers.inFlight,
       assetsPercent: transfers.percent,
+      assetsUnavailable: assets.countUnavailable(),
       inked: items.inked + boardInk.mounted,
       inkPixels: items.inkPixels + boardInk.pixels,
     };
@@ -973,8 +989,11 @@ async function boot(): Promise<void> {
    */
   if (provider !== null) {
     exchange = new AssetExchange(provider, native, {
-      onUnavailable: (sha256) =>
-        console.warn(`[sync] nobody on this board has ${sha256.slice(0, 8)}`),
+      onProgress: (sha256, received, total) => assets.transferring(sha256, received, total),
+      onUnavailable: (sha256) => {
+        assets.unavailable(sha256);
+        console.warn(`[sync] nobody on this board has ${sha256.slice(0, 8)}`);
+      },
     });
   }
 
@@ -1566,6 +1585,14 @@ async function boot(): Promise<void> {
        * live one.
        */
       exchange,
+      /**
+       * What each photograph's bytes are doing (T-95).
+       *
+       * The HUD counts them; this says which hash is in which state, which is
+       * the only way to check a transition from outside while T-75 has yet to
+       * draw any of them.
+       */
+      assets,
       /** The document as persistence would write it — for reopening a board
        *  and checking it comes back still (Phase 3's AC-15). */
       snapshot: () => snapshot(board),
@@ -1593,11 +1620,19 @@ async function boot(): Promise<void> {
         // is not on this disk. Asked for at idle priority, so it queues behind
         // anything the person is actually looking at, which `assetUrl` raises
         // as it is drawn.
-        exchange?.want(sha256);
+        if (exchange === null) {
+          // No wire, and the store has just said it does not have this. Nothing
+          // is going to bring it, and this is the only place that can tell —
+          // `assetUrl` sees a missing photograph but not whether it is missing
+          // because it is late or because it was never here.
+          assets.unavailable(sha256);
+          return;
+        }
+        exchange.want(sha256);
+        assets.requesting(sha256);
         return;
       }
-      showable.add(sha256);
-      refreshAsset(sha256);
+      assets.ready(sha256);
     });
   };
   void reconcileAssets();
