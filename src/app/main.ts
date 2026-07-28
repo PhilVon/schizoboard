@@ -43,7 +43,7 @@ import { Paste } from "@/app/paste";
 import { Mesh } from "@/app/mesh";
 import { formatInvite, inviteSearch, openingPlan, parseInvite } from "@/app/invite";
 import { dialAddress, identityFor } from "@/app/sync";
-import { DEFAULT_ERASER_SIZE, type InkSurface } from "@/lib/ink";
+import { DEFAULT_ERASER_SIZE, type InkSurface, type WetStroke } from "@/lib/ink";
 import { initPlatform } from "@/platform";
 import { variantFor } from "@/platform/types";
 import { Cork } from "@/render/cork";
@@ -96,6 +96,11 @@ import { ContextMenu, type MenuEntry } from "@/ui/menu";
  * and it only runs at all while something is missing.
  */
 const NOTICE_SWEEP_MS = 500;
+
+/** No pen in hand, or one holding nothing — the same array every frame, because
+ *  the two readers of it run sixty times a second on a board with no ink on it
+ *  at all. */
+const NO_WET_RUNS: readonly WetStroke[] = Object.freeze([]);
 
 async function boot(): Promise<void> {
   const native = await initPlatform();
@@ -1782,7 +1787,7 @@ async function boot(): Promise<void> {
       // above), and drawing it here as well would paint an opaque mark over the
       // hole it just made — the exact "visibly wrong" the erase tool spent a
       // task avoiding.
-      wetPen()?.runsInFlight ?? [],
+      wetPen()?.runsInFlight ?? NO_WET_RUNS,
       // Everybody else: their cursors, and the chrome for what they have hold
       // of. Null on a board with no wire, which costs the overlay one null check
       // and no walk at all.
@@ -1826,6 +1831,13 @@ async function boot(): Promise<void> {
       // beside the grab because it is the same kind of statement: this is what
       // I have hold of right now.
       presence.splitting(select.heldSegment);
+      // The stroke under the pen, sampled every frame even though it is sent
+      // every other one: the decimation that makes the window constant-size
+      // (DATA-MODEL section 9.1) has to see the samples that arrive in between,
+      // or a remote preview is half the resolution of the mark being made.
+      // The same accessor the OVERLAY phase draws from, so a peer sees what is
+      // on this client's overlay and never the smudge.
+      presence.drawing(wetPen()?.runsInFlight ?? NO_WET_RUNS);
       const holding = select.heldItems.size > 0;
       if (holding) presence.grabbing(select.heldItems);
       else if (wasGrabbing) presence.released();
@@ -1972,6 +1984,18 @@ async function boot(): Promise<void> {
        * answer for a board that is alone.
        */
       peers,
+      /**
+       * The wire, or null on a board that is alone — for the awareness channel
+       * itself, which `peers` above only shows the drawn half of.
+       *
+       * `provider.awareness.getStates()` is the raw state of every client on
+       * the board, and it is the only readout there is for a field that has
+       * been published before anything renders it. That is not a hypothetical
+       * gap: `wet` went on the wire in T-168 and is drawn in T-169, and without
+       * this there was no way to tell a sliding window that never left the
+       * machine from one that arrived and simply was not painted.
+       */
+      provider,
       loop,
       ops,
       tools,

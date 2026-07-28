@@ -28,13 +28,15 @@
  * selection with its methods — can arrive on the wire because somebody handed
  * one to a setter.
  *
- * `wet` and `impulse` from section 9 are absent because the work that produces
- * them has not happened: wet ink is T-73. Each adds its own field and its own
- * test — `locks` did, in T-130.
+ * `impulse` from section 9 is absent because the work that produces it has not
+ * happened. It adds its own field and its own test — `locks` did in T-130, and
+ * `wet` in T-168.
  */
 
+import type { WetStroke } from "@/lib/ink";
 import type { Camera } from "@/state/camera";
 import type { Selection } from "@/state/selection";
+import { WetWire, type PresenceWetRun } from "@/state/wetwire";
 
 /** Who this is. The only field a peer shows a human directly. */
 export interface PresenceUser {
@@ -186,6 +188,17 @@ export interface PresenceState {
    * 7), and that belongs beside this rather than in a second field.
    */
   locks: { segments: readonly PresenceLock[] };
+  /**
+   * The stroke under this client's pen right now, windowed — DATA-MODEL section
+   * 9.1, and `state/wetwire.ts` for how.
+   *
+   * A list where section 9 writes `null | {…}`, because one gesture is several
+   * marks once it crosses an edge (T-137, Q-81), and empty where the schema
+   * writes null, for the same reason `locks.segments` is: an absent array and an
+   * empty one are the same statement, and a reader that has to handle both is a
+   * reader with a branch that can be got wrong.
+   */
+  wet: readonly PresenceWetRun[];
 }
 
 /** The narrow slice of `Awareness` this needs. Keeps the tests free of Yjs. */
@@ -311,6 +324,17 @@ export class Presence {
   /** The same array for every client claiming nothing, which is nearly all of
    *  them nearly all of the time. */
   private static readonly NO_LOCKS: readonly PresenceLock[] = Object.freeze([]);
+
+  /**
+   * The sliding window over whatever the pen is drawing — the one field with an
+   * algorithm rather than a rounding rule behind it, so it has a file.
+   *
+   * Fed every frame by [`drawing`] and read on the frames that publish, which
+   * is why it cannot be a comparison in [`changed`] like the others: the
+   * decimation wants every sample the hand made, and half of those arrive on
+   * the frames nothing is sent.
+   */
+  private readonly wet = new WetWire();
 
   private readonly now: () => number;
   /**
@@ -443,6 +467,26 @@ export class Presence {
   }
 
   /**
+   * The runs the pen has on the overlay this frame, or nothing.
+   *
+   * Called on **every** frame rather than every publishing one, and that is the
+   * difference between this and [`grabbing`]: a grab is a position and the
+   * newest one is the whole truth about it, while a stroke is a *path* and the
+   * samples that arrive between two publishes are what decide where the
+   * decimation puts its points (DATA-MODEL section 9.1). Sampling this at the
+   * publish cadence would halve the resolution of every remote preview and make
+   * it depend on `everyNthFrame`, which is a transport setting.
+   *
+   * The pen's runs, never the eraser's smudge — that one is already on the ink
+   * canvas, and a peer drawing it here would paint an opaque mark over the hole
+   * it had just made. `app/main.ts` makes the same distinction for the local
+   * overlay, from the same accessor.
+   */
+  drawing(runs: readonly WetStroke[]): void {
+    this.wet.update(runs, this.camera.zoom);
+  }
+
+  /**
    * Publish, if this is a publishing frame and anything is different.
    *
    * Takes the frame index rather than the frame, so that nothing in `state/`
@@ -539,6 +583,13 @@ export class Presence {
             ? Presence.NO_LOCKS
             : [{ string: this.lock.string, a: this.lock.a, b: this.lock.b }],
       },
+      // The one field not named again here, because there is nothing to name it
+      // *from*: `WetWire` cuts fresh arrays of numbers it quantised itself out
+      // of primitives, holds nothing anybody else can reach, and this is the
+      // call that takes them. Naming a run's six fields a second time would
+      // copy an object made a microsecond ago for this and nothing else — the
+      // same bargain `selection` and `grab` above already make.
+      wet: this.wet.payload(),
     };
     this.channel.setLocalState(state as unknown as Record<string, unknown>);
   }
@@ -561,7 +612,10 @@ export class Presence {
     // Taking a segment and letting go of one are both changes, and neither
     // moves the cursor by a whole board unit on the frame it happens.
     if (!sameLock(this.lock, this.sentLock)) return true;
-
+    // A line that has grown, or whose tip has moved, and neither shows up in
+    // anything above: the pen captures the pointer, so a stroke is drawn by a
+    // cursor that has already been published at that position.
+    if (this.wet.changed) return true;
 
     if ((cursor === null) !== (this.cursor === null)) return true;
     if (cursor !== null && this.cursor !== null) {

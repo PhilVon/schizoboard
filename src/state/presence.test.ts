@@ -8,6 +8,7 @@
 
 import { describe, expect, it } from "vitest";
 
+import type { WetStroke } from "@/lib/ink";
 import { Camera } from "@/state/camera";
 import { Presence, type PresenceState } from "@/state/presence";
 import { Selection } from "@/state/selection";
@@ -113,6 +114,7 @@ describe("what it says", () => {
       "locks",
       "selection",
       "user",
+      "wet",
     ]);
   });
 
@@ -503,6 +505,159 @@ describe("claiming a segment", () => {
   it("survives the round trip through JSON", () => {
     const { channel, presence } = setUp();
     presence.splitting(SEG);
+    presence.flush(0);
+
+    expect(JSON.parse(JSON.stringify(channel.last))).toEqual(channel.last);
+  });
+});
+
+/**
+ * The window itself is `state/wetwire.test.ts`'s subject. What is here is the
+ * part only `Presence` can be wrong about: when the samples are read, and when
+ * the result is allowed to cost a message.
+ */
+describe("the stroke under the pen", () => {
+  const RUN: WetStroke = {
+    id: "run-1",
+    tool: "marker",
+    color: "#1f1b17",
+    size: 6,
+    opacity: 1,
+    item: null,
+    samples: [],
+  };
+
+  /** A run whose samples are the array handed in, exactly as `MarkerTool` hands
+   *  its live one over rather than copying it. */
+  function stroke(samples: { x: number; y: number; pressure: number }[]): WetStroke {
+    return { ...RUN, samples };
+  }
+
+  it("says nothing about ink until somebody draws some", () => {
+    const { channel, presence } = setUp();
+    presence.flush(0);
+
+    expect(channel.last.wet).toEqual([]);
+  });
+
+  it("publishes the run, named by the id it was born with", () => {
+    const { channel, presence } = setUp();
+    presence.flush(0);
+    presence.drawing([
+      stroke([
+        { x: 0, y: 0, pressure: 0.5 },
+        { x: 40, y: 0, pressure: 0.5 },
+      ]),
+    ]);
+    presence.flush(2);
+
+    expect(channel.last.wet).toHaveLength(1);
+    // The name minted at pen-down (T-167) — what lets a receiver match the
+    // document record that is about to arrive against the ghost it is drawing.
+    expect(channel.last.wet[0]!.id).toBe("run-1");
+    expect(channel.last.wet[0]!.base).toBe(0);
+  });
+
+  it("reads the samples on every frame, not only the ones that publish", () => {
+    const { channel, presence } = setUp();
+    const samples: { x: number; y: number; pressure: number }[] = [];
+    presence.flush(0);
+
+    // A hand moving through eight frames, four of which send nothing. The
+    // decimation has to see all eight: sampling at the publish cadence would
+    // make a remote preview coarser on a peer that had been told to publish
+    // less often, which is a transport setting and no business of the ink's.
+    for (let frame = 1; frame <= 8; frame += 1) {
+      samples.push({ x: frame * 40, y: 0, pressure: 0.5 });
+      presence.drawing([stroke(samples)]);
+      presence.flush(frame);
+    }
+
+    expect(channel.last.wet[0]!.pts).toHaveLength(8 * 3);
+  });
+
+  it("decimates against the zoom the sender is drawing at", () => {
+    const { channel, camera, presence } = setUp();
+    camera.resize(800, 600);
+    camera.zoomTo(4, 400, 300);
+    const samples: { x: number; y: number; pressure: number }[] = [];
+    for (let i = 0; i < 10; i += 1) samples.push({ x: i * 2, y: 0, pressure: 0.5 });
+
+    presence.drawing([stroke(samples)]);
+    presence.flush(0);
+
+    // Six screen pixels is a unit and a half at 400%, so two-unit steps all
+    // survive. At 100% the same hand would send four points for these ten —
+    // which is the right answer *there*, and the wrong one here.
+    expect(channel.last.wet[0]!.pts).toHaveLength(10 * 3);
+  });
+
+  it("is a change in its own right, which nothing else on presence would notice", () => {
+    const { channel, presence } = setUp();
+    const samples = [
+      { x: 0, y: 0, pressure: 0.5 },
+      { x: 40, y: 0, pressure: 0.5 },
+    ];
+    presence.drawing([stroke(samples)]);
+    presence.flush(0);
+    const after = channel.states.length;
+
+    // The pen has pointer capture, so the cursor was published at this position
+    // before the line reached it. Nothing but the ink itself has moved.
+    samples.push({ x: 80, y: 0, pressure: 0.5 });
+    presence.drawing([stroke(samples)]);
+    presence.flush(2);
+
+    expect(channel.states.length).toBe(after + 1);
+  });
+
+  it("goes quiet again when the hand stops without lifting", () => {
+    const { channel, presence } = setUp();
+    const samples = [
+      { x: 0, y: 0, pressure: 0.5 },
+      { x: 40, y: 0, pressure: 0.5 },
+    ];
+    presence.drawing([stroke(samples)]);
+    presence.flush(0);
+    const after = channel.states.length;
+
+    // A pen resting on the tablet produces no pointer events, so the array
+    // stops growing and there is nothing new to say about it.
+    for (let frame = 2; frame < 20; frame += 2) {
+      presence.drawing([stroke(samples)]);
+      presence.flush(frame);
+    }
+
+    expect(channel.states.length).toBe(after);
+  });
+
+  it("clears the ink when the gesture ends, so nothing stale sits in awareness", () => {
+    const { channel, presence } = setUp();
+    presence.drawing([
+      stroke([
+        { x: 0, y: 0, pressure: 0.5 },
+        { x: 40, y: 0, pressure: 0.5 },
+      ]),
+    ]);
+    presence.flush(0);
+    expect(channel.last.wet).toHaveLength(1);
+
+    presence.drawing([]);
+    presence.flush(2);
+    // Awareness keeps whatever it was last told. A run left sitting here is a
+    // trap for the next peer to connect: it would arrive and draw a ghost for a
+    // stroke that landed in the document minutes ago.
+    expect(channel.last.wet).toEqual([]);
+  });
+
+  it("survives the round trip through JSON", () => {
+    const { channel, presence } = setUp();
+    presence.drawing([
+      stroke([
+        { x: 3.7, y: -9.2, pressure: 0.37 },
+        { x: 44.1, y: -9.2, pressure: 0.61 },
+      ]),
+    ]);
     presence.flush(0);
 
     expect(JSON.parse(JSON.stringify(channel.last))).toEqual(channel.last);
