@@ -311,6 +311,9 @@ export class Overlay {
   /** Was there wet ink on the canvas last frame? The frame after a release has
    *  to clear the mark, and a release changes nothing else on this canvas. */
   private hadWet = false;
+  /** And the same for a peer's — their release leaves a mark on this canvas
+   *  that nothing else will clear, and it does not touch our dirty sets. */
+  private hadPeerWet = false;
   /** Reset at the top of every `draw` â€” see [`Overlay.clear`]. */
   private cleared = false;
   /** What the peers on the canvas were drawn from — see [`PeerSource.version`]. */
@@ -432,6 +435,10 @@ export class Overlay {
     // is a per-peer reverse index rebuilt on every awareness message, to save
     // work on the frames where something is already moving.
     const wantsPeerChrome = peers !== null && peers.chromed;
+    // Somebody else mid-stroke. Its own flag rather than a share of
+    // `wantsPeerChrome`, because the two gate different passes and a peer who
+    // is drawing usually has nothing selected.
+    const wantsPeerWet = peers !== null && peers.inked;
     // A flash fades, so every frame of one is a different picture — and unlike
     // everything else here it is stale on frames where the board is otherwise
     // completely still, which is the usual case: you press Ctrl+Z and nothing
@@ -448,6 +455,25 @@ export class Overlay {
       // the canvas that nothing else will clear.
       wantsWet ||
       this.hadWet ||
+      // Emphatically *not* the same shape as `wantsWet` above, and the
+      // difference is worth stating because the symmetry is inviting and wrong.
+      // Our own stroke grows on every frame the pen is down, so its mere
+      // presence is a reason to redraw. A peer's grows only when a message
+      // lands — thirty times a second at most, against sixty frames — and
+      // `peers.version` below already fires on exactly those. An unconditional
+      // `wantsPeerWet` here restrokes a full-viewport canvas every frame that
+      // anybody anywhere is holding a pen.
+      //
+      // What is left is the two things the version cannot say. A remote run
+      // glued to a photograph moves when *somebody else* drags it, touching
+      // neither our camera nor our selection nor their awareness state — the
+      // case `wantsPeerChrome` answers for their outlines.
+      (wantsPeerWet && (dirty.all || dirty.items.size > 0)) ||
+      // And the frame their ghost goes: their mark is on our canvas and nothing
+      // else will take it off. A store that bumped its version on the retire
+      // makes this redundant; a store that forgot to would leave a stranger's
+      // stroke on the board until something else happened to move.
+      (this.hadPeerWet && !wantsPeerWet) ||
       stringHover !== null ||
       this.hadStringHover ||
       hoveredPin !== this.hoveredPin ||
@@ -486,6 +512,7 @@ export class Overlay {
     this.hadStringHover = stringHover !== null;
     this.hadFlash = wantsFlash;
     this.hadWet = wantsWet;
+    this.hadPeerWet = wantsPeerWet;
     this.hoveredPin = hoveredPin;
     this.highlighted = highlight;
     this.cameraVersion = camera.version;
@@ -550,6 +577,13 @@ export class Overlay {
     // because it is not chrome: it is a mark being made, and a selection outline
     // painted on top of the line you are drawing would read as the line going
     // *under* the photograph it is being drawn on.
+    // Their ink first, then ours over it. Two people drawing in the same place
+    // is the case this settles, and it settles it the way the rest of this
+    // canvas already does — our own selection chrome is drawn inside a peer's,
+    // our own cursor over theirs. The board is ours.
+    if (wantsPeerWet && peers !== null && this.drawPeerWet(ctx, camera, scene, peers)) {
+      drew = true;
+    }
     if (wantsWet && this.drawWet(ctx, camera, scene, wet)) drew = true;
     // And over even the ink. A pointer is not part of the picture the board is
     // making — it is the thing pointing at it, and one that can be hidden behind
@@ -649,6 +683,48 @@ export class Overlay {
     return drew;
   }
 
+  /**
+   * Everybody else's pens.
+   *
+   * Through the same [`WetInk`] the local stroke goes through, with the run's
+   * own tool, colour, size and opacity off the wire — which is D-29 in code:
+   *
+   * > A peer's wet ink is drawn in the ink's own colour, exactly as the person
+   * > drawing it sees it. It is never tinted, outlined or otherwise marked with
+   * > the peer's identity colour.
+   *
+   * There is deliberately no branch here that could give a remote mark a
+   * different look, because the whole of the wet/dry handoff rests on the ghost
+   * and the record that replaces it being the same mark (DATA-MODEL section
+   * 9.2). A recoloured ghost would change colour at the moment of commit — a
+   * flash on every stroke anybody else made.
+   *
+   * "Who drew this" is answered by the cursor at the end of the line, which is
+   * drawn a few lines further down and on this same canvas.
+   *
+   * The frame is resolved per run, this frame, exactly as it is for our own ink
+   * — a peer drawing on a photograph that a third person is dragging must have
+   * their mark stay on the paper.
+   */
+  private drawPeerWet(
+    ctx: CanvasRenderingContext2D,
+    camera: Camera,
+    scene: Scene,
+    peers: PeerSource,
+  ): boolean {
+    // Like `drawWet` above: the clear is deferred to whoever draws first, and
+    // on a frame where a peer's stroke is the only thing moving that is this.
+    // Without it their line is painted over the previous frame's copy of
+    // itself, which on a marker reads as the mark thickening as it is drawn.
+    if (!this.cleared) this.clear(ctx);
+    let drew = false;
+    for (const peer of peers.peers()) {
+      for (const run of peer.ink.drawable()) {
+        if (this.wetInk.draw(ctx, camera, run, this.inkFrame(scene, run.item))) drew = true;
+      }
+    }
+    return drew;
+  }
   /**
    * Where the item a stroke is glued to is drawn — null for a board-space stroke,
    * and also for an item that is no longer on the board, which a peer's delete

@@ -43,6 +43,7 @@
  * its own rate, so it cannot reproduce the step it is being fed.
  */
 
+import { PeerInk, readWet, type PeerWetRun } from "@/render/presence/wetpeer";
 import { criticallyDamped } from "@/state/remote";
 
 /**
@@ -132,6 +133,40 @@ export interface DrawnPeer {
   /** The segments they have hold of. Empty for everyone who is not, which is
    *  everyone, nearly always. */
   readonly locks: readonly PeerLock[];
+  /**
+   * The stroke under their pen, spliced together out of the windows seen so far
+   * — DATA-MODEL section 9.1, and `render/presence/wetpeer.ts` for how.
+   *
+   * An object rather than an array, and the one field here that is *not* what
+   * the last message said: a sliding window only makes sense against what came
+   * before, so this accumulates across messages while everything above it is
+   * replaced by each one. That is also why it is absent from [`ReadPeer`].
+   */
+  readonly ink: PeerInk;
+}
+
+/**
+ * What one awareness message said, before any of it is merged with what came
+ * before.
+ *
+ * Distinct from [`DrawnPeer`] because two of the fields are not the same kind
+ * of thing. A name, a colour and a selection are *stated* by each message and
+ * the newest statement is the whole truth. A cursor is smoothed towards what
+ * was stated, and wet ink is spliced into what was already held — neither can
+ * be read out of one message, so neither is here.
+ */
+export interface ReadPeer {
+  readonly id: string;
+  readonly name: string;
+  readonly color: string;
+  readonly cursor: PeerPoint | null;
+  readonly items: readonly string[];
+  readonly strings: readonly string[];
+  readonly pins: readonly string[];
+  readonly locks: readonly PeerLock[];
+  /** The windows this message carried, validated. Spliced by [`Peers.observe`]
+   *  into the accumulator on [`DrawnPeer.ink`]. */
+  readonly wet: readonly PeerWetRun[];
 }
 
 /**
@@ -146,6 +181,9 @@ export interface PeerSource {
   readonly version: number;
   /** Whether any peer has anything selected, so the chrome pass can be skipped. */
   readonly chromed: boolean;
+  /** Whether any peer has a stroke in the air, so the ink pass can be skipped —
+   *  which on a board where nobody is drawing is every frame. */
+  readonly inked: boolean;
   peers(): Iterable<DrawnPeer>;
 }
 
@@ -168,6 +206,8 @@ interface Live {
   pins: readonly string[];
   /** The segments they have hold of — DATA-MODEL section 5.4. */
   locks: readonly PeerLock[];
+  /** Their wet ink, accumulated across messages rather than replaced by them. */
+  ink: PeerInk;
 }
 
 function text(value: unknown, fallback: string, cap: number): string {
@@ -234,7 +274,7 @@ function point(value: unknown): PeerPoint | null {
  * Exported because it is the boundary, and a boundary is worth testing without
  * a store, a channel or a canvas around it.
  */
-export function readPeer(state: unknown): DrawnPeer | null {
+export function readPeer(state: unknown): ReadPeer | null {
   if (typeof state !== "object" || state === null) return null;
   const user = (state as { user?: unknown }).user;
   if (typeof user !== "object" || user === null) return null;
@@ -255,6 +295,7 @@ export function readPeer(state: unknown): DrawnPeer | null {
     strings: ids(bag.strings),
     pins: ids(bag.pins),
     locks: locks((state as { locks?: unknown }).locks),
+    wet: readWet((state as { wet?: unknown }).wet),
   };
 }
 
@@ -317,6 +358,21 @@ export class Peers implements PeerSource {
     return false;
   }
 
+  /**
+   * Whether anybody is mid-stroke, so the ink pass can be skipped entirely.
+   *
+   * Separate from [`chromed`] rather than folded into it, because the two gate
+   * different passes and a peer who is drawing usually has nothing selected —
+   * one board in a hundred has both true at once, and a single flag would make
+   * every frame of a remote stroke walk the chrome pass for nothing.
+   */
+  get inked(): boolean {
+    for (const peer of this.live.values()) {
+      if (peer.ink.any) return true;
+    }
+    return false;
+  }
+
   get size(): number {
     return this.live.size;
   }
@@ -362,7 +418,12 @@ export class Peers implements PeerSource {
         strings: read.strings,
         pins: read.pins,
         locks: read.locks,
+        ink: new PeerInk(),
       });
+      // Spliced after the record exists, because the first window of a run is
+      // the same code path as the hundredth — there is no separate case for a
+      // stroke that starts while somebody is joining.
+      this.live.get(clientId)!.ink.splice(read.wet);
       this.ver += 1;
       return;
     }
@@ -383,6 +444,9 @@ export class Peers implements PeerSource {
     existing.strings = read.strings;
     existing.pins = read.pins;
     existing.target = read.cursor;
+    // Not a comparison like the fields above: a splice already knows whether it
+    // changed the picture, and asking it is cheaper than walking the samples.
+    if (existing.ink.splice(read.wet)) changed = true;
 
     if (read.cursor === null) {
       // The pointer left their board, and a peer who is no longer pointing at

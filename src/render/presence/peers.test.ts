@@ -10,6 +10,7 @@ function state(over: Record<string, unknown> = {}): Record<string, unknown> {
     cursor: { x: 100, y: 50, tool: "select" },
     selection: { items: [], strings: [], pins: [] },
     grab: null,
+    wet: [],
     ...over,
   };
 }
@@ -265,5 +266,83 @@ describe("a claimed segment counts as chrome", () => {
 
     peers.observe(1, state({ locks: { segments: [] } }));
     expect(peers.chromed).toBe(false);
+  });
+});
+
+/**
+ * The wet-ink field, at the store's level. What the splice itself does is
+ * `wetpeer.test.ts`'s subject; what is here is the part only `Peers` can get
+ * wrong — whether the accumulator survives a message, and whether a stroke
+ * moving is a reason to redraw.
+ */
+describe("a peer's wet ink", () => {
+  function run(over: Record<string, unknown> = {}): Record<string, unknown> {
+    return {
+      id: "run-1",
+      item: null,
+      tool: "marker",
+      color: "#1f1b17",
+      size: 6,
+      opacity: 1,
+      base: 0,
+      pts: [0, 0, 128, 80, 0, 128],
+      ...over,
+    };
+  }
+
+  it("says nothing is inked until somebody draws", () => {
+    peers.observe(9, state());
+    expect(peers.inked).toBe(false);
+  });
+
+  it("accumulates across messages rather than being replaced by each one", () => {
+    peers.observe(9, state({ wet: [run()] }));
+    // The second window overlaps the first by a point, which is what a sliding
+    // window does — and the receiver has to end up with three points, not two
+    // and not five.
+    peers.observe(9, state({ wet: [run({ base: 1, pts: [80, 0, 128, 160, 0, 128] })] }));
+
+    const [peer] = [...peers.peers()];
+    const [stroke] = [...peer!.ink.drawable()];
+    expect(stroke!.samples.map((sample) => sample.x)).toEqual([0, 10, 20]);
+    expect(peers.inked).toBe(true);
+  });
+
+  it("bumps its version when the ink moved, and only then", () => {
+    peers.observe(9, state({ wet: [run()] }));
+    const after = peers.version;
+
+    // The same window again. Awareness republishes on its own clock, and this
+    // is what stops a peer holding a pen still restroking the viewport.
+    peers.observe(9, state({ wet: [run()] }));
+    expect(peers.version).toBe(after);
+
+    peers.observe(9, state({ wet: [run({ pts: [0, 0, 128, 96, 0, 128] })] }));
+    expect(peers.version).toBe(after + 1);
+  });
+
+  it("takes the ink with the peer when they leave", () => {
+    peers.observe(9, state({ wet: [run()] }));
+    expect(peers.inked).toBe(true);
+
+    peers.forget(9);
+    expect(peers.inked).toBe(false);
+    expect([...peers.peers()]).toHaveLength(0);
+  });
+
+  it("takes it with them when their state stops being readable", () => {
+    peers.observe(9, state({ wet: [run()] }));
+    // No user, so there is nobody to attribute a mark to. `observe` forgets the
+    // peer, and the accumulator is part of the peer.
+    peers.observe(9, { cursor: { x: 1, y: 1 } });
+    expect(peers.inked).toBe(false);
+  });
+
+  it("does not draw one peer's ink for another", () => {
+    peers.observe(9, state({ wet: [run()] }));
+    peers.observe(10, state({ user: { id: "8", name: "Green", color: "#4a8a4f" } }));
+
+    const drawn = [...peers.peers()].map((peer) => [...peer.ink.drawable()].length);
+    expect(drawn.sort()).toEqual([0, 1]);
   });
 });

@@ -10,6 +10,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { Overlay } from "@/render/overlay";
 import type { DrawnPeer } from "@/render/presence/peers";
+import { PeerInk, readWet } from "@/render/presence/wetpeer";
 import { Camera } from "@/state/camera";
 import { DirtySets } from "@/state/dirty";
 import { Scene, type ItemCold, type ItemPose } from "@/state/scene";
@@ -31,6 +32,10 @@ interface Calls {
   strokeWidths: number[];
   /** Wet ink is the one thing on this canvas that is filled from a `Path2D`. */
   fills: number;
+  /** The `fillStyle` and `globalCompositeOperation` in force at each `fill()`.
+   *  A peer's ink is drawn in the *run's* colour and never their identity one
+   *  (D-29), which is a claim about exactly this. */
+  inks: { style: string; op: string }[];
   /** The `globalAlpha` in force at each `strokeRect`/`stroke`. The undo flash
    *  is the only chrome that fades, and its fade *is* its alpha. */
   alphas: number[];
@@ -96,6 +101,7 @@ function stubCanvas(): HTMLCanvasElement {
     },
     fill: () => {
       calls.fills++;
+      calls.inks.push({ style: String(ctx.fillStyle), op: String(ctx.globalCompositeOperation) });
     },
     /** The wet stroke clips to the paper it is being drawn on (T-136). */
     clip: vi.fn(),
@@ -103,6 +109,7 @@ function stubCanvas(): HTMLCanvasElement {
     strokeStyle: "",
     lineWidth: 0,
     globalAlpha: 1,
+    globalCompositeOperation: "source-over",
   };
   canvas.getContext = (() => ctx) as unknown as HTMLCanvasElement["getContext"];
   return canvas;
@@ -143,6 +150,7 @@ beforeEach(() => {
     lines: [],
     strokeWidths: [],
     fills: 0,
+    inks: [],
     alphas: [],
     text: [],
   };
@@ -794,6 +802,9 @@ describe("Overlay and its peers", () => {
     get chromed(): boolean {
       return this.list.some((p) => p.items.length + p.strings.length + p.pins.length > 0);
     }
+    get inked(): boolean {
+      return this.list.some((p) => p.ink.any);
+    }
     peers(): Iterable<DrawnPeer> {
       return this.list;
     }
@@ -815,6 +826,7 @@ describe("Overlay and its peers", () => {
       strings: [],
       pins: [],
       locks: [],
+      ink: new PeerInk(),
       ...over,
     };
   }
@@ -1116,5 +1128,166 @@ describe("Overlay, the undo flash", () => {
     camera.centreOn(0, 0);
     draw(flash([["a", 1]]));
     expect(calls.rotate[0]).toBeCloseTo(0.4, 6);
+  });
+});
+
+/**
+ * A peer's ink on this canvas. The splice is `wetpeer.test.ts`'s subject and
+ * the geometry is `wet.test.ts`'s; what is here is the overlay's own share —
+ * that the pass runs at all, that it stops, and that the mark keeps its own
+ * colour.
+ */
+describe("Overlay and a peer's wet ink", () => {
+  class Fake {
+    version = 0;
+    list: DrawnPeer[] = [];
+    get chromed(): boolean {
+      return this.list.some((p) => p.items.length + p.strings.length + p.pins.length > 0);
+    }
+    get inked(): boolean {
+      return this.list.some((p) => p.ink.any);
+    }
+    peers(): Iterable<DrawnPeer> {
+      return this.list;
+    }
+    bump(): void {
+      this.version += 1;
+    }
+  }
+
+  let fake: Fake;
+
+  function inked(color: string, tool: string, pts: number[], item: string | null = null): PeerInk {
+    const ink = new PeerInk();
+    ink.splice(readWet([{ id: "run-1", item, tool, color, size: 6, opacity: 1, base: 0, pts }]));
+    return ink;
+  }
+
+  function peer(ink: PeerInk): DrawnPeer {
+    return {
+      id: "7",
+      name: "Blue peer",
+      // Their identity is blue. Nothing below may paint a mark in it.
+      color: "#2c5aa8",
+      cursor: null,
+      items: [],
+      strings: [],
+      pins: [],
+      locks: [],
+      ink,
+    };
+  }
+
+  function frame(): void {
+    overlay.draw(camera, scene, selection, null, dirty, null, null, null, null, null, [], fake);
+  }
+
+  beforeEach(() => {
+    fake = new Fake();
+  });
+
+  it("draws it in the ink's colour, never the peer's — D-29", () => {
+    fake.list = [peer(inked("#c0392b", "marker", [0, 0, 128, 800, 0, 128]))];
+    fake.bump();
+    frame();
+
+    expect(calls.fills).toBe(1);
+    // A ghost tinted by whose it is would change colour at the moment the
+    // document record replaced it, which is the flash 9.2 exists to prevent.
+    expect(calls.inks[0]!.style).toBe("#c0392b");
+    expect(calls.inks[0]!.op).toBe("source-over");
+  });
+
+  it("multiplies a highlighter, so it does not change shade at their pen-up", () => {
+    fake.list = [peer(inked("#f2d024", "highlighter", [0, 0, 128, 800, 0, 128]))];
+    fake.bump();
+    frame();
+
+    expect(calls.inks[0]!.op).toBe("multiply");
+  });
+
+  it("redraws while their line grows and stops when it does not", () => {
+    const ink = inked("#c0392b", "marker", [0, 0, 128, 800, 0, 128]);
+    fake.list = [peer(ink)];
+    fake.bump();
+    frame();
+    expect(calls.clearRect).toBe(1);
+
+    // The version is what a real store bumps on a splice that moved something.
+    ink.splice(readWet([{ id: "run-1", item: null, tool: "marker", color: "#c0392b",
+      size: 6, opacity: 1, base: 0, pts: [0, 0, 128, 800, 0, 128, 1600, 0, 128] }]));
+    fake.bump();
+    frame();
+    expect(calls.clearRect).toBe(2);
+
+    // A hand that stopped without lifting. Nothing changes, and a
+    // full-viewport canvas must not be restroked for it.
+    frame();
+    frame();
+    expect(calls.clearRect).toBe(2);
+  });
+
+  it("clears their mark on the frame after it goes, and then stops", () => {
+    fake.list = [peer(inked("#c0392b", "marker", [0, 0, 128, 800, 0, 128]))];
+    fake.bump();
+    frame();
+    expect(calls.fills).toBe(1);
+
+    // Their ghost retired. Nothing else on this canvas would clear it: an undo
+    // of theirs touches none of our dirty sets.
+    fake.list = [peer(new PeerInk())];
+    fake.bump();
+    frame();
+    expect(calls.clearRect).toBe(2);
+    expect(calls.fills).toBe(1);
+
+    frame();
+    expect(calls.clearRect).toBe(2);
+  });
+
+  it("follows their mark when a third person drags the paper it is on", () => {
+    add("photo-1");
+    fake.list = [peer(inked("#c0392b", "marker", [0, 0, 128, 400, 0, 128], "photo-1"))];
+    fake.bump();
+    frame();
+    expect(calls.clearRect).toBe(1);
+
+    // Nobody published anything: the peer's awareness state is word for word
+    // what it was, so `version` cannot have moved. What moved is the
+    // photograph, dragged by somebody else entirely — and their ink is in its
+    // local frame, so it has to be redrawn where the paper now is.
+    dirty.items.add("photo-1");
+    frame();
+    expect(calls.clearRect).toBe(2);
+  });
+
+  it("takes their mark off even if the store forgot to say it had gone", () => {
+    fake.list = [peer(inked("#c0392b", "marker", [0, 0, 128, 400, 0, 128]))];
+    fake.bump();
+    frame();
+    expect(calls.fills).toBe(1);
+
+    // No bump. A real store bumps on a retire and this is belt to that brace —
+    // the failure it guards is a stranger's stroke left on the board until
+    // something unrelated happened to move.
+    fake.list = [peer(new PeerInk())];
+    frame();
+    expect(calls.clearRect).toBe(2);
+    expect(calls.fills).toBe(1);
+
+    // And once, not every frame after.
+    frame();
+    expect(calls.clearRect).toBe(2);
+  });
+
+  it("costs nothing at all on a board where nobody is drawing", () => {
+    fake.list = [peer(new PeerInk())];
+    fake.bump();
+    frame();
+    const drawn = calls.clearRect;
+    frame();
+    frame();
+    expect(calls.clearRect).toBe(drawn);
+    expect(calls.fills).toBe(0);
   });
 });

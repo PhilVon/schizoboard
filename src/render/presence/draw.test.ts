@@ -10,6 +10,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { PeerPainter } from "@/render/presence/draw";
 import type { DrawnPeer, PeerSource } from "@/render/presence/peers";
+import { PeerInk } from "@/render/presence/wetpeer";
 import { Camera } from "@/state/camera";
 import { Scene, type ItemCold, type ItemPose } from "@/state/scene";
 
@@ -87,6 +88,7 @@ function peer(over: Partial<DrawnPeer> = {}): DrawnPeer {
     strings: [],
     pins: [],
     locks: [],
+    ink: new PeerInk(),
     ...over,
   };
 }
@@ -97,6 +99,7 @@ function source(...list: DrawnPeer[]): PeerSource {
     chromed: list.some(
       (p) => p.items.length + p.strings.length + p.pins.length + p.locks.length > 0,
     ),
+    inked: list.some((p) => p.ink.any),
     peers: () => list,
   };
 }
