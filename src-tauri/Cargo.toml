@@ -87,6 +87,16 @@ futures-util = { version = "0.3.33", default-features = false, features = ["sink
 # anywhere near it. Already in the tree at this version, so this is an import
 # rather than a build.
 getrandom = "0.3"
+# DNS-SD over multicast, which DESIGN section 8 names as one of the four things
+# that has no browser equivalent and is therefore part of why this is a desktop
+# application at all. Pure Rust, so no Bonjour or Avahi to be installed or
+# missing at run time.
+#
+# No `async`: the daemon is a thread with a channel, which is what the browse
+# loop wants anyway — it outlives any one command and must not be tied to
+# whichever runtime happened to call it. No `serde` either; nothing here is
+# serialised.
+mdns-sd = { version = "0.20.3", default-features = false, features = ["log"] }
 
 # --- the clipboard's SourceURL (T-97) ---------------------------------------
 # CF_HTML carries the page a fragment was copied from, in a header the webview

@@ -168,6 +168,15 @@ export interface PlatformEvents {
   "deeplink:open": { url: string };
   "sync:peer-joined": { peer: string };
   "sync:peer-left": { peer: string };
+  /**
+   * Somebody on this network is hosting a board we hold the secret to (T-70).
+   *
+   * The URL is dialable as it stands: the shell put our own secret on it,
+   * because the mDNS advertisement never carried one. Re-announced periodically
+   * and on every interface, so the same peer arrives repeatedly — `instance` is
+   * what tells a re-announcement from a second peer.
+   */
+  "sync:peer-found": { url: string; board: string; instance: string };
 }
 
 export type Unlisten = () => void;

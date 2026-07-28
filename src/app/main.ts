@@ -40,6 +40,7 @@ import { WireProvider } from "@/crdt/sync/provider";
 import { UndoHistory } from "@/crdt/undo";
 import { noteSizeFor } from "@/app/ingest";
 import { Paste } from "@/app/paste";
+import { Mesh } from "@/app/mesh";
 import { dialAddress, identityFor, planSync } from "@/app/sync";
 import { DEFAULT_ERASER_SIZE, type InkSurface } from "@/lib/ink";
 import { initPlatform } from "@/platform";
@@ -1044,6 +1045,33 @@ async function boot(): Promise<void> {
   else console.info(`[sync] ${plan.config.mode} · ${address}`);
   provider?.on("error", (error) => console.warn("[sync] error", error));
   provider?.on("denied", (reason) => console.warn(`[sync] denied: ${reason}`));
+
+  /**
+   * The peers this client finds for itself (T-70).
+   *
+   * One more provider per board the shell finds on the network, on this same
+   * document and sharing this same awareness — see `app/mesh.ts` for why nobody
+   * is elected and why no second `AssetExchange` is needed.
+   *
+   * Only where there is already a provider, because the awareness object to
+   * share comes from it: with no wire at all there is nothing to join a peer
+   * *to*, and under `platform/mock.ts` no peer is ever announced anyway.
+   */
+  const mesh =
+    provider === null
+      ? null
+      : new Mesh({
+          connect: (url) => {
+            console.info(`[sync] found a peer at ${url.replace(/token=[^&]*/, "token=…")}`);
+            const found = new WireProvider(board.doc, url, { awareness: provider.awareness });
+            found.on("denied", (reason) => console.warn(`[sync] a found peer refused us: ${reason}`));
+            found.on("error", (error) => console.warn("[sync] found peer error", error));
+            return found;
+          },
+        });
+  // Awaited for the same reason `asset:ready` is: `listen` is a round trip, and
+  // a peer announced before it resolves is a peer this window never dials.
+  if (mesh !== null) await native.on("sync:peer-found", (peer) => mesh.found(peer));
 
   /**
    * The bytes behind the document (T-74).

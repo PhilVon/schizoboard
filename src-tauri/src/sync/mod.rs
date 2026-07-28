@@ -27,6 +27,7 @@
 //! which is the one rule that makes a blocking mutex safe in async code.
 
 pub mod awareness;
+pub mod discovery;
 pub mod room;
 pub mod secret;
 pub mod wire;

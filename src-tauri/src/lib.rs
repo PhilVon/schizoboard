@@ -47,6 +47,8 @@ struct Hosting {
     board: std::sync::Mutex<Option<String>>,
     /// This board's secret (T-70). Whoever holds it is a peer.
     secret: std::sync::Mutex<Option<String>>,
+    /// The mDNS advertisement and browse, while hosting (T-70).
+    discovery: std::sync::Mutex<Option<sync::discovery::Discovery>>,
 }
 
 #[derive(serde::Deserialize)]
@@ -100,7 +102,7 @@ async fn sync_start(app: AppHandle, config: SyncConfig) -> Result<(), String> {
     let hosting = app.state::<Hosting>();
     *hosting.mode.lock().expect("hosting lock") = Some(config.mode.clone());
     *hosting.url.lock().expect("hosting lock") = config.url.clone();
-    *hosting.board.lock().expect("hosting lock") = Some(config.board_id);
+    *hosting.board.lock().expect("hosting lock") = Some(config.board_id.clone());
 
     // Relay mode: somebody else is hosting, and the webview's own provider
     // dials them. There is nothing for this side to start — but the secret is
@@ -126,9 +128,66 @@ async fn sync_start(app: AppHandle, config: SyncConfig) -> Result<(), String> {
     let relay = sync::Relay::start_guarded(([0, 0, 0, 0], 0).into(), Some(secret.clone()))
         .await
         .map_err(|error| format!("the relay could not start: {error}"))?;
+    let port = relay.addr().port();
     *hosting.relay.lock().expect("hosting lock") = Some(relay);
-    *hosting.secret.lock().expect("hosting lock") = Some(secret);
+    *hosting.secret.lock().expect("hosting lock") = Some(secret.clone());
+
+    // Say so on the network. A relay nobody can find is only reachable by
+    // somebody who was told its address, which is what LAN mode exists not to
+    // require.
+    //
+    // A discovery that will not start is reported and then let go: the board
+    // works, the relay is up, and a peer given the address by hand still
+    // connects. Multicast is blocked on plenty of networks — a guest wifi, a
+    // corporate VLAN — and "you cannot use this board" is the wrong thing to
+    // say to somebody who was only ever going to use it alone.
+    let announced = app.clone();
+    let ours = secret.clone();
+    match sync::discovery::Discovery::start(
+        instance_name(),
+        config.board_id,
+        sync::secret::fingerprint(&secret),
+        port,
+        move |peer| {
+            // Our own secret goes on here, not the peer's — the advertisement
+            // never carried one. The fingerprint already said this is a board
+            // we hold the secret to; this is where holding it is spent.
+            let found = PeerFound {
+                url: format!("{}?token={ours}", peer.url()),
+                board: peer.board,
+                instance: peer.instance,
+            };
+            let _ = announced.emit("sync:peer-found", found);
+        },
+    ) {
+        Ok(discovery) => *hosting.discovery.lock().expect("hosting lock") = Some(discovery),
+        Err(error) => eprintln!("[sync] the board is not being advertised: {error}"),
+    }
     Ok(())
+}
+
+/// A name for this board's advertisement, unique on the network.
+///
+/// Random rather than derived from the machine, the board or the secret. The
+/// machine's name is more identifying than anybody agreed to broadcast, the
+/// board's is not unique — two windows on one machine hosting `demo` is the
+/// ordinary development case, and DNS-SD would read the second as a correction
+/// of the first — and the secret must not appear on the wire in any form,
+/// including a few characters of it.
+fn instance_name() -> String {
+    format!("schizoboard-{}", &sync::secret::generate()[..12])
+}
+
+/// A board somebody on this network is hosting, on its way to the frontend.
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct PeerFound {
+    /// Dialable as it stands, secret and all.
+    url: String,
+    board: String,
+    /// The DNS-SD instance name. Stable while that peer is up, so the frontend
+    /// can tell a re-announcement from a second peer.
+    instance: String,
 }
 
 /// Stop hosting. Dropping the relay closes the port and every connection on it.
@@ -136,6 +195,10 @@ async fn sync_start(app: AppHandle, config: SyncConfig) -> Result<(), String> {
 async fn sync_stop(app: AppHandle) -> Result<(), String> {
     let hosting = app.state::<Hosting>();
     hosting.relay.lock().expect("hosting lock").take();
+    // Dropped rather than merely forgotten: `Discovery`'s own `Drop` sends the
+    // goodbye packet that takes this board off every other machine's list now,
+    // instead of when the record ages out.
+    hosting.discovery.lock().expect("hosting lock").take();
     *hosting.mode.lock().expect("hosting lock") = None;
     *hosting.url.lock().expect("hosting lock") = None;
     *hosting.board.lock().expect("hosting lock") = None;
