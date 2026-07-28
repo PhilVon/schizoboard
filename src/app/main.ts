@@ -61,7 +61,7 @@ import { RopeSet, type RopeHit } from "@/sim/ropes";
 import { Torsion } from "@/sim/torsion";
 import { AssetStates } from "@/state/assets";
 import { MissingAssets } from "@/state/missing";
-import { Camera } from "@/state/camera";
+import { Camera, type Bounds } from "@/state/camera";
 import { DirtySets } from "@/state/dirty";
 import { Flashes } from "@/state/flash";
 import { chromeFrame, emptyFrame, handleAt, handleCursor } from "@/state/handles";
@@ -69,6 +69,7 @@ import { isChromeTarget, isTextTarget } from "@/state/input";
 import { Navigation } from "@/state/navigation";
 import { Presence } from "@/state/presence";
 import { RemoteMotion } from "@/state/remote";
+import { reveal, widen } from "@/state/reveal";
 import { Scene } from "@/state/scene";
 import { Selection } from "@/state/selection";
 import { ToolMachine } from "@/state/tools/machine";
@@ -647,10 +648,25 @@ async function boot(): Promise<void> {
     // looking at (DESIGN section 7.6, `state/flash.ts`).
     queued.push(
       intent === "undo"
-        ? () => flashes.around(dirty, scene, () => undo.undo())
-        : () => flashes.around(dirty, scene, () => undo.redo()),
+        ? () => {
+            if (flashes.around(dirty, scene, () => undo.undo())) revealChanged = true;
+          }
+        : () => {
+            if (flashes.around(dirty, scene, () => undo.redo())) revealChanged = true;
+          },
     );
   });
+
+  /**
+   * An undo landed and the camera has not yet been asked whether it can see
+   * what moved — Q-79, `state/reveal.ts`.
+   *
+   * A flag rather than the check itself, because the check runs a phase and a
+   * frame later. A pin's world position is recomputed in LAYOUT from the item
+   * it hangs on, and the undo lands in phase 9 — so asking here would measure
+   * the board as it was before the write it is asking about.
+   */
+  let revealChanged = false;
 
   const select = new SelectTool();
   /**
@@ -1497,7 +1513,76 @@ async function boot(): Promise<void> {
           : null;
       hoveredString = offer && { x: offer.x, y: offer.y };
     }
+
+    /**
+     * An undo landed last frame: can the person see what it moved? (Q-79,
+     * `state/reveal.ts`.)
+     *
+     * Here, at the end of LAYOUT, because this is the first moment the answer
+     * is true — `layoutPins` above has just put every moved pin where it now
+     * is, and a pin whose photograph a collaborator dragged away is exactly the
+     * case this exists for. A frame later than the undo for the same reason.
+     *
+     * Almost always a no-op: the undo entry carried the camera it was made at,
+     * that view has just been restored, and what you edited was on screen when
+     * you edited it. See the module for the case where those come apart.
+     */
+    if (revealChanged) {
+      revealChanged = false;
+      if (reveal(camera, changedBounds())) dirty.camera = true;
+    }
   });
+
+  /**
+   * The box round everything the last undo lit, in board space, or null.
+   *
+   * Read off `flashes` rather than recomputed, because that is already the
+   * answer to "what did this undo change" and computing a second one would be
+   * two definitions of the same thing that could disagree.
+   */
+  const revealBox: Bounds = { minX: 0, minY: 0, maxX: 0, maxY: 0 };
+  const revealOne: Bounds = { minX: 0, minY: 0, maxX: 0, maxY: 0 };
+  const changedBounds = (): Bounds | null => {
+    let seeded = false;
+    for (const id of flashes.items.keys()) {
+      const box = scene.boundsOf(id, 0, revealOne);
+      if (box === null) continue;
+      widen(revealBox, box, seeded);
+      seeded = true;
+    }
+    for (const id of flashes.pins.keys()) {
+      const pin = scene.pins.get(id);
+      if (pin === undefined) continue;
+      // A point, not a box. A pin has no extent worth framing and the camera
+      // centres on the union, so one contributes its position and nothing else.
+      revealOne.minX = revealOne.maxX = pin.wx;
+      revealOne.minY = revealOne.maxY = pin.wy;
+      widen(revealBox, revealOne, seeded);
+      seeded = true;
+    }
+    for (const id of flashes.strings.keys()) {
+      // The pins it hangs from, not `ropes.boundsOf`.
+      //
+      // The rope's box is the *drape*, and a drape is transient: this is read
+      // one frame after the undo, while the solver is still settling into the
+      // slack that was just restored, and a mid-settle box is far bigger than
+      // the one the string comes to rest in. Driven, that showed as a camera
+      // that went to the right place and then sat two and a half times zoomed
+      // out from what the string needed. The pins are where LAYOUT has just put
+      // them and do not move again.
+      const run = scene.strings.get(id);
+      if (run === undefined) continue;
+      for (const node of run.nodes) {
+        const pin = scene.pins.get(node.pin);
+        if (pin === undefined) continue;
+        revealOne.minX = revealOne.maxX = pin.wx;
+        revealOne.minY = revealOne.maxY = pin.wy;
+        widen(revealBox, revealOne, seeded);
+        seeded = true;
+      }
+    }
+    return seeded ? revealBox : null;
+  };
 
   /**
    * The cursor, which is the only affordance two of this board's gestures have.
