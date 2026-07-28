@@ -464,3 +464,42 @@ body {
 .notice-dot.is-gone {
   opacity: 0.4;
 }
+
+
+/* --- the transient confirmation, T-164 ------------------------------------- */
+
+/*
+ * Bottom right, the one corner nothing else uses: the notice is top left, the
+ * dev HUD top right, the hint line bottom left.
+ *
+ * The same slip of paper as the notice, because it is the same board and the
+ * same argument - written on something rather than floating over the cork. It
+ * fades rather than vanishing, so a message that has just gone is
+ * distinguishable from one that was never there.
+ *
+ * `pointer-events: none` is load-bearing, not tidy. This element appears near
+ * where a click just happened, moments after it, which is exactly when the next
+ * click is coming.
+ */
+.flash {
+  position: absolute;
+  right: 14px;
+  bottom: 12px;
+  max-width: 46ch;
+  padding: 5px 10px;
+  border-radius: 3px;
+  font-family: var(--ui-mono);
+  font-size: 11px;
+  pointer-events: none;
+  color: rgba(58, 44, 30, 0.86);
+  background: linear-gradient(#f6f1e6 0%, #e8dfcd 100%);
+  box-shadow: 0 2px 6px rgba(var(--shadow-warm), 0.4);
+  opacity: 0;
+  transition: opacity 420ms ease-out;
+}
+
+.flash.is-live {
+  opacity: 1;
+  /* Nothing to ease in from - a confirmation is late if it arrives gradually. */
+  transition: opacity 90ms ease-in;
+}

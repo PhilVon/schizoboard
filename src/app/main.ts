@@ -41,6 +41,7 @@ import { UndoHistory } from "@/crdt/undo";
 import { noteSizeFor } from "@/app/ingest";
 import { Paste } from "@/app/paste";
 import { Mesh } from "@/app/mesh";
+import { formatInvite } from "@/app/invite";
 import { dialAddress, identityFor, planSync } from "@/app/sync";
 import { DEFAULT_ERASER_SIZE, type InkSurface } from "@/lib/ink";
 import { initPlatform } from "@/platform";
@@ -78,8 +79,9 @@ import { stringAt } from "@/state/tools/frame";
 import { SelectTool } from "@/state/tools/select";
 import { StringTool } from "@/state/tools/string";
 import type { BoardWriter, WritePose } from "@/state/tools/tool";
-import { itemMenuRows, penMenuRows, pinMenuRows, stringMenuRows } from "@/ui/boardmenu";
+import { boardMenuRows, itemMenuRows, penMenuRows, pinMenuRows, stringMenuRows } from "@/ui/boardmenu";
 import { Hud, type HudStats } from "@/ui/hud";
+import { Flash } from "@/ui/flash";
 import { Notice } from "@/ui/notice";
 import { ContextMenu, type MenuEntry } from "@/ui/menu";
 
@@ -833,6 +835,44 @@ async function boot(): Promise<void> {
    * module happening to suppress the native one first.
    */
   const menu = new ContextMenu(world.layers.ui);
+
+  /**
+   * This board's invite link, or null when there is nothing to give away
+   * (T-164).
+   *
+   * Declared here rather than beside the rest of the sync wiring below because
+   * the context-menu handler closes over it, and the handler is registered
+   * first. `board.ts` fills it in once the shell has answered with a secret, and
+   * `rewire` replaces it when an invite moves this window to another board — so
+   * it is a `let` on purpose, and reading it at any other time than menu-open is
+   * a bug.
+   */
+  let invite: string | null = null;
+
+  /**
+   * Put the link where somebody can paste it, and say so.
+   *
+   * `navigator.clipboard` rather than a shell call: the webview is a secure
+   * context, the click is the user activation the API wants, and adding a
+   * clipboard *write* to `platform/types.ts` for one caller would mean building
+   * it twice — the mock would need one too, and a browser's answer would be this
+   * exact line.
+   *
+   * The failure path names the console rather than apologising, because there is
+   * genuinely somewhere to go: the link is logged, and it can be copied from
+   * there. A confirmation that only said "sorry" would leave somebody with no
+   * next move.
+   */
+  const copyInvite = async (link: string): Promise<void> => {
+    try {
+      await navigator.clipboard.writeText(link);
+      flash.say("Invite link copied — send it to whoever should join this board");
+    } catch (error) {
+      console.warn(`[sync] the invite could not be copied: ${link}`, error);
+      flash.say("Could not reach the clipboard — the invite link is in the console");
+    }
+  };
+
   root.addEventListener("contextmenu", (e) => {
     e.preventDefault();
     // A right-click on the menu itself, or on the HUD. Chrome takes its own.
@@ -921,14 +961,20 @@ async function boot(): Promise<void> {
 
     /**
      * Bare cork — the one case with nothing under the cursor to name, so the
-     * menu is about the string selection as it stands and moves nothing.
+     * menu is about the string selection as it stands, and about the board
+     * itself (Q-76).
      *
-     * Kept because a right-click *near* a string is a right-click that missed
-     * by a few pixels, and a menu that vanished for it would be worse than one
-     * that offers the string you are plainly pointing at. Nothing opens when
-     * nothing is selected, which is the empty cork case.
+     * The string rows are kept because a right-click *near* a string is a
+     * right-click that missed by a few pixels, and a menu that vanished for it
+     * would be worse than one that offers the string you are plainly pointing
+     * at. What changed with T-164 is that empty cork with nothing selected is no
+     * longer a gesture that opens nothing: it is where the invite lives, because
+     * it was the only surface left and because the honest answer to "what is
+     * here" on bare cork is the board.
      */
-    open(stringMenuRows(scene, writer, [...selection.strings]));
+    open(
+      boardMenuRows(scene, writer, [...selection.strings], { link: invite, copy: copyInvite }),
+    );
   });
 
   const paste = new Paste({
@@ -948,6 +994,13 @@ async function boot(): Promise<void> {
    * and whose they are. Silent, and touching no DOM at all, until there is one.
    */
   const notice = new Notice(world.layers.ui);
+  /**
+   * Where a verb with no visible result says it happened (T-164).
+   *
+   * Copying an invite is the first thing on this board that changes nothing on
+   * the board, so it is the first that needs telling.
+   */
+  const flash = new Flash(world.layers.ui);
   /**
    * When the notice last checked that what it is counting is still on the board.
    *
@@ -1072,6 +1125,25 @@ async function boot(): Promise<void> {
   // Awaited for the same reason `asset:ready` is: `listen` is a round trip, and
   // a peer announced before it resolves is a peer this window never dials.
   if (mesh !== null) await native.on("sync:peer-found", (peer) => mesh.found(peer));
+
+  /**
+   * Work out what this board's invite says, now that the shell has a secret for
+   * it (T-164).
+   *
+   * Asked of `syncStatus` rather than read off `plan.config`, because the plan
+   * is what was *requested* and the secret is very often not in it: the ordinary
+   * first launch of a board asks for no secret at all and the shell answers with
+   * the one it found on disk or invented (Q-75). So the shell is the only place
+   * that knows, and this is the round trip that gets it.
+   *
+   * Null on a plain browser, which is correct and not a gap — `platform/mock.ts`
+   * has no relay to hold a secret, and the invite row simply does not appear.
+   */
+  const refreshInvite = async (boardId: string): Promise<void> => {
+    const status = await native.syncStatus();
+    invite = status.secret === null ? null : formatInvite({ boardId, secret: status.secret });
+  };
+  await refreshInvite(plan.config.boardId);
 
   /**
    * The bytes behind the document (T-74).
@@ -1796,6 +1868,7 @@ async function boot(): Promise<void> {
     `Alt+click a pin removes it · Alt+drag pulls a new string out of one · ` +
     `drag the middle of a string to pull a new pin out of it, click it to select · ` +
     `right-click a string for its menu · M or H to draw, right-click for ink · ` +
+    (invite === null ? "" : `right-click the cork to copy an invite link · `) +
     `E rubs a whole stroke out and Shift+E smudges part of one away · ` +
     `[ and ] size the nib, Ctrl at pen-down means the cork · ` +
     `drag to move · drag the handle or R+drag to rotate · drag a note's edge to resize · ` +

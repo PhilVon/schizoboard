@@ -250,6 +250,70 @@ export function pinMenuRows(
 }
 
 /**
+ * What the board itself offers, which today is the one thing that is about the
+ * board rather than about anything on it.
+ *
+ * ## Why a right-click on bare cork (Q-76)
+ *
+ * Because it was the only surface left, and it turned out to be the right one.
+ * There is no settings panel; the two pieces of standing chrome — the hint line
+ * and the dev HUD — are `pointer-events: none` on purpose, each having already
+ * swallowed board presses once. A right-click on empty cork with nothing
+ * selected opened nothing at all, which made it the one gesture on this board
+ * that was reaching for something and finding nothing.
+ *
+ * It is also where it belongs. Every other menu here answers *about this thing
+ * under the cursor*; on bare cork there is no thing, and the honest answer to
+ * "what is here" is the board.
+ *
+ * ## The invite row and the string rows share this menu
+ *
+ * Because a right-click on cork a few pixels from a string is a right-click
+ * that missed, and the string rows have always been kept for exactly that. The
+ * invite goes *below* them behind a rule: a selection of four strings is a much
+ * more likely thing to have meant, and burying the restyle pickers under a row
+ * about networking would be answering the wrong question first.
+ *
+ * `link` is the invite as it stands, or null when there is nothing to give away
+ * — a plain browser, or a board whose shell never started a relay. Null removes
+ * the row rather than disabling it: a menu entry you cannot use is a question
+ * ("why not?") that nothing on screen can answer.
+ */
+export function boardMenuRows(
+  scene: Scene,
+  write: BoardWriter,
+  strings: readonly string[],
+  invite: { link: string | null; copy(link: string): void },
+): MenuEntry[] {
+  const rows = stringMenuRows(scene, write, strings);
+  if (invite.link === null) return rows;
+  return [
+    ...rows,
+    {
+      /**
+       * Named for what it does rather than for what it is. *Invite someone* is
+       * the friendlier label and it is a promise this row cannot keep — nothing
+       * is sent, no one is notified, and the user is left holding a link and
+       * wondering whether that was it. *Copy invite link* says exactly what will
+       * be true a moment later, which is the only thing a confirmation can then
+       * confirm.
+       */
+      label: "Copy invite link",
+      divided: rows.length > 0,
+      // The link is fixed when the menu opens, not when the row is picked,
+      // because the rows are a snapshot and every other menu here works the same
+      // way. There is one moment where that matters: an invite arriving while
+      // this menu stands open moves the board to a different secret (T-165), and
+      // this row would then copy the previous one. The answer is on that side —
+      // a rewire closes the menu — rather than here, because a row that
+      // re-resolved on activation would hand out a link to a board the user is
+      // no longer looking at, which is the worse of the two.
+      run: () => invite.copy(invite.link!),
+    },
+  ];
+}
+
+/**
  * The rows for a right-click made while a pen is the tool in hand.
  *
  * > Colours live in a small palette per tool — marker in black, red, blue,

@@ -22,7 +22,14 @@ import {
   INK_SIZES,
   MARKER_COLORS,
 } from "@/lib/ink";
-import { itemMenuRows, penMenuRows, pinMenuRows, stringMenuRows, type Pen } from "@/ui/boardmenu";
+import {
+  boardMenuRows,
+  itemMenuRows,
+  penMenuRows,
+  pinMenuRows,
+  stringMenuRows,
+  type Pen,
+} from "@/ui/boardmenu";
 import type { MenuChoice, MenuEntry, MenuRow } from "@/ui/menu";
 
 type Settle = [string, WritePose][];
@@ -550,5 +557,59 @@ describe("the pen menu", () => {
     expect(chips(penMenuRows(pen("marker")), "Size").map((c) => c.weight)).toEqual([...INK_SIZES]);
     expect(INK_SIZES).toContain(DEFAULT_INK_SIZE);
     expect(INK_SIZES).toContain(DEFAULT_HIGHLIGHTER_SIZE);
+  });
+});
+
+describe("the board menu on bare cork", () => {
+  const LINK = "schizo://join?board=demo&secret=8f14e45fceea167a5a36dedd4bea2543";
+  /** A board with an invite to give away, recording what gets copied. */
+  const sharing = (link: string | null) => {
+    const copied: string[] = [];
+    return { invite: { link, copy: (l: string) => copied.push(l) }, copied };
+  };
+
+  it("offers the invite on empty cork, which used to open nothing at all", () => {
+    // The whole of Q-76: a right-click here reached for something and found
+    // nothing, which made it the one free surface on the board.
+    const { invite } = sharing(LINK);
+    const rows = boardMenuRows(scene, write, [], invite) as MenuRow[];
+    expect(rows.map((r) => r.label)).toEqual(["Copy invite link"]);
+  });
+
+  it("hands over the link the board was opened with", () => {
+    const { invite, copied } = sharing(LINK);
+    (boardMenuRows(scene, write, [], invite)[0] as MenuRow).run();
+    expect(copied).toEqual([LINK]);
+    // Sharing a board is not an edit to it.
+    expect(writes).toEqual([]);
+  });
+
+  it("drops the row entirely when there is nothing to give away", () => {
+    // A plain browser, or a shell that never started a relay. Removed rather
+    // than disabled: a row you cannot use is a question nothing on screen can
+    // answer.
+    const { invite } = sharing(null);
+    expect(boardMenuRows(scene, write, [], invite)).toEqual([]);
+  });
+
+  it("keeps the string rows, and puts the invite below them behind a rule", () => {
+    // A right-click on cork near a string is a right-click that missed, and a
+    // selection of strings is the much likelier thing to have meant.
+    span("s", 0);
+    const { invite } = sharing(LINK);
+    const rows = boardMenuRows(scene, write, ["s"], invite);
+    const labels = rows.map((r) => r.label);
+    expect(labels).toEqual([...stringMenuRows(scene, write, ["s"]).map((r) => r.label), "Copy invite link"]);
+    expect((rows.at(-1) as MenuRow).divided).toBe(true);
+  });
+
+  it("still offers the invite when the selected strings are gone", () => {
+    // The rows are a snapshot and a peer may have deleted the selection since.
+    // That empties the string half and must not take the board half with it.
+    const { invite } = sharing(LINK);
+    const rows = boardMenuRows(scene, write, ["ghost"], invite) as MenuRow[];
+    expect(rows.map((r) => r.label)).toEqual(["Copy invite link"]);
+    // Nothing to divide it from, so no rule.
+    expect(rows[0]!.divided).toBe(false);
   });
 });
