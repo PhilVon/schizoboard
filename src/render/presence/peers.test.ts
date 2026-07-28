@@ -198,3 +198,54 @@ describe("Peers", () => {
     expect(only().cursor).toEqual({ x: 0, y: 0 });
   });
 });
+
+/**
+ * The claimed segments — DATA-MODEL section 5.4, arriving from another machine
+ * and therefore validated down to three ids like everything else here.
+ */
+describe("a peer's claimed segments", () => {
+  const SEG = { string: "s1", a: "p1", b: "p2" };
+
+  it("is empty for a peer that claims nothing, and for one that never mentions it", () => {
+    expect(readPeer(state())!.locks).toEqual([]);
+    expect(readPeer(state({ locks: { segments: [] } }))!.locks).toEqual([]);
+  });
+
+  it("reads the segments a peer is holding", () => {
+    expect(readPeer(state({ locks: { segments: [SEG] } }))!.locks).toEqual([SEG]);
+  });
+
+  it("drops a malformed entry and keeps the rest — a hint is not worth a peer over", () => {
+    const read = readPeer(
+      state({
+        locks: {
+          segments: [{ string: "s1", a: "p1" }, null, "nonsense", { string: "", a: "p1", b: "p2" }, SEG],
+        },
+      }),
+    );
+    expect(read!.locks).toEqual([SEG]);
+  });
+
+  it("ignores a locks field that is not the shape section 9 names", () => {
+    expect(readPeer(state({ locks: "held" }))!.locks).toEqual([]);
+    expect(readPeer(state({ locks: { segments: "s1" } }))!.locks).toEqual([]);
+    expect(readPeer(state({ locks: null }))!.locks).toEqual([]);
+  });
+
+  /** The overlay redraws on this number, so taking or dropping a claim has to
+   *  move it — and holding one still must not. */
+  it("bumps the version when a claim is taken and again when it goes", () => {
+    peers.observe(1, state({ locks: { segments: [] } }));
+    const idle = peers.version;
+
+    peers.observe(1, state({ locks: { segments: [SEG] } }));
+    expect(peers.version).toBeGreaterThan(idle);
+    const held = peers.version;
+
+    peers.observe(1, state({ locks: { segments: [SEG] } }));
+    expect(peers.version).toBe(held);
+
+    peers.observe(1, state({ locks: { segments: [] } }));
+    expect(peers.version).toBeGreaterThan(held);
+  });
+});

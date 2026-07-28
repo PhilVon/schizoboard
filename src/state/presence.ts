@@ -28,9 +28,9 @@
  * selection with its methods — can arrive on the wire because somebody handed
  * one to a setter.
  *
- * `wet`, `impulse` and `locks` from section 9 are absent because the work that
- * produces them has not happened: wet ink is T-73, segment locks are T-130.
- * Each adds its own field and its own test.
+ * `wet` and `impulse` from section 9 are absent because the work that produces
+ * them has not happened: wet ink is T-73. Each adds its own field and its own
+ * test — `locks` did, in T-130.
  */
 
 import type { Camera } from "@/state/camera";
@@ -139,12 +139,53 @@ export interface PresenceGrab {
   phase: "live" | "final";
 }
 
+/**
+ * One segment of one string, claimed by whoever is in the middle of splitting
+ * it — DATA-MODEL section 5.4's third bullet.
+ *
+ * > Take an advisory lock on the segment over awareness, purely as a UX hint —
+ * > never as a correctness mechanism.
+ *
+ * The two halves of that sentence are both load-bearing, and the second is the
+ * one worth being careful about: nothing may read this to decide whether a
+ * write is allowed. 5.4 accepts what happens when two people split the same
+ * segment — they compute from the same prior state, the total rest length
+ * changes once, and the result is valid and sags slightly differently than
+ * either expected. A lock that could refuse the second write would be a
+ * correctness mechanism, which the same sentence rules out.
+ *
+ * ## Named by its two pins
+ *
+ * Not by the node it starts at, which is how `crdt/ops/strings.ts` addresses a
+ * gap. A receiver has to *draw* this, and the only route from a node id to the
+ * particles on screen is to pair `RopeSet.visit`'s arrival order against the
+ * run's node array — two orders that ropes.ts's own comment says disagree the
+ * moment a segment has no particles to draw. The simulation indexes a segment
+ * by the pins at its ends, so those are what travel.
+ */
+export interface PresenceLock {
+  /** The string the segment belongs to. */
+  string: string;
+  /** The pin the segment runs from, and the one it runs to. */
+  a: string;
+  b: string;
+}
+
 export interface PresenceState {
   user: PresenceUser;
   cam: PresenceCam | null;
   cursor: PresenceCursor | null;
   selection: PresenceSelection;
   grab: PresenceGrab | null;
+  /**
+   * > `locks: { segments: [...] }` — docs/DATA-MODEL.md section 9
+   *
+   * An object with one array in it rather than a bare array, because that is
+   * what section 9 writes and because a segment is not the only thing anybody
+   * might come to claim — a `compact layers` operation wants one too (section
+   * 7), and that belongs beside this rather than in a second field.
+   */
+  locks: { segments: readonly PresenceLock[] };
 }
 
 /** The narrow slice of `Awareness` this needs. Keeps the tests free of Yjs. */
@@ -222,6 +263,13 @@ function grabMoved(
   return false;
 }
 
+/** Whether the claim is the one already on the wire. Three string comparisons,
+ *  on the frames a segment is being held — which is a gesture, not a session. */
+function sameLock(now: PresenceLock | null, sent: PresenceLock | null): boolean {
+  if (now === null || sent === null) return now === sent;
+  return now.string === sent.string && now.a === sent.a && now.b === sent.b;
+}
+
 export class Presence {
   private readonly channel: PresenceChannel;
   private readonly camera: Camera;
@@ -247,6 +295,22 @@ export class Presence {
   /** Set by input, consumed at the next flush. */
   private pointer: PresenceCursor | null = null;
   private stopped = false;
+
+  /**
+   * The segment this client has hold of, or null.
+   *
+   * One, not a list, because one pointer splits one segment. The wire carries an
+   * array because section 9 says `segments`, and because a claim is a property
+   * of the *client* rather than of the gesture — the day a second kind of claim
+   * exists it goes in the same array rather than in a second field.
+   */
+  private lock: PresenceLock | null = null;
+  /** What the last published state said about locks, so an unchanged frame
+   *  costs a comparison rather than a message. */
+  private sentLock: PresenceLock | null = null;
+  /** The same array for every client claiming nothing, which is nearly all of
+   *  them nearly all of the time. */
+  private static readonly NO_LOCKS: readonly PresenceLock[] = Object.freeze([]);
 
   private readonly now: () => number;
   /**
@@ -355,6 +419,30 @@ export class Presence {
   }
 
   /**
+   * This client is in the middle of splitting a segment, or has stopped being.
+   *
+   * Called every frame the gesture is running, like [`grabbing`], and with null
+   * on the frame it ends. A hint and nothing else: it is published, drawn by
+   * whoever sees it, and read by nothing that decides whether a write may
+   * happen — see [`PresenceLock`].
+   *
+   * A segment naming a pin that is not a string, or an empty id, is dropped
+   * rather than published. A receiver cannot draw a claim it cannot find, and a
+   * malformed one would sit on their board until this client disconnected.
+   */
+  splitting(segment: PresenceLock | null): void {
+    if (segment === null) {
+      this.lock = null;
+      return;
+    }
+    if (segment.string === "" || segment.a === "" || segment.b === "") {
+      this.lock = null;
+      return;
+    }
+    this.lock = { string: segment.string, a: segment.a, b: segment.b };
+  }
+
+  /**
    * Publish, if this is a publishing frame and anything is different.
    *
    * Takes the frame index rather than the frame, so that nothing in `state/`
@@ -390,6 +478,7 @@ export class Presence {
             phase: final ? "final" : "live",
           };
     this.sent = this.grab === null ? null : { ids: this.grab.ids, poses: this.grab.poses };
+    this.sentLock = this.lock;
     // A `final` is the last word about this gesture, so the grab goes away with
     // it. Awareness keeps whatever it was last told until it is told otherwise,
     // and a `final` left sitting there is a trap for the next peer to connect:
@@ -441,6 +530,15 @@ export class Presence {
       // `selection` above: naming the fields again here would copy an object
       // this module has just made and nobody else can reach.
       grab: this.grabWire,
+      // Field by field like everything else, and a fresh single-entry array
+      // rather than one held anywhere: the claim is three strings and the point
+      // of naming them here is that nothing else can arrive by this route.
+      locks: {
+        segments:
+          this.lock === null
+            ? Presence.NO_LOCKS
+            : [{ string: this.lock.string, a: this.lock.a, b: this.lock.b }],
+      },
     };
     this.channel.setLocalState(state as unknown as Record<string, unknown>);
   }
@@ -460,6 +558,10 @@ export class Presence {
     if ((this.grab === null) !== (this.sent === null)) return true;
     if (this.grab !== null && this.sent !== null && grabMoved(this.grab, this.sent)) return true;
     if (cam.x !== this.cam.x || cam.y !== this.cam.y || cam.zoom !== this.cam.zoom) return true;
+    // Taking a segment and letting go of one are both changes, and neither
+    // moves the cursor by a whole board unit on the frame it happens.
+    if (!sameLock(this.lock, this.sentLock)) return true;
+
 
     if ((cursor === null) !== (this.cursor === null)) return true;
     if (cursor !== null && this.cursor !== null) {

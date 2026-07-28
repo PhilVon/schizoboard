@@ -1629,6 +1629,44 @@ describe("pulling a pin out of a string", () => {
     return write;
   }
 
+  /**
+   * The advisory lock of DATA-MODEL section 5.4, from the tool's side — T-130.
+   *
+   * The tool's whole part in it is to say what it has hold of. It never asks
+   * whether anybody else has hold of the same thing, and it must not: 5.4 asks
+   * for the lock and rules out treating it as a correctness mechanism in one
+   * sentence, and two people splitting one segment is a case it accepts.
+   */
+  describe("the segment it says it is holding", () => {
+    it("holds nothing before the gesture and nothing after it", () => {
+      taut();
+      expect(tool.heldSegment).toBeNull();
+      down(100, 0);
+      move(100, 20);
+      up(100, 20);
+      expect(tool.heldSegment).toBeNull();
+    });
+
+    it("names the string and the two pins the loop is being pulled from", () => {
+      taut();
+      down(100, 0);
+      move(100, 20);
+
+      expect(tool.heldSegment).toEqual({ string: "s", a: "p0", b: "p1" });
+    });
+
+    /** Esc reverts the gesture, and a claim that outlived it would sit on every
+     *  other board until this client disconnected. */
+    it("lets go when the gesture is cancelled", () => {
+      taut();
+      down(100, 0);
+      move(100, 20);
+      tool.cancel(ctx);
+
+      expect(tool.heldSegment).toBeNull();
+    });
+  });
+
   it("makes the pin and its node in one write, after the node it hangs from", () => {
     taut();
     down(100, 0);

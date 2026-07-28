@@ -104,6 +104,21 @@ export interface PeerPoint {
  * can select pins and strings as well as items (T-119, T-121), and each gets
  * different chrome.
  */
+/**
+ * A segment somebody else is in the middle of splitting — DATA-MODEL section
+ * 5.4, and `state/presence.ts`'s `PresenceLock` for why it is named by its two
+ * pins rather than by the node it starts at.
+ *
+ * A hint, and nothing on this side may treat it as more than one: it is drawn,
+ * and it is read by nothing that decides whether this client's own split may go
+ * ahead. Two people splitting the same segment is a case 5.4 accepts.
+ */
+export interface PeerLock {
+  readonly string: string;
+  readonly a: string;
+  readonly b: string;
+}
+
 export interface DrawnPeer {
   readonly id: string;
   readonly name: string;
@@ -114,6 +129,9 @@ export interface DrawnPeer {
   readonly items: readonly string[];
   readonly strings: readonly string[];
   readonly pins: readonly string[];
+  /** The segments they have hold of. Empty for everyone who is not, which is
+   *  everyone, nearly always. */
+  readonly locks: readonly PeerLock[];
 }
 
 /**
@@ -148,6 +166,8 @@ interface Live {
   items: readonly string[];
   strings: readonly string[];
   pins: readonly string[];
+  /** The segments they have hold of — DATA-MODEL section 5.4. */
+  locks: readonly PeerLock[];
 }
 
 function text(value: unknown, fallback: string, cap: number): string {
@@ -169,6 +189,32 @@ function ids(value: unknown): readonly string[] {
 
 /** The same array for every empty list, since most peers select nothing. */
 const EMPTY: readonly string[] = Object.freeze([]);
+
+/** Likewise, and more so: claiming a segment is a gesture, so this is the
+ *  answer for every peer on almost every frame. */
+const NO_LOCKS: readonly PeerLock[] = Object.freeze([]);
+
+/**
+ * The claimed segments, validated down to three ids each.
+ *
+ * A malformed entry is dropped and the rest kept, like `ids` above: a peer whose
+ * claim is half readable has still taken hold of the others, and there is no
+ * version of this worth refusing a whole peer over — it is a hint.
+ */
+function locks(value: unknown): readonly PeerLock[] {
+  const list = (value as { segments?: unknown } | null | undefined)?.segments;
+  if (!Array.isArray(list)) return NO_LOCKS;
+  const out: PeerLock[] = [];
+  for (const entry of list) {
+    if (typeof entry !== "object" || entry === null) continue;
+    const { string, a, b } = entry as Record<string, unknown>;
+    if (typeof string !== "string" || string.length === 0) continue;
+    if (typeof a !== "string" || a.length === 0) continue;
+    if (typeof b !== "string" || b.length === 0) continue;
+    out.push({ string, a, b });
+  }
+  return out.length === 0 ? NO_LOCKS : out;
+}
 
 function point(value: unknown): PeerPoint | null {
   if (typeof value !== "object" || value === null) return null;
@@ -208,7 +254,21 @@ export function readPeer(state: unknown): DrawnPeer | null {
     items: ids(bag.items),
     strings: ids(bag.strings),
     pins: ids(bag.pins),
+    locks: locks((state as { locks?: unknown }).locks),
   };
+}
+
+/** Claims are three ids each and there is never more than a handful, so this is
+ *  a walk rather than a version counter. */
+function sameLocks(a: readonly PeerLock[], b: readonly PeerLock[]): boolean {
+  if (a === b) return true;
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i += 1) {
+    const one = a[i]!;
+    const other = b[i]!;
+    if (one.string !== other.string || one.a !== other.a || one.b !== other.b) return false;
+  }
+  return true;
 }
 
 function same(a: readonly string[], b: readonly string[]): boolean {
@@ -296,6 +356,7 @@ export class Peers implements PeerSource {
         items: read.items,
         strings: read.strings,
         pins: read.pins,
+        locks: read.locks,
       });
       this.ver += 1;
       return;
@@ -306,11 +367,13 @@ export class Peers implements PeerSource {
       existing.color !== read.color ||
       !same(existing.items, read.items) ||
       !same(existing.strings, read.strings) ||
-      !same(existing.pins, read.pins);
+      !same(existing.pins, read.pins) ||
+      !sameLocks(existing.locks, read.locks);
 
     existing.id = read.id;
     existing.name = read.name;
     existing.color = read.color;
+    existing.locks = read.locks;
     existing.items = read.items;
     existing.strings = read.strings;
     existing.pins = read.pins;

@@ -110,6 +110,7 @@ describe("what it says", () => {
       "cam",
       "cursor",
       "grab",
+      "locks",
       "selection",
       "user",
     ]);
@@ -419,6 +420,89 @@ describe("the grab", () => {
     const { channel, poses, presence } = setUp();
     poses.put("a", 100, 100, 0.5);
     presence.grabbing(["a"]);
+    presence.flush(0);
+
+    expect(JSON.parse(JSON.stringify(channel.last))).toEqual(channel.last);
+  });
+});
+
+/**
+ * The advisory lock on a segment being split — DATA-MODEL section 5.4, T-130.
+ *
+ * > Take an advisory lock on the segment over awareness, purely as a UX hint —
+ * > never as a correctness mechanism.
+ *
+ * Both halves are testable from here. The first is that it goes out at all and
+ * goes away again; the second is that taking one is a *change*, because a
+ * gesture that grabs a segment without moving the cursor a whole board unit
+ * would otherwise say nothing until the hand did.
+ */
+describe("claiming a segment", () => {
+  const SEG = { string: "s1", a: "p1", b: "p2" };
+
+  it("says nothing about locks until something is claimed", () => {
+    const { channel, presence } = setUp();
+    presence.flush(0);
+    expect(channel.last.locks).toEqual({ segments: [] });
+  });
+
+  it("publishes the segment, named by its two pins", () => {
+    const { channel, presence } = setUp();
+    presence.flush(0);
+    presence.splitting(SEG);
+    presence.flush(2);
+
+    expect(channel.last.locks).toEqual({ segments: [{ string: "s1", a: "p1", b: "p2" }] });
+  });
+
+  /** A press that takes hold of a segment moves nothing and changes nothing
+   *  else about this client. Without the claim in `changed` it would sit on the
+   *  wire unsent until the hand happened to move a whole board unit. */
+  it("is a change in its own right", () => {
+    const { channel, presence } = setUp();
+    presence.flush(0);
+    const before = channel.states.length;
+
+    presence.splitting(SEG);
+    presence.flush(2);
+    expect(channel.states.length).toBe(before + 1);
+  });
+
+  it("goes away when the gesture lets go", () => {
+    const { channel, presence } = setUp();
+    presence.flush(0);
+    presence.splitting(SEG);
+    presence.flush(2);
+    presence.splitting(null);
+    presence.flush(4);
+
+    expect(channel.last.locks).toEqual({ segments: [] });
+  });
+
+  /** Holding a segment still is not news. The claim is republished only when it
+   *  changes, like every other field here. */
+  it("does not republish the same claim every frame", () => {
+    const { channel, presence } = setUp();
+    presence.splitting(SEG);
+    presence.flush(0);
+    const after = channel.states.length;
+
+    for (let frame = 2; frame < 20; frame += 2) presence.flush(frame);
+    expect(channel.states.length).toBe(after);
+  });
+
+  it("drops a claim with an empty id in it rather than publishing one", () => {
+    const { channel, presence } = setUp();
+    presence.flush(0);
+    presence.splitting({ string: "s1", a: "", b: "p2" });
+    presence.flush(2);
+
+    expect(channel.last.locks).toEqual({ segments: [] });
+  });
+
+  it("survives the round trip through JSON", () => {
+    const { channel, presence } = setUp();
+    presence.splitting(SEG);
     presence.flush(0);
 
     expect(JSON.parse(JSON.stringify(channel.last))).toEqual(channel.last);

@@ -808,6 +808,7 @@ describe("Overlay and its peers", () => {
       items: [],
       strings: [],
       pins: [],
+      locks: [],
       ...over,
     };
   }

@@ -86,6 +86,7 @@ function peer(over: Partial<DrawnPeer> = {}): DrawnPeer {
     items: [],
     strings: [],
     pins: [],
+    locks: [],
     ...over,
   };
 }

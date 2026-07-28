@@ -516,6 +516,25 @@ export class SelectTool implements Tool {
   }
 
   /**
+   * The segment this gesture is in the middle of splitting, or null.
+   *
+   * > Take an advisory lock on the segment over awareness, purely as a UX hint
+   * > — never as a correctness mechanism. — docs/DATA-MODEL.md section 5.4
+   *
+   * Read once a frame by whoever publishes presence, which is the only reader
+   * there is or should be. Nothing in this tool asks it: a segment somebody
+   * else has hold of is one this gesture may still split, and 5.4 says so in
+   * the same sentence that asks for the lock.
+   *
+   * Named by the two pins it runs between, because that is what a receiver can
+   * find on their own board — `state/presence.ts` has the argument.
+   */
+  get heldSegment(): { string: string; a: string; b: string } | null {
+    if (this.loopString === null || this.loopFrom === null || this.loopTo === null) return null;
+    return { string: this.loopString, a: this.loopFrom, b: this.loopTo };
+  }
+
+  /**
    * Where a held item was pivoting when the gesture took hold, for the items
    * this tool knows better than the scene does — which today is exactly one:
    * the item a pin being dragged hangs from, because the pin whose position

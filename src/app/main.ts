@@ -1736,6 +1736,11 @@ async function boot(): Promise<void> {
       const cursor = cursorBoard();
       if (cursor === null) presence.pointerGone();
       else presence.pointerAt(cursor.x, cursor.y, tools.active.id);
+      // The segment a mid-string split has hold of, if any — a hint for
+      // everybody else and nothing more (DATA-MODEL section 5.4). Published
+      // beside the grab because it is the same kind of statement: this is what
+      // I have hold of right now.
+      presence.splitting(select.heldSegment);
       const holding = select.heldItems.size > 0;
       if (holding) presence.grabbing(select.heldItems);
       else if (wasGrabbing) presence.released();
