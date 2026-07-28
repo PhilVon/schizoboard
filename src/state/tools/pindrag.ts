@@ -43,6 +43,16 @@ import { drawnPose, itemLocal, repivotedPose } from "@/state/tools/frame";
 import type { ToolContext, WritePose } from "@/state/tools/tool";
 
 /**
+ * Whether the drag is being held inside the pin's current parent.
+ *
+ * **The only `Ctrl`+drag on the board, and not an axis lock.** DESIGN 3.9 used
+ * to summarise this row as "Ctrl+drag constrain", which read as a board-wide
+ * hold-to-the-horizontal and got filed as a missing feature (T-102) — the map
+ * now says what it is, 1.4 lists an alignment tool among the non-goals, and 3.2
+ * says there is no axis lock. What this constrains is *re-parenting*: the pin
+ * stays in the paper it is in, whatever the cursor wanders across. Nothing
+ * about it touches direction, so nothing about it is snapping.
+ *
  * Read as a level, not as an edge — the same reason `R`+drag is (see
  * `state/tools/machine.ts`). "Hold Ctrl while dragging" is a question asked
  * partway through the gesture, and answering it from the modifier flag on the

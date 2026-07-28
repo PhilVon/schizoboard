@@ -71,6 +71,7 @@ Stated plainly, because each is a thing someone will eventually ask for and the 
 | A presentation tool | Boards are for thinking in, not for showing. Export exists for taking a picture of your thinking; it is not a slide deck. |
 | A document editor | Note text is short-form. No tables, no headings, no styles beyond a handful of paper and pen choices. |
 | A web app | It's a desktop app. This buys the filesystem, the native clipboard, real image decoding and LAN peer discovery — see §8. |
+| An alignment tool | No axis-lock modifier, no snapping, no guides — "mess is a feature" (§1.3) and the only thing an axis lock is ever used for is lining things up. The single `Ctrl`+drag on the board keeps a pin in its item (§3.3); it does not constrain a direction. |
 | Infinitely scalable | Designed for boards of hundreds to a few thousand items. A board with 50,000 items is a database, and you should use one. |
 
 ### 1.5 The test
@@ -208,6 +209,8 @@ Everything created this way gets **one pin**, placed at the top centre, and a sm
 Drag an item to move it. Drag its rotation handle, or hold `R` and drag, to rotate. There is no resize handle on a polaroid — a photograph is the size it is — but notes, cards and scraps resize from their edges.
 
 Nothing snaps to anything. There is no grid, no alignment guide, no distribution tool. This is deliberate and it is not a missing feature.
+
+**And no axis lock.** There is no modifier that holds a drag to the horizontal or the vertical. The only `Ctrl`+drag on the board is the pin one in §3.3, which keeps a pin in the item it is already in and has nothing to do with alignment. See §1.4.
 
 While an item is dragged, its shadow lifts and softens, it scales up by about 2%, and it gains a slight lag-and-catch-up rotation in the direction of travel — the item is being *carried*, not teleported. On release it settles. If it has exactly one pin, it swings (§5.5).
 
@@ -351,7 +354,7 @@ Tools           V select · P pin · S string · N note · M marker · H highlig
 Navigation      Space+drag pan · wheel zoom · Ctrl+0 fit · Ctrl+1 100% · F frame · Ctrl+F find
 Editing         Ctrl+V paste · Ctrl+C copy · Ctrl+X cut · Ctrl+Z undo · Ctrl+Shift+Z redo
                 Delete remove · Shift+Delete remove but keep pins · Ctrl+D duplicate
-Modifiers       Ctrl+drag constrain · Alt+drag pull string · Alt+click remove pin
+Modifiers       Ctrl+drag keep a pin in its item · Alt+drag pull string · Alt+click remove pin
                 Shift+click extend selection · Ctrl at pen-down force board ink
 Strings         1–9 slack presets · Alt+wheel whole-string slack · Enter/Esc end run
 ```
