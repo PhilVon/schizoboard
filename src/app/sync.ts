@@ -149,6 +149,41 @@ export async function dialAddress(native: Platform, config: SyncConfig): Promise
 }
 
 /**
+ * The colours a peer may not wear, and the reason each is out.
+ *
+ * Neither is a judgement about the colour — both are perfectly good *strings*.
+ * Each is about legibility against something specific:
+ *
+ *   - **White** (`#e6ddcd`) is a warm off-white, and a white cursor on a pale
+ *     note is not a cursor.
+ *   - **Black** (`#26231f`) is a very dark warm grey, and so is the overlay's
+ *     own selection outline — `SELECT_STROKE`, `rgba(34, 21, 10, 0.8)`. So a
+ *     black peer's chrome is the same colour as *your* chrome. Measured on a
+ *     note two windows had both selected, the two outlines came back `37,35,31`
+ *     and `34,21,9`, four pixels apart and indistinguishable (T-152). The offset
+ *     still separates them and the cursor is still perfectly legible — an arrow
+ *     is a filled shape with a pale ring round it, so its value does not have to
+ *     carry it — but "whose outline is that" should not need measuring.
+ *
+ * That leaves four, which is thin: a fifth peer wears somebody else's colour.
+ * It is the right trade for now, since DESIGN section 5.1's LAN case is "two
+ * people at a table", and the way out is a palette of this module's own rather
+ * than a longer exclusion list. The six in `lib/palette.ts` are what a *string*
+ * may be (DESIGN section 3.4); peers borrow them only because both wanted
+ * colours that read on cork, which is a coincidence and not a shared
+ * requirement.
+ *
+ * By label rather than by hex, so a colour that gets retuned stays excluded.
+ * The cost is that a *renamed* one would silently come back, which is what
+ * `sync.test.ts` measures against the chrome colour rather than asserting by
+ * name.
+ */
+const NOT_A_PEER: ReadonlySet<string> = new Set(["White", "Black"]);
+
+/** The palette a peer is drawn from. Resolved once, not per client. */
+const PEER_COLORS = STRING_COLORS.filter((entry) => !NOT_A_PEER.has(entry.label));
+
+/**
  * Who this client is, to everybody else.
  *
  * Derived from the Yjs client id rather than asked for, because there is nowhere
@@ -158,15 +193,14 @@ export async function dialAddress(native: Platform, config: SyncConfig): Promise
  * not the other one's — and a client id is already unique and already agreed.
  *
  * The colour comes from the string palette (`lib/palette.ts`) because those six
- * were chosen to be told apart on cork, which is exactly the requirement, and
- * white is skipped: a white cursor on a pale note is not a cursor.
+ * were chosen to be told apart on cork, which is exactly the requirement, minus
+ * the two a peer may not be — see [`NOT_A_PEER`].
  */
 export function identityFor(clientId: number): { id: string; name: string; color: string } {
-  const usable = STRING_COLORS.filter((entry) => entry.label !== "White");
-  const index = Math.abs(clientId) % usable.length;
+  const index = Math.abs(clientId) % PEER_COLORS.length;
   return {
     id: String(clientId),
-    name: `${usable[index]!.label} peer`,
-    color: usable[index]!.hex,
+    name: `${PEER_COLORS[index]!.label} peer`,
+    color: PEER_COLORS[index]!.hex,
   };
 }

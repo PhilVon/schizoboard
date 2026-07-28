@@ -61,8 +61,12 @@ const MARQUEE_STROKE = "rgba(255, 244, 214, 0.85)";
  * A dark warm line is the only one legible against both the cork and the paper,
  * and it reads as something drawn round the photograph rather than as a UI
  * rectangle floating over it.
+ *
+ * Exported so that `app/sync.test.ts` can hold it and the peer palette apart:
+ * a peer's chrome is drawn in their own colour, and one that landed on this
+ * value would make somebody else's outline look like yours (T-152).
  */
-const SELECT_STROKE = "rgba(34, 21, 10, 0.8)";
+export const SELECT_STROKE = "rgba(34, 21, 10, 0.8)";
 
 /**
  * The rotation knob is filled in the same warm dark as the outline and ringed in

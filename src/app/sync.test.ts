@@ -11,6 +11,7 @@
 import { describe, expect, it } from "vitest";
 
 import { dialAddress, identityFor, planSync } from "@/app/sync";
+import { SELECT_STROKE } from "@/render/overlay";
 import type { Platform } from "@/platform/types";
 import { STRING_COLORS } from "@/lib/palette";
 
@@ -91,6 +92,19 @@ describe("planning a connection", () => {
   });
 });
 
+/** `#rrggbb` or `rgba(r, g, b, a)` to a triple. Enough for the two it is given. */
+function rgb(color: string): [number, number, number] {
+  if (color.startsWith("#")) {
+    return [
+      parseInt(color.slice(1, 3), 16),
+      parseInt(color.slice(3, 5), 16),
+      parseInt(color.slice(5, 7), 16),
+    ];
+  }
+  const parts = color.match(/[\d.]+/g)!;
+  return [Number(parts[0]), Number(parts[1]), Number(parts[2])];
+}
+
 describe("who this client says it is", () => {
   it("gives two clients different colours", () => {
     const one = identityFor(1);
@@ -104,6 +118,43 @@ describe("who this client says it is", () => {
     for (let client = 0; client < 60; client += 1) {
       expect(identityFor(client).color).not.toBe(white);
     }
+  });
+
+  /**
+   * The other exclusion, and the one worth measuring rather than naming.
+   *
+   * A peer's selection chrome is drawn in their own colour and yours in
+   * `SELECT_STROKE`, so a peer colour that lands on that value makes somebody
+   * else's outline look like your own — which is what a black peer did, four
+   * pixels apart and indistinguishable, until T-152 took Black out.
+   *
+   * Measured rather than asserted by name because [`NOT_A_PEER`] excludes by
+   * *label*: a colour that is renamed would quietly come back, and the whole
+   * point of the exclusion is a property of the hex.
+   */
+  it("never picks a colour the overlay already draws your own chrome in", () => {
+    const chrome = rgb(SELECT_STROKE);
+    // Plain RGB distance, which is coarse and does not need to be anything
+    // else: every colour still in the palette is at least 128 away and the one
+    // that was taken out was 26. There is no threshold in that gap to argue
+    // about.
+    const apart = (hex: string): number => {
+      const c = rgb(hex);
+      return Math.hypot(c[0] - chrome[0], c[1] - chrome[1], c[2] - chrome[2]);
+    };
+    for (let client = 0; client < 60; client += 1) {
+      expect(apart(identityFor(client).color)).toBeGreaterThan(64);
+    }
+    // And the claim the exclusion rests on, so the number above is not a
+    // threshold nobody can place: the colour that was removed fails it.
+    const black = STRING_COLORS.find((entry) => entry.label === "Black")!.hex;
+    expect(apart(black)).toBeLessThan(64);
+  });
+
+  it("still offers more than one colour after the exclusions", () => {
+    const seen = new Set<string>();
+    for (let client = 0; client < 60; client += 1) seen.add(identityFor(client).color);
+    expect(seen.size).toBeGreaterThanOrEqual(4);
   });
 
   it("survives a client id Yjs picked out of the whole 32-bit range", () => {
