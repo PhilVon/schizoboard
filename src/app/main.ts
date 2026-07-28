@@ -47,7 +47,7 @@ import { variantFor } from "@/platform/types";
 import { Cork } from "@/render/cork";
 import { Culler } from "@/render/cull";
 import { BoardInkLayer } from "@/render/ink/board";
-import { DomItemLayer } from "@/render/items/dom";
+import { DomItemLayer, type AssetView } from "@/render/items/dom";
 import { FrameLoop } from "@/render/loop";
 import { Overlay, type PendingRun } from "@/render/overlay";
 import { Janitor } from "@/crdt/janitor";
@@ -151,8 +151,10 @@ async function boot(): Promise<void> {
    * The choice itself is `variantFor`, over in `platform/`, because this module
    * is wiring and nothing tests it.
    */
-  const assetUrl = (sha256: string, screenPx: number): string => {
-    if (assets.isReady(sha256)) return native.assetUrl(sha256, variantFor(screenPx));
+  const assetUrl = (sha256: string, screenPx: number): AssetView => {
+    if (assets.isReady(sha256)) {
+      return { url: native.assetUrl(sha256, variantFor(screenPx)), phase: "ready", fraction: 0 };
+    }
     // Asked for a photograph we do not have the bytes of, which means an item
     // wearing it is being drawn — and culling only binds what is on screen, so
     // this *is* "an asset whose item is in or near the viewport" (ARCHITECTURE
@@ -163,10 +165,14 @@ async function boot(): Promise<void> {
     // nobody to ask, so saying so here would be a promise this process cannot
     // keep; `reconcileAssets` is what calls that case what it is, once it has
     // asked the store and knows the bytes are genuinely not here.
-    if (exchange === null) return "";
-    exchange.want(sha256, Priority.VISIBLE);
-    assets.requesting(sha256);
-    return "";
+    if (exchange !== null) {
+      exchange.want(sha256, Priority.VISIBLE);
+      assets.requesting(sha256);
+    }
+    // Read after asking, so the first frame an item appears on already draws it
+    // as film somebody has been asked for rather than as film nobody has
+    // mentioned. Both are blank, and the difference is one repaint.
+    return { url: "", phase: assets.phase(sha256), fraction: assets.fraction(sha256) };
   };
   const items = new DomItemLayer(world.layers.world, assetUrl);
   /** Ink on the bare cork — its own layer, under the string and under the paper

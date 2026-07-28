@@ -83,7 +83,7 @@ beforeEach(() => {
   camera = new Camera();
   camera.resize(1000, 800);
   sim = new Torsion();
-  items = new DomItemLayer(host, () => "");
+  items = new DomItemLayer(host, () => ({ url: "", phase: "unknown", fraction: 0 }));
 });
 
 describe("a hanging item", () => {

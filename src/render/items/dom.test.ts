@@ -4,7 +4,7 @@
 
 import { beforeEach, describe, expect, it } from "vitest";
 
-import { DomItemLayer, type AssetResolver } from "@/render/items/dom";
+import { DomItemLayer, type AssetResolver, type AssetView } from "@/render/items/dom";
 import { DirtySets } from "@/state/dirty";
 import { Scene, type ItemCold, type ItemPose } from "@/state/scene";
 
@@ -13,13 +13,18 @@ let scene: Scene;
 let dirty: DirtySets;
 let layer: DomItemLayer;
 
+/** The bytes are on this disk. */
+const ready = (url: string): AssetView => ({ url, phase: "ready", fraction: 0 });
+/** Nothing to point an `<img>` at yet, in whichever state left it that way. */
+const waiting = (): AssetView => ({ url: "", phase: "requesting", fraction: 0 });
+
 beforeEach(() => {
   document.body.innerHTML = "";
   host = document.createElement("div");
   document.body.append(host);
   scene = new Scene();
   dirty = new DirtySets();
-  layer = new DomItemLayer(host, (sha) => `asset://sha256/${sha}`);
+  layer = new DomItemLayer(host, (sha) => ready(`asset://sha256/${sha}`));
 });
 
 function add(
@@ -253,14 +258,14 @@ describe("DomItemLayer", () => {
     // The asset store answers "not here yet" with an empty URL, and the item is
     // fully usable in that state (DESIGN 7.5). What must not happen is that it
     // stays that way: the cold record does not change when the bytes land.
-    let stored = "";
+    let stored: AssetView = waiting();
     const late = new DomItemLayer(host, () => stored);
     add("a", { assetId: "abc" });
     late.sync(scene, dirty, null);
     const img = host.querySelector(".pol-photo") as HTMLImageElement;
     expect(img.hasAttribute("src")).toBe(false);
 
-    stored = "asset://sha256/abc";
+    stored = ready("asset://sha256/abc");
     dirty.clear();
     dirty.item("a");
     late.sync(scene, dirty, null);
@@ -343,7 +348,7 @@ describe("asset variants", () => {
       asked,
       resolve: (sha, px) => {
         asked.push({ sha, px });
-        return `asset://sha256/${sha}?px=${Math.round(px)}`;
+        return ready(`asset://sha256/${sha}?px=${Math.round(px)}`);
       },
     };
   }
@@ -802,5 +807,174 @@ describe("ink", () => {
     layer.destroy();
     expect(layer.inked).toBe(0);
     expect(document.querySelectorAll("canvas.item-ink")).toHaveLength(0);
+  });
+});
+
+describe("undeveloped film", () => {
+  /**
+   * A layer whose asset state the test drives, because that is the whole point:
+   * none of these transitions is a document write, so nothing in the scene
+   * changes across any of them (DESIGN 7.5, DATA-MODEL section 10).
+   */
+  function film(): { set: (view: AssetView) => void; layer: DomItemLayer; item: HTMLElement } {
+    let view: AssetView = { url: "", phase: "unknown", fraction: 0 };
+    const layer = new DomItemLayer(host, () => view);
+    add("a", { assetId: "abc" });
+    layer.sync(scene, dirty, null);
+    return {
+      layer,
+      item: host.querySelector(".item-polaroid") as HTMLElement,
+      set: (next) => {
+        view = next;
+        dirty.clear();
+        dirty.item("a");
+        layer.sync(scene, dirty, null);
+      },
+    };
+  }
+
+  it("shows blank film for an asset nobody has mentioned", () => {
+    const { item, layer } = film();
+    expect(item.classList.contains("is-waiting")).toBe(true);
+    expect(item.classList.contains("is-developing")).toBe(false);
+    expect(item.classList.contains("is-torn")).toBe(false);
+    layer.destroy();
+  });
+
+  it("develops as the chunks land, though the document never changes", () => {
+    // The regression this whole change is about: every phase short of `ready`
+    // resolves to the same empty URL, so a layer guarding on the URL alone sees
+    // no difference between film that is blank and film that is half developed.
+    const { item, set, layer } = film();
+    set({ url: "", phase: "transferring", fraction: 0.42 });
+    expect(item.classList.contains("is-developing")).toBe(true);
+    expect(item.style.getPropertyValue("--develop")).toBe("42%");
+
+    set({ url: "", phase: "transferring", fraction: 0.77 });
+    expect(item.style.getPropertyValue("--develop")).toBe("77%");
+    layer.destroy();
+  });
+
+  it("tears a photograph nobody on the board has, and stops developing it", () => {
+    const { item, set, layer } = film();
+    set({ url: "", phase: "transferring", fraction: 0.3 });
+    set({ url: "", phase: "unavailable", fraction: 0 });
+    expect(item.classList.contains("is-torn")).toBe(true);
+    expect(item.classList.contains("is-developing")).toBe(false);
+    // A stale wash height would still be driving the gradient the torn rule
+    // paints over.
+    expect(item.style.getPropertyValue("--develop")).toBe("");
+    layer.destroy();
+  });
+
+  it("un-tears when a peer that holds it turns up", () => {
+    // `state/assets.ts` makes `unavailable` sticky against a re-request and
+    // clears it only when bytes actually move, so this is what the person sees
+    // the moment the holder joins: the tear closes and the picture comes up.
+    const { item, set, layer } = film();
+    set({ url: "", phase: "unavailable", fraction: 0 });
+    set({ url: "", phase: "transferring", fraction: 0.1 });
+    expect(item.classList.contains("is-torn")).toBe(false);
+    expect(item.classList.contains("is-developing")).toBe(true);
+    layer.destroy();
+  });
+
+  it("keeps the film on until there are pixels, not until the bytes land", () => {
+    // `ready` is a fact about the disk. There is a decode between it and
+    // anything appearing in the window, and blanking the film for those frames
+    // would flash the bare backing.
+    const { item, set, layer } = film();
+    set({ url: "", phase: "transferring", fraction: 0.9 });
+    set({ url: "asset://sha256/abc", phase: "ready", fraction: 0 });
+    expect(item.classList.contains("is-developing")).toBe(false);
+    expect(item.classList.contains("is-waiting")).toBe(true);
+
+    const img = host.querySelector(".pol-photo") as HTMLImageElement;
+    img.dispatchEvent(new Event("load"));
+    expect(item.classList.contains("is-waiting")).toBe(false);
+    layer.destroy();
+  });
+
+  it("tears a photograph that is on this disk and will not decode", () => {
+    // Not "waiting": the bytes arrived. A file that is present and broken is a
+    // photograph that is not coming, which is what the tear says.
+    const { item, set, layer } = film();
+    set({ url: "asset://sha256/abc", phase: "ready", fraction: 0 });
+    const img = host.querySelector(".pol-photo") as HTMLImageElement;
+    img.dispatchEvent(new Event("error"));
+    expect(item.classList.contains("is-torn")).toBe(true);
+    expect(item.classList.contains("is-waiting")).toBe(true);
+    layer.destroy();
+  });
+
+  it("does not hand a recycled node the last item's tear", () => {
+    // The tear has two ways on, and only one of them is a phase. A decode that
+    // failed is invisible to `paintFilm`'s guard, so a node torn by a broken
+    // file and pooled would carry the tear onto whatever it is recycled onto —
+    // and both items being `ready` is exactly what stops anything repainting it.
+    let view: AssetView = { url: "asset://sha256/abc", phase: "ready", fraction: 0 };
+    const layer = new DomItemLayer(host, () => view);
+    add("a", { assetId: "abc" });
+    layer.sync(scene, dirty, null);
+    const first = host.querySelector(".item-polaroid") as HTMLElement;
+    (host.querySelector(".pol-photo") as HTMLImageElement).dispatchEvent(new Event("error"));
+    expect(first.classList.contains("is-torn")).toBe(true);
+
+    dirty.clear();
+    scene.removeItem("a");
+    dirty.item("a");
+    layer.sync(scene, dirty, null);
+
+    dirty.clear();
+    view = { url: "asset://sha256/def", phase: "ready", fraction: 0 };
+    add("b", { assetId: "def" });
+    layer.sync(scene, dirty, null);
+    const item = host.querySelector(".item-polaroid") as HTMLElement;
+    expect(item).toBe(first);
+    expect(item.classList.contains("is-torn")).toBe(false);
+    layer.destroy();
+  });
+
+  it("re-dresses a recycled node even when the new item is in the same state", () => {
+    // The other half of the recycling problem, and the one that decides which
+    // of the two things `release` does is load-bearing. Sweeping the classes off
+    // a released node is not enough on its own: the next item to get that node
+    // is very often in the *same* phase — a viewport full of one board's worth
+    // of arriving photographs is exactly that — and `paintFilm` would look at a
+    // phase that matches the one it last painted and decline to paint anything.
+    // The node would come back stripped and never be dressed again.
+    const view: AssetView = { url: "", phase: "transferring", fraction: 0.6 };
+    const layer = new DomItemLayer(host, () => view);
+    add("a", { assetId: "abc" });
+    layer.sync(scene, dirty, null);
+    expect(host.querySelector(".item-polaroid")!.classList.contains("is-developing")).toBe(true);
+
+    dirty.clear();
+    scene.removeItem("a");
+    dirty.item("a");
+    layer.sync(scene, dirty, null);
+
+    dirty.clear();
+    add("b", { assetId: "def" });
+    layer.sync(scene, dirty, null);
+    const item = host.querySelector(".item-polaroid") as HTMLElement;
+    expect(item.classList.contains("is-developing")).toBe(true);
+    expect(item.style.getPropertyValue("--develop")).toBe("60%");
+    layer.destroy();
+  });
+
+  it("gives each waiting photograph its own crystals", () => {
+    // One shared grain tile, offset per item — twenty blank films showing the
+    // identical speckle read as one repeated texture rather than as twenty
+    // pieces of film.
+    const layer = new DomItemLayer(host, () => ({ url: "", phase: "requesting", fraction: 0 }));
+    add("a", { assetId: "abc", seed: 11 }, { x: -200 });
+    add("b", { assetId: "abc", seed: 12 }, { x: 200 });
+    layer.sync(scene, dirty, null);
+    const films = [...host.querySelectorAll<HTMLElement>(".pol-film")];
+    expect(films).toHaveLength(2);
+    expect(films[0]!.style.backgroundPosition).not.toBe("");
+    expect(films[0]!.style.backgroundPosition).not.toBe(films[1]!.style.backgroundPosition);
+    layer.destroy();
   });
 });

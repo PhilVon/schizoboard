@@ -130,10 +130,193 @@
   -webkit-user-drag: none;
 }
 
-/* Waiting for bytes. A flat wash for now; the undeveloped-film treatment,
- * with grain and a chemical bloom, is T-75. */
+/* --- undeveloped film, DESIGN 7.5 ---------------------------------------- */
+
+/*
+ * > The waiting state is treated as an art direction opportunity rather than an
+ * > error: an undeveloped-film look, grain and a faint chemical wash, animating
+ * > gently while the transfer runs. A photo that no connected peer holds gets a
+ * > torn-photograph treatment and a retry.
+ *
+ * Three looks over one base, off `state/assets.ts`'s five states:
+ *
+ *   is-waiting              blank film — unknown, requesting, and the decode gap
+ *   is-waiting is-developing  the wash rises to `--develop` as chunks land
+ *   is-waiting is-torn        nobody on this board has it
+ *
+ * The emulsion is warm and dark and *not* neutral grey, which is the difference
+ * between film and a loading placeholder. Nothing here is a rectangle with a
+ * spinner in it: the point of section 7.5 is that an item with no photograph yet
+ * is an object on a corkboard, not a widget in a state.
+ */
 .item-polaroid.is-waiting .pol-window {
-  background: linear-gradient(160deg, #a89d8c 0%, #8d8272 55%, #9d9384 100%);
+  background:
+    /* The bloom, off the top left, which is where every shadow on this board
+     * agrees the light is (DESIGN 4.1) — so the film reads as a surface
+     * catching light rather than as a fill. */
+    radial-gradient(105% 85% at 28% 20%, rgba(226, 209, 178, 0.34) 0%, rgba(226, 209, 178, 0) 66%),
+    /* And darker into the corners. A small rectangle of one colour reads as a
+     * swatch; the falloff is what makes it read as an exposure. */
+    radial-gradient(130% 110% at 50% 45%, rgba(30, 20, 10, 0) 42%, rgba(30, 20, 10, 0.34) 100%),
+    linear-gradient(162deg, #7d7161 0%, #5e5446 58%, #726853 100%);
+}
+
+/*
+ * The emulsion layer: grain, and whatever wash the phase calls for.
+ *
+ * `background-image` (the grain tile) and `background-position` (this item's
+ * offset into it) are written by the view — see `film.ts`. Everything the phase
+ * decides is here.
+ */
+.pol-film {
+  position: absolute;
+  inset: 0;
+  display: none;
+  pointer-events: none;
+}
+
+.item-polaroid.is-waiting .pol-film {
+  display: block;
+}
+
+/*
+ * The chemical wash.
+ *
+ * Nothing on blank film — the bloom and the falloff are on the window beneath,
+ * so that the grain lies *between* the emulsion and the wash rather than on top
+ * of everything. This layer is what develops.
+ */
+
+/*
+ * Developing: the image comes up from the bottom of the tray.
+ *
+ * `--develop` is the fraction of the transfer, in whole percent, written by the
+ * view. Below the line the emulsion has taken; above it, blank film. The band is
+ * soft — a hard edge would read as a progress bar, and a progress bar is the
+ * piece of software UI this whole treatment exists to avoid.
+ *
+ * **Amber, not black.** The first version of this darkened what had developed,
+ * and it was unreadable for a reason worth writing down: the blank emulsion
+ * above already darkens into its corners, so "darker at the bottom" is what
+ * every waiting photograph on the board looks like. Measured down a 130-pixel
+ * item, developed-half against undeveloped-half came out 82 against 127 — and
+ * the *blank* film beside it ran 141 to 119 over the same distance. A value
+ * difference that small, in the same direction as the falloff, is camouflage.
+ * A wash the colour of the chemistry is a hue difference, which nothing else
+ * here produces.
+ */
+.item-polaroid.is-developing .pol-film::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(
+    to top,
+    rgba(104, 56, 18, 0.62) 0%,
+    rgba(104, 56, 18, 0.62) calc(var(--develop, 0%) - 11%),
+    rgba(138, 88, 40, 0.3) var(--develop, 0%),
+    rgba(150, 116, 74, 0) calc(var(--develop, 0%) + 9%)
+  );
+  /*
+   * The one animation in `render/`, and it is standing next to the rule at the
+   * top of this file that says the frame loop owns all motion.
+   *
+   * It is admissible because none of that rule's reasons apply: this moves no
+   * board content, so there is no geometry for the scene mirror, the sim or hit
+   * testing to disagree with, and nothing here is a transition on a value the
+   * renderer also writes. It is the inside of a photograph that does not exist
+   * yet. DESIGN 7.5 asks for it in as many words — "animating gently while the
+   * transfer runs" — and it is scoped to exactly that: `is-developing` only, so
+   * the compositor layer this promotes exists per *transfer in flight*, not per
+   * un-arrived photograph. A cold board with two hundred blank films promotes
+   * none of them.
+   */
+  animation: film-develop 3.2s ease-in-out infinite;
+}
+
+@keyframes film-develop {
+  0%,
+  100% {
+    opacity: 0.82;
+  }
+  50% {
+    opacity: 1;
+  }
+}
+
+/*
+ * Torn: nobody on this board has it.
+ *
+ * Dead and cold where the rest is warm — the emulsion goes grey, because this is
+ * the one waiting state that is not waiting for anything. The tear is a ragged
+ * band of the polaroid's own frame stock showing through, with the paper's
+ * thickness shadowed along one lip, so it reads as a photograph that has been
+ * pulled apart rather than as a photograph with a line drawn on it.
+ *
+ * There is no retry affordance here on purpose: the retry is automatic. Every
+ * time a provider reaches `synced` the board re-asks for everything it is
+ * missing (`reconcileAssets`), so a peer that holds this joining the board is
+ * what un-tears it, and `state/assets.ts` will not let this state stick once
+ * bytes start moving.
+ */
+.item-polaroid.is-torn .pol-window {
+  background: linear-gradient(162deg, #6d6963 0%, #4f4c47 58%, #625f59 100%);
+}
+
+.item-polaroid.is-torn .pol-film::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  /* The frame stock showing through the gap, with the upper piece's shadow
+   * falling onto it. The shadow is a gradient inside the band rather than a
+   * `drop-shadow` on it: the rule at the top of this file is not negotiable for
+   * something that could land on many items at once, and the effect is a
+   * two-stop gradient anyway. */
+  background: linear-gradient(
+    to bottom,
+    rgba(58, 46, 32, 0.55) 0%,
+    rgba(126, 112, 92, 0.22) 34%,
+    #f2ede2 62%,
+    #f7f3ea 100%
+  );
+  /*
+   * A tear, not a cut. Two things separate the two, and the first version of
+   * this had neither: the run must be irregular in *both* axes — vertices at
+   * uneven intervals, each off the line by its own amount — and the two lips
+   * must stay close, because a wide even band reads as a stripe drawn across
+   * the photograph. Paper also does not tear level, hence the diagonal.
+   */
+  clip-path: polygon(
+    -2% 64%,
+    6% 56%,
+    11% 60%,
+    22% 49%,
+    27% 55%,
+    33% 46%,
+    45% 52%,
+    50% 42%,
+    59% 46%,
+    65% 36%,
+    72% 41%,
+    77% 31%,
+    88% 35%,
+    94% 28%,
+    102% 24%,
+    102% 31%,
+    94% 36%,
+    88% 42%,
+    77% 38%,
+    72% 48%,
+    65% 43%,
+    59% 53%,
+    50% 50%,
+    45% 59%,
+    33% 53%,
+    27% 62%,
+    22% 56%,
+    11% 68%,
+    6% 63%,
+    -2% 71%
+  );
 }
 
 .pol-gloss {

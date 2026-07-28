@@ -47,10 +47,33 @@ import {
   stockRuling,
 } from "@/render/items/paper";
 import { ItemInk } from "@/render/ink/canvas";
+import { FILM_CLASSES, filmClass, filmGrainUrl } from "@/render/items/film";
 import { counterRotate, shadowSprite, type Elevation } from "@/render/items/shadow";
 import type { ItemLayer } from "@/render/items/view";
+import type { AssetPhase } from "@/state/assets";
 import type { DirtySets } from "@/state/dirty";
 import type { ItemCold, Scene } from "@/state/scene";
+
+/**
+ * What this machine can show of an item's photograph.
+ *
+ * A URL alone was enough while there were two outcomes — a picture, or a blank
+ * — and it stopped being enough the moment "missing" grew five states
+ * (`state/assets.ts`, DATA-MODEL section 10). Undeveloped film, film that is
+ * developing, and a photograph nobody has are three different pictures, and a
+ * `""` cannot tell them apart.
+ */
+export interface AssetView {
+  /** Where the bytes are, or `""` while there are none to point an `<img>` at. */
+  readonly url: string;
+  /** What this machine can currently do about them. */
+  readonly phase: AssetPhase;
+  /** 0…1 through the transfer, and 0 for every phase but `transferring`. */
+  readonly fraction: number;
+}
+
+/** An item that names no asset at all. Blank film, and nothing is coming. */
+const NO_ASSET: AssetView = { url: "", phase: "unknown", fraction: 0 };
 
 /**
  * Where an item's photograph comes from.
@@ -60,7 +83,7 @@ import type { ItemCold, Scene } from "@/state/scene";
  * serves it is a fact about the asset store, so the caller decides — that is what
  * keeps `render/` from needing to know that variants exist at all.
  */
-export type AssetResolver = (sha256: string, screenPx: number) => string;
+export type AssetResolver = (sha256: string, screenPx: number) => AssetView;
 
 type Archetype = "polaroid" | "paper";
 
@@ -182,9 +205,21 @@ class PolaroidView implements View {
   /** The URL this view wants to be showing — see `swapPhoto`. */
   private pending: string | null = null;
   private framedFor = -1;
+  /** The film state last painted. Null so the first bind always paints one. */
+  private boundPhase: AssetPhase | null = null;
+  /**
+   * How far the wash has been raised, in whole percent.
+   *
+   * Whole percent because that is the resolution the eye gets out of a wash
+   * across a two-inch photograph, and because a transfer is one callback per
+   * chunk: a raw fraction would rewrite a custom property on every chunk, and
+   * on every frame of a drag that happens to be in progress at the time.
+   */
+  private boundDevelop = -1;
 
   private readonly shadow = new ShadowNode();
   private readonly frame: HTMLDivElement;
+  private readonly film: HTMLDivElement;
   readonly ink: ItemInk;
 
   constructor() {
@@ -205,12 +240,29 @@ class PolaroidView implements View {
     this.photo.decoding = "async";
     this.photo.draggable = false;
     this.photo.alt = "";
-    // A photograph nobody can produce is a *render state*, not an error
-    // (DESIGN section 7.5) — the asset store 404s for bytes this peer has not
-    // been sent yet, and the item has to go on looking like undeveloped film
-    // rather than like a broken image.
-    this.photo.addEventListener("error", () => this.el.classList.add("is-waiting"));
+    // The `<img>` is now only ever pointed at bytes `state/assets.ts` has said
+    // are on this disk, so a failure here is no longer "not arrived yet" — it
+    // is a file that is present and will not decode. That is a photograph which
+    // is not coming, which is what the torn treatment says (DESIGN section 7.5);
+    // calling it "waiting" would promise an arrival that has already happened.
+    this.photo.addEventListener("error", () => this.el.classList.add("is-waiting", "is-torn"));
+    // And this is the only thing that may take the film off. Not the phase:
+    // `ready` means the bytes are on the disk, and there is a decode between
+    // that and pixels in this window.
     this.photo.addEventListener("load", () => this.el.classList.remove("is-waiting"));
+
+    // The emulsion: grain, and whatever wash the phase calls for. Its own node
+    // rather than more pseudo-elements on the window, because the grain needs a
+    // per-item `background-position` and the window's background is the flat
+    // backing every archetype shares.
+    //
+    // Always in the tree, shown only while `is-waiting`. A polaroid that is
+    // waiting is the common case on a board that has just been joined, so
+    // creating this on demand would mean a `createElement` storm at exactly the
+    // moment the wire is busiest — and the pool exists to avoid that shape.
+    this.film = document.createElement("div");
+    this.film.className = "pol-film";
+    this.film.style.backgroundImage = `url(${filmGrainUrl()})`;
 
     const gloss = document.createElement("div");
     gloss.className = "pol-gloss";
@@ -218,7 +270,7 @@ class PolaroidView implements View {
     this.caption = document.createElement("div");
     this.caption.className = "pol-caption";
 
-    window_.append(this.photo, gloss);
+    window_.append(this.photo, this.film, gloss);
     this.frame.append(window_, this.caption);
     this.el.append(this.shadow.el, this.frame);
   }
@@ -227,22 +279,59 @@ class PolaroidView implements View {
     // Two inputs, so two guards. The binding mints a fresh cold record every
     // time the *document* changes and `setPose` leaves it alone, so identity
     // covers everything the document can say — that is what lets a drag skip
-    // sixty rebinds a second. The resolved URL is the other input, and it
-    // changes with no document write at all when an item's bytes finally
-    // arrive (DESIGN section 7.5), and again when the zoom crosses far enough
-    // for a different variant to be the right one; guarding on the record alone
-    // would leave that photograph undeveloped for good.
-    const url = cold.assetId ? assetUrl(cold.assetId, screenPx) : "";
-    if (this.boundCold === cold && url === this.boundAsset) return;
+    // sixty rebinds a second. What the asset resolves to is the other input, and
+    // it changes with no document write at all: when the bytes finally arrive
+    // (DESIGN section 7.5), while they are arriving, when the board runs out of
+    // peers to ask, and again when the zoom crosses far enough for a different
+    // variant to be the right one. Guarding on the record alone would leave that
+    // photograph undeveloped for good; guarding on the URL alone would leave it
+    // blank while it developed, because every state short of `ready` resolves to
+    // the same empty string.
+    const asset = cold.assetId ? assetUrl(cold.assetId, screenPx) : NO_ASSET;
+    const develop = Math.round(asset.fraction * 100);
+    const sameFilm = asset.phase === this.boundPhase && develop === this.boundDevelop;
+    if (this.boundCold === cold && asset.url === this.boundAsset && sameFilm) return;
     this.boundCold = cold;
-    if (url !== this.boundAsset) {
-      const replacing = Boolean(this.boundAsset);
-      this.boundAsset = url;
-      this.swapPhoto(url, replacing);
+    if (!sameFilm) {
+      this.boundPhase = asset.phase;
+      this.boundDevelop = develop;
+      this.paintFilm(asset.phase, develop);
     }
+    if (asset.url !== this.boundAsset) {
+      const replacing = Boolean(this.boundAsset);
+      this.boundAsset = asset.url;
+      this.swapPhoto(asset.url, replacing);
+    }
+    // The grain is one shared tile, so every waiting photograph would show the
+    // identical crystals in the identical places without this — which is what
+    // makes a wall of undeveloped film read as a repeated texture rather than as
+    // twenty separate pieces of film. Same trick, and the same function, as the
+    // fibres in a sheet of paper.
+    this.film.style.backgroundPosition = grainPosition(cold.seed);
     this.caption.textContent = cold.text;
     this.caption.classList.toggle("is-empty", cold.text.length === 0);
     this.el.style.filter = sheetTint(cold.seed);
+  }
+
+  /**
+   * Dress the window for what this machine can show — DESIGN section 7.5's
+   * "art direction opportunity rather than an error".
+   *
+   * `is-waiting` goes *on* here, and only ever comes off in the `<img>`'s load
+   * handler. The asymmetry is the point: `ready` is a fact about the disk, and
+   * there is a decode between the disk and pixels in this window. Taking the
+   * film off on the phase would blank the photograph for those frames, which is
+   * the flash the wet/dry ink handoff exists to avoid elsewhere (T-58).
+   */
+  private paintFilm(phase: AssetPhase, develop: number): void {
+    this.el.classList.remove(...FILM_CLASSES);
+    const film = filmClass(phase);
+    if (film) this.el.classList.add(film);
+    if (phase !== "ready") this.el.classList.add("is-waiting");
+    // Only while it means something. Left set, a photograph that arrived would
+    // keep a stale wash height for the next item this node is recycled onto.
+    if (phase === "transferring") this.el.style.setProperty("--develop", `${develop}%`);
+    else this.el.style.removeProperty("--develop");
   }
 
   /**
@@ -252,8 +341,11 @@ class PolaroidView implements View {
    * state until the load lands. Missing is a render state, not an error: the item
    * is fully usable — pinnable, stringable, annotatable — before its bytes arrive
    * (DESIGN section 7.5), and it should look like undeveloped film for the whole
-   * of that wait, not for the instant before the src is assigned. The proper
-   * treatment, with grain and a chemical wash, is T-75.
+   * of that wait, not for the instant before the src is assigned.
+   *
+   * The `is-waiting` here overlaps with `paintFilm` and is not redundant. That
+   * one covers every phase short of `ready`; this covers the gap `ready` opens
+   * on its own — bytes on the disk, no pixels in the window yet.
    *
    * When there *is* something on screen, this is a variant swap at a zoom
    * boundary, and assigning `src` would blank the photograph until the new bytes
@@ -318,7 +410,20 @@ class PolaroidView implements View {
     // next; clearing `pending` is what `swapPhoto` checks before it assigns.
     this.pending = null;
     this.photo.removeAttribute("src");
-    this.el.classList.remove("is-lifted", "is-waiting");
+    // And the film with it. Forgetting the phase is the load-bearing half:
+    // `paintFilm` only runs when the phase differs from the one last painted,
+    // and the item that gets this node next is very often in the *same* phase —
+    // a viewport of one board's arriving photographs is exactly that — so a node
+    // that remembered would never be dressed again. Stripping the classes as
+    // well is what the line below already does for `is-waiting`: a released node
+    // is left clean, so nothing downstream has to reason about what it was.
+    //
+    // The tear needs both, because it has a second way on that no phase knows
+    // about: an `<img>` that failed to decode.
+    this.el.style.removeProperty("--develop");
+    this.boundPhase = null;
+    this.boundDevelop = -1;
+    this.el.classList.remove("is-lifted", "is-waiting", ...FILM_CLASSES);
     this.shadow.reset();
     // And the ink, for the reason the photograph goes: a pooled node keeps its
     // subtree, so a view recycled onto a different item would sit there wearing
