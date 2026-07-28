@@ -987,3 +987,81 @@ describe("a stroke that crosses off its surface", () => {
     expect(commits[0]).toHaveLength(4);
   });
 });
+
+/**
+ * A run's name, decided at pen-down — T-167.
+ *
+ * > Rule: keep rendering the ghost, keyed by stroke id, until the document
+ * > contains that stroke id. — docs/DATA-MODEL.md section 9.2
+ *
+ * That rule needs a name that exists while the ink is still wet, which is a
+ * whole gesture before the commit that used to mint one. The properties worth
+ * holding are the two that make a name a name: it is stable for the life of the
+ * run, and no two runs share one.
+ */
+describe("the id a run is filed under", () => {
+  /** A photograph at the origin, 200 square, hit-tested by geometry - the same
+   *  fixture the crossing tests above use. */
+  function paper(id: string): void {
+    scene.putItem(
+      { id, type: "polaroid", z: "a0", seed: 1, assetId: null, createdBy: 1, createdAt: 0, text: "" },
+      { x: 100, y: 100, rot: 0, w: 200, h: 200 },
+    );
+    byGeometry = true;
+  }
+
+  /** The earliest a run can be observed at all: `runsInFlight` withholds a
+   *  one-sample stroke until the gesture proves it was a line rather than a
+   *  click, so the first frame with an id on it is the first frame with a run. */
+  it("has one on the first frame it is drawn", () => {
+    down(100, 100);
+    move([at(150, 100)]);
+    expect(live()!.id).not.toBe("");
+  });
+
+  it("keeps it for the whole run, and hands the same one to the commit", () => {
+    down(100, 100);
+    move([at(150, 100)]);
+    const born = live()!.id;
+    move([at(200, 100), at(220, 100)]);
+    expect(live()!.id).toBe(born);
+    up(250, 100);
+    expect(committed).toHaveLength(1);
+    expect(committed[0]!.id).toBe(born);
+  });
+
+  /** A gesture that crosses an edge is several records, and a peer has to be
+   *  able to tell the halves apart — see [`handOver`]. */
+  it("gives each run of a crossing gesture its own", () => {
+    paper("p");
+    down(100, 100);
+    move([at(250, 100)]);
+    up(300, 100);
+
+    const ids = committed.map((run) => run.id);
+    expect(ids).toHaveLength(2);
+    expect(new Set(ids).size).toBe(2);
+  });
+
+  /** Two marks with one name would be one mark to every peer, and the second
+   *  would arrive claiming to be the first's commit. */
+  it("never reuses one across gestures", () => {
+    down(100, 100);
+    move([at(200, 100)]);
+    up(250, 100);
+    down(400, 400);
+    move([at(500, 400)]);
+    up(550, 400);
+
+    expect(committed).toHaveLength(2);
+    expect(committed[0]!.id).not.toBe(committed[1]!.id);
+  });
+
+  it("takes the id source it is given, so a test can name what it is watching", () => {
+    let n = 0;
+    const named = new MarkerTool({ newId: () => `run-${(n += 1)}` });
+    named.handle({ kind: "down", at: at(100, 100) }, ctx);
+    named.handle({ kind: "move", at: at(150, 100), trail: [at(150, 100)] }, ctx);
+    expect(named.runsInFlight[0]!.id).toBe("run-1");
+  });
+});

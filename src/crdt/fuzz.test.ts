@@ -24,7 +24,7 @@
  *
  * A fuzz failure that cannot be replayed is a bug report with no repro, and this
  * codebase generates randomness in three places that have nothing to do with the
- * harness: `crdt/ids.ts` mints ids from `crypto.getRandomValues`, `createItems`
+ * harness: `lib/ids.ts` mints ids from `crypto.getRandomValues`, `createItems`
  * mints a seed the same way, and `crdt/zindex.ts` appends four random base-62
  * digits to every key it generates — which is *precisely* the mechanism whose
  * concurrent behaviour is interesting.

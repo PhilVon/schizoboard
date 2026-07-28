@@ -9,7 +9,7 @@
 
 import * as Y from "yjs";
 
-import { newId } from "@/crdt/ids";
+import { newId } from "@/lib/ids";
 import { Origin, type OriginTag } from "@/crdt/origins";
 import { SCHEMA_VERSION, type YMap } from "@/crdt/schema";
 

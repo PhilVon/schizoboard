@@ -63,7 +63,7 @@ import { freshId, mutate, type BoardDoc } from "@/crdt/doc";
 import { DEFAULT_STRING_MATERIAL } from "@/lib/material";
 import { DEFAULT_STRING_COLOR, DEFAULT_STRING_THICKNESS } from "@/lib/palette";
 import { DEFAULT_SLACK, splitSlack } from "@/lib/slack";
-import { newId } from "@/crdt/ids";
+import { newId } from "@/lib/ids";
 import { writePoses, type Pose } from "@/crdt/ops/items";
 import { buildPin } from "@/crdt/ops/pins";
 import { Origin } from "@/crdt/origins";

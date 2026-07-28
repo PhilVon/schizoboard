@@ -9,6 +9,16 @@
  *
  * Ids are opaque. Nothing sorts by them except the tie-break in
  * `compareOrder`, and nothing parses them.
+ *
+ * ## Why this is in `lib/` and not in `crdt/`
+ *
+ * It lived next to the document until T-167, and moved when a *tool* needed to
+ * mint one: a stroke's id is now decided at pen-down rather than at commit, so
+ * that a peer can match the wet ink it is drawing against the record that
+ * eventually arrives (DATA-MODEL section 9.2). Nothing in `state/` imports
+ * `crdt/` — the binding is the only bridge between the document and the mirror —
+ * and an id generator is not worth being the first exception to that. It is a
+ * dependency-free primitive, which is exactly what `lib/` is for.
  */
 
 const ALPHABET = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz";

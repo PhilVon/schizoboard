@@ -54,6 +54,20 @@ import { newSeed } from "@/lib/seed";
 import { packStroke } from "@/lib/strokepack";
 
 export interface CommitStrokeInput {
+  /**
+   * The id to file this run under, when the caller has already decided one.
+   *
+   * The pen does (`state/tools/marker.ts`), and for a reason that has nothing to
+   * do with the document: a peer watching the stroke being drawn needs a name to
+   * match the arriving record against, and an id minted here does not exist
+   * while the ink is still wet (DATA-MODEL section 9.2). Everything else that
+   * writes a stroke leaves this out and gets a fresh one.
+   *
+   * Taken as given, not checked for collision. It is twelve base-62 characters
+   * from `crypto.getRandomValues`, and a caller that hands over one it made up
+   * has bigger problems than this map key.
+   */
+  id?: string;
   /** The item the samples are local to, or null for a stroke on bare cork —
    *  which goes into a `boardInk` tile instead. See the note at the top. */
   item: string | null;
@@ -152,7 +166,7 @@ export function commitStrokes(
       const map = input.item === null ? tileMap(board, tile!) : strokesOfItem(board, input.item);
       if (map === null) continue;
 
-      const id = freshId(map);
+      const id = input.id ?? freshId(map);
       const stroke = new Y.Map<unknown>();
       stroke.set("tool", input.tool);
       stroke.set("color", input.color);

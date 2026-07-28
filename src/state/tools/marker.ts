@@ -104,6 +104,7 @@ import {
   type InkTool,
   type WetStroke,
 } from "@/lib/ink";
+import { newId } from "@/lib/ids";
 import { reportsRealPressure, VelocityPressure } from "@/lib/pressure";
 import type { Point } from "@/lib/rotate";
 import { itemLocal } from "@/state/tools/frame";
@@ -122,6 +123,12 @@ export interface MarkerToolOptions {
   /** `Escape`. The caller hands the board back to `select`; a tool has no idea
    *  what other tools exist — see `state/tools/note.ts`. */
   onDone?: () => void;
+  /**
+   * Where a run's id comes from. Injected for the reason `Presence`'s clock is:
+   * so a test can name the runs it is reasoning about instead of matching
+   * twelve random characters.
+   */
+  readonly newId?: () => string;
 }
 
 /** The answer for a pen that is not drawing anything — the same array every
@@ -154,6 +161,15 @@ export class MarkerTool implements Tool {
    */
   private strokeInk = "";
   private strokeNib = 0;
+  /**
+   * The name the live run will be filed under — see [`WetStroke.id`].
+   *
+   * Minted at the press and again at every edge the hand crosses, because a run
+   * is what gets a record and a gesture can be several. Not reused across
+   * gestures: two marks with one name would be one mark to every peer, and the
+   * second would arrive claiming to be the first's commit.
+   */
+  private runId = "";
   /** The live run, in [`space`], oldest first. Empty means no run in progress. */
   private samples: InkSample[] = [];
   /**
@@ -312,6 +328,9 @@ export class MarkerTool implements Tool {
         // The pen, fixed for this stroke — see the note on [`strokeInk`].
         this.strokeInk = this.ink;
         this.strokeNib = this.nib;
+        // And the name this run will be filed under, decided here so a peer can
+        // recognise the record when it lands (DATA-MODEL section 9.2).
+        this.runId = this.mint();
         // Also before the first sample, so this stroke starts from rest rather
         // than from wherever the last one's hand was going.
         this.velocity.reset();
@@ -401,6 +420,7 @@ export class MarkerTool implements Tool {
    *  why the sample array is shared rather than copied. */
   private snapshot(): WetStroke {
     return {
+      id: this.runId,
       tool: this.tool,
       color: this.strokeInk,
       size: this.strokeNib,
@@ -408,6 +428,11 @@ export class MarkerTool implements Tool {
       item: this.space,
       samples: this.samples,
     };
+  }
+
+  /** A name for a run. See [`MarkerToolOptions.newId`]. */
+  private mint(): string {
+    return (this.options.newId ?? newId)();
   }
 
   /**
@@ -478,6 +503,10 @@ export class MarkerTool implements Tool {
     this.space = next;
     // A fresh array, never a clear: the run just pushed is holding this one.
     this.samples = [];
+    // And a fresh name. The piece just closed keeps the old one — it is a
+    // record of its own, and the two halves of a line drawn across an edge are
+    // two things a peer has to be able to tell apart.
+    this.runId = this.mint();
   }
 
   /**

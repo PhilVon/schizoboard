@@ -524,3 +524,65 @@ describe("reading a stroke back", () => {
     expect(stroke.bbox).toEqual([0, 0, 0, 0]);
   });
 });
+
+/**
+ * A caller that has already named its run — T-167.
+ *
+ * The pen decides a stroke's id at pen-down, because a peer watching the ink
+ * being drawn needs something to match the arriving record against and an id
+ * minted in here does not exist yet (DATA-MODEL section 9.2). Everything else
+ * that writes a stroke still gets one from `freshId`.
+ */
+describe("an id the caller brought with it", () => {
+  it("files the record under exactly that id", () => {
+    const b = board();
+    const id = note(b);
+    const done = commitStroke(b, {
+      id: "wet-1",
+      item: id,
+      tool: "marker",
+      color: "#1f1b17",
+      size: 6,
+      samples: samples(),
+    });
+
+    expect(done?.id).toBe("wet-1");
+    expect([...strokeMap(b, id).keys()]).toEqual(["wet-1"]);
+  });
+
+  it("names each run of one gesture separately", () => {
+    const b = board();
+    const id = note(b);
+    commitStrokes(b, [
+      { id: "wet-a", item: id, tool: "marker", color: "#1f1b17", size: 6, samples: samples() },
+      { id: "wet-b", item: null, tool: "marker", color: "#1f1b17", size: 6, samples: samples() },
+    ]);
+
+    expect([...strokeMap(b, id).keys()]).toEqual(["wet-a"]);
+    const tile = [...b.boardInk.values()][0] as Y.Map<YMap>;
+    expect([...tile.keys()]).toEqual(["wet-b"]);
+  });
+
+  it("still mints one when nobody brought an id", () => {
+    const b = board();
+    const id = note(b);
+    commitStroke(b, { item: id, tool: "marker", color: "#1f1b17", size: 6, samples: samples() });
+
+    const keys = [...strokeMap(b, id).keys()];
+    expect(keys).toHaveLength(1);
+    expect(keys[0]).toMatch(/^[0-9A-Za-z]{12}$/);
+  });
+
+  /** A run that packed to nothing is skipped, and a skipped run must not take
+   *  its id into the document as an empty record. */
+  it("writes nothing for a run that packed to nothing", () => {
+    const b = board();
+    const id = note(b);
+    const done = commitStrokes(b, [
+      { id: "wet-empty", item: id, tool: "marker", color: "#1f1b17", size: 6, samples: [] },
+    ]);
+
+    expect(done).toEqual([]);
+    expect([...strokeMap(b, id).keys()]).toEqual([]);
+  });
+});

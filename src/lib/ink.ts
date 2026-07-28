@@ -248,6 +248,26 @@ export function inkSizeIndex(size: number): number {
  * > landed on a photograph, board if it landed on cork. — DESIGN section 3.9
  */
 export interface WetStroke {
+  /**
+   * The id this run will be filed under when it lands, decided **now** rather
+   * than at commit.
+   *
+   * > Rule: keep rendering the ghost, keyed by stroke id, until the document
+   * > contains that stroke id. — docs/DATA-MODEL.md section 9.2
+   *
+   * That rule is the whole reason this field exists. A peer watching somebody
+   * draw has the wet ink on the wire and the committed record arriving from the
+   * document in either order, and the only thing that can tell it the two are
+   * the same mark is a shared name. An id minted inside the commit transaction
+   * — which is where every other id on this board is minted — does not exist
+   * yet at the moment the wet ink goes out, so there is nothing to match
+   * against and the ghost has to be guessed away on a timer.
+   *
+   * One per *run*, not per gesture: a stroke broken at an edge is several
+   * records (T-137) and each is filed separately, so each gets its own name as
+   * it is born.
+   */
+  readonly id: string;
   readonly tool: InkTool;
   readonly color: string;
   /** Board units — see [`DEFAULT_INK_SIZE`]. Also item-local units, because the

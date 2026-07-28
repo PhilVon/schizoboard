@@ -519,6 +519,11 @@ async function boot(): Promise<void> {
         const written = commitStrokes(
           board,
           runs.map((run) => ({
+            // The pen named this run at pen-down, so that a peer already
+            // drawing it can recognise the record when it arrives (DATA-MODEL
+            // section 9.2). Dropping it here would leave the ghost on their
+            // overlay with nothing to match.
+            id: run.id,
             item: run.item,
             tool: run.tool,
             color: run.color,

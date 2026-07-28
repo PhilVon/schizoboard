@@ -110,7 +110,7 @@ function straight(count: number, step = 20): InkSample[] {
 }
 
 function stroke(samples: readonly InkSample[], size = 6): WetStroke {
-  return { tool: "highlighter", color: "#1f1b17", size, opacity: 1, item: null, samples };
+  return { id: "w1", tool: "highlighter", color: "#1f1b17", size, opacity: 1, item: null, samples };
 }
 
 /** The same stroke, glued to a photograph — so the samples are that item's local
