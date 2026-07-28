@@ -49,6 +49,7 @@ import { BoardInkLayer } from "@/render/ink/board";
 import { DomItemLayer } from "@/render/items/dom";
 import { FrameLoop } from "@/render/loop";
 import { Overlay, type PendingRun } from "@/render/overlay";
+import { Janitor } from "@/crdt/janitor";
 import { Peers } from "@/render/presence/peers";
 import { PinLayer } from "@/render/pins/dom";
 import { RopeLayer } from "@/render/ropes/paint";
@@ -910,6 +911,17 @@ async function boot(): Promise<void> {
    * refuses `syncStart` and the board is simply local. Every use below is
    * therefore guarded, and none of them is on a hot path.
    */
+  /**
+   * The compaction section 8.1 names, ticked in phase 9.
+   *
+   * It collects the records no cascade can reach — a string left with fewer than
+   * two nodes that resolve to a pin, which two peers produce between them
+   * without either of them being wrong (T-76 found both ways). Constructed
+   * unconditionally because a board with no wire has them too, from a document
+   * loaded off disk that was shared earlier.
+   */
+  const janitor = new Janitor(board);
+
   const plan = planSync(window.location.search);
   if (plan.complaint !== null) console.warn(`[sync] ignored: ${plan.complaint}`);
   const address = await dialAddress(native, plan.config);
@@ -1376,6 +1388,37 @@ async function boot(): Promise<void> {
       // frame at most, and only when something changed (T-71).
       presence.flush(frame.index);
     }
+
+    /**
+     * Compaction, rate-limited to once a second inside `Janitor.tick` — so this
+     * is a subtraction and a comparison on the frames it does nothing, which is
+     * all but one in sixty.
+     *
+     * Two conditions on running at all, and both are about *not* collecting a
+     * board this client has only half of:
+     *
+     *   - **Synced, if there is a wire.** `WireProvider` distinguishes connected
+     *     from synced precisely because the handshake sits between them, and a
+     *     connected-but-unsynced board is one whose pins may not have arrived
+     *     yet. Every string on it reads as beyond repair.
+     *   - **Present includes us.** `elected` refuses to act when the caller
+     *     cannot say who is on the board, which is not the same as being alone.
+     *     Our own id is passed explicitly rather than relied on from
+     *     `getStates()`, because presence only puts this client in that map
+     *     after its first publishing frame.
+     *
+     * The settle period inside the janitor is the real safety net for both, but
+     * these cost nothing and mean it is never even asked.
+     */
+    if (provider === null || provider.synced) {
+      janitor.tick(
+        frame.now,
+        provider === null
+          ? [board.doc.clientID]
+          : [board.doc.clientID, ...provider.awareness.getStates().keys()],
+      );
+    }
+
     // Everything downstream has consumed this frame's changes.
     dirty.clear();
     // Then, and only then, the document writes this frame's input asked for.

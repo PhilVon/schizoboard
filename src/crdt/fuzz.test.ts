@@ -66,6 +66,7 @@ import {
   describe as explain,
   unrepairableStrings,
 } from "@/crdt/invariants";
+import { CHECK_MS, Janitor, SETTLE_MS } from "@/crdt/janitor";
 import {
   appendStringNode,
   bringToFront,
@@ -607,6 +608,11 @@ function fuzz(seed: number, rounds: number, opsPerRound: number): Run {
     b.doc.clientID = 2;
     Y.applyUpdate(b.doc, Y.encodeStateAsUpdate(a.doc), "fuzz/remote");
 
+    // A is client 1 and B is client 2, so A is the elected client throughout.
+    const janitor = new Janitor(a);
+    const present = [1, 2];
+    let clock = 0;
+
     const log: string[] = [];
     let unrepairable = 0;
     for (let round = 1; round <= rounds; round += 1) {
@@ -622,6 +628,22 @@ function fuzz(seed: number, rounds: number, opsPerRound: number): Run {
       }
 
       merge(a, b);
+
+      // And then the janitor, exactly where the application runs it: on the
+      // elected client, a settle period after the state appears, followed by
+      // the propagation of whatever it collected. Invariant 3 is asserted below
+      // and this is the only thing in the system that can make it hold — no
+      // cascade maintains it and none can (`crdt/janitor.ts`).
+      //
+      // The clock is the harness's rather than a real one, and it is advanced
+      // by exactly one settle period: a janitor that collected on first sight
+      // would satisfy this too, so what rules that out is `janitor.test.ts`
+      // rather than anything here.
+      unrepairable = Math.max(unrepairable, unrepairableStrings(a).length);
+      janitor.tick(clock, present);
+      clock += SETTLE_MS + CHECK_MS;
+      if (janitor.tick(clock, present).length > 0) merge(a, b);
+      clock += CHECK_MS;
 
       const context = `seed ${seed}, round ${round} of ${rounds}\n${log.slice(-40).join("\n")}`;
       const broken = [
@@ -651,7 +673,6 @@ function fuzz(seed: number, rounds: number, opsPerRound: number): Run {
         );
       }
 
-      unrepairable = Math.max(unrepairable, unrepairableStrings(a).length);
     }
 
     // Invariant 3 is reported, not asserted. `crdt/invariants.ts` carries the
@@ -726,11 +747,13 @@ describe("fuzz — two documents, concurrent operations, all nine invariants", (
       expect(nodes.filter((node) => pins.has(node.pin))).toHaveLength(1);
       expect(unrepairableStrings(a)).toContain(id);
 
-      // And nothing will ever collect it. The pin cascade is the only thing that
-      // removes a node, and it has already run — on a document where this node
-      // did not exist.
-      deletePins(a, [p1]);
-      expect(unrepairableStrings(a).length + (a.strings.has(id) ? 0 : 1)).toBeGreaterThan(0);
+      // No cascade will ever collect it: the pin cascade is the only thing that
+      // removes a node and it has already run, on a document where this node did
+      // not exist. The janitor is what closes it, a settle period later.
+      const janitor = new Janitor(a);
+      expect(janitor.tick(0, [1])).toEqual([]);
+      expect(janitor.tick(SETTLE_MS + CHECK_MS, [1])).toEqual([id]);
+      expect(a.strings.has(id)).toBe(false);
     });
 
     it("two peers each reducing a string to the legal minimum leave it below it", () => {
@@ -757,6 +780,11 @@ describe("fuzz — two documents, concurrent operations, all nine invariants", (
       expect(a.strings.has(id)).toBe(true);
       expect(readString(id, a.strings.get(id) as YMap)!.nodes.length).toBeLessThan(2);
       expect(unrepairableStrings(a)).toContain(id);
+
+      // And again, the janitor is the only thing that can tidy it.
+      const janitor = new Janitor(a);
+      janitor.tick(0, [1, 2]);
+      expect(janitor.tick(SETTLE_MS + CHECK_MS, [1, 2])).toEqual([id]);
     });
 
     it("is reached by the random runs too, not only by hand", () => {

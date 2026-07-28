@@ -76,10 +76,11 @@ export function describe(violations: readonly Violation[]): string {
  */
 export function checkInvariants(board: BoardDoc): Violation[] {
   const out: Violation[] = [];
+  const pinIds = new Set(board.pins.keys());
 
   checkFinite(board, out);
   checkItems(board, out);
-  checkStrings(board, out);
+  checkStrings(board, pinIds, out);
   checkPins(board, out);
   checkStrokes(board, out);
   return out;
@@ -181,7 +182,7 @@ function checkItems(board: BoardDoc, out: Violation[]): void {
 
 // --- 2, 3 and 4 ------------------------------------------------------------
 
-function checkStrings(board: BoardDoc, out: Violation[]): void {
+function checkStrings(board: BoardDoc, pinIds: ReadonlySet<string>, out: Violation[]): void {
   for (const [id, map] of board.strings.entries()) {
     const nodes = map.get("nodes");
     if (!(nodes instanceof Y.Array)) {
@@ -225,10 +226,26 @@ function checkStrings(board: BoardDoc, out: Violation[]): void {
       continue;
     }
 
-    // Invariant 3 is **not asserted here**, and that is the harness's largest
-    // finding rather than an omission. See [`unrepairableStrings`], which is
-    // where it went and why.
-    void read;
+    // 3 — no string survives with fewer than two valid nodes, where "valid"
+    // means resolving to a pin. `isRenderableString` is the schema's own answer
+    // to "is this still a string", so asking it here is what keeps the invariant
+    // and the code that maintains it from drifting apart.
+    //
+    // **No cascade maintains this and none can.** T-76's fuzz harness found two
+    // ways to break it, both now pinned in `fuzz.test.ts`, and both the same
+    // shape: a guard evaluated against one document cannot constrain the union
+    // of two. What maintains it is `crdt/janitor.ts`, a few seconds later, which
+    // is what section 8.1 says the answer is. So this check is only satisfiable
+    // on a board the janitor has been allowed to run on — which is what the
+    // harness gives it, and what the application does every second.
+    if (!isRenderableString(read.nodes, pinIds)) {
+      const resolved = read.nodes.filter((node) => pinIds.has(node.pin)).length;
+      out.push({
+        invariant: 3,
+        path: `strings/${id}`,
+        detail: `survives with ${read.nodes.length} node(s) of which ${resolved} resolve to a pin, wanted at least 2 — the janitor has not collected it`,
+      });
+    }
 
     // 4 — every node's `pin` either resolves or is skipped cleanly at render.
     // A dangling node is *allowed*: the second half of this invariant is that
