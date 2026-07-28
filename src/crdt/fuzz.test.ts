@@ -98,6 +98,7 @@ import {
   type StringAnchor,
 } from "@/crdt/ops";
 import { isRenderableString, readString, type YMap } from "@/crdt/schema";
+import { RopeSet } from "@/sim/ropes";
 import { DirtySets } from "@/state/dirty";
 import { Scene } from "@/state/scene";
 
@@ -705,13 +706,44 @@ function fuzz(seed: number, rounds: number, opsPerRound: number): Run {
         );
       }
 
-
+      // A string in the scene has to be a string you can see.
+      //
+      // The check above says the mirror and the janitor agree about which
+      // strings exist. This says the mirror and the *renderer* do, and it is a
+      // separate claim that was false: `sim/ropes.ts` built a segment per
+      // adjacent node pair, so a run that had lost a middle pin put the dead
+      // reference on the end of two segments, both were released, and the
+      // string drew nothing at all — mirrored, invariant-3 clean, and invisible
+      // (T-77). Section 8.1 says such a node is *skipped*, meaning the run
+      // closes up around it, and this is what holds the renderer to that.
+      //
+      // A rope set rather than an inspection of the run, because "skipped" is a
+      // statement about what ends up on the canvas and the run cannot answer it.
+      for (const scene of scenes) {
+        const ropes = new RopeSet();
+        const dirty = new DirtySets();
+        dirty.everything();
+        ropes.step(scene, dirty, 16);
+        for (const id of scene.strings.keys()) {
+          let spans = 0;
+          ropes.visit(id, () => spans++);
+          if (spans === 0) {
+            const side = scene === scenes[0] ? "A" : "B";
+            const run = scene.strings.get(id)!;
+            throw new Error(
+              `${side} mirrors string ${id} and it draws nothing: ` +
+                `${run.nodes.length} node(s), ` +
+                `${run.nodes.filter((node) => scene.pins.has(node.pin)).length} resolving` +
+                `\n\n${context}`,
+            );
+          }
+        }
+      }
     }
 
-    // Invariant 3 is reported, not asserted. `crdt/invariants.ts` carries the
-    // argument; the short of it is that no guard evaluated against one document
-    // can constrain the union of two, section 8.1 already says the answer is a
-    // janitor rather than a check, and the janitor is not built.
+    // How much the janitor had to do, reported rather than asserted — it is a
+    // count of states reached, not of things gone wrong, and a run that reaches
+    // none of them has exercised less than it looks.
     return { unrepairable, items: a.items.size, strings: a.strings.size };
   } finally {
     restore();

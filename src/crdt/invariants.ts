@@ -243,7 +243,10 @@ function checkStrings(board: BoardDoc, pinIds: ReadonlySet<string>, out: Violati
       out.push({
         invariant: 3,
         path: `strings/${id}`,
-        detail: `survives with ${read.nodes.length} node(s) of which ${resolved} resolve to a pin, wanted at least 2 — the janitor has not collected it`,
+        // Not "the janitor has not collected it" — the janitor is built, so on
+        // a board where it has had its settle period this is a real violation
+        // and not a description of the queue.
+        detail: `survives with ${read.nodes.length} node(s) of which ${resolved} resolve to a pin, wanted at least 2 — and the janitor has had its chance at it`,
       });
     }
 
@@ -293,11 +296,13 @@ function checkStrings(board: BoardDoc, pinIds: ReadonlySet<string>, out: Violati
  *   > a single elected client (lowest present client id) compacts a few seconds
  *   > later under a maintenance origin that undo doesn't track.
  *
- * That janitor is not built. So this returns what it would collect rather than
- * pretending the invariant holds: asserting it today would be asserting that the
- * janitor exists, and asserting it in a weakened form would be a check that
- * passes for the wrong reason. What the harness does with this number is
- * *report* it.
+ * That janitor is `crdt/janitor.ts`, and this is its work-list rather than an
+ * assertion: what it returns is what would be collected *if the state held*,
+ * which is a different claim from the invariant. So invariant 3 is checked
+ * above, where a violation means the janitor has not got to it *yet* — a
+ * statement about timing, satisfiable only on a board it has been allowed to
+ * run on. The harness gives it that (`fuzz.test.ts` ticks a settle period
+ * before it asserts) and the application does it every second.
  *
  * `isRenderableString` is the schema's own answer to "is this still a string",
  * documented against this very invariant — and until this function it was wired

@@ -98,6 +98,19 @@ interface Segment {
   readonly string: string;
   readonly a: string;
   readonly b: string;
+  /**
+   * Index, in the run, of the node this segment starts at.
+   *
+   * Not the segment's own position in the string's list, which is what
+   * `nearest` used to report and which stopped being the same number the
+   * moment a segment could span more than one node — see `setString`. An
+   * insert goes at `node + 1`, so getting this wrong puts a pin in the wrong
+   * gap.
+   *
+   * Refreshed by `sync` rather than fixed at build time, because the janitor
+   * can shorten a run without changing anything drawable (`crdt/janitor.ts`).
+   */
+  node: number;
   /** Slack ratio for this gap, from the node the segment starts at. */
   slack: number;
   /**
@@ -194,6 +207,34 @@ export class RopeSet {
    * Fewer than two nodes is not an error, it is a string that has nothing to
    * draw yet; the document layer deletes it (DATA-MODEL section 5.3) and this
    * simply holds no segments for it in the meantime.
+   *
+   * ## A node that resolves to nothing is stepped over, not stopped at
+   *
+   * > A string node pointing at a missing pin is skipped at render time.
+   * > — DATA-MODEL section 8.1
+   *
+   * *Skipped*, which means the run reconnects around it: a segment goes from
+   * each resolving node to the next resolving node, however many dead ones lie
+   * between them. Building a segment per *adjacent* pair instead — which is
+   * what this did — puts the missing pin at the end of two of them, and
+   * `seed` then releases both. A three-node run that lost its middle pin drew
+   * nothing at all: no particles, no bounds, nothing for `nearest` to find,
+   * while sitting in the scene with all three nodes and satisfying invariant 3.
+   *
+   * Which is not the transient the sleep branch in `step` assumes. A pin
+   * deletion that meets a concurrent edit to the same run leaves the node
+   * behind on the merge (T-76), and no cascade will ever reach it — that state
+   * is the reason `crdt/janitor.ts` exists, and it lasts until the janitor gets
+   * to it, which on a client that is not elected means until somebody else's
+   * write arrives.
+   *
+   * The gap inherits the slack of the node it starts at and nothing is merged
+   * into it, so it hangs slightly tighter than the two gaps it replaces. That
+   * is not a compromise, it is the only answer available: merging rest lengths
+   * needs the chord either side of the vanished pin, and a pin that is gone has
+   * no position — `healSlack` bails to the written value for the same reason.
+   * It also makes this and the janitor's own compaction agree exactly, so
+   * collecting the dead node later moves no rope.
    */
   setString(
     scene: Scene,
@@ -205,18 +246,21 @@ export class RopeSet {
     material: string = DEFAULT_STRING_MATERIAL,
   ): void {
     this.removeString(dirty, id);
-    const spans = closed ? pins.length : pins.length - 1;
-    if (pins.length < 2 || spans < 1) return;
+    const run = resolving(scene, pins);
+    const spans = closed ? run.length : run.length - 1;
+    if (run.length < 2 || spans < 1) return;
 
     const owned: Segment[] = [];
     for (let i = 0; i < spans; i++) {
-      const a = pins[i]!;
-      const b = pins[(i + 1) % pins.length]!;
+      const node = run[i]!;
+      const a = pins[node]!;
+      const b = pins[run[(i + 1) % run.length]!]!;
       const segment: Segment = {
         string: id,
         a,
         b,
-        slack: Math.max(slack[i] ?? 0, 0),
+        node,
+        slack: Math.max(slack[node] ?? 0, 0),
         material,
         // A rope being built is a rope arriving, not one changing material, so
         // it starts on its own number rather than easing onto it.
@@ -241,7 +285,7 @@ export class RopeSet {
       this.seed(scene, segment);
     }
     this.byString.set(id, owned);
-    this.runs.set(id, runSignature(pins, closed));
+    this.runs.set(id, runSignature(run.map((node) => pins[node]!), closed));
     dirty.rope(id);
   }
 
@@ -308,9 +352,11 @@ export class RopeSet {
       const a = scene.pins.get(segment.a);
       const b = scene.pins.get(segment.b);
       if (a === undefined || b === undefined) {
-        // A node pointing at a pin that is not there is skipped (DATA-MODEL
-        // section 8.1). Transient by construction — the pin cascade removes
-        // the node — so it sleeps rather than being torn down here.
+        // Belt and braces. `setString` only builds segments between nodes that
+        // resolve, and a pin appearing or disappearing dirties every string
+        // naming it (`crdt/binding.ts`), so the rebuild above has already run
+        // by the time this loop does. What is left is the frame ordering going
+        // wrong, and a sleeping rope is a better answer to that than a throw.
         segment.asleep = true;
         continue;
       }
@@ -393,19 +439,28 @@ export class RopeSet {
       return;
     }
 
-    const signature = runSignature(mirror.nodes, mirror.closed);
+    const pins = mirror.nodes.map((node) => node.pin);
+    const run = resolving(scene, pins);
+    const signature = runSignature(run.map((node) => pins[node]!), mirror.closed);
     if (this.runs.get(id) === signature) {
       const owned = this.byString.get(id);
       if (owned === undefined) return;
       let moved = false;
-      for (let i = 0; i < owned.length; i++) {
-        const slack = Math.max(mirror.nodes[i]?.slackAfter ?? 0, 0);
-        if (owned[i]!.slack !== slack) {
-          owned[i]!.slack = slack;
+      // Segment `k` starts at the `k`th *resolving* node, which is where its
+      // slack comes from and which is not `k` on a run carrying a dead node.
+      // Re-derived rather than trusted, because a run can lose a node without
+      // changing anything drawable — the janitor collecting the dead one — and
+      // that must not silently re-point a segment at the wrong slack.
+      for (let k = 0; k < owned.length; k++) {
+        const node = run[k]!;
+        owned[k]!.node = node;
+        const slack = Math.max(mirror.nodes[node]?.slackAfter ?? 0, 0);
+        if (owned[k]!.slack !== slack) {
+          owned[k]!.slack = slack;
           moved = true;
         }
-        if (owned[i]!.material !== mirror.material) {
-          owned[i]!.material = mirror.material;
+        if (owned[k]!.material !== mirror.material) {
+          owned[k]!.material = mirror.material;
           moved = true;
         }
       }
@@ -420,7 +475,7 @@ export class RopeSet {
       scene,
       dirty,
       id,
-      mirror.nodes.map((node) => node.pin),
+      pins,
       mirror.nodes.map((node) => node.slackAfter),
       mirror.closed,
       mirror.material,
@@ -572,7 +627,7 @@ export class RopeSet {
           const distance = Math.hypot(bx - px, by - py);
           if (distance >= bestDistance) continue;
           bestDistance = distance;
-          best = { string: id, node: k, t: (i + u) / links, x: px, y: py, distance };
+          best = { string: id, node: segment.node, t: (i + u) / links, x: px, y: py, distance };
         }
       }
     }
@@ -795,16 +850,28 @@ export class RopeSet {
  * contains, so two different runs cannot collide into the same signature by
  * concatenation — `["ab", "c"]` and `["a", "bc"]` are famously the same string
  * once you join them with nothing.
+ *
+ * The *drawable* run, not the document's. Two runs that differ only in nodes
+ * nothing draws produce the same segments over the same pins, and rebuilding
+ * for that would throw the particles away mid-swing to arrive at the pose they
+ * were already in — it is what lets the janitor collect a dead node without the
+ * rope so much as twitching.
  */
-function runSignature(
-  nodes: readonly string[] | readonly { pin: string }[],
-  closed: boolean,
-): string {
-  const pins =
-    typeof nodes[0] === "string"
-      ? (nodes as readonly string[])
-      : (nodes as readonly { pin: string }[]).map((node) => node.pin);
+function runSignature(pins: readonly string[], closed: boolean): string {
   return `${pins.join(" ")}|${closed ? "c" : "o"}`;
+}
+
+/**
+ * Which nodes of a run have a pin to hang from, by index.
+ *
+ * The one place "skipped at render time" (DATA-MODEL section 8.1) is decided,
+ * shared by `setString` and `sync` so the segments and the signature that
+ * guards them can never disagree about what is drawable.
+ */
+function resolving(scene: Scene, pins: readonly string[]): number[] {
+  const out: number[] = [];
+  for (let i = 0; i < pins.length; i++) if (scene.pins.has(pins[i]!)) out.push(i);
+  return out;
 }
 
 /** How long a rope takes to fall asleep once it stops moving, in

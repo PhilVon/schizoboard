@@ -26,6 +26,7 @@ import { openBoardDoc, type BoardDoc } from "@/crdt/doc";
 import { createPin, movePin } from "@/crdt/ops/pins";
 import { createString } from "@/crdt/ops/strings";
 import { readString } from "@/crdt/schema";
+import { RopeSet } from "@/sim/ropes";
 import { DirtySets } from "@/state/dirty";
 import { Scene } from "@/state/scene";
 
@@ -64,6 +65,20 @@ function vanish(pinId: string): Record<string, unknown> {
   return record;
 }
 
+/** What a string actually puts on the canvas: how many gaps, and where they
+ *  run. Empty segments are already skipped by `visit`, so a string that draws
+ *  nothing reports no spans at all. */
+function drawn(ropes: RopeSet, id: string): { spans: number; points: Array<[number, number]> } {
+  const points: Array<[number, number]> = [];
+  let spans = 0;
+  const pool = ropes.positions;
+  ropes.visit(id, (at, count) => {
+    spans += 1;
+    for (let i = 0; i < count; i++) points.push([pool[at + i * 2]!, pool[at + i * 2 + 1]!]);
+  });
+  return { spans, points };
+}
+
 /** That pin again, from a peer that never saw the delete. */
 function restore(pinId: string, record: Record<string, unknown>): void {
   board.doc.transact(() => {
@@ -100,6 +115,58 @@ describe("a node that resolves to nothing does not count", () => {
     // would be repair on read, which DATA-MODEL section 8.1 forbids.
     expect(scene.strings.has(id)).toBe(true);
     expect(scene.strings.get(id)!.nodes.map((n) => n.pin)).toEqual([a, b, c]);
+  });
+
+  /**
+   * And "still a string" has to mean one you can see.
+   *
+   * The mirror keeping the dead node is only half of section 8.1; the other
+   * half is that the node is *skipped at render time*, which means the run
+   * closes up around it. It did not. `sim/ropes.ts` built a segment per
+   * adjacent pair, so the vanished pin sat on the end of both, both were
+   * released, and the string drew nothing at all — present, invariant-3 clean,
+   * and invisible. Nothing downstream could have told you: no particles, no
+   * bounds, nothing for `nearest` to hit.
+   *
+   * The whole document is here rather than a hand-built scene because that is
+   * the claim — this state comes out of a merge no cascade can reach (T-76),
+   * and the thing being asserted is that it survives the trip.
+   */
+  it("goes on drawing, from the first surviving pin to the last", () => {
+    const a = createPin(board, { parent: null, lx: 0, ly: 0 });
+    const b = createPin(board, { parent: null, lx: 100, ly: 0 });
+    const c = createPin(board, { parent: null, lx: 200, ly: 0 });
+    const id = createString(board, { pins: [a, b, c] })!;
+
+    const ropes = new RopeSet();
+    ropes.step(scene, dirty, 16);
+    expect(drawn(ropes, id).spans).toBe(2);
+
+    vanish(b);
+    ropes.step(scene, dirty, 16);
+
+    const after = drawn(ropes, id);
+    expect(after.spans).toBe(1);
+    expect(after.points[0]).toEqual([0, 0]);
+    expect(after.points[after.points.length - 1]).toEqual([200, 0]);
+    expect(ropes.boundsOf(id, { minX: 0, minY: 0, maxX: 0, maxY: 0 })).not.toBeNull();
+  });
+
+  /** And it comes back to three gaps when the pin does. */
+  it("re-splits the run when the missing pin returns", () => {
+    const a = createPin(board, { parent: null, lx: 0, ly: 0 });
+    const b = createPin(board, { parent: null, lx: 100, ly: 0 });
+    const c = createPin(board, { parent: null, lx: 200, ly: 0 });
+    const id = createString(board, { pins: [a, b, c] })!;
+
+    const ropes = new RopeSet();
+    const record = vanish(b);
+    ropes.step(scene, dirty, 16);
+    expect(drawn(ropes, id).spans).toBe(1);
+
+    restore(b, record);
+    ropes.step(scene, dirty, 16);
+    expect(drawn(ropes, id).spans).toBe(2);
   });
 
   it("drops it when the second anchor goes too", () => {

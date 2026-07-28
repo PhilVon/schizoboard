@@ -39,6 +39,32 @@ function string(id: string, slack = 0.2): void {
   ropes.setString(scene, dirty, id, ["p1", "p2"], [slack]);
 }
 
+/**
+ * A run put into the scene and marked dirty, which is how the *binding* hands
+ * a string over — `setString` is what `sync` decides to call, not the route in.
+ * Tests that turn on a node's pin coming or going have to come this way, since
+ * that is a question `sync` answers and `setString` is only told the answer to.
+ */
+function run(id: string, pins: readonly string[], slack: readonly number[], closed = false): void {
+  scene.putString({
+    id,
+    nodes: pins.map((pin, i) => ({ nodeId: `${id}-${i}`, pin, slackAfter: slack[i] ?? 0.2 })),
+    color: "#c8352f",
+    thickness: 2,
+    material: "cotton",
+    layer: "over",
+    closed,
+  });
+  dirty.string(id);
+}
+
+/** How far the lowest particle of a string hangs — sag, measured. */
+function lowest(id: string): number {
+  let y = -Infinity;
+  for (const [, py] of points(id)) if (py > y) y = py;
+  return y;
+}
+
 function frame(n = 1): void {
   for (let i = 0; i < n; i++) {
     ropes.step(scene, dirty, FRAME);
@@ -461,14 +487,76 @@ describe("pins that are not there", () => {
     expect(ropes.boundsOf("s1", box)).toBeNull();
   });
 
+  /**
+   * *Skipped*, which means the run closes up around it — not stopped at.
+   *
+   * A segment per adjacent pair puts the missing pin on the end of two of them
+   * and both are then unbuildable, so a three-node run that lost its middle pin
+   * drew nothing whatsoever: no particles, no bounds, nothing to hover, while
+   * sitting in the scene with all three nodes and satisfying invariant 3. And
+   * not transiently — that state comes from a merge no cascade can reach (T-76)
+   * and lasts until the janitor gets to it.
+   */
+  it("spans a dead node rather than breaking at it", () => {
+    pin("p3", 400, 0);
+    run("s1", ["p1", "ghost", "p3"], [0.2, 0.4, 0.6]);
+    frame();
+
+    let spans = 0;
+    ropes.visit("s1", () => spans++);
+    expect(spans).toBe(1);
+    // Straight from the first surviving pin to the last, past the dead one.
+    const pts = points("s1");
+    expect(pts[0]).toEqual([0, 0]);
+    expect(pts[pts.length - 1]).toEqual([400, 0]);
+    expect(ropes.boundsOf("s1", box)).not.toBeNull();
+  });
+
+  /** The gap takes the slack of the node it starts at. Nothing is merged in:
+   *  that needs the chord either side of the vanished pin, and a pin that is
+   *  gone has no position — `crdt/ops/cascade.ts` bails for the same reason. */
+  it("hangs the spanning gap on the surviving node's own slack", () => {
+    pin("p3", 400, 0);
+    run("s1", ["p1", "ghost", "p3"], [0.05, 0.9, 0.9]);
+    untilAsleep();
+    const shallow = lowest("s1");
+
+    // The dead node's own 0.9 is never consulted, so only the first number
+    // moves the rope. A merge would have let go far more than this.
+    run("s1", ["p1", "ghost", "p3"], [0.5, 0.9, 0.9]);
+    untilAsleep();
+    expect(lowest("s1")).toBeGreaterThan(shallow);
+  });
+
+  /** An insert goes at `node + 1`, so `nearest` has to name the node the
+   *  segment starts at and not the segment's own place in the list. */
+  it("names the run index a spanning segment starts at", () => {
+    pin("p3", 400, 0);
+    run("s1", ["p1", "ghost", "p3"], [0.2, 0.2, 0.2]);
+    frame();
+    expect(ropes.nearest(200, 20, 100)?.node).toBe(0);
+  });
+
+  it("names it correctly when the dead node comes first", () => {
+    pin("p3", 400, 0);
+    run("s1", ["ghost", "p1", "p3"], [0.2, 0.2, 0.2]);
+    frame();
+    expect(ropes.nearest(200, 20, 100)?.node).toBe(1);
+  });
+
   /** Nodes can arrive before the pins they name under concurrent editing, so
-   *  the pin turning up has to be what gives the rope its shape. */
+   *  the pin turning up has to be what gives the rope its shape. The route is
+   *  the run being re-read — `crdt/binding.ts` dirties every string naming a
+   *  pin whose *presence* changed, which is the whole reason it keeps that
+   *  index. */
   it("takes shape when the pin finally turns up", () => {
-    ropes.setString(scene, dirty, "s1", ["p1", "ghost"], [0.2]);
-    dirty.clear();
+    run("s1", ["p1", "ghost"], [0.2]);
+    frame();
+    expect(points("s1")).toEqual([]);
 
     pin("ghost", 300, 100);
     dirty.pin("ghost");
+    dirty.string("s1");
     ropes.step(scene, dirty, FRAME);
 
     expect(points("s1").length).toBeGreaterThan(2);
