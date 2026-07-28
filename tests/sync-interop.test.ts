@@ -109,6 +109,11 @@ if (embedded === null) {
   console.warn("[interop] no Rust toolchain — the embedded relay is not under test");
 }
 
+/** The path `buildRelay` found, for the tests below that spawn it themselves. */
+const relayBinary = ["src-tauri/target/debug/relay.exe", "src-tauri/target/debug/relay"].find(
+  existsSync,
+);
+
 const servers: Server[] = embedded === null ? [reference] : [reference, embedded];
 
 /**
@@ -367,4 +372,167 @@ describe.each(servers)("against $name", (server) => {
     // And presence came back without anybody having to move.
     await until(() => named(b.provider, a.board.doc.clientID));
   }, 60_000);
+});
+
+/**
+ * The secret, against the real relay over a real socket (T-70).
+ *
+ * The unit tests in `sync/mod.rs` prove `secret_matches` and `query_token` in
+ * isolation, which is exactly the shape of proof that is worth least here: the
+ * question is not whether the comparison is right, it is whether anything calls
+ * it before a socket is in a room. That can only be asked from outside the
+ * process, which is what this file is for.
+ *
+ * It matters more than most of what is tested here, because the check is the
+ * only thing standing between `0.0.0.0` and a read-write corkboard offered to
+ * whatever network the machine is on.
+ */
+describe.skipIf(relayBinary === undefined)("the relay's secret", () => {
+  const SECRET = "0f1e2d3c4b5a69788796a5b4c3d2e1f0";
+  let port = 0;
+  let process_: ChildProcess | null = null;
+  const running: WireProvider[] = [];
+
+  /** A client dialling the guarded relay with whatever token it was given. */
+  function dial(token: string | null): { board: BoardDoc; provider: WireProvider } {
+    const made = openBoardDoc();
+    const query = token === null ? "" : `?token=${token}`;
+    const provider = new WireProvider(made.doc, `ws://127.0.0.1:${port}/guarded${query}`, {
+      baseDelayMs: 100,
+      maxDelayMs: 500,
+      resyncMs: 2_000,
+      healthMs: 5_000,
+    });
+    running.push(provider);
+    return { board: made, provider };
+  }
+
+  /** The refusal, or null if the peer never said one. */
+  function refusal(provider: WireProvider): Promise<string | null> {
+    return new Promise((resolve) => {
+      const unlisten = provider.on("denied", (reason) => {
+        unlisten();
+        resolve(reason);
+      });
+      setTimeout(() => {
+        unlisten();
+        resolve(null);
+      }, 5_000);
+    });
+  }
+
+  beforeAll(async () => {
+    port = await freePort();
+    process_ = spawn(relayBinary!, [], {
+      env: { ...process.env, PORT: String(port), HOST: "127.0.0.1", RELAY_SECRET: SECRET },
+      stdio: "ignore",
+    });
+    const deadline = Date.now() + 20_000;
+    for (;;) {
+      const up = await new Promise<boolean>((resolve) => {
+        const probe = connect({ port, host: "127.0.0.1" });
+        probe.once("connect", () => {
+          probe.destroy();
+          resolve(true);
+        });
+        probe.once("error", () => resolve(false));
+      });
+      if (up) break;
+      if (Date.now() > deadline) throw new Error("the guarded relay never came up");
+      await pause(50);
+    }
+  }, 40_000);
+
+  afterAll(() => {
+    for (const provider of running.splice(0)) provider.destroy();
+    process_?.kill();
+  });
+
+  it("lets in a peer that presents the secret", async () => {
+    const a = dial(SECRET);
+    const b = dial(SECRET);
+    await until(() => a.provider.synced && b.provider.synced);
+
+    const made = polaroid(a.board, 42, 43);
+    await until(() => at(b.board, made) !== null);
+    expect(at(b.board, made)).toEqual({ x: 42, y: 43 });
+  }, 40_000);
+
+  it("refuses a peer with no secret at all, in words", async () => {
+    const stranger = dial(null);
+    expect(await refusal(stranger.provider)).toBeTruthy();
+    expect(stranger.provider.synced).toBe(false);
+  }, 20_000);
+
+  it("refuses a peer with the wrong secret", async () => {
+    const stranger = dial("0f1e2d3c4b5a69788796a5b4c3d2e1f1");
+    expect(await refusal(stranger.provider)).toBeTruthy();
+    expect(stranger.provider.synced).toBe(false);
+  }, 20_000);
+
+  it("refuses a secret that is merely a prefix of the real one", async () => {
+    // The case a length check has to catch before the comparison loop does,
+    // and the one an over-clever `starts_with` would wave through.
+    const stranger = dial(SECRET.slice(0, 16));
+    expect(await refusal(stranger.provider)).toBeTruthy();
+    expect(stranger.provider.synced).toBe(false);
+  }, 20_000);
+
+  it("does not let a refused peer see the board", async () => {
+    // The refusal is only worth anything if it happens before the socket is in
+    // a room: a client that is denied and *then* handed the document has been
+    // told no and given the thing anyway.
+    const member = dial(SECRET);
+    await until(() => member.provider.synced);
+    const secretItem = polaroid(member.board, 999, 999);
+
+    const stranger = dial("ffffffffffffffffffffffffffffffff");
+    await refusal(stranger.provider);
+    await pause(500);
+    expect(at(stranger.board, secretItem)).toBeNull();
+    expect(stranger.board.items.size).toBe(0);
+  }, 30_000);
+});
+
+/**
+ * The invariant the whole of the above exists to protect: **a relay reachable
+ * from another machine must have a secret.**
+ *
+ * Asserted on the process rather than on a function, because the thing that
+ * must never happen is a *running* relay bound wide and open — and a unit test
+ * of `guard` would still pass if somebody stopped calling it.
+ */
+describe.skipIf(relayBinary === undefined)("binding beyond loopback", () => {
+  function run(env: Record<string, string>): Promise<number | null> {
+    return new Promise((resolve) => {
+      const child = spawn(relayBinary!, [], {
+        env: { ...process.env, ...env },
+        stdio: "ignore",
+      });
+      child.once("exit", (code) => resolve(code));
+      // A relay that started is a relay that did not refuse, which is the
+      // failure this is looking for. Kill it and report that it lived.
+      setTimeout(() => {
+        child.kill();
+        resolve(null);
+      }, 3_000);
+    });
+  }
+
+  it("refuses a wide bind with no secret, rather than quietly narrowing it", async () => {
+    const port = await freePort();
+    expect(await run({ HOST: "0.0.0.0", PORT: String(port) })).toBe(2);
+  }, 20_000);
+
+  it("allows a wide bind once there is a secret", async () => {
+    const port = await freePort();
+    expect(await run({ HOST: "0.0.0.0", PORT: String(port), RELAY_SECRET: "a".repeat(32) })).toBe(
+      null,
+    );
+  }, 20_000);
+
+  it("allows loopback with no secret, which is every developer's relay", async () => {
+    const port = await freePort();
+    expect(await run({ HOST: "127.0.0.1", PORT: String(port) })).toBe(null);
+  }, 20_000);
 });

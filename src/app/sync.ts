@@ -50,6 +50,22 @@ const BOARD_NAME = /^[A-Za-z0-9_-]{1,64}$/;
 /** What a board is called when nobody said. Matches the relay's own default. */
 const DEFAULT_BOARD = "board";
 
+/**
+ * What a board secret may look like (T-70).
+ *
+ * Hex, because that is what `sync/secret.rs` generates and because a secret
+ * that needs percent-encoding to survive a query string is a secret that will
+ * one day fail to match for a reason nobody can see. Anything else is refused
+ * here rather than sent: the relay would refuse it too, but it would do so as
+ * `PERMISSION_DENIED` from across a socket, which is a much longer way round to
+ * "you pasted that wrong".
+ *
+ * The lower bound is not cosmetic. A four-character secret would be checked
+ * exactly as carefully as a real one and would be worth nothing, so a length
+ * that cannot be brute-forced is part of what the word means here.
+ */
+const SECRET = /^[0-9a-f]{16,128}$/;
+
 export interface SyncPlan {
   config: SyncConfig;
   /** Anything wrong with what was asked for, in words. Null when it was fine. */
@@ -75,20 +91,36 @@ export function planSync(search: string): SyncPlan {
     else complaints.push(`board name ${JSON.stringify(asked)} is not [A-Za-z0-9_-]{1,64}`);
   }
 
-  const relay = params.get("relay");
-  if (relay === null) {
-    return { config: { mode: "lan", boardId }, complaint: complaints[0] ?? null };
+  // A secret nobody gave is the ordinary case and not a complaint: in `lan`
+  // mode the shell invents one, and a loopback relay does not ask. A secret
+  // given *wrong* is a complaint, and the board still opens — the alternative
+  // is a typo in a URL being the difference between a board and a blank window.
+  const asked_secret = params.get("secret");
+  let secret: string | undefined;
+  if (asked_secret !== null) {
+    if (SECRET.test(asked_secret)) secret = asked_secret;
+    else complaints.push("that is not a board secret: 16 to 128 lowercase hex characters");
   }
 
-  const url = relayUrl(relay, boardId);
+  const relay = params.get("relay");
+  if (relay === null) {
+    return { config: { mode: "lan", boardId, secret }, complaint: complaints[0] ?? null };
+  }
+
+  const url = relayUrl(relay, boardId, secret);
   if (url === null) {
     complaints.push(`${JSON.stringify(relay)} is not a ws:// or wss:// address`);
-    return { config: { mode: "lan", boardId }, complaint: complaints.join("; ") };
+    return { config: { mode: "lan", boardId, secret }, complaint: complaints.join("; ") };
   }
   // The board is on the end of the address in relay mode, because `sync_status`
   // hands back this exact string as the one to dial and "nothing else has to know
-  // how a relay URL is spelled".
-  return { config: { mode: "relay", url, boardId }, complaint: complaints[0] ?? null };
+  // how a relay URL is spelled". The secret rides on the end for the same
+  // reason, and because a WebSocket opened by a webview cannot carry a header
+  // of our choosing — so the query string is the only place it can go.
+  return {
+    config: { mode: "relay", url, boardId, secret },
+    complaint: complaints[0] ?? null,
+  };
 }
 
 /**
@@ -99,7 +131,7 @@ export function planSync(search: string): SyncPlan {
  * rather than coerced: `http://` would connect to something, and what it
  * connected to would not be a relay.
  */
-function relayUrl(asked: string, boardId: string): string | null {
+function relayUrl(asked: string, boardId: string, secret?: string): string | null {
   const bare = /^[0-9]{1,5}$/.test(asked) ? `ws://127.0.0.1:${asked}` : asked;
   let parsed: URL;
   try {
@@ -111,7 +143,11 @@ function relayUrl(asked: string, boardId: string): string | null {
   const path = parsed.pathname.replace(/\/+$/, "");
   // A path already on the address is somebody naming the room themselves, and
   // that beats a default appended behind their back.
-  return path === "" ? `${parsed.origin}/${boardId}` : `${parsed.origin}${path}`;
+  const room = path === "" ? `${parsed.origin}/${boardId}` : `${parsed.origin}${path}`;
+  // A `?token=` already on the address wins, for the same reason: somebody who
+  // spelled the whole thing out has said what they mean.
+  if (parsed.searchParams.has("token")) return `${room}?${parsed.searchParams.toString()}`;
+  return secret === undefined ? room : `${room}?token=${secret}`;
 }
 
 /**

@@ -28,6 +28,7 @@
 
 pub mod awareness;
 pub mod room;
+pub mod secret;
 pub mod wire;
 
 use std::collections::HashMap;
@@ -44,6 +45,9 @@ use futures_util::future::Either;
 use futures_util::{SinkExt, StreamExt};
 
 use room::{Room, Target};
+
+/// The query parameter a dialling peer puts its secret in.
+const TOKEN_PARAM: &str = "token";
 
 /// A board name taken from the URL path, and what it may contain.
 ///
@@ -63,6 +67,43 @@ fn room_name(path: &str) -> Option<String> {
         return None;
     }
     Some(name.to_string())
+}
+
+/// The `token` out of a query string, if there is one.
+///
+/// Hand-rolled rather than pulled from a URL crate, for the same reason
+/// `wire.rs` is: this reads bytes an unauthenticated peer chose, and the whole
+/// job is four lines of splitting. No percent-decoding, because the only thing
+/// that is ever put here is a secret this application generated — 32 hex
+/// characters, which encode to themselves. A token that needed escaping would
+/// simply fail to match, which is the safe direction to be wrong in.
+fn query_token(query: &str) -> Option<&str> {
+    query.split('&').find_map(|pair| {
+        let (key, value) = pair.split_once('=')?;
+        (key == TOKEN_PARAM).then_some(value)
+    })
+}
+
+/// Whether a peer presented the secret, without leaking *where* it stopped
+/// matching.
+///
+/// A short-circuiting `==` on a secret tells anyone who can measure the
+/// difference how many leading characters they got right, which turns a
+/// 128-bit secret into 32 four-bit guesses. The length is not itself a secret —
+/// every one of ours is the same length — so comparing it up front is free.
+///
+/// Nothing here is worth a dependency on `subtle`: the fold below is the whole
+/// idea, and it stays constant-time because it has no branch to be fast in.
+fn secret_matches(expected: &str, presented: &str) -> bool {
+    if expected.len() != presented.len() {
+        return false;
+    }
+    let difference = expected
+        .as_bytes()
+        .iter()
+        .zip(presented.as_bytes())
+        .fold(0u8, |acc, (a, b)| acc | (a ^ b));
+    difference == 0
 }
 
 #[derive(Default)]
@@ -115,13 +156,32 @@ pub struct Relay {
 }
 
 impl Relay {
-    /// Bind and start accepting. Returns once the port is listening, so a
-    /// caller that dials immediately afterwards will not be refused.
+    /// Bind and start accepting, open to anyone who can reach the port.
+    ///
+    /// Only safe on loopback, and that is what both callers use it for: the
+    /// headless binary defaults to `127.0.0.1`, and `tests/sync-interop.test.ts`
+    /// spawns it there to run the real client against the real relay. Anything
+    /// bound wider wants [`Relay::start_guarded`].
     pub async fn start(addr: SocketAddr) -> std::io::Result<Relay> {
+        Relay::start_guarded(addr, None).await
+    }
+
+    /// Bind and start accepting, refusing anyone who cannot present `secret`.
+    ///
+    /// Returns once the port is listening, so a caller that dials immediately
+    /// afterwards will not be refused.
+    ///
+    /// The secret is checked once, at connect, and never again — a socket that
+    /// got in is trusted for as long as it stays open. That is the same shape
+    /// as the room membership around it, and it is the honest level of
+    /// assurance for something whose threat model is "the other machines on
+    /// this network", not "an attacker with the wire".
+    pub async fn start_guarded(addr: SocketAddr, secret: Option<String>) -> std::io::Result<Relay> {
         let listener = TcpListener::bind(addr).await?;
         let bound = listener.local_addr()?;
         let rooms = Arc::new(Mutex::new(Rooms::default()));
         let (shutdown, stop) = tokio::sync::oneshot::channel();
+        let secret: Option<Arc<str>> = secret.map(Arc::from);
 
         let accepting = Arc::clone(&rooms);
         tokio::spawn(async move {
@@ -138,7 +198,8 @@ impl Relay {
                     Either::Left((Ok((stream, _)), _)) => {
                         let id = ids.fetch_add(1, Ordering::Relaxed);
                         let rooms = Arc::clone(&accepting);
-                        tokio::spawn(async move { serve(stream, id, rooms).await });
+                        let secret = secret.clone();
+                        tokio::spawn(async move { serve(stream, id, rooms, secret).await });
                     }
                     // One refused connection is not a reason to stop listening.
                     Either::Left((Err(_), _)) => continue,
@@ -189,18 +250,36 @@ impl Drop for Relay {
     }
 }
 
-async fn serve(stream: TcpStream, id: u64, rooms: Arc<Mutex<Rooms>>) {
+async fn serve(stream: TcpStream, id: u64, rooms: Arc<Mutex<Rooms>>, secret: Option<Arc<str>>) {
     // The board is in the URL, and the URL is only visible during the
     // handshake — so it has to be captured here rather than read back later.
+    // The secret rides in the query for the same reason: a WebSocket opened by
+    // a webview cannot carry a header of our choosing.
     let mut path = String::new();
+    let mut query = String::new();
     let accepted = tokio_tungstenite::accept_hdr_async(stream, |request: &Request, response: Response| {
         path = request.uri().path().to_string();
+        query = request.uri().query().unwrap_or("").to_string();
         Ok(response)
     })
     .await;
 
-    let Ok(socket) = accepted else { return };
+    let Ok(mut socket) = accepted else { return };
     let Some(board) = room_name(&path) else { return };
+
+    // Refused *after* the handshake rather than during it, so the reason
+    // arrives as a `PERMISSION_DENIED` the client can show a human — a 401 on
+    // the upgrade is, to every WebSocket API there is, an anonymous failure to
+    // connect. `provider.ts` stops retrying on this frame, which is the
+    // difference between "wrong secret" and a peer hammering the port.
+    if let Some(expected) = secret.as_deref() {
+        if !query_token(&query).is_some_and(|token| secret_matches(expected, token)) {
+            let refusal = wire::permission_denied("this board is not open to you");
+            let _ = socket.send(Message::Binary(refusal.into())).await;
+            let _ = socket.close(None).await;
+            return;
+        }
+    }
 
     let (mut writer, mut reader) = socket.split();
     let (tx, mut rx) = unbounded_channel::<Message>();
@@ -266,6 +345,31 @@ mod tests {
         assert_eq!(room_name("/board-1").as_deref(), Some("board-1"));
         assert_eq!(room_name("/board-1?token=x").as_deref(), Some("board-1"));
         assert_eq!(room_name("/a.b_c-1").as_deref(), Some("a.b_c-1"));
+    }
+
+    #[test]
+    fn a_token_comes_out_of_a_query_string() {
+        assert_eq!(query_token("token=abc"), Some("abc"));
+        assert_eq!(query_token("board=x&token=abc"), Some("abc"));
+        assert_eq!(query_token("token=abc&board=x"), Some("abc"));
+        // A parameter that merely ends in the word is not the word.
+        assert_eq!(query_token("mytoken=abc"), None);
+        assert_eq!(query_token("token"), None);
+        assert_eq!(query_token(""), None);
+        // Empty is a value, and it is one that cannot match a real secret.
+        assert_eq!(query_token("token="), Some(""));
+    }
+
+    #[test]
+    fn a_secret_matches_only_itself() {
+        assert!(secret_matches("0123456789abcdef", "0123456789abcdef"));
+        assert!(!secret_matches("0123456789abcdef", "0123456789abcdee"));
+        assert!(!secret_matches("0123456789abcdef", "0123456789abcde"));
+        assert!(!secret_matches("0123456789abcdef", "0123456789abcdefg"));
+        assert!(!secret_matches("0123456789abcdef", ""));
+        // The prefix case is the one a short-circuiting compare leaks.
+        assert!(!secret_matches("aaaaaaaa", "aaaaaaab"));
+        assert!(!secret_matches("aaaaaaaa", "baaaaaaa"));
     }
 
     #[test]

@@ -81,6 +81,13 @@ tokio-tungstenite = "0.30"
 tokio = { version = "1", features = ["rt-multi-thread", "net", "sync", "time"] }
 futures-util = { version = "0.3.33", default-features = false, features = ["sink", "std"] }
 
+# --- LAN discovery and its secret (T-70) ------------------------------------
+# The operating system's CSPRNG and nothing else. `rand` would bring
+# distributions and a seedable generator, neither of which a board secret wants
+# anywhere near it. Already in the tree at this version, so this is an import
+# rather than a build.
+getrandom = "0.3"
+
 # --- the clipboard's SourceURL (T-97) ---------------------------------------
 # CF_HTML carries the page a fragment was copied from, in a header the webview
 # strips before the `paste` event ever sees it. Reading it needs the raw Win32

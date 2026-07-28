@@ -107,6 +107,17 @@ export interface SyncConfig {
   /** Relay mode only. */
   url?: string;
   boardId: string;
+  /**
+   * The board's secret (T-70, Q-59 — "a secret in the invite link, checked at
+   * connect"). Whoever holds it is a peer.
+   *
+   * Optional, and the two modes mean opposite things by leaving it out. In
+   * `lan` mode, absent means *this* client is opening the board and the shell
+   * invents one — somebody has to be first. In `relay` mode, absent means the
+   * relay being dialled does not ask for one, which is every loopback relay a
+   * developer runs.
+   */
+  secret?: string;
 }
 
 export interface SyncStatus {
@@ -120,9 +131,15 @@ export interface SyncStatus {
    * It has to come back out rather than go in, because the relay binds port
    * zero and is told its address by the operating system. A fixed port would
    * be one more thing to collide with on a machine somebody is working on, and
-   * mDNS (T-70) carries whatever this says.
+   * the mDNS advertisement (T-70) carries whatever this says.
    */
   url: string | null;
+  /**
+   * The board's secret, so a client that did not choose it can still put it in
+   * an invite and can recognise its own board among the advertised ones.
+   * `null` when this client is not hosting and was not given one.
+   */
+  secret: string | null;
 }
 
 /**

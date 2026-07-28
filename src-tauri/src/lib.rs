@@ -45,6 +45,8 @@ struct Hosting {
     /// Relay mode's address, as the frontend gave it to us.
     url: std::sync::Mutex<Option<String>>,
     board: std::sync::Mutex<Option<String>>,
+    /// This board's secret (T-70). Whoever holds it is a peer.
+    secret: std::sync::Mutex<Option<String>>,
 }
 
 #[derive(serde::Deserialize)]
@@ -54,8 +56,16 @@ struct SyncConfig {
     /// Relay mode: where somebody else's relay is. The webview dials it, not
     /// us — this is here so the shell can report what it was told.
     url: Option<String>,
-    /// Which board. Carried for `sync_status` and for T-70's advertisement.
+    /// Which board. Carried for `sync_status` and for the mDNS advertisement.
     board_id: String,
+    /// The board's secret, when the frontend already has one — from `?secret=`
+    /// today and from the invite link when that lands.
+    ///
+    /// Absent in LAN mode means *this* peer is opening the board, so the shell
+    /// makes one up and hands it back: somebody has to be first, and there is
+    /// nobody else to ask. Absent in relay mode means the relay does not want
+    /// one, which is every loopback relay a developer runs.
+    secret: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -64,23 +74,27 @@ struct SyncStatus {
     peers: Vec<String>,
     mode: Option<String>,
     url: Option<String>,
+    /// The board's secret, for the frontend to put in an invite. `null` when
+    /// this client is not the one hosting.
+    secret: Option<String>,
 }
 
 /// Start hosting, in the mode asked for.
 ///
-/// ## Loopback, deliberately
+/// ## Why this binds every interface, and what pays for it
 ///
-/// The relay binds `127.0.0.1` even in LAN mode, and LAN mode is therefore not
-/// yet reachable from another machine. That is not an oversight to be tidied up
-/// later by widening the bind address: the relay has no authentication at all —
-/// the protocol has an `AUTH` message and nothing ever sends one — so binding
-/// every interface would put a read-write board on whatever network this
-/// machine is attached to, for anybody who guesses a board name.
+/// LAN mode binds `0.0.0.0`, because a board only this machine can reach is not
+/// a LAN board — the whole of T-70 is another machine finding this one. Until
+/// T-70 it bound loopback deliberately, with a comment saying the relay has no
+/// authentication at all and so a wider bind would put a read-write board on
+/// whatever network this machine is attached to.
 ///
-/// ARCHITECTURE section 5.1 names authentication as part of the price of
-/// self-hosting and it has not been paid yet. T-70 is where it starts to
-/// matter, because that is where the board becomes discoverable rather than
-/// merely reachable, and Q-59 asks how far it should go.
+/// That is now paid for rather than ignored: the relay is started with a
+/// secret (`sync/secret.rs`) and refuses, with a reason, anybody who cannot
+/// present it (`sync/mod.rs`). The one invariant to keep is the one the
+/// headless binary states out loud in `guard`: **never bind wider than
+/// loopback without a secret.** There is no path through this function that
+/// does, and there should never be one.
 #[tauri::command]
 async fn sync_start(app: AppHandle, config: SyncConfig) -> Result<(), String> {
     let hosting = app.state::<Hosting>();
@@ -89,8 +103,10 @@ async fn sync_start(app: AppHandle, config: SyncConfig) -> Result<(), String> {
     *hosting.board.lock().expect("hosting lock") = Some(config.board_id);
 
     // Relay mode: somebody else is hosting, and the webview's own provider
-    // dials them. There is nothing for this side to start.
+    // dials them. There is nothing for this side to start — but the secret is
+    // still kept, because it is what says which advertised board is ours.
     if config.mode != "lan" {
+        *hosting.secret.lock().expect("hosting lock") = config.secret;
         return Ok(());
     }
     // Already hosting. The guard is dropped before the await below, which is
@@ -99,13 +115,19 @@ async fn sync_start(app: AppHandle, config: SyncConfig) -> Result<(), String> {
         return Ok(());
     }
 
+    // Whoever opens the board first invents its secret. A caller that already
+    // has one — a second window told to join, an invite link — keeps it, or the
+    // two would host two boards that cannot talk to each other.
+    let secret = config.secret.unwrap_or_else(sync::secret::generate);
+
     // Port zero: the operating system picks, and `sync_status` reports back.
     // A fixed port is one more thing to collide with on a machine somebody is
-    // working on, and T-70 advertises whatever this turns out to be.
-    let relay = sync::Relay::start(([127, 0, 0, 1], 0).into())
+    // working on, and the advertisement carries whatever this turns out to be.
+    let relay = sync::Relay::start_guarded(([0, 0, 0, 0], 0).into(), Some(secret.clone()))
         .await
         .map_err(|error| format!("the relay could not start: {error}"))?;
     *hosting.relay.lock().expect("hosting lock") = Some(relay);
+    *hosting.secret.lock().expect("hosting lock") = Some(secret);
     Ok(())
 }
 
@@ -117,6 +139,7 @@ async fn sync_stop(app: AppHandle) -> Result<(), String> {
     *hosting.mode.lock().expect("hosting lock") = None;
     *hosting.url.lock().expect("hosting lock") = None;
     *hosting.board.lock().expect("hosting lock") = None;
+    *hosting.secret.lock().expect("hosting lock") = None;
     Ok(())
 }
 
@@ -127,24 +150,38 @@ async fn sync_status(app: AppHandle) -> SyncStatus {
     let relay = hosting.relay.lock().expect("hosting lock");
     let board = hosting.board.lock().expect("hosting lock").clone();
 
+    let secret = hosting.secret.lock().expect("hosting lock").clone();
+
     match relay.as_ref() {
         Some(running) => SyncStatus {
             connected: true,
             peers: running.peer_ids(),
             mode,
-            // The address a peer should dial, board and all, so nothing else
-            // has to know how a relay URL is spelled.
+            // The address a peer should dial, board and secret and all, so
+            // nothing else has to know how a relay URL is spelled.
+            //
+            // Loopback rather than `running.addr()`, which since the bind
+            // widened is `0.0.0.0:port` — a wildcard is what to *listen* on and
+            // has never been an address to dial. This one is for the window
+            // that started the relay; the address other machines use is the one
+            // the advertisement carries, and mDNS resolves that itself.
             url: Some(format!(
-                "ws://{}/{}",
-                running.addr(),
-                board.unwrap_or_else(|| "board".to_string())
+                "ws://127.0.0.1:{}/{}{}",
+                running.addr().port(),
+                board.unwrap_or_else(|| "board".to_string()),
+                match secret.as_deref() {
+                    Some(token) => format!("?token={token}"),
+                    None => String::new(),
+                }
             )),
+            secret,
         },
         None => SyncStatus {
             connected: false,
             peers: Vec::new(),
             mode,
             url: hosting.url.lock().expect("hosting lock").clone(),
+            secret,
         },
     }
 }

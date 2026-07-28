@@ -81,6 +81,53 @@ describe("planning a connection", () => {
     expect(planSync(`?board=${"a".repeat(64)}`).config.boardId).toBe("a".repeat(64));
   });
 
+  it("carries the secret onto the address it dials", () => {
+    // A webview's WebSocket cannot be given a header, so the query string is the
+    // only place a secret can ride. The relay reads it back out of exactly here
+    // (`sync/mod.rs`, `query_token`).
+    const secret = "0123456789abcdef";
+    expect(planSync(`?relay=1234&secret=${secret}`).config).toEqual({
+      mode: "relay",
+      url: `ws://127.0.0.1:1234/board?token=${secret}`,
+      boardId: "board",
+      secret,
+    });
+  });
+
+  it("keeps a secret in lan mode, where the shell would otherwise invent one", () => {
+    // This is how two windows end up on one board: both are told the same
+    // secret, so the second one hosts the board the first one did, rather than a
+    // second board with the same name that cannot talk to it.
+    expect(planSync("?secret=0123456789abcdef").config).toEqual({
+      mode: "lan",
+      boardId: "board",
+      secret: "0123456789abcdef",
+    });
+  });
+
+  it("refuses a secret that is not one, and still opens the board", () => {
+    // The relay would refuse it too, but from across a socket and as
+    // PERMISSION_DENIED, which is a long way round to "you pasted that wrong".
+    for (const bad of ["nothex", "0123ABCDEF012345", "abc", "a".repeat(129)]) {
+      const plan = planSync(`?secret=${bad}`);
+      expect(plan.config.secret, bad).toBeUndefined();
+      expect(plan.config.mode, bad).toBe("lan");
+      expect(plan.complaint, bad).toContain("hex");
+    }
+  });
+
+  it("leaves a token somebody spelled out alone", () => {
+    // Somebody who wrote the whole address including its token has said what
+    // they mean, and a `?secret=` appended behind that would be two tokens.
+    expect(planSync("?relay=ws://127.0.0.1:1234/theirs?token=abc&secret=0123456789abcdef").config)
+      .toEqual({
+        mode: "relay",
+        url: "ws://127.0.0.1:1234/theirs?token=abc",
+        boardId: "board",
+        secret: "0123456789abcdef",
+      });
+  });
+
   it("still complains about the board when the relay was fine", () => {
     const plan = planSync("?relay=1234&board=no/good");
     expect(plan.config).toEqual({
