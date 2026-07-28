@@ -104,6 +104,7 @@ export class AssetExchange {
   private readonly wanted = new Map<string, Wanted>();
   private readonly inFlight = new Map<string, InFlight>();
   private readonly unlisten: (() => void)[] = [];
+  private readonly onPeers: (change: { added: number[] }) => void;
   private open = false;
   private destroyed = false;
 
@@ -123,7 +124,31 @@ export class AssetExchange {
         else this.closed();
       }),
     );
+    // Tell a peer that has just arrived what we hold.
+    //
+    // `HAVE` is a broadcast with no history behind it, so everything announced
+    // before somebody joined was announced to a room they were not in. Without
+    // this, a window reloaded an hour into a session comes back to a board full
+    // of photographs, wants every one of them, and waits forever — nobody is
+    // going to mention them again. It cost a driven session to find, because
+    // every test had both peers present before the first announcement.
+    //
+    // ARCHITECTURE section 5.2 says "periodic" and this is the same idea aimed:
+    // the only thing a timer would add is a delay of up to its own period on
+    // exactly this case, plus chatter forever on a board where nothing changes.
+    // Everything that alters what we hold already announces on the spot.
+    this.onPeers = ({ added }: { added: number[] }): void => {
+      if (added.some((client) => client !== provider.awareness.clientID)) void this.reannounce();
+    };
+    provider.awareness.on("change", this.onPeers);
+
     if (provider.synced) void this.opened();
+  }
+
+  private async reannounce(): Promise<void> {
+    if (!this.open) return;
+    const held = await this.native.peerHaveSummary();
+    if (!this.destroyed) this.announce(held);
   }
 
   /**
@@ -194,6 +219,7 @@ export class AssetExchange {
   destroy(): void {
     this.destroyed = true;
     this.closed();
+    this.provider.awareness.off("change", this.onPeers);
     for (const off of this.unlisten) off();
     this.unlisten.length = 0;
   }

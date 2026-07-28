@@ -41,6 +41,15 @@ async function sha256Hex(bytes: Uint8Array): Promise<string> {
  */
 class Wire implements Pick<SyncProvider, "send" | "on" | "synced"> {
   synced = true;
+  /** Just enough awareness to notice somebody arriving. */
+  readonly awareness = {
+    clientID: 1,
+    on: (_event: string, listener: (change: { added: number[] }) => void) => {
+      this.arrivals.push(listener);
+    },
+    off: () => {},
+  };
+  private readonly arrivals: ((change: { added: number[] }) => void)[] = [];
   /** Everything the exchange has said, in order, already decoded. */
   readonly sent: { to: number; message: NonNullable<ReturnType<typeof decodeAsset>> }[] = [];
   private readonly listeners = new Map<string, ((value: never) => void)[]>();
@@ -88,6 +97,11 @@ class Wire implements Pick<SyncProvider, "send" | "on" | "synced"> {
     for (const listener of this.listeners.get("status") ?? []) {
       (listener as unknown as (value: ConnectionState) => void)(state);
     }
+  }
+
+  /** Somebody joins the board. */
+  joins(client: number): void {
+    for (const listener of this.arrivals) listener({ added: [client] });
   }
 
   /** What was asked of whom, which is the whole observable behaviour. */
@@ -324,6 +338,28 @@ describe("the asset exchange", () => {
     // transfers and two waiting — not five transfers cancelling one another.
     expect(wire.wants()).toHaveLength(3);
     expect(exchange.stats().wanted).toBe(5);
+  });
+
+  it("tells a peer that arrives late what it holds", async () => {
+    // `HAVE` is a broadcast with no history, so everything said before somebody
+    // joined was said to a room they were not in. A window reloaded an hour
+    // into a session would otherwise want every photograph on the board and
+    // wait forever for an announcement nobody was going to repeat.
+    //
+    // Found by driving two browser windows, not by this suite — every test in
+    // it had both peers present before the first announcement, which is exactly
+    // the case that works.
+    wire.joins(PEER_A);
+
+    await vi.waitFor(() => expect(wire.sent).toHaveLength(1));
+    expect(wire.sent[0]).toMatchObject({ to: 0, message: { kind: "have" } });
+  });
+
+  it("does not announce to itself arriving", async () => {
+    wire.joins(wire.awareness.clientID);
+
+    await vi.waitFor(() => expect(true).toBe(true));
+    expect(wire.sent).toEqual([]);
   });
 
   it("forgets everything about a connection that has gone", async () => {

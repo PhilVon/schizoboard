@@ -295,6 +295,20 @@ describe.each(servers)("against $name", (server) => {
     expect(chunks.length).toBe(3);
     expect(received).toEqual(bytes);
     expect(await seeker.peerHaveSummary()).toContain(sha256);
+
+    // And now somebody who was not in the room when either of the other two
+    // announced anything. `HAVE` has no history behind it, so without the two
+    // holders saying it again on arrival this peer waits forever — which is
+    // what a reloaded window is, and what a driven session found.
+    const latecomer = board();
+    const late = new MockPlatform();
+    const catching = new AssetExchange(latecomer.provider, late);
+    exchanges.push(catching);
+    await until(() => latecomer.provider.synced);
+    catching.want(sha256);
+
+    await until(() => catching.stats().wanted === 0, 30_000);
+    expect(await late.assetHas([sha256])).toEqual([true]);
   }, 60_000);
 
   it("tells the room when a board's socket goes", async () => {

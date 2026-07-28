@@ -4,6 +4,13 @@ version = "0.1.0"
 description = "An infinite corkboard for organising information that hasn't decided what shape it is yet."
 authors = ["Phil Wheatley"]
 edition = "2021"
+# `src/bin/relay.rs` (T-69) made this crate ambiguous: `cargo run` with two
+# binaries and no default refuses to pick, and `tauri dev` runs a bare
+# `cargo run`. So the documented way to launch the application — `npm run tauri
+# dev` — has been failing with "could not determine which binary to run" ever
+# since the headless relay landed, while every test kept passing because they
+# name their binary.
+default-run = "schizoboard"
 
 [lib]
 # The `_lib` suffix keeps the lib name distinct from the bin name, which

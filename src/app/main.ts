@@ -1556,6 +1556,16 @@ async function boot(): Promise<void> {
       loop,
       ops,
       tools,
+      /**
+       * The asset transfer, or null on a board with no wire (T-74).
+       *
+       * Here because the HUD cannot be trusted to answer for it: a second
+       * browser window on the same board is a *background* window, and Chromium
+       * throttles its rAF — so the HUD reads whatever frame it last managed,
+       * which during a transfer is a number that has since moved. This is the
+       * live one.
+       */
+      exchange,
       /** The document as persistence would write it — for reopening a board
        *  and checking it comes back still (Phase 3's AC-15). */
       snapshot: () => snapshot(board),
