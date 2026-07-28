@@ -41,8 +41,8 @@ import { UndoHistory } from "@/crdt/undo";
 import { noteSizeFor } from "@/app/ingest";
 import { Paste } from "@/app/paste";
 import { Mesh } from "@/app/mesh";
-import { formatInvite } from "@/app/invite";
-import { dialAddress, identityFor, planSync } from "@/app/sync";
+import { formatInvite, inviteSearch, openingPlan, parseInvite } from "@/app/invite";
+import { dialAddress, identityFor } from "@/app/sync";
 import { DEFAULT_ERASER_SIZE, type InkSurface } from "@/lib/ink";
 import { initPlatform } from "@/platform";
 import { variantFor } from "@/platform/types";
@@ -1090,7 +1090,10 @@ async function boot(): Promise<void> {
   /** How many records it has collected this session, for the dev HUD. */
   let swept = 0;
 
-  const plan = planSync(window.location.search);
+  // The address bar, or the invite that launched this window — see
+  // `openingPlan`. Cold arrivals cost nothing here: there is no provider yet, so
+  // the link is simply the plan.
+  const plan = await openingPlan(() => native.syncTakeInvite(), window.location.search);
   if (plan.complaint !== null) console.warn(`[sync] ignored: ${plan.complaint}`);
   const address = await dialAddress(native, plan.config);
   const provider = address === null ? null : new WireProvider(board.doc, address);
@@ -1144,6 +1147,57 @@ async function boot(): Promise<void> {
     invite = status.secret === null ? null : formatInvite({ boardId, secret: status.secret });
   };
   await refreshInvite(plan.config.boardId);
+
+  /**
+   * An invite clicked while this board is already open (T-165, Q-77).
+   *
+   * The **warm** arrival, and the one that has something to tear down: a
+   * provider, a mesh, an asset exchange and a presence, all bound to the
+   * connection this window has been using. Q-77 settled how — the window
+   * reloads, and the whole boot path runs again against the new plan.
+   *
+   * That is not the lazy answer, it is the safe one. Nothing about the document
+   * changes when you join another board — there is one per installation, and it
+   * is on disk — so all that is really moving is the wire. Four things
+   * individually detached and reattached is four ways to be left half-connected,
+   * and the symptom of any of them is a board that looks synced and is not,
+   * which is the most expensive kind of wrong this application has.
+   *
+   * The link's own query string is what the window reloads with, unchanged. That
+   * is `inviteSearch`, and it is the whole "an invite is the address bar" idea
+   * being spent rather than merely stated.
+   */
+  await native.on("deeplink:open", ({ url }) => {
+    const search = inviteSearch(url);
+    if (search === null) return;
+
+    // Already here. Worth saying rather than silently doing nothing: somebody
+    // who clicks an invite twice, or who clicks their own, has asked a question
+    // and deserves the answer — and reloading for it would throw away their
+    // camera and selection to arrive exactly where they already were.
+    //
+    // Compared as links rather than field by field, so there is one notion of
+    // what "the same board" means and it is the one the user was handed. A link
+    // carrying no secret cannot match — it is not a link this window would ever
+    // have produced — so it reloads, and settles on the second pass once the
+    // shell has answered with the secret it kept (Q-75).
+    const arriving = parseInvite(url)?.config;
+    const asLink =
+      arriving?.secret === undefined
+        ? null
+        : formatInvite({ boardId: arriving.boardId, secret: arriving.secret });
+    if (asLink !== null && asLink === invite) {
+      flash.say("You are already on that board");
+      return;
+    }
+
+    // The menu may be standing open with the *old* board's invite in it, which
+    // would otherwise be copyable for the moment before the page goes. It is
+    // also about to be a menu belonging to a board nobody is on.
+    menu.close();
+    flash.say("Joining that board…");
+    window.location.search = search;
+  });
 
   /**
    * The bytes behind the document (T-74).

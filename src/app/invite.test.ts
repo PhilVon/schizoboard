@@ -11,7 +11,8 @@
 
 import { describe, expect, it } from "vitest";
 
-import { formatInvite, INVITE_SCHEME, parseInvite } from "@/app/invite";
+import { formatInvite, INVITE_SCHEME, inviteSearch, openingPlan, parseInvite } from "@/app/invite";
+import { planSync } from "@/app/sync";
 
 const SECRET = "8f14e45fceea167a5a36dedd4bea2543";
 
@@ -124,5 +125,54 @@ describe("reading an invite", () => {
       expect(plan?.config.boardId, name).toBe("board");
       expect(plan?.complaint, name).toMatch(/board name/);
     }
+  });
+});
+
+describe("the plan a window opens with", () => {
+  const none = async (): Promise<string | null> => null;
+
+  it("takes the query string when no link launched us, which is nearly every launch", async () => {
+    expect(await openingPlan(none, "?board=mine")).toEqual(planSync("?board=mine"));
+  });
+
+  it("is the invite when one launched us, and the address bar is not consulted", async () => {
+    // The cold arrival costs no reload: this runs before there is a provider, a
+    // mesh or a relay, so the link simply is the plan.
+    const link = async (): Promise<string> => `schizo://join?board=theirs&secret=${SECRET}`;
+    expect((await openingPlan(link, "?board=mine")).config).toEqual({
+      mode: "lan",
+      boardId: "theirs",
+      secret: SECRET,
+    });
+  });
+
+  it("falls back to the query string when what launched us was not an invite", async () => {
+    const other = async (): Promise<string> => "https://example.com/";
+    expect(await openingPlan(other, "?board=mine")).toEqual(planSync("?board=mine"));
+  });
+
+  it("opens the board anyway when the shell cannot answer at all", async () => {
+    // An older shell, or a platform with no such command. A board that refuses
+    // to open because nobody could be asked about invites would be absurd.
+    const broken = async (): Promise<string | null> => {
+      throw new Error("no such command");
+    };
+    expect(await openingPlan(broken, "?board=mine")).toEqual(planSync("?board=mine"));
+  });
+});
+
+describe("the query an invite is the same thing as", () => {
+  it("is what the address bar would have said, character for character", () => {
+    // The whole "an invite link is the address bar" idea, made checkable: a
+    // window told to join somewhere else reloads with exactly this, and there is
+    // no conversion step that could drift.
+    const search = inviteSearch(`schizo://join?board=demo&secret=${SECRET}`);
+    expect(search).toBe(`?board=demo&secret=${SECRET}`);
+    expect(planSync(search!)).toEqual(parseInvite(`schizo://join?board=demo&secret=${SECRET}`));
+  });
+
+  it("is null for a link that is not ours, so nothing reloads for it", () => {
+    expect(inviteSearch("https://example.com/?board=demo")).toBeNull();
+    expect(inviteSearch("schizo://wipe?board=demo")).toBeNull();
   });
 });

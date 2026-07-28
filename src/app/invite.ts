@@ -104,6 +104,21 @@ export function formatInvite(invite: Invite): string | null {
  * fingerprint of *their* secret, and `is_joinable` will not match it.
  */
 export function parseInvite(link: string): SyncPlan | null {
+  const search = inviteSearch(link);
+  return search === null ? null : planSync(search);
+}
+
+/**
+ * The address-bar query this invite is the same thing as, or null when the link
+ * is not one of ours.
+ *
+ * This is the claim in the module header made literal: an invite link's query
+ * string *is* what `?board=…&secret=…` would have been, character for character,
+ * so a window that has been told to join somewhere else can get there by putting
+ * this in its own address and reloading (T-165, Q-77) — with no conversion step
+ * to keep in step, and no second spelling of the same three parameters.
+ */
+export function inviteSearch(link: string): string | null {
   let url: URL;
   try {
     url = new URL(link.trim());
@@ -121,5 +136,36 @@ export function parseInvite(link: string): SyncPlan | null {
   const verb = url.host !== "" ? url.host : url.pathname.replace(/^\/+/, "");
   if (verb !== JOIN && verb !== "") return null;
 
-  return planSync(url.search);
+  return url.search;
+}
+
+/**
+ * What to connect to, given the address bar and whatever link launched us.
+ *
+ * The **cold** arrival, and the reason it needs no reload: a click on an invite
+ * starts the application, so this runs before there is a provider, a mesh or a
+ * relay to tear down. There is nothing to rewire — the invite simply *is* the
+ * plan, and the query string it would otherwise have been is not consulted.
+ *
+ * `syncTakeInvite` clears as it reads, which is what stops a reload from
+ * re-joining a board the user has since left, and what makes the warm path
+ * (`app/main.ts`) safe to implement by reloading: the link it reloads for has
+ * already been taken by the time the new page asks.
+ *
+ * A link that is not one of ours, or no link at all, falls through to the query
+ * string — which on every ordinary launch is the only thing there is.
+ */
+export async function openingPlan(
+  takeInvite: () => Promise<string | null>,
+  search: string,
+): Promise<SyncPlan> {
+  let link: string | null = null;
+  try {
+    link = await takeInvite();
+  } catch (error) {
+    // A shell too old to answer, or a platform with no such command. Opening the
+    // board on the query string is exactly right, and is what happens anyway.
+    console.warn("[sync] could not ask for a pending invite", error);
+  }
+  return (link === null ? null : parseInvite(link)) ?? planSync(search);
 }
