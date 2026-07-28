@@ -324,10 +324,23 @@ export function readAsset(sha256: string, map: YMap): AssetFields | null {
 }
 
 /**
+ * Whichever collection of pins the caller happens to hold.
+ *
+ * The document's answer is a `Set` of ids built for the question; the mirror's
+ * is `Scene.pins`, a `Map` keyed by the same ids. Both answer "is this pin
+ * there", and a `Map` is not a `ReadonlySet` — so asking for the *question*
+ * rather than for a container is what lets `crdt/binding.ts` apply invariant 3
+ * against the mirror without building a throwaway set on every string it reads.
+ */
+export interface PinPresence {
+  has(pinId: string): boolean;
+}
+
+/**
  * Does a string still have enough valid nodes to be a string?
  * Invariant 3 — "no string survives with fewer than two valid nodes".
  */
-export function isRenderableString(nodes: readonly StringNodeFields[], pins: ReadonlySet<string>): boolean {
+export function isRenderableString(nodes: readonly StringNodeFields[], pins: PinPresence): boolean {
   let valid = 0;
   for (const node of nodes) {
     if (pins.has(node.pin)) valid++;

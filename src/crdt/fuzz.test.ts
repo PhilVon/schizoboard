@@ -97,7 +97,7 @@ import {
   setStringStyle,
   type StringAnchor,
 } from "@/crdt/ops";
-import { readString, type YMap } from "@/crdt/schema";
+import { isRenderableString, readString, type YMap } from "@/crdt/schema";
 import { DirtySets } from "@/state/dirty";
 import { Scene } from "@/state/scene";
 
@@ -643,6 +643,35 @@ function fuzz(seed: number, rounds: number, opsPerRound: number): Run {
       // would satisfy this too, so what rules that out is `janitor.test.ts`
       // rather than anything here.
       unrepairable = Math.max(unrepairable, unrepairableStrings(a).length);
+
+      // The mirror and the janitor have to mean the same thing by "string" —
+      // checked *here*, in the window between the merge and the collection,
+      // because that window is where the application lives. A board renders
+      // every frame and the janitor runs after a settle period, so the state
+      // that matters is the one after a merge and before any tidying; checked
+      // below instead, this passes by having nothing left to disagree about.
+      //
+      // Invariant 3 itself is reported rather than asserted (see the return) —
+      // no guard on one document can constrain the union of two. But *this* is
+      // assertable and was not: a string the janitor is going to collect must
+      // not already be in the scene, because everything downstream reads scene
+      // membership as "this string exists". It used to reach `sim/ropes.ts`,
+      // which found the missing anchor, slept the segment and drew nothing — so
+      // the only symptom was an inert record two subsystems disagreed about
+      // (T-154).
+      for (const board of [a, b]) {
+        const pinIds = new Set(board.pins.keys());
+        for (const id of mirror(board).strings.keys()) {
+          const read = readString(id, board.strings.get(id)!);
+          if (read !== null && isRenderableString(read.nodes, pinIds)) continue;
+          const side = board === a ? "A" : "B";
+          throw new Error(
+            `${side} mirrors string ${id}, which the janitor would collect\n\n` +
+              `seed ${seed}, round ${round} of ${rounds}\n${log.slice(-40).join("\n")}`,
+          );
+        }
+      }
+
       janitor.tick(clock, present);
       clock += SETTLE_MS + CHECK_MS;
       if (janitor.tick(clock, present).length > 0) merge(a, b);
@@ -675,6 +704,7 @@ function fuzz(seed: number, rounds: number, opsPerRound: number): Run {
           `the two documents mirror to different scenes: ${scenes[0].size} items vs ${scenes[1].size}\n\n${context}`,
         );
       }
+
 
     }
 

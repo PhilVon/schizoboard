@@ -24,7 +24,15 @@
 import * as Y from "yjs";
 
 import type { BoardDoc } from "@/crdt/doc";
-import { readItem, readPin, readStroke, readString, type YMap } from "@/crdt/schema";
+import {
+  isRenderableString,
+  readItem,
+  readPin,
+  readStroke,
+  readString,
+  type StringNodeFields,
+  type YMap,
+} from "@/crdt/schema";
 import type { InkSample } from "@/lib/ink";
 import { unpackStroke } from "@/lib/strokepack";
 import type { DirtySets } from "@/state/dirty";
@@ -95,6 +103,24 @@ export class Binding {
   private readonly scene: Scene;
   private readonly dirty: DirtySets;
   private started = false;
+  /**
+   * Which strings name each pin — **including the strings not being mirrored**,
+   * which is the entire reason it is here rather than being read off
+   * `Scene.stringsThrough`.
+   *
+   * Invariant 3 is a test a string can fail temporarily. On a fresh connection
+   * the updates for a run and for the pins it hangs from arrive in whatever
+   * order the document hands them over, and a string read before its pins is a
+   * string with nothing to resolve against. The scene's reverse index is built
+   * from what was mirrored, so a string kept out of the scene is invisible to
+   * it — and the pin that would rescue it arrives with no way to find it. This
+   * index is the document's view, so it holds exactly the strings that are
+   * waiting for something.
+   */
+  private readonly stringsByPin = new Map<string, Set<string>>();
+  /** What each string named when it was last read, so the index above can be
+   *  corrected when a run is edited rather than only grown. */
+  private readonly pinsByString = new Map<string, Set<string>>();
 
   constructor(board: BoardDoc, scene: Scene, dirty: DirtySets) {
     this.board = board;
@@ -129,6 +155,13 @@ export class Binding {
    */
   resync(): void {
     this.scene.clear();
+    // Not the scene's to clear: these mirror the document, and `scene.clear()`
+    // has never heard of them. Nothing observable depends on it — a stale entry
+    // names a string `restringThrough` then fails to find and skips — so this is
+    // a leak guard, not a correctness one, and it is here because an index that
+    // mirrors the document and is never emptied is a slow lie.
+    this.stringsByPin.clear();
+    this.pinsByString.clear();
     for (const [id, map] of this.board.items) {
       this.syncItem(id, map);
       this.syncStrokes(id);
@@ -211,10 +244,31 @@ export class Binding {
    * has already dropped the nodes whose `pin` field is malformed. The document
    * deletes such a string itself (DATA-MODEL section 5.3); until that lands,
    * this simply does not mirror it.
+   *
+   * "Valid" means *resolving to a pin*, which is what `isRenderableString` has
+   * always meant and what this used to get wrong: it counted well-formed nodes
+   * instead, so a two-node string with one surviving pin was mirrored, and
+   * `sim/ropes.ts` then found the missing anchor, slept the segment and skipped
+   * it. Nothing crashed — the string was simply in the scene, inert and
+   * invisible, disagreeing with the janitor and with `crdt/invariants.ts` about
+   * whether it existed. T-76's harness produces exactly that state by merging
+   * two peers, so it is not the transient the old comment assumed.
+   *
+   * Which makes the index above load-bearing rather than an optimisation: a
+   * string may be unmirrorable now and perfectly good a moment later, and
+   * something has to remember it in the meantime.
    */
   private syncString(id: string, map: YMap): void {
     const fields = readString(id, map);
-    if (!fields || fields.nodes.length < 2) {
+    if (!fields) {
+      this.forgetString(id);
+      if (this.scene.removeString(id)) this.dirty.string(id);
+      return;
+    }
+    // Indexed before the test, and whether or not it passes. A string is only
+    // worth remembering *because* it might fail.
+    this.indexString(id, fields.nodes);
+    if (!isRenderableString(fields.nodes, this.scene.pins)) {
       if (this.scene.removeString(id)) this.dirty.string(id);
       return;
     }
@@ -232,6 +286,65 @@ export class Binding {
       closed: fields.closed,
     });
     this.dirty.string(id);
+  }
+
+  /** Record which pins this run names, and forget the ones it no longer does. */
+  private indexString(id: string, nodes: readonly StringNodeFields[]): void {
+    const next = new Set<string>();
+    for (const node of nodes) next.add(node.pin);
+    const previous = this.pinsByString.get(id);
+    if (previous !== undefined) {
+      for (const pin of previous) if (!next.has(pin)) this.unindex(pin, id);
+    }
+    for (const pin of next) {
+      let waiting = this.stringsByPin.get(pin);
+      if (waiting === undefined) this.stringsByPin.set(pin, (waiting = new Set()));
+      waiting.add(id);
+    }
+    this.pinsByString.set(id, next);
+  }
+
+  /** The string is gone from the document, or has become unreadable. */
+  private forgetString(id: string): void {
+    const previous = this.pinsByString.get(id);
+    if (previous === undefined) return;
+    this.pinsByString.delete(id);
+    for (const pin of previous) this.unindex(pin, id);
+  }
+
+  private unindex(pin: string, id: string): void {
+    const waiting = this.stringsByPin.get(pin);
+    if (waiting === undefined) return;
+    waiting.delete(id);
+    if (waiting.size === 0) this.stringsByPin.delete(pin);
+  }
+
+  /**
+   * A pin appeared or disappeared, so every string naming it may have crossed
+   * the invariant-3 line in either direction.
+   *
+   * Called only on a *presence* change, never on a pin merely moving. A pin
+   * being dragged writes to the document several times a second, and re-mirroring
+   * a run there would raise `dirty.string` at that rate — which `state/dirty.ts`
+   * spells out as the one thing that must not happen ("a rope set that rebuilt
+   * itself on every frame of a drag would re-seed the pose it was in the middle
+   * of simulating").
+   */
+  private restringThrough(pinId: string): void {
+    const waiting = this.stringsByPin.get(pinId);
+    if (waiting === undefined) return;
+    // Over a copy: `syncString` writes back into this very set.
+    for (const id of [...waiting]) {
+      const map = this.board.strings.get(id);
+      if (map) this.syncString(id, map);
+    }
+  }
+
+  /** `syncPin`, and then whatever was waiting on this pin's existence. */
+  private repin(id: string, map: YMap): void {
+    const had = this.scene.pins.has(id);
+    this.syncPin(id, map);
+    if (had !== this.scene.pins.has(id)) this.restringThrough(id);
   }
 
   private readonly onItems = (events: DeepEvent[]): void => {
@@ -342,6 +455,7 @@ export class Binding {
             // The pins stay exactly where they are — a string owns nothing but
             // references (DESIGN section 3.4). What goes is the run and its
             // entries in the pin index, which is what `removeString` is for.
+            this.forgetString(id);
             this.scene.removeString(id);
             this.dirty.string(id);
           } else {
@@ -394,9 +508,13 @@ export class Binding {
             this.scene.removePin(id);
             this.dirty.pin(id);
             if (gone?.parent) this.dirty.item(gone.parent);
+            // A string that has just lost an anchor may no longer be a string.
+            // The pin cascade usually removes the node too, and this is the
+            // case where it did not — a peer's delete meeting a peer's edit.
+            if (gone) this.restringThrough(id);
           } else {
             const map = this.board.pins.get(id);
-            if (map) this.syncPin(id, map);
+            if (map) this.repin(id, map);
           }
         }
         continue;
@@ -405,7 +523,7 @@ export class Binding {
       const id = event.path[0];
       if (typeof id !== "string") continue;
       const map = this.board.pins.get(id);
-      if (map) this.syncPin(id, map);
+      if (map) this.repin(id, map);
     }
   };
 }
