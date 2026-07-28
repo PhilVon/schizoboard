@@ -105,7 +105,57 @@ SendKeys does not reach it.
 
 ## Driving
 
-The app has no CLI and no test hooks. Drive it the way a person does:
+### Start at `window.schizo`
+
+Dev builds hang the board's own long-lived objects off `window.schizo` —
+`board`, `scene`, `camera`, `ropes`, `dirty`, `flashes`, `peers`, `provider`,
+`loop`, `ops`, `tools`, `exchange`, `assets`, `snapshot`. Read `main.ts`'s
+comment on it before reaching for anything else; the short of it is that
+everything there is something the application already has and already uses, so
+reaching through the handle and reaching through the app cannot disagree.
+
+That makes **setting up a state** and **reading what came of it** cheap, and
+both are usually the expensive part of a run. Over CDP:
+
+```js
+const { board, ops, ropes } = window.schizo;
+const a = ops.createPin(board, { parent: null, lx: -400, ly: -100 });
+const b = ops.createPin(board, { parent: null, lx: 400, ly: -100 });
+const id = ops.createStringThrough(board, [{ pin: a }, { pin: b }]);
+let spans = 0; ropes.visit(id, () => spans++);          // what actually draws
+```
+
+It also reaches states a person cannot produce on one machine. A raw
+`board.doc.transact(() => board.pins.delete(p))` is a *peer's* delete arriving
+on a merge — the record goes and no cascade touches the strings — which is the
+whole class `crdt/janitor.ts` exists for and is otherwise a two-window
+partition dance to reproduce.
+
+> **Sample from inside one evaluation when you are timing something.** A
+> `setTimeout` chain in the page that returns one array at the end is the only
+> way to see a *transition*; two CDP round trips are seconds apart on their own,
+> and a settle period measured across them reports the state after, with the
+> change inferred rather than seen.
+
+The handle is a window onto the application, **not** an API for it. It cannot
+tell you whether a gesture reaches a tool, whether a keystroke is bound, or
+whether a thing is visible — and those are exactly the failures a run is for.
+For those, drive the input.
+
+### Pointer gestures without the foreground
+
+CDP `Input.dispatchMouseEvent` — `mouseMoved` to the start, `mousePressed`,
+stepped `mouseMoved`s, `mouseReleased` — puts a real gesture through the tool
+state machine, drag threshold and pointer capture included. **No foreground
+raise, so it works while the human is at the machine**, which the `mouse_event`
+route below does not: Windows' lock refuses the raise and the honest response is
+to abort.
+
+It does not exercise the OS input path, so it proves nothing about scan codes or
+native pointer plumbing. For everything downstream of `pointerdown` it is the
+better tool, and it is the only one available when the foreground is not yours.
+
+### Real input, for when it is input under test
 
 ```powershell
 Set-Clipboard -Value "some text"
@@ -154,14 +204,26 @@ somebody's browser.
 
 Paste is the primary verb, so it is also the cheapest way to get state onto a
 board: text becomes a note, image bytes become a polaroid. Everything else —
-drag, rotate, marquee, and every context menu — needs real mouse input, below.
+drag, rotate, marquee, and every context menu — needs a pointer, either the CDP
+one above or the real one below.
 
 ## Pointer input
+
+Only when the OS input path is what is under test, or when the CDP route above
+has already told you the gesture works and you want it proved through Windows.
+Reach for `Input.dispatchMouseEvent` first: it needs no foreground, and the
+foreground is the thing that goes wrong here.
 
 `SetCursorPos` then `mouse_event`. Screen coordinates, so add the window origin
 from `GetWindowRect` — and because `PrintWindow` captures the **whole** window,
 a coordinate read off a screenshot is already in that frame and needs no
 correction for the title bar beyond the origin itself.
+
+A point computed from the *camera* rather than read off a screenshot is in CSS
+pixels inside the webview, which starts below the title bar. `window.screenX` /
+`window.screenY` is that origin — `GetWindowRect`'s is the wrong one by the
+frame, and being ~31px out reads as a broken hit test rather than as a bad
+coordinate.
 
 Do the same foreground dance as for keys, and **read the pid back before
 pressing a button**: a click that lands in somebody's browser is worse than a
