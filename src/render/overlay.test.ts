@@ -1079,9 +1079,12 @@ describe("Overlay, the undo flash", () => {
     // Three particles walked, sag and all — a chord would be two points.
     expect(calls.lines).toHaveLength(3);
     expect(calls.lines[1]![1]).not.toBe(calls.lines[0]![1]);
-    // A band outside the cotton and a wash inside it, neither opaque.
-    expect(calls.strokeWidths).toHaveLength(2);
-    expect(calls.strokeWidths[0]!).toBeGreaterThan(calls.strokeWidths[1]!);
+    // One pass, a few pixels wider than the cotton and translucent — the string
+    // is lit, not replaced by an amber tube (which is what a driven board said
+    // about the first version of this).
+    expect(calls.strokeWidths).toHaveLength(1);
+    expect(calls.strokeWidths[0]!).toBeGreaterThan(3);
+    expect(calls.strokeWidths[0]!).toBeLessThan(3 + 8);
     for (const alpha of calls.alphas) expect(alpha).toBeLessThan(1);
   });
 

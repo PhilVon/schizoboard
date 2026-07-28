@@ -1857,6 +1857,15 @@ async function boot(): Promise<void> {
       camera,
       ropes,
       dirty,
+      /**
+       * What the last undo lit, and how far through its fade each one is.
+       *
+       * Next to `dirty` because it is read from it. A flash lasts under a
+       * second and is the one piece of chrome on this board that a screenshot
+       * can genuinely miss, so the pixels want a reading beside them that says
+       * what was supposed to be on the canvas at the time.
+       */
+      flashes,
       loop,
       ops,
       tools,

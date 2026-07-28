@@ -146,12 +146,19 @@ const FLASH_SPREAD = 10;
  */
 const FLASH_HOLD = 1.5;
 /**
- * A string is lit rather than outlined — a band outside the cotton and a wash
- * inside it, both well short of opaque. See [`STRING_HALO`] for what happens to
- * a string covered by a solid pale stroke.
+ * A string is *lit*, not outlined, and it keeps its own colour while it is.
+ *
+ * The first version of this drew the item's ripple along the rope — a band that
+ * fattened to fifteen screen pixels as it faded, over a strand four wide. Driven
+ * on a real board that is not a flash: it is an amber tube where a red string
+ * used to be, and the one thing a flash has to say — *which* string — is the
+ * thing it paints over. So the band is a fixed few pixels wider than the cotton
+ * and well short of opaque, which is the same shape and the same argument as
+ * [`THREAD_LIT`], one step brighter because this is a report rather than a
+ * hover.
  */
-const FLASH_STRING_GLOW = 0.4;
-const FLASH_STRING_CORE = 0.85;
+const FLASH_STRING_WIDEN = 5;
+const FLASH_STRING_LIT = 0.6;
 
 /** Full for the first third of the life, then away. See [`FLASH_HOLD`]. */
 function alphaOf(life: number): number {
@@ -1019,17 +1026,15 @@ export class Overlay {
       ctx.lineCap = "round";
       ctx.lineJoin = "round";
       ctx.strokeStyle = FLASH_OVER;
-      // A soft band outside the cotton and a wash inside it, both amber and
-      // neither opaque. The pale outline a selected string gets is deliberately
-      // not reused: at 0.85 of near-white it makes a string read as *faded*
-      // (see [`STRING_HALO`]), which is why that one punches its own middle
-      // back out — and a `destination-out` pass here would take the halo and
-      // the lit threads underneath with it.
-      ctx.globalAlpha = alpha * FLASH_STRING_GLOW;
-      ctx.lineWidth = drawn + FLASH_SPREAD * (1 - life) + FLASH_WIDTH * 2;
-      ctx.stroke();
-      ctx.globalAlpha = alpha * FLASH_STRING_CORE;
-      ctx.lineWidth = drawn;
+      // One pass, a few pixels wider than the cotton and translucent, so the
+      // string is lit rather than replaced — see [`FLASH_STRING_WIDEN`]. The
+      // pale outline a selected string gets is deliberately not reused: at 0.85
+      // of near-white it makes a string read as *faded* (see [`STRING_HALO`]),
+      // which is why that one punches its own middle back out — and a
+      // `destination-out` pass here would take the halo and the lit threads
+      // underneath with it.
+      ctx.globalAlpha = alpha * FLASH_STRING_LIT;
+      ctx.lineWidth = drawn + FLASH_STRING_WIDEN;
       ctx.stroke();
       ctx.restore();
     }
