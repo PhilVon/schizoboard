@@ -46,6 +46,18 @@ export interface HudStats {
    */
   inked: number;
   inkPixels: number;
+  /**
+   * Records the janitor is holding on the clock, and how many it has collected
+   * this session — `crdt/janitor.ts`.
+   *
+   * Here for the reason the ink numbers are: it makes something otherwise
+   * invisible watchable. A janitor that never runs and a board with nothing to
+   * collect look identical from outside, and so do a janitor working correctly
+   * and one that has quietly stopped. `pending` moving off zero and back is the
+   * whole mechanism happening in front of you.
+   */
+  janitorPending: number;
+  janitorSwept: number;
 }
 
 /**
@@ -153,6 +165,11 @@ export class Hud {
     rows.push(
       this.stat("doc", formatBytes(s.docBytes), s.docBytes > DOC_SIZE_ALERT_BYTES),
     );
+    // Silent on the overwhelmingly common case — nothing pending, nothing ever
+    // collected — so the row appears exactly when there is something to say.
+    if (s.janitorPending > 0 || s.janitorSwept > 0) {
+      rows.push(this.stat("janitor", `${s.janitorPending} · ${s.janitorSwept} swept`));
+    }
 
     this.el.innerHTML = rows.join("");
   }

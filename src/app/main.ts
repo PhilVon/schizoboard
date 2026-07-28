@@ -876,6 +876,8 @@ async function boot(): Promise<void> {
       // as pixels. The HUD's ink numbers exist to make the memory risk (DESIGN
       // section 9.5, risk 5) watchable, and a tile is the largest single bitmap
       // on the board — leaving it out would be the one omission that matters.
+      janitorPending: janitor.pending,
+      janitorSwept: swept,
       inked: items.inked + boardInk.mounted,
       inkPixels: items.inkPixels + boardInk.pixels,
     };
@@ -921,6 +923,8 @@ async function boot(): Promise<void> {
    * loaded off disk that was shared earlier.
    */
   const janitor = new Janitor(board);
+  /** How many records it has collected this session, for the dev HUD. */
+  let swept = 0;
 
   const plan = planSync(window.location.search);
   if (plan.complaint !== null) console.warn(`[sync] ignored: ${plan.complaint}`);
@@ -1411,12 +1415,12 @@ async function boot(): Promise<void> {
      * these cost nothing and mean it is never even asked.
      */
     if (provider === null || provider.synced) {
-      janitor.tick(
+      swept += janitor.tick(
         frame.now,
         provider === null
           ? [board.doc.clientID]
           : [board.doc.clientID, ...provider.awareness.getStates().keys()],
-      );
+      ).length;
     }
 
     // Everything downstream has consumed this frame's changes.
