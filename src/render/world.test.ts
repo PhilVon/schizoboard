@@ -23,6 +23,7 @@ import { World } from "@/render/world";
 let host: HTMLElement;
 let world: World;
 let scales: number[];
+let settled: number[];
 
 /** The one number every re-raster is a multiple of. Read rather than assumed,
  *  because happy-dom's is 1 and a browser's very often is not. */
@@ -34,7 +35,9 @@ beforeEach(() => {
   document.body.append(host);
   world = new World(host);
   scales = [];
+  settled = [];
   world.onRasterize((scale) => scales.push(scale));
+  world.onSettle((zoom) => settled.push(zoom));
 });
 
 afterEach(() => {
@@ -70,6 +73,57 @@ describe("the settled camera", () => {
     // debounced one arriving afterwards would re-raster the whole board a second
     // time for nothing.
     expect(scales).toEqual([4 * DPR()]);
+  });
+});
+
+/**
+ * The LOD tier's wake-up (T-197). Deliberately not the re-raster's, because the
+ * re-raster is gated on a 1.25x swing and a tier boundary is not something a
+ * gate may be applied to.
+ */
+describe("the settle notification", () => {
+  it("reports the zoom, not devicePixelRatio times the zoom", () => {
+    world.settle(0.5);
+    // The re-raster is choosing a bitmap resolution and wants device pixels.
+    // A tier is choosing how much of an item to lay out, which happens in CSS
+    // pixels on every display — see `render/lod.ts`.
+    expect(settled).toEqual([0.5]);
+    expect(scales).toEqual([0.5 * DPR()]);
+  });
+
+  it("fires for a swing far too small to re-raster for", () => {
+    world.settle(0.36);
+    world.settle(0.34);
+
+    // 0.36 -> 0.34 is a swing of 1.06 and crosses DESIGN section 6.6's 35%
+    // boundary. If this shared the raster gate, the tier would silently never
+    // switch at the one zoom it exists for.
+    expect(settled).toEqual([0.36, 0.34]);
+    expect(scales).toEqual([0.36 * DPR()]);
+  });
+
+  it("waits out the debounce with everything else", () => {
+    for (const zoom of [0.9, 0.7, 0.5, 0.3]) {
+      world.gestureTick(zoom);
+      vi.advanceTimersByTime(30);
+    }
+    expect(settled).toEqual([]);
+
+    vi.runAllTimers();
+    // One switch for a roll of the wheel. Changing tier mid-gesture would
+    // rebuild every mounted item on a frame that is already promoted and
+    // showing a cached layer, which nobody would see and everybody would pay
+    // for.
+    expect(settled).toEqual([0.3]);
+  });
+
+  it("stops telling a listener that has unsubscribed", () => {
+    const off = world.onSettle((zoom) => settled.push(zoom * 100));
+    world.settle(1);
+    off();
+    world.settle(2);
+
+    expect(settled).toEqual([1, 100, 2]);
   });
 });
 

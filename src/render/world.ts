@@ -47,6 +47,21 @@ const GESTURE_END_MS = 180;
 
 export type RasterizeListener = (scale: number) => void;
 
+/**
+ * Told the zoom the camera came to rest at, on every gesture end.
+ *
+ * The sibling of [`RasterizeListener`], and separate from it because the two
+ * have opposite tolerances. A bitmap survives being stretched, so a re-raster
+ * is gated on a 1.25x swing and skipping one costs nothing anybody can see. A
+ * threshold does not survive anything: 0.36 to 0.34 crosses DESIGN section
+ * 6.6's 35% boundary and is a swing of 1.06, so a listener that shared the
+ * raster gate would silently never fire at the one zoom it exists for.
+ *
+ * The value is the **zoom**, not `devicePixelRatio * zoom` — see `render/lod.ts`
+ * for why a tier is not a fact about device pixels.
+ */
+export type SettleListener = (zoom: number) => void;
+
 export interface Layers {
   readonly cork: HTMLDivElement;
   /** Board-ink tile canvases, in the camera transform — `render/ink/board.ts`. */
@@ -79,6 +94,7 @@ export class World {
   private gestureTimer = 0;
   private gesturing = false;
   private readonly rasterizeListeners: RasterizeListener[] = [];
+  private readonly settleListeners: SettleListener[] = [];
   /** Scale the promoted layers were last rasterised at. */
   private rasterScale = 0;
 
@@ -164,6 +180,12 @@ export class World {
     this.layers.world.style.willChange = "";
     this.layers.boardInk.style.willChange = "";
 
+    // Before the raster gate below, and outside it. This is the frame the whole
+    // world subtree repaints on regardless, which is exactly when changing how
+    // much of an item is drawn is free — and the gate would swallow the small
+    // swings that cross a tier boundary.
+    for (const fn of this.settleListeners) fn(scale);
+
     const target = scale * devicePixelRatio;
     // Re-rastering for a hair of scale change is pure waste; a 1.25x swing is
     // where a stretched bitmap starts being visible.
@@ -179,6 +201,15 @@ export class World {
     return () => {
       const i = this.rasterizeListeners.indexOf(fn);
       if (i >= 0) this.rasterizeListeners.splice(i, 1);
+    };
+  }
+
+  /** Notified with the zoom the camera settled at, on every gesture end. */
+  onSettle(fn: SettleListener): () => void {
+    this.settleListeners.push(fn);
+    return () => {
+      const i = this.settleListeners.indexOf(fn);
+      if (i >= 0) this.settleListeners.splice(i, 1);
     };
   }
 
@@ -198,5 +229,6 @@ export class World {
     if (this.gestureTimer !== 0) clearTimeout(this.gestureTimer);
     this.host.replaceChildren();
     this.rasterizeListeners.length = 0;
+    this.settleListeners.length = 0;
   }
 }
