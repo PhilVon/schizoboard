@@ -137,6 +137,33 @@ partition dance to reproduce.
 > and a settle period measured across them reports the state after, with the
 > change inferred rather than seen.
 
+### Drive frames yourself; a background window has none
+
+A window that is not in the foreground has its `requestAnimationFrame` throttled
+to nothing, so the frame loop stops and **anything waiting on a rAF never
+resolves** — a `Runtime.evaluate` that returns a promise from inside one just
+times out, and the honest-looking conclusion is that the probe threw.
+
+`loop.step(now)` is the way through. It runs exactly one frame, phases and
+timings included, and `loop.timings` then holds the milliseconds each phase
+took — which is the whole of a performance measurement without a profiler:
+
+```js
+const s = window.schizo;
+let t = performance.now();
+for (let i = 0; i < 3; i++) s.loop.step((t += 16));
+s.loop.timings[4];   // the DOM phase, indexed to render/loop.ts's PHASES
+```
+
+> **A camera written field by field does not move.** `camera.x`, `y` and `zoom`
+> are plain fields and the render compares `camera.version` against the value it
+> last wrote, so setting them and stepping the loop leaves the world transform
+> exactly where it was. `Page.captureScreenshot` then returns the *old* view,
+> which looks like the camera being ignored. Either call the methods
+> (`zoomTo`, `panByBoard` — note `zoomTo` zooms about a screen point, so
+> repeated calls walk the camera away) or bump `camera.version++` by hand after
+> writing the fields.
+
 The handle is a window onto the application, **not** an API for it. It cannot
 tell you whether a gesture reaches a tool, whether a keystroke is bound, or
 whether a thing is visible — and those are exactly the failures a run is for.
