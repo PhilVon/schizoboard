@@ -75,7 +75,7 @@ import {
   tapedCorners,
   tapeFlip,
 } from "@/render/items/tape";
-import type { Tier } from "@/render/lod";
+import { DETAIL, type Tier } from "@/render/lod";
 import type { ItemLayer } from "@/render/items/view";
 import {
   creaseFace,
@@ -127,6 +127,30 @@ export interface AssetView {
  * a settled camera, which is the one moment there is budget for it.
  */
 const COARSE = "is-coarse";
+
+/**
+ * How many items may be given their detail on one frame.
+ *
+ * A budget, unlike the one `payTheDetailDebt` used not to have, and T-203 is why.
+ * Detail now arrives *during* a zoom in rather than on the frame the camera stops,
+ * which is where motion hides it — but a tier rise at the 38.5% boundary catches
+ * about a hundred and forty items mounted, and rebinding them all on one frame
+ * costs **493 ms**. Measured.
+ *
+ * The budget does two things, and the second is the better one. It spreads the
+ * cost. And it means an item culled before its turn is never upgraded at all:
+ * during a zoom in to 400% those hundred and forty become six, so a hundred and
+ * thirty-four of those rebinds were work thrown away a moment later. Waiting for
+ * the settle used to avoid that by accident — which is why the old numbers looked
+ * so good at 400% and so bad at 35%.
+ *
+ * Six, because a rebind of a texted sheet is around three and a half milliseconds
+ * — 493 over a hundred and forty — so six is a little over the budget on the
+ * worst frame and comfortably inside it on an ordinary one. A hundred and forty
+ * items therefore take about a quarter of a second to come in, during a gesture,
+ * which is a sweep rather than a snap.
+ */
+const UPGRADE_BUDGET = 6;
 
 
 /** An item that names no asset at all. Blank film, and nothing is coming. */
@@ -1762,7 +1786,30 @@ export class DomItemLayer implements ItemLayer {
    */
   setTier(tier: Tier): void {
     if (tier === this.tier) return;
+    const rising = DETAIL[tier] > DETAIL[this.tier];
     this.tier = tier;
+    if (rising) {
+      /**
+       * Every mounted item now owes its detail, and must go on looking like a
+       * card until its turn comes (T-203).
+       *
+       * The class is what holds it there. Taking `data-lod` off the host below
+       * would otherwise give every sheet its grain and its tape back on this very
+       * frame — CSS needs no rebind — and the whole point of the budget is that
+       * they arrive a few at a time.
+       */
+      for (const [id, view] of this.views) {
+        this.coarse.add(id);
+        view.el.classList.add(COARSE);
+      }
+      this.upgradeWanted = this.coarse.size > 0;
+    } else {
+      // Falling. Every item is a card now by the tier alone, so nothing is owed
+      // and the per-item marker would be a second thing saying the same thing.
+      for (const id of this.coarse) this.views.get(id)?.el.classList.remove(COARSE);
+      this.coarse.clear();
+      this.upgradeWanted = false;
+    }
     // Absent rather than `"full"` at the top tier, so a stylesheet that has
     // never heard of LOD — and every selector written before this existed —
     // goes on meaning what it meant.
@@ -1807,12 +1854,19 @@ export class DomItemLayer implements ItemLayer {
    * has the numbers that would say.
    */
   private payTheDetailDebt(scene: Scene): void {
-    this.upgradeWanted = false;
-    if (this.coarse.size === 0) return;
+    if (this.coarse.size === 0) {
+      this.upgradeWanted = false;
+      return;
+    }
+    let left = UPGRADE_BUDGET;
+    const done: string[] = [];
     for (const id of this.coarse) {
+      if (left <= 0) break;
+      left -= 1;
+      done.push(id);
       const view = this.views.get(id);
-      // Culled between the settle and this frame. `sync`'s unmount walk already
-      // dropped it from the set, so this is belt and braces.
+      // Culled since it went on the list. `sync`'s unmount walk already dropped
+      // it from the set, so this is belt and braces.
       if (view === undefined) continue;
       const slot = scene.slotOf(id);
       const cold = slot === undefined ? null : scene.coldAt(slot);
@@ -1830,7 +1884,10 @@ export class DomItemLayer implements ItemLayer {
         this.tier !== "full",
       );
     }
-    this.coarse.clear();
+    for (const id of done) this.coarse.delete(id);
+    // Still armed while any remain, so the sweep continues on the next frame
+    // without anybody having to ask again.
+    this.upgradeWanted = this.coarse.size > 0;
   }
 
   private create(archetype: Archetype): View {
