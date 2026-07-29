@@ -35,6 +35,27 @@ export interface ItemLayer {
   hitTest(scene: Scene, boardX: number, boardY: number): string | null;
 
   /**
+   * Put a caret in an item's text, or take it out (DESIGN section 3.6).
+   *
+   * `text` is what is already on the paper; the layer reports what it becomes
+   * through the hooks it was built with. Null closes whatever was open.
+   *
+   * On this side of the seam because a caret is presentation, and because the
+   * alternative leaks an element: a caller that made its own field would have
+   * to be handed a node to park it in, and the header above says what that
+   * costs. A Pixi implementation satisfies this by overlaying a field of its
+   * own — WebGL has no caret either, so the problem does not go away, it just
+   * stops being everybody's.
+   *
+   * Idempotent. Opening the item that is already open does nothing, which is
+   * what lets the DOM phase call it every frame.
+   */
+  edit(itemId: string | null, text: string): void;
+
+  /** The item being written on, or null. */
+  readonly editing: string | null;
+
+  /**
    * The scale board content is drawn at, `devicePixelRatio * zoom`, so the layer
    * can ask for a stored variant that suits the size rather than the source. The
    * one value here that cannot come through the scene: the scene knows board

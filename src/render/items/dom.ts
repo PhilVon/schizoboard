@@ -47,6 +47,7 @@ import {
   stockRuling,
 } from "@/render/items/paper";
 import { ItemInk } from "@/render/ink/canvas";
+import { TextEditor, type ItemEditorHooks } from "@/render/items/editor";
 import { FILM_CLASSES, filmClass, filmGrainUrl } from "@/render/items/film";
 import { counterRotate, shadowSprite, type Elevation } from "@/render/items/shadow";
 import type { ItemLayer } from "@/render/items/view";
@@ -108,6 +109,16 @@ interface View {
   bind(cold: ItemCold, assetUrl: AssetResolver, screenPx: number): void;
   /** `lift` is the scene's carry transient, 0 at rest and 1 while carried. */
   transform(x: number, y: number, rot: number, w: number, h: number, lift: number): void;
+  /**
+   * Take the text editor's field in, beside the static text it stands in for,
+   * or give it back (T-179).
+   *
+   * The field belongs to `ui/editor.ts` and outlives any one view. It is
+   * offered again on every DOM phase rather than handed over once, because
+   * these nodes are pooled and recycled between items — a field parked and
+   * forgotten would be inherited by whichever note got this node next.
+   */
+  adopt(field: HTMLTextAreaElement | null): void;
   /**
    * The item's committed ink. Identical on both archetypes, which is right —
    * every kind of paper on this board can be drawn on (DESIGN section 2.1).
@@ -200,6 +211,8 @@ class PolaroidView implements View {
   readonly el: HTMLDivElement;
   private readonly photo: HTMLImageElement;
   private readonly caption: HTMLDivElement;
+  /** The editor's field while this caption is the one being written on. */
+  private field: HTMLTextAreaElement | null = null;
   private boundAsset: string | null = null;
   private boundCold: ItemCold | null = null;
   /** The URL this view wants to be showing — see `swapPhoto`. */
@@ -389,6 +402,10 @@ class PolaroidView implements View {
       const bottom = w * FRAME_BOTTOM;
       this.frame.style.padding = `${side.toFixed(1)}px ${side.toFixed(1)}px ${bottom.toFixed(1)}px`;
       this.caption.style.fontSize = `${Math.max(9, w * 0.055).toFixed(1)}px`;
+      // The caption's size is written per width rather than declared, so the
+      // field has to be told the same number or the caption changes size the
+      // moment you click into it.
+      if (this.field) this.field.style.fontSize = this.caption.style.fontSize;
     }
     writeTransform(this.el, x, y, rot, w, h, lift);
     // Elevation before the offset: swapping sprites invalidates the written
@@ -398,9 +415,29 @@ class PolaroidView implements View {
     this.shadow.update(rot);
   }
 
+  adopt(field: HTMLTextAreaElement | null): void {
+    if (field === null) {
+      this.el.classList.remove("is-editing");
+      this.field?.remove();
+      this.field = null;
+      return;
+    }
+    this.el.classList.add("is-editing");
+    // Idempotent — re-appending a focused node blurs it, and that blur is what
+    // closes the editor. See `PaperView.adopt`.
+    if (this.field === field && field.parentNode === this.frame) return;
+    this.field = field;
+    field.className = "item-field pol-caption";
+    // Not `is-empty`: an uncaptioned photograph hides its caption, and the
+    // whole point of clicking into one is to give it a caption it has not got.
+    field.style.fontSize = this.caption.style.fontSize;
+    this.frame.append(field);
+  }
+
   release(): void {
     this.caption.textContent = "";
     this.boundCold = null;
+    this.adopt(null);
     // The photograph goes too. A pooled node keeps its subtree, so a view
     // recycled onto an item that happens to reference the same asset would
     // otherwise pass the URL guard, never request anything, and sit there
@@ -453,6 +490,8 @@ class PaperView implements View {
   private readonly grain: HTMLDivElement;
   private readonly body: HTMLDivElement;
   private boundCold: ItemCold | null = null;
+  /** The editor's field while this item is the one being written on (T-179). */
+  private field: HTMLTextAreaElement | null = null;
   readonly ink: ItemInk;
 
   constructor() {
@@ -496,10 +535,32 @@ class PaperView implements View {
     this.shadow.update(rot);
   }
 
+  adopt(field: HTMLTextAreaElement | null): void {
+    if (field === null) {
+      this.el.classList.remove("is-editing");
+      this.field?.remove();
+      this.field = null;
+      return;
+    }
+    this.el.classList.add("is-editing");
+    // Idempotent: re-appending a focused node would blur it, which is the blur
+    // that closes the editor. So the common case — the field is already here —
+    // has to cost nothing and touch nothing.
+    if (this.field === field && field.parentNode === this.surface) return;
+    this.field = field;
+    // Beside `.paper-text` and wearing its class, so the paper's hand, its
+    // metrics and its stock rules all reach the field without being restated.
+    // Beside rather than inside, because `bind` writes `textContent` on the
+    // static node and that would take the field with it.
+    field.className = "item-field paper-text";
+    this.surface.append(field);
+  }
+
   release(): void {
     this.body.textContent = "";
     this.boundCold = null;
     this.el.classList.remove("is-lifted");
+    this.adopt(null);
     this.shadow.reset();
     this.ink.release();
   }
@@ -510,6 +571,15 @@ export class DomItemLayer implements ItemLayer {
   private readonly assetUrl: AssetResolver;
   private readonly views = new Map<string, View>();
   private readonly pool: Record<Archetype, View[]> = { polaroid: [], paper: [] };
+
+  /**
+   * The caret, when there is one (T-179). Null when the layer was built with no
+   * hooks — a headless test, or the spike harness — and `edit` is then a no-op
+   * rather than a crash.
+   */
+  private readonly editor: TextEditor | null;
+  /** The view holding the field, so the previous one can be told to let go. */
+  private editorView: View | null = null;
 
   /**
    * Paint order over the **whole scene**, not over what is mounted, plus the z
@@ -552,9 +622,10 @@ export class DomItemLayer implements ItemLayer {
    */
   private readonly inkPending = new Set<string>();
 
-  constructor(host: HTMLElement, assetUrl: AssetResolver) {
+  constructor(host: HTMLElement, assetUrl: AssetResolver, editor?: ItemEditorHooks) {
     this.host = host;
     this.assetUrl = assetUrl;
+    this.editor = editor ? new TextEditor(editor) : null;
   }
 
   get mounted(): number {
@@ -655,14 +726,59 @@ export class DomItemLayer implements ItemLayer {
     return this.views.get(id)?.ink.rub(samples, size) ?? false;
   }
 
+  get editing(): string | null {
+    return this.editor?.itemId ?? null;
+  }
+
+  edit(itemId: string | null, text: string): void {
+    if (!this.editor) return;
+    if (itemId === null) this.editor.close();
+    else this.editor.open(itemId, text);
+    this.parkEditor();
+  }
+
+  /**
+   * Put the field on the view the edited item currently has, take it off
+   * whichever view had it before, and focus it once it is in the document.
+   *
+   * The layer does this rather than the editor placing itself, because only the
+   * layer knows which view an item has — and views are pooled, so "currently"
+   * is a question that has to be re-asked on every DOM phase.
+   */
+  private parkEditor(): void {
+    const editor = this.editor;
+    if (!editor) return;
+    const id = editor.itemId;
+    const view = id === null ? undefined : this.views.get(id);
+    if (this.editorView && this.editorView !== view) this.editorView.adopt(null);
+    this.editorView = view ?? null;
+    if (view) {
+      view.adopt(editor.field);
+      // Only now is the field in the document, which is the earliest a focus
+      // call does anything.
+      editor.focusParked();
+    } else {
+      editor.field.remove();
+    }
+  }
+
   sync(scene: Scene, dirty: DirtySets, visible: ReadonlySet<string> | null): void {
     if (dirty.isClean) return;
 
     const wanted = visible ?? new Set(scene.itemIds());
+    /**
+     * The note being written on stays mounted whatever the culler thinks.
+     *
+     * Unmounting it would pull the field out of the document, and a focused
+     * node removed from the document is a blur — which is the event that closes
+     * the editor. Panning far enough to cull the note you are typing into would
+     * end the sentence you were in the middle of.
+     */
+    const writing = this.editing;
 
     // Unmount anything that left the scene or the viewport.
     for (const [id, view] of this.views) {
-      if (wanted.has(id) && scene.has(id)) continue;
+      if ((wanted.has(id) || id === writing) && scene.has(id)) continue;
       view.release();
       view.el.remove();
       this.pool[view.archetype].push(view);
@@ -690,67 +806,75 @@ export class DomItemLayer implements ItemLayer {
       }
     }
 
-    for (const id of wanted) {
-      // One map lookup per item per frame, and then the typed arrays directly.
-      // This walk used to go through `poseOf`, which mints an object per item —
-      // affordable when a clean frame skipped the whole loop, and hundreds of
-      // allocations a frame now that culling makes a *pan* re-enter it.
-      const slot = scene.slotOf(id);
-      if (slot === undefined) continue;
-      const cold = scene.coldAt(slot);
-      if (!cold) continue;
+    for (const id of wanted) this.place(scene, dirty, id);
+    // And the note being written on, if the culler had left it out.
+    if (writing !== null && !wanted.has(writing)) this.place(scene, dirty, writing);
 
-      let view = this.views.get(id);
-      const isNew = view === undefined;
-      const archetype = archetypeOf(cold.type);
-
-      if (view && view.archetype !== archetype) {
-        // Type is immutable after creation, so this only happens if a peer
-        // wrote something strange. Swap rather than render the wrong thing.
-        view.release();
-        view.el.remove();
-        this.pool[view.archetype].push(view);
-        view = undefined;
-      }
-
-      if (!view) {
-        view = this.pool[archetype].pop() ?? this.create(archetype);
-        this.views.set(id, view);
-        this.host.append(view.el);
-        // Its rank is already known unless the order is about to be rebuilt
-        // anyway, so mounting costs one style write and disturbs nobody else.
-        const rank = this.rank.get(id);
-        if (rank !== undefined) view.el.style.zIndex = String(rank);
-        // Culling threw this item's canvas away when it left, which is the whole
-        // point of the eviction — so coming back means rastering again. Queued
-        // rather than done here: the DOM phase does not paint.
-        if (scene.hasInk(id)) this.inkPending.add(id);
-      }
-
-      if (isNew || dirty.all || dirty.items.has(id)) {
-        // The longest edge this item is about to occupy, in device pixels. What
-        // the resolver does with it is the resolver's business.
-        const screenPx = Math.max(scene.w[slot]!, scene.h[slot]!) * this.rasterScale;
-        view.bind(cold, this.assetUrl, screenPx);
-        view.transform(
-          // The rendered centre, not the stored one: a hanging item turns about
-          // its pin, and `drift` is the half of that which is a translation
-          // (`state/scene.ts`).
-          scene.renderX(slot),
-          scene.renderY(slot),
-          scene.renderRot(slot),
-          scene.w[slot]!,
-          scene.h[slot]!,
-          scene.lift[slot]!,
-        );
-      }
-
-    }
+    // Last, so it sees this frame's mounts: a note that has just come back into
+    // the viewport has a different view from the one it left with.
+    this.parkEditor();
 
     // `scene.size`, not `views.size`: the order covers the board, so what
     // invalidates it is an item arriving or leaving the board, never the
     // viewport. This is the comparison that used to make a pan re-sort.
     if (orderChanged || this.order.length !== scene.size) this.reorder(scene);
+  }
+
+  /** Mount `id` if it is not mounted, and write its transform if it moved. */
+  private place(scene: Scene, dirty: DirtySets, id: string): void {
+    // One map lookup per item per frame, and then the typed arrays directly.
+    // This walk used to go through `poseOf`, which mints an object per item —
+    // affordable when a clean frame skipped the whole loop, and hundreds of
+    // allocations a frame now that culling makes a *pan* re-enter it.
+    const slot = scene.slotOf(id);
+    if (slot === undefined) return;
+    const cold = scene.coldAt(slot);
+    if (!cold) return;
+
+    let view = this.views.get(id);
+    const isNew = view === undefined;
+    const archetype = archetypeOf(cold.type);
+
+    if (view && view.archetype !== archetype) {
+      // Type is immutable after creation, so this only happens if a peer
+      // wrote something strange. Swap rather than render the wrong thing.
+      view.release();
+      view.el.remove();
+      this.pool[view.archetype].push(view);
+      view = undefined;
+    }
+
+    if (!view) {
+      view = this.pool[archetype].pop() ?? this.create(archetype);
+      this.views.set(id, view);
+      this.host.append(view.el);
+      // Its rank is already known unless the order is about to be rebuilt
+      // anyway, so mounting costs one style write and disturbs nobody else.
+      const rank = this.rank.get(id);
+      if (rank !== undefined) view.el.style.zIndex = String(rank);
+      // Culling threw this item's canvas away when it left, which is the whole
+      // point of the eviction — so coming back means rastering again. Queued
+      // rather than done here: the DOM phase does not paint.
+      if (scene.hasInk(id)) this.inkPending.add(id);
+    }
+
+    if (isNew || dirty.all || dirty.items.has(id)) {
+      // The longest edge this item is about to occupy, in device pixels. What
+      // the resolver does with it is the resolver's business.
+      const screenPx = Math.max(scene.w[slot]!, scene.h[slot]!) * this.rasterScale;
+      view.bind(cold, this.assetUrl, screenPx);
+      view.transform(
+        // The rendered centre, not the stored one: a hanging item turns about
+        // its pin, and `drift` is the half of that which is a translation
+        // (`state/scene.ts`).
+        scene.renderX(slot),
+        scene.renderY(slot),
+        scene.renderRot(slot),
+        scene.w[slot]!,
+        scene.h[slot]!,
+        scene.lift[slot]!,
+      );
+    }
   }
 
   /**

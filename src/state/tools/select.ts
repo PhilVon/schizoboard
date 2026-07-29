@@ -998,6 +998,21 @@ export class SelectTool implements Tool {
       // click, so it means that one item — DESIGN section 3.8, "click to
       // select" — and the group it was standing in goes.
       ctx.selection.replace([this.pendingSelect]);
+      /**
+       * > Click into a note or a polaroid's caption area to edit.
+       * > — DESIGN section 3.6
+       *
+       * Which cannot be a plain click, because a plain click on paper is
+       * select-and-drag. Q-92 settled it as the double, and this is where the
+       * second press lands: the first one selected the item, so by now it is
+       * the already-selected one above.
+       *
+       * At the release and only if the press never became a drag, exactly as
+       * follow-the-thread and toggle-taut are — pressing twice on a note and
+       * *then* pulling means drag the note, and it must not also leave a caret
+       * behind in something the pointer has since moved off.
+       */
+      if (this.pendingDouble) ctx.edit(this.pendingSelect);
     } else if (this.pendingPin !== null && this.pendingDouble) {
       /**
        * > | Follow the thread | Double-click | Selects the entire connected

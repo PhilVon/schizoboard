@@ -92,6 +92,8 @@ beforeEach(() => {
     hitTest: () => under,
     hitPin: () => null,
     hitString: () => null,
+    // Nothing to put a caret in, in a harness with no presentation (T-179).
+    edit: () => undefined,
     held: new Set<string>(),
     write: {
       setPoses: () => {},

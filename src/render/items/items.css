@@ -391,3 +391,52 @@
 .item-paper[data-stock="legal"] .paper-text {
   line-height: 22px;
 }
+
+/* --- writing on it. DESIGN 3.6, T-179 ------------------------------------- */
+
+/*
+ * The editor's field, parked inside the item it is writing on.
+ *
+ * It wears the class of the text it stands in for — `paper-text` or
+ * `pol-caption` — so the paper's hand, its metrics and its stock rules all
+ * reach it without being restated. Everything here is either undoing a
+ * textarea's chrome or the one behaviour Q-93 asked for.
+ */
+textarea.item-field {
+  display: block;
+  margin: 0;
+  border: 0;
+  outline: none;
+  resize: none;
+  background: transparent;
+  /* A textarea does not inherit its font, but it does not need to: the class it
+   * shares with the static text sets one, and a UA rule loses to a class. What
+   * it will not inherit is the colour, which is set per element. */
+  color: inherit;
+  /* Q-93: the paper is the size it is, and the words scroll inside it while
+   * they are being written. `overlay` rather than `auto` so a scrollbar never
+   * reflows the line the caret is on. */
+  overflow-y: auto;
+  overflow-x: hidden;
+  scrollbar-width: none;
+  /* The one place on the board where a selection is wanted. */
+  -webkit-user-select: text;
+  user-select: text;
+}
+
+textarea.item-field::-webkit-scrollbar {
+  display: none;
+}
+
+/*
+ * The static text steps aside rather than being emptied, so nothing about the
+ * item's binding has to know an editor exists — `bind()` goes on writing
+ * `textContent` to a node that happens not to be showing.
+ *
+ * `visibility`, not `display`: the field is sized by the box the static text
+ * would have occupied on the polaroid, and taking it out of flow would move it.
+ */
+.item.is-editing > .paper-surface > div.paper-text,
+.item.is-editing > .pol-frame > div.pol-caption {
+  visibility: hidden;
+}

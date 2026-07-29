@@ -59,6 +59,8 @@ let writes: Write[];
 let placeSettles: Array<Map<string, WritePose>>;
 let stringSettles: Array<Map<string, WritePose>>;
 let held: Set<string>;
+/** Items the tool asked to put a caret in — `ToolContext.edit` (T-179). */
+let edits: string[];
 let ctx: ToolContext;
 
 /** Insertion order is paint order, as it is in the real layer for equal z. */
@@ -243,6 +245,7 @@ beforeEach(() => {
   placeSettles = [];
   stringSettles = [];
   held = new Set<string>();
+  edits = [];
   ctx = {
     scene,
     dirty,
@@ -251,6 +254,7 @@ beforeEach(() => {
     hitTest,
     hitPin,
     hitString,
+    edit: (itemId) => edits.push(itemId),
     held,
     write: {
       setPoses: (poses, phase) => writes.push({ kind: "poses", phase, poses: new Map(poses) }),
@@ -2909,5 +2913,102 @@ describe("a thread that is dragged carries its free pins", () => {
     down(35, 35);
     move(95, 35);
     expect(scene.pins.get("free")).toMatchObject({ wx: 360, wy: 0 });
+  });
+});
+
+/**
+ * T-179 / Q-92. Getting a caret into a note.
+ *
+ * DESIGN 3.6 says "click into a note", which cannot be literal: a plain click
+ * on paper is select-and-drag. The double is what is free — it is taken on
+ * pins and on strings, and on nothing else.
+ */
+describe("double-clicking paper to write on it", () => {
+  it("asks for a caret in the note that was pressed twice", () => {
+    paper("note", 0, 0);
+    down(0, 0);
+    up(0, 0);
+    expect(edits).toEqual([]);
+
+    downAgain(0, 0);
+    up(0, 0);
+    expect(edits).toEqual(["note"]);
+  });
+
+  it("narrows the selection to it as well, as any click on it would", () => {
+    paper("note", 0, 0);
+    paper("other", 400, 0);
+    selection.replace(["note", "other"]);
+
+    downAgain(0, 0);
+    up(0, 0);
+    expect(selection.toArray()).toEqual(["note"]);
+    expect(edits).toEqual(["note"]);
+  });
+
+  /**
+   * At the release and only if the press never travelled, exactly as
+   * follow-the-thread and toggle-taut are: pressing twice on a note and *then*
+   * pulling means drag the note, and it must not also leave a caret behind in
+   * paper the pointer has since moved off.
+   */
+  it("does not, if the second press turned into a drag", () => {
+    paper("note", 0, 0);
+    down(0, 0);
+    up(0, 0);
+    downAgain(0, 0);
+    move(60, 30);
+    up(60, 30);
+    expect(edits).toEqual([]);
+    // It was a drag, and it moved the paper.
+    expect(writes.some((w) => w.kind === "poses")).toBe(true);
+  });
+
+  /**
+   * The one that matters most, and the one the other cases miss: a *single*
+   * click on an already-selected note goes down the same branch the double
+   * does — it is the branch for "a press on a selected item that never became
+   * a drag". Without the flag, every click on a selected note would drop a
+   * caret in it, and paper would stop being draggable once it was selected.
+   */
+  it("does not open on a plain click on a note that is already selected", () => {
+    paper("note", 0, 0);
+    selection.replace(["note"]);
+    down(0, 0);
+    up(0, 0);
+    expect(selection.toArray()).toEqual(["note"]);
+    expect(edits).toEqual([]);
+  });
+
+  it("does not, for a double-click on bare cork", () => {
+    paper("note", 0, 0);
+    down(400, 400);
+    up(400, 400);
+    downAgain(400, 400);
+    up(400, 400);
+    expect(edits).toEqual([]);
+  });
+
+  /**
+   * The first press of the double selects, the second one writes. A note that
+   * was *already* selected therefore reaches the caret on the very first press
+   * — which is the same asymmetry a click on an already-selected item has, and
+   * it is why the caret hangs off `pendingSelect` rather than off the hit.
+   */
+  it("takes the double on an already-selected note without a spare click", () => {
+    paper("note", 0, 0);
+    selection.replace(["note"]);
+    downAgain(0, 0);
+    up(0, 0);
+    expect(edits).toEqual(["note"]);
+  });
+
+  it("leaves a shift-click alone, which is a selection and not a caret", () => {
+    paper("note", 0, 0);
+    paper("other", 400, 0);
+    selection.replace(["other"]);
+    downAgain(0, 0, { shift: true });
+    up(0, 0);
+    expect(edits).toEqual([]);
   });
 });

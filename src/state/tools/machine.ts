@@ -64,6 +64,14 @@ export interface ToolMachineOptions {
   hitPin: (screenX: number, screenY: number) => string | null;
   /** Board space, and against the rope particles — see `ToolContext.hitString`. */
   hitString: (boardX: number, boardY: number, reach: number) => StringHit | null;
+  /**
+   * Put a caret in an item's text — see `ToolContext.edit`.
+   *
+   * Optional here alone: a machine driven in a test has no presentation to put
+   * a caret in, and defaulting to a no-op is what keeps every one of those
+   * harnesses from having to declare it. The real one is wired in `app/main.ts`.
+   */
+  edit?: (itemId: string) => void;
   /** True when navigation owns the pointer — space held, or mid-pan. */
   suppressed?: () => boolean;
   /** Wall clock, injected so the double-click window is testable — the same
@@ -158,6 +166,7 @@ export class ToolMachine {
       hitTest: options.hitTest,
       hitPin: options.hitPin,
       hitString: options.hitString,
+      edit: options.edit ?? (() => undefined),
       held: this.heldKeys,
     };
     this.attach();
@@ -371,6 +380,22 @@ export class ToolMachine {
 
     add(this.target, "pointerdown", (e: PointerEvent) => {
       if (e.button !== 0 || this.suppressed() || isChromeTarget(e.target)) return;
+      /**
+       * A press inside a note being written on is text, not board input
+       * (T-179).
+       *
+       * `isChromeTarget` cannot answer this one: the editor's field is parked
+       * inside the item's own node, in the world layer, because that is what
+       * gives it the paper's hand and the item's transform for free. So it is
+       * board content by position and a text field by nature, and the second
+       * one wins — both `preventDefault` below, which would stop the field
+       * taking focus, and the drag this press would otherwise start on the very
+       * note the caret is in.
+       *
+       * The keyboard listeners below have asked this question since before
+       * there was anything to ask it about; this is the pointer catching up.
+       */
+      if (isTextTarget(e.target)) return;
       // One gesture at a time. A second finger arriving mid-drag would
       // otherwise take the machine over, and the first finger's release —
       // filtered out by the pointer-id check below — would never arrive, so

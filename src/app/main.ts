@@ -239,7 +239,26 @@ async function boot(): Promise<void> {
     // mentioned. Both are blank, and the difference is one repaint.
     return { url: "", phase: assets.phase(sha256), fraction: assets.fraction(sha256) };
   };
-  const items = new DomItemLayer(world.layers.world, assetUrl);
+  /** Phase 3, after the torsion: the note being written on, laid flat (T-178). */
+  const flatten = new Flatten();
+  /**
+   * The caret, when there is one (DESIGN section 3.6).
+   *
+   * The layer owns the field — see `render/items/view.ts` on why nothing that
+   * crosses that seam may be an element — and these two are what it reports.
+   * `onInput` is wired to the document in T-180; for now the field is a
+   * scratchpad, and closing it throws the text away.
+   */
+  const items = new DomItemLayer(world.layers.world, assetUrl, {
+    onInput: () => {
+      // T-180.
+    },
+    onClosed: (id) => {
+      // Let the paper back down. The clock runs from wherever it got to, so
+      // clicking away mid-rise does not snap.
+      if (flatten.itemId === id) flatten.close();
+    },
+  });
   /** Ink on the bare cork — its own layer, under the string and under the paper
    *  (T-61). Nothing else on this board draws below the items. */
   const boardInk = new BoardInkLayer(world.layers.boardInk);
@@ -295,8 +314,6 @@ async function boot(): Promise<void> {
   /** Phase 3, the other half. Empty until something makes a string (T-41), and
    *  free while it is — a rope set with no ropes steps nothing. */
   const ropes = new RopeSet();
-  /** Phase 3, after the torsion: the note being written on, laid flat (T-178). */
-  const flatten = new Flatten();
   /**
    * Phase 2: every other peer's in-flight drag, rendered 100 ms in the past.
    *
@@ -784,6 +801,17 @@ async function boot(): Promise<void> {
     hitTest: hitItem,
     hitPin,
     hitString,
+    /**
+     * A double-click on paper puts a caret in it (Q-92).
+     *
+     * The flatten first, so the lay-flat and the caret start on the same frame
+     * — `state/flatten.ts` steps in phase 3 and this is phase 1, so the paper
+     * has already begun to turn by the time the field is parked in phase 5.
+     */
+    edit: (itemId) => {
+      flatten.open(itemId);
+      items.edit(itemId, scene.cold(itemId)?.text ?? "");
+    },
     // Space+drag and middle-drag belong to the camera, not to the board.
     suppressed: () => navigation.panReady,
   });
@@ -1664,6 +1692,15 @@ async function boot(): Promise<void> {
   loop.on("dom", () => {
     world.applyCamera(camera);
     cork.apply(camera);
+    /**
+     * The paper somebody is writing on can be taken away underneath them — a
+     * peer's delete, an undo, a document that resynced. Closing it here rather
+     * than waiting for the field to be pulled out of the document, because a
+     * focused node that is removed does not reliably fire `blur`, and the one
+     * thing worse than losing the note is keeping a caret that belongs to it.
+     */
+    const writing = items.editing;
+    if (writing !== null && !scene.has(writing)) items.edit(null, "");
     items.sync(scene, dirty, culler.visible);
     pins.sync(scene, camera, dirty, hoveredPin);
     applyCursor();

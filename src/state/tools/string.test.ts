@@ -86,6 +86,8 @@ beforeEach(() => {
     dirty,
     camera,
     selection: new Selection(),
+    // Nothing to put a caret in, in a harness with no presentation (T-179).
+    edit: () => undefined,
     held: new Set<string>(),
     hitTest: (bx, by) => {
       for (const id of scene.itemIds()) {

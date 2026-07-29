@@ -489,6 +489,21 @@ export interface ToolContext {
    * "was it pressed?" at the start of one.
    */
   readonly held: ReadonlySet<string>;
+  /**
+   * Put the caret in an item's text — DESIGN section 3.6, and Q-92's
+   * double-click.
+   *
+   * Injected like `hitTest` and for the same reason: writing on a note means a
+   * caret, a caret means a real text field, and a tool never touches the DOM.
+   * What the tool knows is which piece of paper the pointer meant; everything
+   * after that belongs to whoever owns the presentation.
+   *
+   * Not on `BoardWriter`, because it is not a write. Opening an editor changes
+   * nothing about the document and nothing a peer can see — it is a statement
+   * about where this person's attention is, and the text it produces arrives
+   * through the ordinary character-level writes afterwards.
+   */
+  edit(itemId: string): void;
 }
 
 export interface Tool {

@@ -485,6 +485,31 @@ describe("the 1-9 slack presets", () => {
   });
 
   /**
+   * And neither is a press in it (T-179).
+   *
+   * `isChromeTarget` cannot answer this one. The editor's field is parked
+   * inside the item's own node, in the world layer, so it is board content by
+   * position and a text field by nature — and a press that reached the machine
+   * would both `preventDefault` the focus away and start a drag on the very
+   * note the caret is in.
+   */
+  it("and neither is a press inside the field", () => {
+    const field = document.createElement("textarea");
+    root.append(field);
+    pointer("pointerdown", { button: 0, pointerId: 9, clientX: 4, clientY: 4, target: field });
+    machine.flush(16);
+    expect(tool.seen).toEqual([]);
+  });
+
+  it("still takes a press on the paper around it", () => {
+    const field = document.createElement("textarea");
+    root.append(field);
+    pointer("pointerdown", { button: 0, pointerId: 9, clientX: 4, clientY: 4 });
+    machine.flush(16);
+    expect(tool.seen.map((i) => i.kind)).toEqual(["down"]);
+  });
+
+  /**
    * `B` tucks a selected string behind the items — DESIGN section 3.4's row,
    * whose context menu arrives with the restyle verbs (T-52). It rides here
    * because it is forwarded on the same terms as the digits: bare only, and
