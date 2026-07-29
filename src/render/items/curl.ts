@@ -25,21 +25,31 @@
  * scrap or a poster. That is also what makes the four-pin case fall out — pins
  * at the corners are inside [`HOLD_NEAR`] of them at any sheet size.
  *
- * ## Why the shading sits on the paper and the shadow sits over everything
+ * ## Why all of it sits on the paper
  *
  * A corner lifting off the cork does two things. Its face bends, which is a
- * gradient *on* the sheet and therefore clipped by the sheet's own ragged
- * silhouette (`edge.ts`). And it casts a shadow, which lands on the cork when
+ * gradient *on* the sheet. And it casts a shadow, which lands on the cork when
  * the corner is on the far side of the light and **on the sheet itself** when it
  * is on the near side — the shadow of a lifted top-left corner falls down and to
- * the right, which is onto the paper. So the shadow layer is a sibling *over*
- * the surface, unclipped, and it darkens whichever of the two it happens to be
- * above. A layer behind the paper would have shown two of the four corners and
- * silently swallowed the other two.
+ * the right, which is onto the paper.
  *
- * The light does not rotate with the sheet, so the shadow layer's displacement
- * is counter-rotated out of the item's frame — the same move, for the same
- * reason, that `shadow.ts` makes for the item's own shadow.
+ * That second half had a layer of its own for two versions, a sibling over the
+ * surface and unclipped, so that it could darken the cork as well as the sheet.
+ * It is gone, and `items.css` argues the case at length. In one line: an
+ * unclipped layer has to draw its own boundary, a cast shadow's boundary is the
+ * paper's edge slid along the light, and every cheap way to draw that leaves a
+ * hard edge — which lands on flat paper at three corners out of four and reads
+ * as a rectangle laid over the sheet. Clipped by the silhouette, the sheet's own
+ * outline is the only boundary, and there is nothing left to give the trick
+ * away. The price is the shadow a corner would throw onto a *neighbouring* note,
+ * which the item's nine-slice already half carries.
+ *
+ * What is left here is one number per corner and its sign: [`cornerFace`] says
+ * how far into or away from the light each flap has tipped, and the stylesheet
+ * reads the two signs as two different things — a highlight and a shading on the
+ * away side, a cast shadow on the near one. The light does not rotate with the
+ * sheet, which is why that number is computed per frame from the drawn rotation
+ * rather than baked per item.
  */
 
 import type { Point } from "@/lib/rotate";
@@ -186,20 +196,3 @@ export function cornerCurl(
   // this and the strips themselves are drawn off the one answer.
   for (let c = 0; c < out.length; c++) if (taped & (1 << c)) out[c] = 0;
 }
-
-/**
- * How far a lifted corner's shadow is thrown, in board units.
- *
- * Bigger than `RESTING_LIFT`, which is how far the *sheet* is off the cork,
- * because a corner that has curled is further off it than the middle of the
- * sheet — that is what curling means.
- *
- * And bigger than the shadow's own radius is wide, which is the part that was
- * wrong at 7. A radial gradient is symmetric, so a blob of radius r displaced by
- * d spills `r - d` back the way the light came from — and a corner with shadow
- * *up-light* of it is the one thing DESIGN 4.1 says breaks a surface fastest.
- * Thrown far enough to clear the corner, the same blob reads as what it is: the
- * shadow of a flap, on the paper at the corners the light reaches over and on
- * the cork at the ones it does not.
- */
-export const CURL_THROW = 18;

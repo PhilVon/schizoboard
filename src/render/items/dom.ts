@@ -46,13 +46,7 @@ import {
   stockBase,
   stockRuling,
 } from "@/render/items/paper";
-import {
-  cornerCurl,
-  cornerFace,
-  CURL_PROPS,
-  CURL_THROW,
-  FACE_PROPS,
-} from "@/render/items/curl";
+import { cornerCurl, cornerFace, CURL_PROPS, FACE_PROPS } from "@/render/items/curl";
 import { EDGE_PROPS, sheetEdge, tearEdge } from "@/render/items/edge";
 import { ItemInk } from "@/render/ink/canvas";
 import { TextEditor, type ItemEditorHooks } from "@/render/items/editor";
@@ -833,7 +827,6 @@ class PaperView implements View {
   private readonly grain: HTMLDivElement;
   private readonly tear: HTMLDivElement;
   private readonly bend: HTMLDivElement;
-  private readonly lift: HTMLDivElement;
   private readonly body: HTMLDivElement;
   private readonly age: HTMLDivElement;
   private readonly worn: HTMLDivElement;
@@ -846,7 +839,7 @@ class PaperView implements View {
    *
    * Held because the *lighting* of a crease is a question about the board and
    * the answer changes when the sheet turns, which is a `transform` and not a
-   * bind — the same shape as `liftRot` below, and for the same reason.
+   * bind — the same shape as `facedRot` below, and for the same reason.
    */
   private creaseRot = Number.NaN;
   /** The rotation `--crease-face` was last written for. */
@@ -858,8 +851,6 @@ class PaperView implements View {
    * the first offer always writes, whatever it is.
    */
   private readonly written = new Float32Array(CURL_PROPS.length + FACE_PROPS.length).fill(-9);
-  /** The rotation the lift shadow's displacement was counter-rotated for. */
-  private liftRot = Number.NaN;
   readonly ink: ItemInk;
 
   constructor() {
@@ -884,17 +875,13 @@ class PaperView implements View {
     this.body = document.createElement("div");
     this.body.className = "paper-text";
 
-    // The bend in a curling corner: on the sheet, so the ragged silhouette
-    // clips it, and over the writing, because a sheet that bends bends what is
-    // written on it too.
+    // The bend in a curling corner, and the shadow it throws: on the sheet, so
+    // the ragged silhouette clips both, and over the writing, because a sheet
+    // that bends bends what is written on it too. There was a second, unclipped
+    // layer for the shadow and `items.css` says at length why there is not one
+    // now — the short of it is that its own boundary became the visible edge.
     this.bend = document.createElement("div");
     this.bend.className = "paper-bend";
-
-    // And what the corner throws. Outside the surface and *over* it, because a
-    // lifted corner on the light side of the sheet casts onto the sheet and one
-    // on the far side casts onto the cork — see `curl.ts`.
-    this.lift = document.createElement("div");
-    this.lift.className = "paper-lift";
 
     // The sheet going brown, and the marks on it. Both always in the tree and
     // both painting nothing until `is-aged` — the same bargain `.paper-tear` and
@@ -917,7 +904,7 @@ class PaperView implements View {
     this.surface.append(this.grain, this.tear, this.age, this.body, this.bend, this.worn);
     // Tape last, because it is stuck over the front of the sheet — and over the
     // curl, since a taped corner is a corner that is not lifting.
-    this.el.append(this.shadow.el, this.surface, this.lift, ...this.tape.nodes);
+    this.el.append(this.shadow.el, this.surface, ...this.tape.nodes);
   }
 
   bind(cold: ItemCold, _assetUrl: AssetResolver, _screenPx: number, wear: number): void {
@@ -966,11 +953,6 @@ class PaperView implements View {
     setCarried(this.el, this.shadow, lift);
     this.shadow.update(rot);
     this.tape.update(rot);
-    if (rot !== this.liftRot) {
-      this.liftRot = rot;
-      const throw_ = counterRotate(LIGHT_DX * CURL_THROW, LIGHT_DY * CURL_THROW, rot);
-      this.lift.style.transform = `translate(${throw_.x.toFixed(2)}px, ${throw_.y.toFixed(2)}px)`;
-    }
     // Which flank of the fold catches the light. Guarded on the rotation on its
     // own — the crease itself is the seed's and never moves in the sheet — and
     // skipped entirely on the sheets that have no crease, which on a young board
@@ -1096,7 +1078,6 @@ class PaperView implements View {
     this.boundWear = -1;
     this.creaseRot = Number.NaN;
     this.facedRot = Number.NaN;
-    this.liftRot = Number.NaN;
     this.tape.release();
     this.adopt(null);
     this.shadow.reset();

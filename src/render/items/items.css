@@ -724,158 +724,204 @@
  * mount, so a sheet whose view has not been told yet — and a polaroid, and any
  * caller with no pins wired up — is flat instead of maximally curled.
  *
- * Gradient radii are in board units, so a curl is the same physical size on a
+ * Every length is in board units, so a curl is the same physical size on a
  * scrap and on a poster. The same reasoning as the ragged edge's offsets, and
  * the same reason percentages would have been wrong: a corner does not lift
  * proportionally more because the sheet is bigger.
+ *
+ * ## One layer, and it is inside the sheet
+ *
+ * There were two: this, and a `.paper-lift` sibling *over* everything, carrying
+ * the shadow the corner throws — outside the silhouette, because a corner that
+ * lifts on the light side of a sheet casts onto the sheet and one on the far
+ * side casts onto the cork, and a layer tucked behind the paper would have drawn
+ * two of the four and swallowed the other two.
+ *
+ * It is gone, and the argument for it is the reason. An unclipped layer has to
+ * bound its own shadows, and a cast shadow's bounds are the two edges of the
+ * sheet that meet at the corner, slid along the light. Every way of drawing that
+ * cheaply — a background tile, a clip path — puts a **hard edge** at those
+ * bounds, and the hard edge only stays invisible while it lies on the paper's
+ * own silhouette. Displace it along the light, which is the entire point of a
+ * cast shadow, and three of the four corners slide their boundary *inboard*,
+ * onto flat paper, where it reads as a grey rectangle laid over the sheet. Only
+ * the corner the light runs off — the bottom right, under this board's one light
+ * — moves both of its bounds off the sheet and survives. Phil caught it on
+ * sight, corner by corner, and named the one that was right.
+ *
+ * Softening the bound is not available: it is at distance zero from the corner
+ * along the paper's edge, so there is nowhere for it to fade. Blurring the layer
+ * is what DESIGN 9.4 forbids outright. So the shadow moves onto the sheet, where
+ * the silhouette clips it for free and no boundary of ours is ever the visible
+ * one — the far-side flap's shading and, at a corner turned into the light, the
+ * band it throws down-light of the fold. What is lost is the shadow landing on a
+ * *neighbouring* note, which is real, and small: the item's own nine-slice
+ * already darkens what a sheet overlaps, and a corner curls "very slightly".
  */
 
-.paper-bend,
-.paper-lift {
+.paper-bend {
   position: absolute;
   pointer-events: none;
 }
 
 /*
- * The bend, on the paper: two layers per corner.
+ * ## Why every gradient here runs on a diagonal and none of them is round
  *
- * **The lit one** shows only where a flap has tipped *toward* the light —
- * `--face-*` is signed, and an alpha that comes out negative clamps to zero
- * rather than dropping the layer, so one number drives both this and its
- * opposite below. Which corner that is depends on the light and on how the sheet
- * is turned, and both are in the number: a note rotated far enough swaps which
- * of its corners catches the light, exactly as a real one would.
+ * A sheet lifting at a corner bends about a **line**. Whatever the profile of
+ * the bend — a soft roll or a folded dog-ear — every contour of equal height
+ * runs parallel to that line, so every contour of equal shading does too. The
+ * shape is a triangle: two sides are the paper's own edges and the third is the
+ * fold. Nothing about it is a circle at any point.
  *
- * **The dark one** carries two separate things in the same warm brown, which is
- * why they can share a layer. Its centre is the far-side flap — the mirror of
- * the highlight, off the same signed number — and its outer ring is the crease,
- * which is where the sheet bends and is there whichever way the corner points.
- * The crease is `--curl-*` and the tip is `--face-*`, summed in one `calc()`.
+ * The first version of this was built out of `radial-gradient`s centred on the
+ * corner, and the first version was wrong for exactly that reason. Its shading
+ * was a disc and its crease was an arc, and Phil read the result as "the shadow
+ * of a circle rather than the actual corners that are lifted" — worst at the
+ * bottom pair, which is the fully-curled pair on a note hanging off one pin, and
+ * worst of all where one note overlapped another, because a disc that is
+ * camouflaged against cork is unmistakable against a white sheet.
  *
- * Warm brown rather than grey, under the rule the item shadow is written to
- * (DESIGN 4.1: shadow colour is never black), because this is the same light
- * falling on the same paper.
- */
-/*
- * Each gradient is anchored on the corner of the **paper**, not on the corner of
- * the item's box — `--edge-*` is how far in the silhouette put it (`edge.ts`).
+ * `linear-gradient` at 135°/225°/315°/45° is the whole repair, and it is not
+ * an approximation of a diagonal — it is exact. A gradient's colour stops are
+ * measured along its gradient line from the point whose perpendicular passes
+ * through the box corner *behind* the direction of travel, which for those four
+ * angles is the top-left, top-right, bottom-right and bottom-left corner
+ * respectively. So a stop at `40px` is the locus of points 40 board units from
+ * that corner measured square to the fold — a straight line across the corner —
+ * and it stays that line whatever the sheet's aspect, which is the one thing the
+ * radial version needed a `calc()` per axis to fake and still got wrong.
+ *
+ * And a band that has faded out by its last stop paints nothing past it, so the
+ * box itself does the clipping: on any sheet bigger than the band is wide, four
+ * full-box gradients *are* four corner triangles, with no mask, no clip path and
+ * no per-corner tile.
+ *
+ * ## Anchoring on the paper rather than on the box
+ *
+ * `--tip-*` is how far along that diagonal the paper's corner is, given how far
+ * in from each edge the ragged silhouette put it (`--edge-*`, from `edge.ts`).
+ * Every stop below is measured from there rather than from the box corner. It is
+ * one projection — a point `(dx, dy)` sits `(dx + dy) / sqrt(2)` along a 45°
+ * gradient line — so the whole correction is a single length per corner instead
+ * of a pair of coordinates per stop.
+ *
  * The two differ by a couple of board units on an ordinary sheet and by most of
- * a centimetre on a torn head, and a fold centred on the box is a fold whose
- * highlight the silhouette has already clipped away: the bend and the edge it
- * belongs to visibly disagree, which is what gave the first version of this its
- * halo. The `0px` fallbacks are the untorn rectangle, so a polaroid or a caller
- * that never wrote them is simply square.
+ * a centimetre on a torn head, and that matters here for the same reason it
+ * mattered to the radial version: a fold measured from the box is a fold the
+ * silhouette has already eaten into. A corner that has been torn away has less
+ * paper left to curl, and the bend should move in with it.
  */
 .paper-bend {
   inset: 0;
+  --tip-tl: calc(0.7071 * (var(--edge-tl-x, 0px) + var(--edge-tl-y, 0px)));
+  --tip-tr: calc(0.7071 * (var(--edge-tr-x, 0px) + var(--edge-tr-y, 0px)));
+  --tip-br: calc(0.7071 * (var(--edge-br-x, 0px) + var(--edge-br-y, 0px)));
+  --tip-bl: calc(0.7071 * (var(--edge-bl-x, 0px) + var(--edge-bl-y, 0px)));
+
+  /*
+   * Two layers per corner.
+   *
+   * **The lit one** shows only where a flap has tipped *toward* the light —
+   * `--face-*` is signed, and an alpha that comes out negative clamps to zero
+   * rather than dropping the layer, so one number drives both this and its
+   * opposite below. Which corner that is depends on the light and on how the
+   * sheet is turned, and both are in the number: a note rotated far enough swaps
+   * which of its corners catches the light, exactly as a real one would.
+   *
+   * **The dark one** carries three things in the same warm brown, in the order a
+   * walk inward from the corner meets them.
+   *
+   *   0 -> 36    the far-side flap, the mirror of the highlight above and off
+   *              the same signed number
+   *   32 -> 44   a very faint foot where the roll leaves the paper. `--curl-*`
+   *              and not `--face-*`, because it is there whichever way the
+   *              corner points: a lifted corner shades its own base even when
+   *              its face is turned along the light and has no tone of its own
+   *   44 -> 86   and the shadow the flap throws, which is `--face-*` the other
+   *              way up — a corner tipped *into* the light stands over the sheet
+   *              and darkens it down-light of the fold, which is inboard. This
+   *              is the whole of the cast shadow now, and it is here rather than
+   *              on a layer of its own because here the silhouette clips it
+   *
+   * Both flap ramps fall *away* from the tip and are gone a little before the
+   * sheet goes flat. That direction is the curl: a rolled corner is furthest off
+   * the paper at its tip and flush with it where it lands, so the tone follows
+   * the height. There is no hard line anywhere in the figure — the shape reads
+   * because the contours are straight and parallel, not because anything is
+   * crisp. A version with a sharp crease at the fold read as a folded panel
+   * stuck to the sheet, and a version with a hard-edged cast shadow read as a
+   * grey rectangle laid over it.
+   *
+   * Warm brown rather than grey, under the rule the item shadow is written to
+   * (DESIGN 4.1: shadow colour is never black), because this is the same light
+   * falling on the same paper.
+   */
   background:
     /* the lit flaps */
-    radial-gradient(
-      38px 38px at var(--edge-tl-x, 0px) var(--edge-tl-y, 0px),
-      rgba(255, 253, 246, calc(0.4 * var(--face-tl, 0))) 0%,
-      rgba(255, 253, 246, calc(0.15 * var(--face-tl, 0))) 30%,
-      rgba(255, 253, 246, 0) 78%
+    linear-gradient(
+      135deg,
+      rgba(255, 253, 246, calc(0.32 * var(--face-tl, 0))) var(--tip-tl),
+      rgba(255, 253, 246, calc(0.19 * var(--face-tl, 0))) calc(var(--tip-tl) + 18px),
+      rgba(255, 253, 246, 0) calc(var(--tip-tl) + 36px)
     ),
-    radial-gradient(
-      38px 38px at calc(100% - var(--edge-tr-x, 0px)) var(--edge-tr-y, 0px),
-      rgba(255, 253, 246, calc(0.4 * var(--face-tr, 0))) 0%,
-      rgba(255, 253, 246, calc(0.15 * var(--face-tr, 0))) 30%,
-      rgba(255, 253, 246, 0) 78%
+    linear-gradient(
+      225deg,
+      rgba(255, 253, 246, calc(0.32 * var(--face-tr, 0))) var(--tip-tr),
+      rgba(255, 253, 246, calc(0.19 * var(--face-tr, 0))) calc(var(--tip-tr) + 18px),
+      rgba(255, 253, 246, 0) calc(var(--tip-tr) + 36px)
     ),
-    radial-gradient(
-      38px 38px at calc(100% - var(--edge-br-x, 0px)) calc(100% - var(--edge-br-y, 0px)),
-      rgba(255, 253, 246, calc(0.4 * var(--face-br, 0))) 0%,
-      rgba(255, 253, 246, calc(0.15 * var(--face-br, 0))) 30%,
-      rgba(255, 253, 246, 0) 78%
+    linear-gradient(
+      315deg,
+      rgba(255, 253, 246, calc(0.32 * var(--face-br, 0))) var(--tip-br),
+      rgba(255, 253, 246, calc(0.19 * var(--face-br, 0))) calc(var(--tip-br) + 18px),
+      rgba(255, 253, 246, 0) calc(var(--tip-br) + 36px)
     ),
-    radial-gradient(
-      38px 38px at var(--edge-bl-x, 0px) calc(100% - var(--edge-bl-y, 0px)),
-      rgba(255, 253, 246, calc(0.4 * var(--face-bl, 0))) 0%,
-      rgba(255, 253, 246, calc(0.15 * var(--face-bl, 0))) 30%,
-      rgba(255, 253, 246, 0) 78%
+    linear-gradient(
+      45deg,
+      rgba(255, 253, 246, calc(0.32 * var(--face-bl, 0))) var(--tip-bl),
+      rgba(255, 253, 246, calc(0.19 * var(--face-bl, 0))) calc(var(--tip-bl) + 18px),
+      rgba(255, 253, 246, 0) calc(var(--tip-bl) + 36px)
     ),
-    /* the shaded flaps, and the crease every corner has */
-    radial-gradient(
-      44px 44px at var(--edge-tl-x, 0px) var(--edge-tl-y, 0px),
-      rgba(88, 66, 40, calc(-0.3 * var(--face-tl, 0))) 0%,
-      rgba(96, 73, 44, calc(0.05 * var(--curl-tl, 0) - 0.1 * var(--face-tl, 0))) 32%,
-      rgba(104, 80, 48, calc(0.13 * var(--curl-tl, 0))) 60%,
-      rgba(104, 80, 48, 0) 100%
+    /* the shaded flaps, the foot of each roll, and what a lit corner throws */
+    linear-gradient(
+      135deg,
+      rgba(88, 66, 40, calc(-0.38 * var(--face-tl, 0))) var(--tip-tl),
+      rgba(92, 70, 42, calc(-0.24 * var(--face-tl, 0))) calc(var(--tip-tl) + 18px),
+      rgba(104, 80, 48, calc(0.08 * var(--curl-tl, 0))) calc(var(--tip-tl) + 32px),
+      rgba(104, 80, 48, calc(0.03 * var(--curl-tl, 0) + 0.2 * var(--face-tl, 0)))
+        calc(var(--tip-tl) + 44px),
+      rgba(104, 80, 48, calc(0.11 * var(--face-tl, 0))) calc(var(--tip-tl) + 64px),
+      rgba(104, 80, 48, 0) calc(var(--tip-tl) + 86px)
     ),
-    radial-gradient(
-      44px 44px at calc(100% - var(--edge-tr-x, 0px)) var(--edge-tr-y, 0px),
-      rgba(88, 66, 40, calc(-0.3 * var(--face-tr, 0))) 0%,
-      rgba(96, 73, 44, calc(0.05 * var(--curl-tr, 0) - 0.1 * var(--face-tr, 0))) 32%,
-      rgba(104, 80, 48, calc(0.13 * var(--curl-tr, 0))) 60%,
-      rgba(104, 80, 48, 0) 100%
+    linear-gradient(
+      225deg,
+      rgba(88, 66, 40, calc(-0.38 * var(--face-tr, 0))) var(--tip-tr),
+      rgba(92, 70, 42, calc(-0.24 * var(--face-tr, 0))) calc(var(--tip-tr) + 18px),
+      rgba(104, 80, 48, calc(0.08 * var(--curl-tr, 0))) calc(var(--tip-tr) + 32px),
+      rgba(104, 80, 48, calc(0.03 * var(--curl-tr, 0) + 0.2 * var(--face-tr, 0)))
+        calc(var(--tip-tr) + 44px),
+      rgba(104, 80, 48, calc(0.11 * var(--face-tr, 0))) calc(var(--tip-tr) + 64px),
+      rgba(104, 80, 48, 0) calc(var(--tip-tr) + 86px)
     ),
-    radial-gradient(
-      44px 44px at calc(100% - var(--edge-br-x, 0px)) calc(100% - var(--edge-br-y, 0px)),
-      rgba(88, 66, 40, calc(-0.3 * var(--face-br, 0))) 0%,
-      rgba(96, 73, 44, calc(0.05 * var(--curl-br, 0) - 0.1 * var(--face-br, 0))) 32%,
-      rgba(104, 80, 48, calc(0.13 * var(--curl-br, 0))) 60%,
-      rgba(104, 80, 48, 0) 100%
+    linear-gradient(
+      315deg,
+      rgba(88, 66, 40, calc(-0.38 * var(--face-br, 0))) var(--tip-br),
+      rgba(92, 70, 42, calc(-0.24 * var(--face-br, 0))) calc(var(--tip-br) + 18px),
+      rgba(104, 80, 48, calc(0.08 * var(--curl-br, 0))) calc(var(--tip-br) + 32px),
+      rgba(104, 80, 48, calc(0.03 * var(--curl-br, 0) + 0.2 * var(--face-br, 0)))
+        calc(var(--tip-br) + 44px),
+      rgba(104, 80, 48, calc(0.11 * var(--face-br, 0))) calc(var(--tip-br) + 64px),
+      rgba(104, 80, 48, 0) calc(var(--tip-br) + 86px)
     ),
-    radial-gradient(
-      44px 44px at var(--edge-bl-x, 0px) calc(100% - var(--edge-bl-y, 0px)),
-      rgba(88, 66, 40, calc(-0.3 * var(--face-bl, 0))) 0%,
-      rgba(96, 73, 44, calc(0.05 * var(--curl-bl, 0) - 0.1 * var(--face-bl, 0))) 32%,
-      rgba(104, 80, 48, calc(0.13 * var(--curl-bl, 0))) 60%,
-      rgba(104, 80, 48, 0) 100%
-    );
-}
-
-/*
- * And what the corner throws.
- *
- * Outside the sheet's box by `CURL_PAD` on every side and *over* the sheet
- * rather than behind it, because half the corners cast onto the cork and half
- * cast onto the paper — `curl.ts` says why at length. The corners of the paper
- * are therefore at `CURL_PAD` in from this node's own edges.
- *
- * The whole node is displaced along the board's one light by the view, which
- * counter-rotates it out of the item's frame so that a note turned on its side
- * is not lit from its own private direction (`shadow.ts`).
- */
-/*
- * `--lift-pad` is how far outside the sheet this node reaches, and it has to
- * clear `CURL_THROW` plus the blob's own radius or the far corner's shadow is
- * cut off square — which is a rectangle, on the one layer whose whole job is to
- * not look like one. `SHADOW_PAD` in `shadow.ts` is the budget it spends: the
- * culler pads item bounds by that, and anything reaching past it would pop in
- * and out at the edge of the screen.
- */
-.paper-lift {
-  --lift-pad: 44px;
-  inset: calc(-1 * var(--lift-pad));
-  background:
-    radial-gradient(
-      24px 24px at calc(var(--lift-pad) + var(--edge-tl-x, 0px))
-        calc(var(--lift-pad) + var(--edge-tl-y, 0px)),
-      rgba(38, 24, 12, calc(0.26 * var(--curl-tl, 0))) 0%,
-      rgba(38, 24, 12, calc(0.13 * var(--curl-tl, 0))) 42%,
-      rgba(38, 24, 12, 0) 100%
-    ),
-    radial-gradient(
-      24px 24px at calc(100% - var(--lift-pad) - var(--edge-tr-x, 0px))
-        calc(var(--lift-pad) + var(--edge-tr-y, 0px)),
-      rgba(38, 24, 12, calc(0.26 * var(--curl-tr, 0))) 0%,
-      rgba(38, 24, 12, calc(0.13 * var(--curl-tr, 0))) 42%,
-      rgba(38, 24, 12, 0) 100%
-    ),
-    radial-gradient(
-      24px 24px at calc(100% - var(--lift-pad) - var(--edge-br-x, 0px))
-        calc(100% - var(--lift-pad) - var(--edge-br-y, 0px)),
-      rgba(38, 24, 12, calc(0.26 * var(--curl-br, 0))) 0%,
-      rgba(38, 24, 12, calc(0.13 * var(--curl-br, 0))) 42%,
-      rgba(38, 24, 12, 0) 100%
-    ),
-    radial-gradient(
-      24px 24px at calc(var(--lift-pad) + var(--edge-bl-x, 0px))
-        calc(100% - var(--lift-pad) - var(--edge-bl-y, 0px)),
-      rgba(38, 24, 12, calc(0.26 * var(--curl-bl, 0))) 0%,
-      rgba(38, 24, 12, calc(0.13 * var(--curl-bl, 0))) 42%,
-      rgba(38, 24, 12, 0) 100%
+    linear-gradient(
+      45deg,
+      rgba(88, 66, 40, calc(-0.38 * var(--face-bl, 0))) var(--tip-bl),
+      rgba(92, 70, 42, calc(-0.24 * var(--face-bl, 0))) calc(var(--tip-bl) + 18px),
+      rgba(104, 80, 48, calc(0.08 * var(--curl-bl, 0))) calc(var(--tip-bl) + 32px),
+      rgba(104, 80, 48, calc(0.03 * var(--curl-bl, 0) + 0.2 * var(--face-bl, 0)))
+        calc(var(--tip-bl) + 44px),
+      rgba(104, 80, 48, calc(0.11 * var(--face-bl, 0))) calc(var(--tip-bl) + 64px),
+      rgba(104, 80, 48, 0) calc(var(--tip-bl) + 86px)
     );
 }
 
