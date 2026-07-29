@@ -341,7 +341,9 @@ Undo: text edits are character-level and merge into sensible entries by typing p
 | Frame selection | `F` |
 | Search | `Ctrl+F` — flies the camera to a match. **Never filters or hides.** |
 
-Zoom range is roughly 5% to 400%. The board is unbounded in every direction.
+Zoom range is **15% to 400%**. The board is unbounded in every direction.
+
+The floor was 5% and was raised, and it is a performance decision as much as a product one (T-204). 5% is the zoom at which every item on a five-hundred-item board is on screen at once, and §6.6's measurements say that having them all mounted — not the act of mounting them — is what costs. Capping how far out the camera goes is the lever that finally puts *every* stage where the camera is holding still inside frame budget, at every zoom. It costs exactly one thing: `Ctrl+0` and `F` on a board larger than 15% can frame will centre it and show most of it rather than all of it — a board over roughly 8,500 by 5,700 units, about 28 by 19 pasted photographs.
 
 ### 3.8 Selection and deletion
 

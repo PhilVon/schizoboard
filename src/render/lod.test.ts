@@ -18,7 +18,27 @@ describe("tierAt", () => {
   it("simplifies below 35% and flattens below 15% — DESIGN section 6.6", () => {
     expect(tierAt(CARD_ZOOM - 0.001, "full")).toBe("card");
     expect(tierAt(FLAT_ZOOM - 0.001, "full")).toBe("flat");
-    expect(tierAt(MIN_ZOOM, "full")).toBe("flat");
+    expect(tierAt(0.01, "full")).toBe("flat");
+  });
+
+  /**
+   * The two constants now interact, and the interaction is a live design
+   * question rather than a detail (T-204, Q-120).
+   *
+   * `MIN_ZOOM` was raised to 0.15 so the board never mounts five hundred items at
+   * once, and 0.15 is exactly `FLAT_ZOOM`. The comparison is exclusive, so the
+   * camera can reach the bottom tier's threshold and never pass it: **the bottom
+   * tier is unreachable at this floor.**
+   *
+   * Written down as a test rather than a comment so that neither number can move
+   * without somebody being told. If the floor drops below 0.15, or the bottom
+   * tier's threshold rises above it, this fails and the answer to Q-120 has
+   * changed.
+   */
+  it("records that the current floor puts the bottom tier out of reach", () => {
+    expect(MIN_ZOOM).toBe(FLAT_ZOOM);
+    expect(tierAt(MIN_ZOOM, "full")).toBe("card");
+    expect(tierAt(MIN_ZOOM, "card")).toBe("card");
   });
 
   it("is exclusive at the threshold: 35% itself is still the full item", () => {
@@ -47,7 +67,7 @@ describe("tierAt", () => {
    */
   it("does not let the band strand a tier", () => {
     expect(tierAt(1, "flat")).toBe("full");
-    expect(tierAt(MIN_ZOOM, "full")).toBe("flat");
+    expect(tierAt(0.01, "full")).toBe("flat");
     expect(tierAt(0.25, "flat")).toBe("card");
   });
 
@@ -171,8 +191,10 @@ describe("Lod.rise", () => {
     const listener = vi.fn();
     lod.on(listener);
 
-    // A zoom out, frame by frame, all the way to the floor.
-    for (const zoom of [0.8, 0.5, 0.34, 0.2, 0.1, MIN_ZOOM]) {
+    // A zoom out, frame by frame, past both boundaries. Written in explicit
+    // zooms rather than `MIN_ZOOM`, because this is a statement about the tiers
+    // and the camera's floor is somebody else's decision — see the test above.
+    for (const zoom of [0.8, 0.5, 0.34, 0.2, 0.1, 0.05]) {
       expect(lod.rise(zoom)).toBe(false);
     }
     expect(lod.tier).toBe("full");
@@ -180,7 +202,7 @@ describe("Lod.rise", () => {
 
     // And the settle is what finally lets it go — where the frame is already
     // repainting the world for the demote.
-    expect(lod.settle(MIN_ZOOM)).toBe(true);
+    expect(lod.settle(0.05)).toBe(true);
     expect(lod.tier).toBe("flat");
   });
 
@@ -196,9 +218,9 @@ describe("Lod.rise", () => {
     expect(lod.tier).toBe("full");
   });
 
-  it("rises one tier at a time, so a zoom in from the floor passes through card", () => {
+  it("rises one tier at a time, so a zoom in from the bottom passes through card", () => {
     const lod = new Lod();
-    lod.settle(MIN_ZOOM);
+    lod.settle(0.05);
     // 36% is above both thresholds, but `card` is what the band allows from
     // `flat` — and `card` is the right answer, because it is genuinely a step up.
     expect(lod.rise(0.36)).toBe(true);

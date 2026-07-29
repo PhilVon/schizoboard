@@ -19,7 +19,7 @@ import {
   pinScreenSize,
 } from "@/render/pins/dom";
 import { HEAD_FRACTION } from "@/render/pins/sprite";
-import { Camera } from "@/state/camera";
+import { Camera, MIN_ZOOM } from "@/state/camera";
 import { DirtySets } from "@/state/dirty";
 import { Scene, type PinNode } from "@/state/scene";
 
@@ -185,9 +185,11 @@ describe("PinLayer.hitTest", () => {
   });
 
   /** The floor on the grab radius is what makes this true. */
-  it("still finds a pin on a board zoomed out to 5%", () => {
+  it("still finds a pin on a board zoomed out as far as it goes", () => {
     scene.putPin(pin("p", 1000, 1000));
-    camera.setView(1000 - 400 / 0.05, 1000 - 300 / 0.05, 0.05);
+    // The floor, not a literal: `setView` clamps, so a hard-coded zoom below it
+    // would place the camera for one zoom and be read at another (T-204).
+    camera.setView(1000 - 400 / MIN_ZOOM, 1000 - 300 / MIN_ZOOM, MIN_ZOOM);
     expect(layer.hitTest(scene, camera, 400, 300)).toBe("p");
     expect(layer.hitTest(scene, camera, 406, 300)).toBe("p");
   });

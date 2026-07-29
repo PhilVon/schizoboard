@@ -26,8 +26,37 @@
  *   translate(-camera.x * zoom, -camera.y * zoom) scale(zoom)
  */
 
-/** docs/DESIGN.md section 3.7 — "roughly 5% to 400%". */
-export const MIN_ZOOM = 0.05;
+/**
+ * How far out the board lets you go, and it is a performance decision as much as
+ * a product one (T-204, Q-117).
+ *
+ * DESIGN 3.7 said "roughly 5% to 400%" and the floor was 0.05. What that bought
+ * was a zoom at which every item on a five-hundred-item board is on screen at
+ * once, and D-33 measured what having them all mounted costs: the frame in which
+ * the culler brings them in, and the frame in which the tier lets them go, were
+ * the two most expensive frames this application had.
+ *
+ * Raising the floor caps how many can ever be mounted — 370 rather than 500 on
+ * the bench board — and it is the lever that finally puts **every** stage where
+ * the camera is holding still inside frame budget, at every zoom. Measured with
+ * the LOD tiers and the coarse-mount sweep already in place:
+ *
+ *     floor   mounted   hold-there worst   frames over, zooming back in to 35%
+ *     0.05        500            131.9ms                                   49
+ *     0.10        500             20.9ms                                   32
+ *     0.15        370             13.9ms                                    3
+ *
+ * The 0.10 row is why this is 0.15 and not something gentler: capping the *count*
+ * is only half of it, and the other half is that a shorter zoom range means fewer
+ * items crossing the viewport edge per frame on the way back in.
+ *
+ * ## What it costs, and it is exactly one thing
+ *
+ * [`Camera.fit`] clamps, so `Ctrl+0` and `F` on a board larger than this floor can
+ * frame will centre it and show most of it rather than all of it. At 0.15 that is
+ * a board over roughly 8,500 by 5,700 units — about 28 by 19 pasted photographs.
+ */
+export const MIN_ZOOM = 0.15;
 export const MAX_ZOOM = 4;
 
 export interface Vec2 {
