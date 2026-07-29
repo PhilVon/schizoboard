@@ -26,6 +26,28 @@ describe("FrameLoop", () => {
     expect(dt).toBe(250);
   });
 
+  /**
+   * The other end of the same clamp, and the one that cost T-194 two sessions.
+   *
+   * `start()` seeds `last` from `performance.now()` while the rAF callback is
+   * handed the timestamp the frame *began* at, so the very first frame of a run
+   * can be older than the loop is. Driving `step()` by hand beside a live rAF —
+   * which is how this application is meant to be driven a frame at a time —
+   * makes the gap hundreds of milliseconds.
+   */
+  it("never hands a phase a negative dt, however far back the clock goes", () => {
+    const loop = new FrameLoop();
+    const seen: number[] = [];
+    loop.on("sim", (frame) => seen.push(frame.dt));
+    loop.step(1000);
+    loop.step(1016);
+    // A clock that has gone backwards by more than half a second.
+    loop.step(400);
+    // And one that has not moved at all.
+    loop.step(400);
+    expect(seen).toEqual([250, 16, 0, 0]);
+  });
+
   it("counts frames monotonically and times each phase", () => {
     const loop = new FrameLoop();
     const indices: number[] = [];

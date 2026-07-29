@@ -250,6 +250,40 @@ describe("which items a pin is pushed through", () => {
     expect(scene.pinCount("a")).toBe(1);
   });
 
+  /**
+   * T-194's amplifier, and the reason it was a P1 rather than a cosmetic glitch.
+   *
+   * An item whose transient pose has gone non-finite gives `layoutOver` a `NaN`
+   * bounding box. `CellGrid.place` cannot compute a cell count for one, so it
+   * files the slot under `oversized` — and `oversized` is offered *every pin on
+   * the board*, on the understanding that the exact containment test will
+   * reject whatever the grid over-claims. Stated as a rejection (`> w/2`) that
+   * test accepted `NaN` instead, because every comparison against `NaN` is
+   * false. So one sick item quietly became the thing every pin was pushed
+   * through, which drives `pinCount`, `solePin`, and therefore where every
+   * hanging item on the board decides it hangs.
+   */
+  it("holds nothing at all when its own pose is not finite", () => {
+    const scene = new Scene();
+    scene.putItem(cold("sick"), pose({ x: 0, y: 0, w: 100, h: 100 }));
+    scene.putItem(cold("well"), pose({ x: 5000, y: 5000, w: 100, h: 100 }));
+    // One pin, five thousand units away, pushed through `well` and nothing else.
+    scene.putPin(pin("far", "well", 0, 0));
+    scene.layoutPins();
+    expect(scene.pinCount("sick")).toBe(0);
+    expect(scene.pinCount("well")).toBe(1);
+
+    // The swing is the transient T-194 left non-finite. It is not in the
+    // document and never can be, so this is the only way the state exists.
+    scene.swing[scene.slotOf("sick")!] = NaN;
+    scene.setPose("sick", {});
+
+    expect(scene.pinCount("sick")).toBe(0);
+    expect(scene.solePin("sick")).toBeNull();
+    // And it has not taken the pin away from the item that really holds it.
+    expect(scene.pinCount("well")).toBe(1);
+  });
+
   it("stops holding anything once the item is gone", () => {
     const scene = new Scene();
     scene.putItem(cold("a"), pose({ w: 200, h: 200 }));

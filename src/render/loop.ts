@@ -45,7 +45,7 @@ const MAX_DT_MS = 250;
 export interface Frame {
   /** rAF timestamp, ms. */
   readonly now: number;
-  /** Milliseconds since the previous frame, clamped to MAX_DT_MS. */
+  /** Milliseconds since the previous frame, clamped to `[0, MAX_DT_MS]`. */
   readonly dt: number;
   /** Monotonic frame counter — phase 9 uses it for "every other frame". */
   readonly index: number;
@@ -99,7 +99,32 @@ export class FrameLoop {
 
   /** Run exactly one frame. Tests drive the loop through this. */
   step(now: number): void {
-    const dt = Math.min(now - this.last, MAX_DT_MS);
+    /**
+     * Clamped at **both** ends, and the lower one is not theoretical.
+     *
+     * Time never runs backwards, but `now` is a parameter rather than a clock:
+     * `start()` seeds `last` from `performance.now()` while `tick` is handed the
+     * rAF timestamp, which is when the frame *began* — so the first frame of
+     * every run can arrive slightly older than the moment the loop was started.
+     * And this method is documented as the way to drive the board a frame at a
+     * time; anything doing that beside a live rAF interleaves two clocks and
+     * the gap between them arrives here as a `now` hundreds of milliseconds
+     * behind `last`.
+     *
+     * A negative dt is not a small error in either case. Everything eased in
+     * this application is a first-order filter of the shape
+     * `1 - exp(-dt/tau)`, and at `dt` of `-616` against a 70 ms tau that factor
+     * is not `0.2` but `-6633`: the value it is easing does not lag, it
+     * *multiplies*, by four orders of magnitude per frame. Nine such frames
+     * overflow a double to `Infinity`, and the tenth turns `Infinity` into
+     * `NaN` — which is how T-194 arrived, as a photograph whose swing, driftX
+     * and driftY were all `NaN` while its stored pose was perfectly finite.
+     *
+     * So the guard is here rather than in each filter. A frame that took no
+     * time is the honest reading of a clock that has not moved, and every phase
+     * already does nothing with it.
+     */
+    const dt = Math.min(Math.max(now - this.last, 0), MAX_DT_MS);
     this.last = now;
 
     const frame = this.frame;

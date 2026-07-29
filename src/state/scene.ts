@@ -1021,7 +1021,27 @@ export class Scene {
       Math.sin(angle),
       scratch,
     );
-    if (Math.abs(scratch.x) > this.w[slot]! / 2 || Math.abs(scratch.y) > this.h[slot]! / 2) return;
+    /**
+     * Stated as "is it inside" rather than as "is it outside", which is the
+     * same test for every finite coordinate and not the same test at all for a
+     * pin or an item whose pose has gone `NaN`.
+     *
+     * Every comparison against `NaN` is false, so the old `> w/2` rejection
+     * *accepted* one — and this is the last line standing between that and the
+     * whole board. An item with a non-finite pose gives `layoutOver` a `NaN`
+     * bounding box; `CellGrid.place` computes a `NaN` cell count, cannot index
+     * it, and puts the slot in `oversized`; and `oversized` is offered **every
+     * pin on the board** on the reasoning that the exact test below will reject
+     * what the grid over-claims. So one sick item silently became the thing
+     * every pin was pushed through, which is `pinCount`, which is `solePin`,
+     * which is how every hanging item on the board decides where it hangs.
+     *
+     * Written this way there is no separate `Number.isFinite` to remember: a
+     * coordinate that is not a number is not inside anything.
+     */
+    const inside =
+      Math.abs(scratch.x) <= this.w[slot]! / 2 && Math.abs(scratch.y) <= this.h[slot]! / 2;
+    if (!inside) return;
     let over = this.byOver.get(id);
     if (!over) this.byOver.set(id, (over = new Set()));
     over.add(pin.id);
