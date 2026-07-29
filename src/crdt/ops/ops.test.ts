@@ -684,6 +684,60 @@ describe("z-order ops", () => {
 
     expect(ordered.slice(0, 2)).toEqual(lowered);
   });
+
+  /**
+   * The write is not free when it would move nothing.
+   *
+   * It mints a key per item, which is the growth DATA-MODEL section 7 names as
+   * this scheme's known hazard, and it pushes an undo entry — so raising the
+   * item that is already on top would hand back a `Ctrl`+`Z` that visibly does
+   * nothing. Repeating yourself on a menu row is the ordinary way people check
+   * whether it worked.
+   */
+  it("does not write when the items are already at that end", () => {
+    const b = board();
+    const made = Array.from({ length: 3 }, (_, i) => polaroid(b, i * 10, 0));
+    const top = made[2]!.itemId;
+    const before = b.items.get(top)!.get("z");
+
+    bringToFront(b, [top]);
+    expect(b.items.get(top)!.get("z")).toBe(before);
+
+    const bottom = made[0]!.itemId;
+    const low = b.items.get(bottom)!.get("z");
+    sendToBack(b, [bottom]);
+    expect(b.items.get(bottom)!.get("z")).toBe(low);
+  });
+
+  it("still writes when the run is at that end in the wrong order", () => {
+    // The top two items, named bottom-first. They are the right *set* and the
+    // wrong *order*, and a guard that only counted would decline a real move.
+    const b = board();
+    const made = Array.from({ length: 3 }, (_, i) => polaroid(b, i * 10, 0));
+    const wrongWayRound = [made[2]!.itemId, made[1]!.itemId];
+    bringToFront(b, wrongWayRound);
+
+    const ordered = [...b.items]
+      .map(([id, map]) => readItem(id, map)!)
+      .map((i) => ({ z: i.z, clientId: i.createdBy, id: i.id }))
+      .sort(compareOrder)
+      .map((i) => i.id);
+    expect(ordered.slice(-2)).toEqual(wrongWayRound);
+  });
+
+  it("writes when only some of the run is already up there", () => {
+    const b = board();
+    const made = Array.from({ length: 4 }, (_, i) => polaroid(b, i * 10, 0));
+    const mixed = [made[0]!.itemId, made[3]!.itemId];
+    bringToFront(b, mixed);
+
+    const ordered = [...b.items]
+      .map(([id, map]) => readItem(id, map)!)
+      .map((i) => ({ z: i.z, clientId: i.createdBy, id: i.id }))
+      .sort(compareOrder)
+      .map((i) => i.id);
+    expect(ordered.slice(-2)).toEqual(mixed);
+  });
 });
 
 describe("concurrent editing", () => {

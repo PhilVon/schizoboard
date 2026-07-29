@@ -115,6 +115,8 @@ beforeEach(() => {
       setPoses: () => {},
       setSizes: () => {},
       deleteItems: () => {},
+      bringToFront: () => {},
+      sendToBack: () => {},
       createNote: () => {},
       createPin: () => {
         throw new Error("the string tool creates pins through the run, not one at a time");

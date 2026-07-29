@@ -5,7 +5,7 @@
 import type { BoardDoc } from "@/crdt/doc";
 import { mutate } from "@/crdt/doc";
 import { Origin } from "@/crdt/origins";
-import { keyAbove, keyBelow } from "@/crdt/zindex";
+import { compareOrder, keyAbove, keyBelow, type Ordered } from "@/crdt/zindex";
 
 /**
  * Scans every item. That is fine: this runs when something is created or
@@ -33,8 +33,49 @@ export function lowestZ(board: BoardDoc): string | null {
   return lowest;
 }
 
+/**
+ * The board's items in paint order, bottom to top — the total order of
+ * DATA-MODEL section 7, not `z` alone.
+ *
+ * A sort of the whole board, and affordable for the same reason the two scans
+ * above are: this runs on a menu click, never on a frame.
+ */
+function paintOrder(board: BoardDoc): Ordered[] {
+  const all: Ordered[] = [];
+  for (const [id, item] of board.items) {
+    const z = item.get("z");
+    const clientId = item.get("createdBy");
+    if (typeof z !== "string" || typeof clientId !== "number") continue;
+    all.push({ z, clientId, id });
+  }
+  return all.sort(compareOrder);
+}
+
+/**
+ * Are these items already exactly the run at that end of the stack, in this
+ * order — so that raising or lowering them would move nothing?
+ *
+ * Asked because the write is not free when the answer is yes. It generates a
+ * fresh key per item, which is the growth DATA-MODEL section 7 names as the
+ * known hazard of this whole scheme, and it pushes an undo entry — so a person
+ * who right-clicks the topmost photograph and picks *Bring to front*, as people
+ * do when they are not sure whether it worked, would be handed a `Ctrl`+`Z` that
+ * visibly does nothing. Both are avoided by not writing.
+ *
+ * Both ops leave the run in the order it was given, bottom to top, which is why
+ * one comparison serves both ends.
+ */
+function alreadyStacked(board: BoardDoc, itemIds: readonly string[], end: "front" | "back"): boolean {
+  const live = itemIds.filter((id) => board.items.has(id));
+  if (live.length === 0) return true;
+  const all = paintOrder(board);
+  if (live.length > all.length) return false;
+  const run = end === "front" ? all.slice(all.length - live.length) : all.slice(0, live.length);
+  return run.every((item, i) => item.id === live[i]);
+}
+
 export function bringToFront(board: BoardDoc, itemIds: readonly string[]): void {
-  if (itemIds.length === 0) return;
+  if (itemIds.length === 0 || alreadyStacked(board, itemIds, "front")) return;
   mutate(board, Origin.LOCAL_USER, () => {
     let above = highestZ(board);
     for (const id of itemIds) {
@@ -49,11 +90,13 @@ export function bringToFront(board: BoardDoc, itemIds: readonly string[]): void 
 }
 
 export function sendToBack(board: BoardDoc, itemIds: readonly string[]): void {
-  if (itemIds.length === 0) return;
+  if (itemIds.length === 0 || alreadyStacked(board, itemIds, "back")) return;
   mutate(board, Origin.LOCAL_USER, () => {
     let below = lowestZ(board);
-    // Reversed so the first id ends up on top of the others it was sent back
-    // with, matching bringToFront's relative-order guarantee.
+    // Walked backwards, so the run comes out in the order it was given — the
+    // last id on top of the others it went back with, which is the guarantee
+    // bringToFront makes going the other way. Sending three photographs to the
+    // back must not shuffle them against each other.
     for (let i = itemIds.length - 1; i >= 0; i--) {
       const item = board.items.get(itemIds[i]!);
       if (!item) continue;

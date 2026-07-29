@@ -153,6 +153,30 @@ export interface BoardWriter {
    *  shape with a hole where it was (DESIGN section 3.8). */
   deleteItems(ids: readonly string[], keepPins: boolean): void;
   /**
+   * Move these items to one end of the stack — DESIGN section 2.1's z-order,
+   * reached from the item context menu.
+   *
+   * Both ends rather than one call with a direction, on the argument `setPoses`
+   * and `setSizes` make: they are two writes, not one write with a flag. Front
+   * generates keys above the board's maximum and back below its minimum, and the
+   * two scan opposite ends of a fractional index that has no notion of the
+   * middle.
+   *
+   * What they share is the rule about a group, and it is stated here once. A
+   * selection keeps the order it already had among itself: raising three
+   * photographs puts all three above everything else and leaves them stacked
+   * against each other exactly as they were. Anything else would be a gesture
+   * that quietly rearranged what it was asked to move together.
+   *
+   * Neither writes when it would change nothing. That guard is the op's, in
+   * `crdt/ops/z.ts`, and it is there rather than here because the reason for it
+   * — key growth, and an undo entry that undoes to the same picture — is a fact
+   * about the document rather than about menus.
+   */
+  bringToFront(ids: readonly string[]): void;
+  /** The other end. See [`BoardWriter.bringToFront`]. */
+  sendToBack(ids: readonly string[]): void;
+  /**
    * A blank sheet of paper at a board point.
    *
    * The size is the caller's, not the tool's: an empty note's dimensions come

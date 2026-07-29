@@ -13,6 +13,7 @@ import { Binding } from "@/crdt/binding";
 import { boardSeed, encodedSize, initialiseBoard, openBoardDoc, snapshot } from "@/crdt/doc";
 import * as ops from "@/crdt/ops";
 import {
+  bringToFront,
   commitStrokes,
   createItems,
   createPin,
@@ -29,6 +30,7 @@ import {
   scaleNodeSlack,
   scaleStringSlack,
   setItemPoses,
+  sendToBack,
   setNodeSlack,
   setStringSlack,
   setStringStyle,
@@ -427,6 +429,21 @@ async function boot(): Promise<void> {
     deleteItems: (ids, keepPins) => {
       const snapshot = [...ids];
       queued.push(() => deleteItems(board, snapshot, { keepPins }));
+    },
+    /**
+     * The two ends of the stack. Copied and queued like every other write here,
+     * which matters more than usual for these two: the ops read the whole
+     * board's keys to find the end they are generating against, and doing that
+     * in phase 9 means they read the board after the frame's other writes have
+     * landed rather than the one the menu was built from.
+     */
+    bringToFront: (ids) => {
+      const snapshot = [...ids];
+      queued.push(() => bringToFront(board, snapshot));
+    },
+    sendToBack: (ids) => {
+      const snapshot = [...ids];
+      queued.push(() => sendToBack(board, snapshot));
     },
     /**
      * A blank sheet — what DESIGN section 2.1 calls a scrap, which is "a note

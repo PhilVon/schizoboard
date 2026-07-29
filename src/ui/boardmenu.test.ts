@@ -40,7 +40,8 @@ type Write =
   | { kind: "delete"; stringIds: string[] }
   | { kind: "deleteItems"; ids: string[]; keepPins: boolean }
   | { kind: "createPin"; parent: string | null; lx: number; ly: number; settle: Settle }
-  | { kind: "deletePins"; ids: string[]; settle: Settle };
+  | { kind: "deletePins"; ids: string[]; settle: Settle }
+  | { kind: "stack"; ids: string[]; end: "front" | "back" };
 
 let scene: Scene;
 let writes: Write[];
@@ -116,7 +117,14 @@ beforeEach(() => {
   writes = [];
   const partial: Pick<
     BoardWriter,
-    "setStringLayer" | "setStringStyle" | "deleteStrings" | "deleteItems" | "createPin" | "deletePins"
+    | "setStringLayer"
+    | "setStringStyle"
+    | "deleteStrings"
+    | "deleteItems"
+    | "createPin"
+    | "deletePins"
+    | "bringToFront"
+    | "sendToBack"
   > = {
     setStringLayer: (stringIds, layer) =>
       writes.push({ kind: "layer", stringIds: [...stringIds], layer }),
@@ -128,9 +136,11 @@ beforeEach(() => {
       writes.push({ kind: "createPin", parent, lx, ly, settle: [...(settle ?? [])] }),
     deletePins: (ids, settle) =>
       writes.push({ kind: "deletePins", ids: [...ids], settle: [...(settle ?? [])] }),
+    bringToFront: (ids) => writes.push({ kind: "stack", ids: [...ids], end: "front" }),
+    sendToBack: (ids) => writes.push({ kind: "stack", ids: [...ids], end: "back" }),
   };
-  // The rows only ever reach these five. Everything else on the interface is a
-  // write no menu offers, and stubbing eleven of them would say otherwise.
+  // The rows only ever reach these. Everything else on the interface is a
+  // write no menu offers, and stubbing the rest would say otherwise.
   write = partial as BoardWriter;
 });
 
@@ -450,8 +460,61 @@ describe("the item context menu", () => {
     it("is dropped when the clicked item is gone but the selection is not", () => {
       put("i0");
       const rows = itemMenuRows(scene, write, "gone", ["i0", "gone"], 0, 0);
-      expect(verbs(rows).map((r) => r.label)).toEqual(["Delete"]);
+      // *Add pin* is the row that goes. It is about a point on the item under
+      // the cursor and there is no such item; the verbs that act on the rest of
+      // the selection are unaffected by that.
+      expect(verbs(rows).map((r) => r.label)).toEqual([
+        "Bring to front",
+        "Send to back",
+        "Delete",
+      ]);
       expect(verbs(rows)[0]!.divided).toBe(false);
+    });
+  });
+
+  describe("z-order", () => {
+    it("offers both ends, always, and groups them away from delete", () => {
+      // Both rows whichever end the item is already at. A menu that hid *Bring
+      // to front* on the topmost item would change shape as it was used, and
+      // the op declines a write that would move nothing, so the row costs
+      // nothing to leave in.
+      put("i");
+      const rows = itemMenuRows(scene, write, "i", ["i"], 0, 0);
+      const labels = verbs(rows).map((r) => r.label);
+      expect(labels).toContain("Bring to front");
+      expect(labels).toContain("Send to back");
+      // A rule above the pair and another above Delete: place, then order, then
+      // the destructive one on its own.
+      const front = verbs(rows).find((r) => r.label === "Bring to front")!;
+      const back = verbs(rows).find((r) => r.label === "Send to back")!;
+      expect(front.divided).toBe(true);
+      expect(back.divided).toBeUndefined();
+      expect(front.danger).toBeUndefined();
+    });
+
+    it("raises and lowers the whole selection, not just the clicked item", () => {
+      put("i0");
+      put("i1", { x: 300 });
+      pick(itemMenuRows(scene, write, "i0", ["i0", "i1"], 0, 0), "Bring");
+      pick(itemMenuRows(scene, write, "i0", ["i0", "i1"], 0, 0), "Send");
+      expect(writes).toEqual([
+        { kind: "stack", ids: ["i0", "i1"], end: "front" },
+        { kind: "stack", ids: ["i0", "i1"], end: "back" },
+      ]);
+    });
+
+    it("counts them in the label", () => {
+      put("i0");
+      put("i1", { x: 300 });
+      const labels = verbs(itemMenuRows(scene, write, "i0", ["i0", "i1"], 0, 0)).map((r) => r.label);
+      expect(labels).toContain("Bring 2 to front");
+      expect(labels).toContain("Send 2 to back");
+    });
+
+    it("drops ids the scene no longer has", () => {
+      put("i");
+      pick(itemMenuRows(scene, write, "i", ["i", "vanished"], 0, 0), "Bring");
+      expect(writes).toEqual([{ kind: "stack", ids: ["i"], end: "front" }]);
     });
   });
 
@@ -468,9 +531,12 @@ describe("the item context menu", () => {
       put("i0");
       put("i1", { x: 300 });
       const rows = itemMenuRows(scene, write, "i0", ["i0", "i1"], 0, 0);
-      expect(verbs(rows)[1]!.label).toBe("Delete 2 items");
-      expect(verbs(rows)[1]!.danger).toBe(true);
-      expect(verbs(rows)[1]!.divided).toBe(true);
+      // By label rather than by position: this row has moved down the menu once
+      // already and the assertion is about the row, not about where it sits.
+      const del = verbs(rows).find((r) => r.label.startsWith("Delete"))!;
+      expect(del.label).toBe("Delete 2 items");
+      expect(del.danger).toBe(true);
+      expect(del.divided).toBe(true);
     });
 
     it("drops ids the scene no longer has", () => {

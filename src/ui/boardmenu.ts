@@ -212,6 +212,41 @@ export function itemMenuRows(
   }
 
   /**
+   * > Items have a position, a rotation, an intrinsic size, and a z-order.
+   * > — DESIGN section 2.1
+   *
+   * Which was true of the document and of the renderer and of nothing a person
+   * could reach: `z` was set once at creation and never again, so the only way
+   * to get a photograph out from under another was to move one of them. These
+   * are the way, and the menu is where the human asked for them.
+   *
+   * Both rows, always, in that order, and never one of them. A menu that hid
+   * *Bring to front* on the item that happens to be topmost would be a menu that
+   * changes shape as you use it, and the row is not a lie either way — the op
+   * declines a write that would move nothing, so picking it on the front item
+   * costs no key growth and no undo entry. The pair is also how the two rows
+   * teach each other: *Send to back* is the answer to "I raised the wrong one",
+   * and it is only obvious that it exists if it is sitting there.
+   *
+   * `live` and not `clicked`, unlike *Add pin* and *Edit text* above. Those two
+   * are about a place and a caret, of which there is one; a restack is a verb
+   * that a selection can perfectly well take together, and taking it together is
+   * the only way to raise four photographs without scrambling them against each
+   * other.
+   */
+  rows.push(
+    {
+      label: live.length > 1 ? `Bring ${live.length} to front` : "Bring to front",
+      divided: rows.length > 0,
+      run: () => write.bringToFront(live),
+    },
+    {
+      label: live.length > 1 ? `Send ${live.length} to back` : "Send to back",
+      run: () => write.sendToBack(live),
+    },
+  );
+
+  /**
    * > `Delete` | Removes the item **and its pins**; strings through those pins
    * > heal — DESIGN section 3.8
    *
