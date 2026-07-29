@@ -1119,9 +1119,10 @@ describe("undeveloped film", () => {
   it("does not develop a photograph too small to watch, and does not save it up", () => {
     // The bound that bites: a board zoomed out to a wall of stamps has every
     // photograph on it landing at once, and at that size there is no picture to
-    // come up. Driven on 300 fitted polaroids, developing them cost p99 frame
-    // time 28 ms -> 83 ms and a third of the frames in the four seconds after
-    // boot; below the floor it costs nothing, because nothing runs.
+    // come up. Driven on 300 fitted polaroids with no floor, developing them
+    // cost p99 frame time 28 ms -> 83 ms and a third of the frames in the four
+    // seconds after boot; below the floor it costs nothing, because nothing
+    // runs. See EMERGE_MIN_PX for the numbers either side.
     const layer = new DomItemLayer(host, (sha) => ready(`asset://sha256/${sha}`));
     add("a", { assetId: "abc" }, { w: 60, h: 60 });
     layer.sync(scene, dirty, null);

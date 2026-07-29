@@ -91,39 +91,47 @@ export const IS_EMERGING = "is-emerging";
  * develop is bounded by the fact that it happens once per item — which is a
  * bound on the whole session and no bound at all on the one moment it goes
  * wrong, because a board opened cold has *every* photograph on the screen
- * landing at once. Measured on 300 polaroids fitted to the window: p99 frame
- * time 28 ms without the develop and 83–103 ms with it, and the four seconds
- * after boot fell from ~500 rendered frames to ~315.
+ * landing at once. Measured with no floor, on 300 polaroids fitted to the
+ * window: p99 frame time 28 ms without the develop and 83-103 ms with it, and
+ * the four seconds after boot fell from ~500 rendered frames to ~315.
  *
- * A screen-size floor fixes that in the case it happens in, and it fixes it
- * because of how the case arises: a cold open *fits the board*, so the zoom
- * falls as the item count rises, and three hundred photographs are three hundred
- * thirty-pixel stamps. There is no picture there to come up. Re-measured with
- * the floor in, the same board reports zero develops and is indistinguishable
- * from the control.
+ * ## Why a size floor is a bound and not merely a discouragement
  *
- * The same arithmetic is what makes this a bound rather than a discouragement.
- * Above the floor the viewport can only hold so many — about eighty at this
- * size, and fewer on a real board, which has gaps. Driven at the other end, 24
- * photographs coming up together on a cold open cost three extra frames over
- * 16.7 ms and moved p99 from 9.5 ms to 20.7 ms, with the frame count over four
- * seconds unchanged.
+ * Because of how the bad case arises. A cold open *fits the board*, so the zoom
+ * falls as the item count rises — and the number of photographs that can both be
+ * on the screen and be big enough to develop therefore has its maximum in the
+ * middle rather than at the top end. Driven on packed grids, floor in:
  *
- * 128 rather than the 256 of `VARIANT_MAX_EDGE.thumb`, which is the other
- * threshold in this area and is answering a different question. That one asks
- * how much detail is worth decoding, and it is right to be strict; this asks
- * whether there is a picture there at all. A polaroid at 128 device pixels is
- * still a photograph on a corkboard, and watching it come up is still worth the
- * frame.
+ * ```
+ *    45 items   fit 0.28   30 develop at once
+ *    70 items   fit 0.27   23
+ *   110 items   fit 0.18    0 - the whole board is under the floor
+ * ```
  *
- * What it costs: a photograph pasted onto a board zoomed out past about half
- * does not develop, it simply appears. That is the one place this is a
- * compromise rather than a straight win — a single paste is not a storm and
- * could afford it. It is the price of having one rule and one number instead of
- * a count, a clock and a special case, and the number is measured, so it can be
- * moved by measuring again.
+ * Thirty simultaneous develops cost nothing measurable: p99 8.9 ms against the
+ * control's 9.7 ms, four frames over 16.7 ms against three, medians identical.
+ * That is inside the run-to-run noise, and it is the worst this gets.
+ *
+ * ## The number
+ *
+ * 96 device pixels, which is a polaroid at about 38% zoom. It was 128 for a
+ * while and Q-96 moved it: 128 refused a develop to a photograph pasted onto a
+ * board zoomed out past roughly half, and a single paste is not a storm — the
+ * whole point of the effect is that an arrival is visible, and a paste is the
+ * arrival people see most.
+ *
+ * Not the 256 of `VARIANT_MAX_EDGE.thumb`, which is the other threshold in this
+ * area and answers a different question. That one asks how much detail is worth
+ * decoding and is right to be strict; this asks whether there is a picture there
+ * at all.
+ *
+ * What it still costs, further down: a photograph pasted onto a board zoomed out
+ * past about a third does not develop, it simply appears. That is the price of
+ * one rule and one number instead of a count, a clock and a special case — and
+ * everything above is a measurement rather than an argument, so the number moves
+ * by measuring again.
  */
-export const EMERGE_MIN_PX = 128;
+export const EMERGE_MIN_PX = 96;
 
 /**
  * The most a develop is held back so that a trayful do not come up in lockstep.
