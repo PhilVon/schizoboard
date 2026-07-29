@@ -680,8 +680,15 @@ Input uses coalesced pointer events, which recover every sample the OS delivered
 
 Two LOD tiers, both about removing the things that cost most at small scales:
 
-- **Below 35% zoom** — items become simplified cards: flat paper, baked shadow, and text swapped for a pre-rasterised snapshot. Live text layout is by far the largest cost when many items are visible. Ink renders at quarter resolution.
+- **Below 35% zoom** — items become simplified cards: flat paper, baked shadow, and writing laid down as a single text node rather than one transform box per character. Ink renders at quarter resolution.
 - **Below 15% zoom** — items are flat coloured rectangles, string draws as straight one-pixel chords with no sag, pins hide, board ink comes from tile thumbnails.
+
+The first tier originally said "text swapped for a pre-rasterised snapshot", on the grounds that live text layout is by far the largest cost when many items are visible. **That reason did not survive being measured** (D-33, Q-115). With 500 notes of real prose at 5% zoom the median frame is 194.5 ms — seven frames in a second and a half — and writing the text as one plain node takes that to 7.0 ms. Writing *no text at all* measures the same as writing it plainly, everywhere, within run-to-run noise. So the cost was never the layout; it was the 73,000 `inline-block` glyph boxes the handwriting jitter (§3.6) needs, against 7,100 nodes without them. A raster would have bought nothing over a plain node, at the price of a canvas per texted item, a re-raster on every keystroke, and a reimplementation of word wrapping the browser does for free.
+
+Two things follow, and both are in the tiers above rather than assumed:
+
+- **What costs is paint, not tree size.** Every variant measured had the same node count — `display: none` leaves a node where it is — and they differed by 375 ms against 104. So the flat card is a stylesheet keyed on one attribute, and the item layer's pooling, binding, hit-testing and ink canvases are untouched by LOD entirely. The exception is the handful of properties the view writes *inline* from an item's stock and seed — the silhouette clip path, the ruling, the sheet tint — which a stylesheet cannot reach and which are therefore switched where they are written.
+- **The 15% tier's items are worth nothing on top of the 35% tier's.** A flat rectangle measures the same as a flat card. Its value is entirely in the other three clauses — straight chords, hidden pins, board-ink thumbnails.
 
 The zoom-blur trap deserves its own note, because it is the most likely way this app ends up looking cheap: a DOM subtree under a CSS `scale()` rasterises at its pre-scale resolution, so zooming in gives you a blurry stretch of the old raster until something forces a re-render. `will-change: transform` makes this permanent by pinning a cached layer at a stale scale — and it's exactly the property people reach for to make zoom smooth.
 

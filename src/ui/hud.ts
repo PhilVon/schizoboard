@@ -15,6 +15,7 @@
  *     same 5 Hz tick, never inside the loop's read phases.
  */
 
+import type { Tier } from "@/render/lod";
 import { PHASES, type FrameLoop } from "@/render/loop";
 
 const REFRESH_MS = 200;
@@ -24,6 +25,16 @@ const DOC_SIZE_ALERT_BYTES = 25 * 1024 * 1024;
 /** Numbers the HUD cannot compute for itself. */
 export interface HudStats {
   zoom: number;
+  /**
+   * How much of an item is being drawn — `render/lod.ts`, DESIGN section 6.6.
+   *
+   * Beside the zoom rather than derived from it, and that is the point: the
+   * tier has hysteresis and only moves at gesture end, so a board at 36% may
+   * legitimately be in either tier and the zoom alone cannot say which. It is
+   * also the only way to tell a tier that did not switch from one that switched
+   * and drew the same thing anyway.
+   */
+  lodTier: Tier;
   cameraX: number;
   cameraY: number;
   /** Rope particles currently being stepped (DESIGN section 5.3). */
@@ -175,7 +186,7 @@ export class Hud {
       );
     }
     rows.push('<div class="hud-sep"></div>');
-    rows.push(this.stat("zoom", `${(s.zoom * 100).toFixed(0)}%`));
+    rows.push(this.stat("zoom", `${(s.zoom * 100).toFixed(0)}% · ${s.lodTier}`));
     rows.push(this.stat("camera", `${Math.round(s.cameraX)}, ${Math.round(s.cameraY)}`));
     rows.push(this.stat("items", `${s.mounted} / ${s.items}`));
     rows.push(this.stat("awake", String(s.awakeParticles)));

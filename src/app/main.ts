@@ -64,6 +64,7 @@ import { Culler } from "@/render/cull";
 import { BoardInkLayer } from "@/render/ink/board";
 import { DomItemLayer, type AssetView } from "@/render/items/dom";
 import { NO_AGEING, WALL_CLOCK } from "@/render/items/wear";
+import { Lod } from "@/render/lod";
 import { FrameLoop } from "@/render/loop";
 import { Overlay, type PendingRun } from "@/render/overlay";
 import { Janitor } from "@/crdt/janitor";
@@ -1351,6 +1352,7 @@ async function boot(): Promise<void> {
     const transfers = exchange?.stats() ?? { wanted: 0, inFlight: 0, percent: 0 };
     return {
       zoom: camera.zoom,
+      lodTier: lod.tier,
       cameraX: camera.x + camera.width / (2 * camera.zoom),
       cameraY: camera.y + camera.height / (2 * camera.zoom),
       // Everything phase 3 is stepping: items mid-swing plus ropes not yet
@@ -1389,6 +1391,27 @@ async function boot(): Promise<void> {
     items.setRasterScale(scale);
     boardInk.setRasterScale(scale);
     dirty.everything();
+  });
+
+  /**
+   * How much of an item is worth drawing at this zoom (T-90, DESIGN section
+   * 6.6).
+   *
+   * Beside the re-raster because it is woken by the same event, and separate
+   * from it because the raster gate would swallow it — `render/world.ts`'s
+   * `SettleListener` says why. Constructed here rather than inside `World`
+   * because a tier is a statement about *content*, and the world is the layer
+   * stack: it owns the camera transform and the will-change discipline, and has
+   * never heard of an item.
+   *
+   * `dirty.everything()` only when the tier actually moved, which is what makes
+   * this affordable to hang off every gesture end: the ordinary zoom that
+   * settles somewhere between the boundaries costs one comparison.
+   */
+  const lod = new Lod();
+  lod.on((tier) => items.setTier(tier));
+  world.onSettle((zoom) => {
+    if (lod.settle(zoom)) dirty.everything();
   });
 
   // --- sync ----------------------------------------------------------------
@@ -2338,6 +2361,16 @@ async function boot(): Promise<void> {
        */
       provider,
       loop,
+      /**
+       * Which LOD tier the camera settled into (T-90, `render/lod.ts`).
+       *
+       * Here because the HUD cannot answer for it from outside. The tier only
+       * moves at gesture end and has hysteresis, so at 36% the board may
+       * legitimately be in either tier and the zoom cannot say which — and the
+       * HUD row that does say is written by the frame loop, which a background
+       * window throttles to something that has long since moved on.
+       */
+      lod,
       ops,
       tools,
       /**

@@ -158,14 +158,48 @@ export function clearHand(host: HTMLElement): void {
  * A no-op when the node already carries this text for this seed. The seed is in
  * that comparison because view nodes are pooled and recycled: the same node
  * showing the same string for a *different* item is a different hand, and every
- * glyph in it leans a different way.
+ * glyph in it leans a different way. `plain` is in it too, so crossing a LOD
+ * boundary rewrites rather than recognising the text it already has.
+ *
+ * ## `plain` — the same words, without the boxes (T-198, DESIGN section 6.6)
+ *
+ * Below 35% zoom the writing goes down as a single text node: same string, same
+ * face, no lean. Which is not what DESIGN 6.6 originally asked for — it asked
+ * for a pre-rasterised snapshot, on the grounds that "live text layout is by far
+ * the largest cost when many items are visible" — and Q-115 amended the section
+ * after that reason was measured and did not survive (D-33).
+ *
+ * With 500 notes of real prose at 5% zoom: as it is, the median frame is
+ * 194.5 ms and the stage fits seven frames into a second and a half. As one text
+ * node, 7.0 ms and 112 frames. And writing **no text at all** measures the same
+ * as writing it plainly, everywhere, within run-to-run noise — so none of what
+ * was being paid for was the layout. It was the transform boxes, which exist for
+ * the jitter and not for the words: 73,014 nodes for 500 items, against 7,101
+ * without them.
+ *
+ * So a raster would have bought nothing over this, at the price of a canvas per
+ * texted item, a re-raster on every keystroke and every tier crossing, and a
+ * reimplementation of the word wrapping four lines below this comment get for
+ * free.
+ *
+ * The cost is honest and is a *look*: crossing 35% straightens every note on the
+ * board. At that zoom a line of handwriting is around four device pixels tall,
+ * where the lean was already carrying nothing a person could see.
  */
-export function writeHand(host: HTMLElement, text: string, seed: number): void {
-  const key = `${seed}:${text}`;
+export function writeHand(host: HTMLElement, text: string, seed: number, plain = false): void {
+  const key = `${seed}:${plain ? "p" : "h"}:${text}`;
   if (host.dataset["hand"] === key) return;
   host.dataset["hand"] = key;
   if (text.length === 0) {
     host.textContent = "";
+    return;
+  }
+  if (plain) {
+    // `textContent`, so nothing here has to escape anything — and the wrapping,
+    // the `pre-wrap` whitespace handling and the ruling alignment all go on
+    // being the browser's problem, exactly as they were before the jitter
+    // existed.
+    host.textContent = text;
     return;
   }
 

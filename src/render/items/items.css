@@ -1162,3 +1162,96 @@ textarea.item-field::-webkit-scrollbar {
     rgba(255, 246, 226, 0) 100%
   );
 }
+
+/* --- LOD: the flat card, DESIGN 6.6 --------------------------------------- */
+
+/*
+ * Below 35% zoom an item stops being a piece of paper and becomes a card.
+ *
+ * `[data-lod]` is written once on the layer's host by `DomItemLayer.setTier`, so
+ * crossing the boundary with five hundred items mounted is one attribute write
+ * — and the whole of AC-122's paper half is here rather than as a second
+ * rendering path through `dom.ts`.
+ *
+ * ## This is a paint problem, and that is a measurement
+ *
+ * D-33 flew D-15's camera over the real application with 500 texted notes:
+ *
+ *     stage            today   flat paper + plain text
+ *     hold 5%    p50   194.5                       6.9
+ *                max   375.0                     104.0
+ *     hold 35%   p50     7.0                       6.9
+ *                max   222.2                       7.1   <- AC-121, met
+ *
+ * `hold 5%` today fits **seven frames into a second and a half**. The board has
+ * stopped responding while you look at all of it.
+ *
+ * The node count does not move: `display: none` leaves the node in the tree, and
+ * every variant measured had the same 7,101 for 500 items. What differed by
+ * 375 ms against 104 was how many of them *painted*. So none of the pooling, the
+ * binding, the hit test or the ink canvases had to change, which is by a wide
+ * margin the best thing about this being CSS.
+ *
+ * ## What goes, and what deliberately stays
+ *
+ * Everything below is a texture, a gradient or a filter that is smaller than a
+ * device pixel at this zoom: at 35% a sheet's grain tile is under three pixels
+ * across and the torn lip is four. They are not being *sacrificed* — there is
+ * nothing there to see.
+ *
+ * The **shadow stays**, because DESIGN 6.6 asks for a "baked shadow" and it is
+ * already baked: `shadowSprite` is a pre-rendered border-image and `ShadowNode`
+ * writes a transform only when the item's rotation changes, which a zoom does
+ * not. Removing it would cost the one cue that says the board has depth, at the
+ * zoom where the board is nothing but overlapping rectangles, and buy a frame
+ * time that is already inside budget.
+ *
+ * The `background` and `border-radius` of the surface stay too — that is the
+ * flat paper, and the stock's own colour is what tells a legal pad from an index
+ * card once nothing else can.
+ */
+.layer-world[data-lod] .paper-grain,
+.layer-world[data-lod] .paper-tear,
+.layer-world[data-lod] .paper-age,
+.layer-world[data-lod] .paper-bend,
+.layer-world[data-lod] .paper-worn,
+.layer-world[data-lod] .pol-gloss,
+.layer-world[data-lod] .pol-age,
+.layer-world[data-lod] .item-tape {
+  display: none;
+}
+
+/*
+ * Not here: the silhouette, the sheet tint and the ruling.
+ *
+ * All three are **inline** styles — `PaperView.bind` writes `clip-path`,
+ * `filter` and `background-image` from the stock and the seed — and an inline
+ * style beats a stylesheet rule. So a `clip-path: none` here would be silently
+ * dead, which is exactly what it was until a screenshot at 30% still had torn
+ * edges and ruled lines in it. They are switched where they are written, and
+ * `dom.ts` says why there rather than a second time here.
+ *
+ * A polaroid's `wearFilter` is inline too, and stays at both tiers: it is one
+ * filter per print and it is the whole of what makes an old photograph look
+ * old. The frame time this section is spending was never its.
+ *
+ * The photograph itself stays as well. A print with no picture in it is not a
+ * simplified print, it is a different board — and which *variant* of the
+ * picture is a question `setRasterScale` already answers, whose answer at this
+ * zoom is a thumbnail.
+ */
+
+/*
+ * Below 15%, the writing goes.
+ *
+ * DESIGN 6.6 says "flat coloured rectangles", and D-33 measured that a rectangle
+ * is worth no frame time at all over a flat card once the glyph boxes are gone —
+ * so this is here because the *section* says it and because a line of writing at
+ * 15% is under two device pixels tall, not because it buys anything. The rest of
+ * the bottom tier — one-pixel chords, hidden pins, board-ink thumbnails — is
+ * T-199 and is where its value actually is.
+ */
+.layer-world[data-lod="flat"] .paper-text,
+.layer-world[data-lod="flat"] .pol-caption {
+  display: none;
+}
