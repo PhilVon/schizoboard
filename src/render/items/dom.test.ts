@@ -977,4 +977,157 @@ describe("undeveloped film", () => {
     expect(films[0]!.style.backgroundPosition).not.toBe(films[1]!.style.backgroundPosition);
     layer.destroy();
   });
+
+  /**
+   * The print coming up (T-174).
+   *
+   * Everything here turns on one question — has this item's photograph ever been
+   * on this screen — and every test below is a way of getting that question
+   * wrong. Nothing checks what the animation looks like: that is a stylesheet,
+   * and happy-dom runs no animations, which is also why the class only ever
+   * comes off by hand in here.
+   */
+  function landed(): { item: HTMLElement; img: HTMLImageElement } {
+    return {
+      item: host.querySelector(".item-polaroid") as HTMLElement,
+      img: host.querySelector(".pol-photo") as HTMLImageElement,
+    };
+  }
+
+  it("brings the print up out of the emulsion when it first lands", () => {
+    const { item, set, layer } = film();
+    set(ready("asset://sha256/abc"));
+    expect(item.classList.contains("is-waiting")).toBe(true);
+    expect(item.classList.contains("is-emerging")).toBe(false);
+
+    landed().img.dispatchEvent(new Event("load"));
+    expect(item.classList.contains("is-waiting")).toBe(false);
+    expect(item.classList.contains("is-emerging")).toBe(true);
+    // The stagger, so a viewport of photographs arriving together is a scatter
+    // rather than one flash.
+    expect(item.style.getPropertyValue("--emerge-delay")).toMatch(/^\d+ms$/);
+    layer.destroy();
+  });
+
+  it("takes the emulsion off when the print has come up", () => {
+    const { item, set, layer } = film();
+    set(ready("asset://sha256/abc"));
+    const { img } = landed();
+    img.dispatchEvent(new Event("load"));
+    img.dispatchEvent(new Event("animationend"));
+    expect(item.classList.contains("is-emerging")).toBe(false);
+    layer.destroy();
+  });
+
+  it("does not develop a photograph a second time", () => {
+    // The one this feature lives or dies by. Culling unmounts an item that
+    // leaves the viewport and mounts it again when it comes back, and the
+    // cached `<img>` fires `load` again on the way in — so a develop keyed on
+    // "was it waiting a moment ago" would fade every photograph up afresh every
+    // time the board was panned.
+    const layer = new DomItemLayer(host, (sha) => ready(`asset://sha256/${sha}`));
+    add("a", { assetId: "abc" });
+    layer.sync(scene, dirty, null);
+    landed().img.dispatchEvent(new Event("load"));
+    expect(landed().item.classList.contains("is-emerging")).toBe(true);
+
+    dirty.clear();
+    dirty.item("a");
+    layer.sync(scene, dirty, new Set());
+    expect(layer.mounted).toBe(0);
+
+    dirty.clear();
+    dirty.item("a");
+    layer.sync(scene, dirty, new Set(["a"]));
+    landed().img.dispatchEvent(new Event("load"));
+    expect(landed().item.classList.contains("is-emerging")).toBe(false);
+    expect(landed().item.classList.contains("is-waiting")).toBe(false);
+    layer.destroy();
+  });
+
+  it("does not develop a variant swap", () => {
+    // A zoom that crosses a variant boundary re-points the `<img>` at a sharper
+    // copy of a picture that is already on the screen, and its `load` arrives
+    // here like any other. The photograph has been seen; nothing may fade it up
+    // again, or a board would blink every time it was zoomed past 200%.
+    const { item, set, layer } = film();
+    set(ready("asset://sha256/abc"));
+    const { img } = landed();
+    img.dispatchEvent(new Event("load"));
+    img.dispatchEvent(new Event("animationend"));
+
+    img.dispatchEvent(new Event("load"));
+    expect(item.classList.contains("is-emerging")).toBe(false);
+    layer.destroy();
+  });
+
+  it("abandons a develop when the film goes back on", () => {
+    // Waiting and emerging are the same square inch of the item, and a
+    // photograph that has gone back to being missing must not have a develop
+    // still fading it up over the blank film.
+    const { item, set, layer } = film();
+    set(ready("asset://sha256/abc"));
+    landed().img.dispatchEvent(new Event("load"));
+    expect(item.classList.contains("is-emerging")).toBe(true);
+
+    set({ url: "", phase: "unavailable", fraction: 0 });
+    expect(item.classList.contains("is-emerging")).toBe(false);
+    expect(item.classList.contains("is-torn")).toBe(true);
+    layer.destroy();
+  });
+
+  it("drops a develop when the file turns out not to decode", () => {
+    const { item, set, layer } = film();
+    set(ready("asset://sha256/abc"));
+    const { img } = landed();
+    img.dispatchEvent(new Event("load"));
+    img.dispatchEvent(new Event("error"));
+    expect(item.classList.contains("is-emerging")).toBe(false);
+    expect(item.classList.contains("is-torn")).toBe(true);
+    layer.destroy();
+  });
+
+  it("does not hand a recycled node a develop in flight", () => {
+    // A node pooled mid-develop would otherwise fade the next item's photograph
+    // up from nothing, having already spent that item's first sight on it.
+    let view: AssetView = ready("asset://sha256/abc");
+    const layer = new DomItemLayer(host, () => view);
+    add("a", { assetId: "abc" });
+    layer.sync(scene, dirty, null);
+    const first = landed();
+    first.img.dispatchEvent(new Event("load"));
+    expect(first.item.classList.contains("is-emerging")).toBe(true);
+
+    dirty.clear();
+    scene.removeItem("a");
+    dirty.item("a");
+    layer.sync(scene, dirty, null);
+
+    dirty.clear();
+    view = ready("asset://sha256/def");
+    add("b", { assetId: "def" });
+    layer.sync(scene, dirty, null);
+    const item = host.querySelector(".item-polaroid") as HTMLElement;
+    expect(item).toBe(first.item);
+    expect(item.classList.contains("is-emerging")).toBe(false);
+    expect(item.style.getPropertyValue("--emerge-delay")).toBe("");
+    layer.destroy();
+  });
+
+  it("develops both prints of one photograph, and staggers them apart", () => {
+    // Keyed by item and not by hash. Pasting a picture twice makes two items and
+    // one asset, and watching one of them come up is not having seen the other.
+    const layer = new DomItemLayer(host, (sha) => ready(`asset://sha256/${sha}`));
+    add("a", { assetId: "abc", seed: 11 }, { x: -200 });
+    add("b", { assetId: "abc", seed: 12 }, { x: 200 });
+    layer.sync(scene, dirty, null);
+    const items = [...host.querySelectorAll<HTMLElement>(".item-polaroid")];
+    for (const img of host.querySelectorAll(".pol-photo")) img.dispatchEvent(new Event("load"));
+
+    expect(items.map((el) => el.classList.contains("is-emerging"))).toEqual([true, true]);
+    expect(items[0]!.style.getPropertyValue("--emerge-delay")).not.toBe(
+      items[1]!.style.getPropertyValue("--emerge-delay"),
+    );
+    layer.destroy();
+  });
 });

@@ -48,7 +48,7 @@ import {
 } from "@/render/items/paper";
 import { ItemInk } from "@/render/ink/canvas";
 import { TextEditor, type ItemEditorHooks } from "@/render/items/editor";
-import { FILM_CLASSES, filmClass, filmGrainUrl } from "@/render/items/film";
+import { emergeDelay, FILM_CLASSES, filmClass, filmGrainUrl, IS_EMERGING } from "@/render/items/film";
 import { counterRotate, shadowSprite, type Elevation } from "@/render/items/shadow";
 import type { ItemLayer } from "@/render/items/view";
 import type { AssetPhase } from "@/state/assets";
@@ -85,6 +85,24 @@ const NO_ASSET: AssetView = { url: "", phase: "unknown", fraction: 0 };
  * keeps `render/` from needing to know that variants exist at all.
  */
 export type AssetResolver = (sha256: string, screenPx: number) => AssetView;
+
+/**
+ * Is this the first time this item's photograph has reached this screen — and
+ * having asked, it no longer is.
+ *
+ * A view cannot answer this itself, and neither can the item. Views are pooled,
+ * so the node an item comes back on is not the node it left on, and culling
+ * means an item panned out of the viewport and back has genuinely been mounted
+ * twice: the `<img>` is re-pointed, the browser serves it from cache, and `load`
+ * fires again. Without a record that outlives both the mount and the node, a
+ * photograph would develop every time it crossed the edge of the screen, which
+ * is a board that flickers whenever it is panned.
+ *
+ * Keyed by item and not by asset hash, which are the same thing until somebody
+ * pastes one picture twice. Two items wearing one photograph are two prints, and
+ * seeing one of them come up is not having seen the other.
+ */
+export type FirstSight = (itemId: string) => boolean;
 
 type Archetype = "polaroid" | "paper";
 
@@ -209,6 +227,8 @@ function round(value: number, factor: number): number {
 class PolaroidView implements View {
   readonly archetype = "polaroid" as const;
   readonly el: HTMLDivElement;
+  /** Asked once per photograph that lands — see [`FirstSight`] and `arrive`. */
+  private readonly firstSight: FirstSight;
   private readonly photo: HTMLImageElement;
   private readonly caption: HTMLDivElement;
   /** The editor's field while this caption is the one being written on. */
@@ -235,7 +255,8 @@ class PolaroidView implements View {
   private readonly film: HTMLDivElement;
   readonly ink: ItemInk;
 
-  constructor() {
+  constructor(firstSight: FirstSight) {
+    this.firstSight = firstSight;
     this.el = document.createElement("div");
     this.el.className = "item item-polaroid";
     this.ink = new ItemInk(this.el);
@@ -258,11 +279,19 @@ class PolaroidView implements View {
     // is a file that is present and will not decode. That is a photograph which
     // is not coming, which is what the torn treatment says (DESIGN section 7.5);
     // calling it "waiting" would promise an arrival that has already happened.
-    this.photo.addEventListener("error", () => this.el.classList.add("is-waiting", "is-torn"));
+    this.photo.addEventListener("error", () => {
+      this.wait();
+      this.el.classList.add("is-torn");
+    });
     // And this is the only thing that may take the film off. Not the phase:
     // `ready` means the bytes are on the disk, and there is a decode between
     // that and pixels in this window.
-    this.photo.addEventListener("load", () => this.el.classList.remove("is-waiting"));
+    this.photo.addEventListener("load", () => this.arrive());
+    // The print has finished coming up, so the emulsion under it can go. It is
+    // hidden behind an opaque photograph by now either way, so this is hygiene
+    // rather than the last frame of the effect — which is what lets the class
+    // survive an `animationend` that never comes.
+    this.photo.addEventListener("animationend", () => this.el.classList.remove(IS_EMERGING));
 
     // The emulsion: grain, and whatever wash the phase calls for. Its own node
     // rather than more pseudo-elements on the window, because the grain needs a
@@ -336,11 +365,48 @@ class PolaroidView implements View {
    * film off on the phase would blank the photograph for those frames, which is
    * the flash the wet/dry ink handoff exists to avoid elsewhere (T-58).
    */
+  /**
+   * Put the film back on.
+   *
+   * The one way to do that, because waiting and emerging are mutually exclusive
+   * and only one of them is written by a bind. A photograph that goes back to
+   * blank film — a rebind onto an item whose bytes are not here, a decode that
+   * failed — must abandon whatever develop was in flight, and letting the two
+   * classes overlap would leave the emulsion showing through a photograph the
+   * animation had already faded up.
+   */
+  private wait(): void {
+    this.el.classList.remove(IS_EMERGING);
+    this.el.classList.add("is-waiting");
+  }
+
+  /**
+   * The decode has landed: take the film off, and bring the print up through it
+   * if this is the first time this item's photograph has been on the screen.
+   *
+   * The develop is not conditional on having *just* been waiting, which would be
+   * the obvious test and is the wrong one twice over. It says yes to a remount —
+   * a culled item comes back, is dressed as waiting, and its cached `<img>`
+   * fires `load` a task later — and it would say no to nothing, since a variant
+   * swap keeps the old picture up and never sets the class at all. What actually
+   * distinguishes a develop is whether there has ever been a photograph here,
+   * and that is a question only [`FirstSight`] can answer.
+   */
+  private arrive(): void {
+    this.el.classList.remove("is-waiting");
+    const cold = this.boundCold;
+    if (cold === null || !this.firstSight(cold.id)) return;
+    // Written here rather than in `bind`, so a photograph being dragged around
+    // does not rewrite a property that matters for one second of its life.
+    this.el.style.setProperty("--emerge-delay", `${emergeDelay(cold.seed)}ms`);
+    this.el.classList.add(IS_EMERGING);
+  }
+
   private paintFilm(phase: AssetPhase, develop: number): void {
     this.el.classList.remove(...FILM_CLASSES);
     const film = filmClass(phase);
     if (film) this.el.classList.add(film);
-    if (phase !== "ready") this.el.classList.add("is-waiting");
+    if (phase !== "ready") this.wait();
     // Only while it means something. Left set, a photograph that arrived would
     // keep a stale wash height for the next item this node is recycled onto.
     if (phase === "transferring") this.el.style.setProperty("--develop", `${develop}%`);
@@ -367,18 +433,24 @@ class PolaroidView implements View {
    * with "the stale bitmap stretched in the interim" (T-63) — and it is also the
    * bounded decode policy D-15 asked for: only mounted items, only when the
    * variant actually changes, never a blanket warm-up of the whole board.
+   *
+   * That path never develops, which falls out of it rather than being arranged:
+   * the photograph is already up, so nothing here says it is waiting, and
+   * `firstSight` was spent on the first variant. A zoom that crossed a variant
+   * boundary is not an arrival, and a photograph that faded up again every time
+   * you zoomed past 200% would say it was.
    */
   private swapPhoto(url: string, replacing: boolean): void {
     this.pending = url;
     if (!url) {
       // An empty src would trigger a network request for the page itself.
       this.photo.removeAttribute("src");
-      this.el.classList.add("is-waiting");
+      this.wait();
       return;
     }
     if (!replacing) {
       this.photo.src = url;
-      this.el.classList.add("is-waiting");
+      this.wait();
       return;
     }
     const next = new Image();
@@ -457,10 +529,18 @@ class PolaroidView implements View {
     //
     // The tear needs both, because it has a second way on that no phase knows
     // about: an `<img>` that failed to decode.
+    //
+    // A develop in flight goes too, though nothing depends on it doing so here:
+    // `boundAsset` was cleared two lines up, so whatever this node is recycled
+    // onto is guaranteed a `swapPhoto`, and that path puts the film back on and
+    // takes the develop off before anything is drawn. It is swept anyway for the
+    // reason the paragraph above gives — a released node is left clean, so
+    // nothing downstream has to reason about what it was.
     this.el.style.removeProperty("--develop");
+    this.el.style.removeProperty("--emerge-delay");
     this.boundPhase = null;
     this.boundDevelop = -1;
-    this.el.classList.remove("is-lifted", "is-waiting", ...FILM_CLASSES);
+    this.el.classList.remove("is-lifted", "is-waiting", IS_EMERGING, ...FILM_CLASSES);
     this.shadow.reset();
     // And the ink, for the reason the photograph goes: a pooled node keeps its
     // subtree, so a view recycled onto a different item would sit there wearing
@@ -621,6 +701,30 @@ export class DomItemLayer implements ItemLayer {
    * see [`paintInk`] for the budget and why it exists.
    */
   private readonly inkPending = new Set<string>();
+
+  /**
+   * Items whose photograph has been on this screen, so it does not develop
+   * again — see [`FirstSight`].
+   *
+   * The layer holds it because the layer is the thing that outlives both a view
+   * and a mount: pooling recycles the node and culling remounts the item, and
+   * this has to survive both. It is not local *asset* state either, which is
+   * `state/assets.ts` and is keyed by hash — this is a fact about a window, and
+   * the second window on the same board is quite correctly still to see any of
+   * these come up.
+   *
+   * It grows by one string per photograph the person has looked at and is
+   * dropped whole when the layer is, which is when the document under it is
+   * replaced — at which point the ids stop meaning anything anyway.
+   */
+  private readonly developed = new Set<string>();
+
+  /** [`FirstSight`], bound once so every view can be built with it. */
+  private readonly firstSight: FirstSight = (itemId) => {
+    if (this.developed.has(itemId)) return false;
+    this.developed.add(itemId);
+    return true;
+  };
 
   constructor(host: HTMLElement, assetUrl: AssetResolver, editor?: ItemEditorHooks) {
     this.host = host;
@@ -983,7 +1087,7 @@ export class DomItemLayer implements ItemLayer {
   }
 
   private create(archetype: Archetype): View {
-    return archetype === "polaroid" ? new PolaroidView() : new PaperView();
+    return archetype === "polaroid" ? new PolaroidView(this.firstSight) : new PaperView();
   }
 
   destroy(): void {
@@ -1001,6 +1105,7 @@ export class DomItemLayer implements ItemLayer {
     for (const pooled of [...this.pool.polaroid, ...this.pool.paper]) pooled.release();
     this.views.clear();
     this.inkPending.clear();
+    this.developed.clear();
     this.pool.polaroid.length = 0;
     this.pool.paper.length = 0;
     this.order = [];

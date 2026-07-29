@@ -11,7 +11,7 @@
  * board legitimately show the same item as developed and as blank at the same
  * moment. That is why this is a render concern and not an item field.
  *
- * ## Only the transfer animates
+ * ## Nothing animates because it is waiting
  *
  * DESIGN says "animating gently **while the transfer runs**", and taking that
  * literally is also the only version that is affordable. An opacity keyframe
@@ -21,14 +21,20 @@
  * exchange's in-flight window, so `transferring` is the state that breathes and
  * the other three are still bitmaps.
  *
- * This is the one place in `render/` that animates outside the frame loop, and
- * items.css states the rule it is standing next to. It is admissible because
- * nothing here is board *content*: no geometry, nothing hit-tested, nothing the
- * sim or the scene mirror can observe. It is the inside of a photograph that
- * does not exist yet.
+ * The emerge below is the second animation and takes the same bound from the
+ * other direction: it is one-shot, about a second long, and runs once per item
+ * per session, so what it promotes is a layer per develop *in flight* rather
+ * than one per photograph.
+ *
+ * These two are the only places in `render/` that animate outside the frame
+ * loop, and items.css states the rule they are standing next to. They are
+ * admissible because nothing here is board *content*: no geometry, nothing
+ * hit-tested, nothing the sim or the scene mirror can observe. It is the inside
+ * of a photograph — one that does not exist yet, and one that has just started
+ * to.
  */
 
-import { mulberry32 } from "@/lib/seed";
+import { mulberry32, valueAt } from "@/lib/seed";
 import type { AssetPhase } from "@/state/assets";
 
 /**
@@ -52,6 +58,51 @@ export function filmClass(phase: AssetPhase): string {
 
 /** Every class `filmClass` can return, for the release path to strip blindly. */
 export const FILM_CLASSES = ["is-developing", "is-torn"] as const;
+
+/**
+ * The print coming up: the class an item wears for the second or so between its
+ * photograph decoding and the emulsion clearing off it.
+ *
+ * Not one of `FILM_CLASSES`, and not returned by `filmClass`, because it is not
+ * a *phase*. Every one of those five is a fact about bytes on a disk somewhere;
+ * this is a fact about one window at one moment — the same asset is emerging in
+ * this window and long since developed in the one beside it, and the phase is
+ * `ready` in both.
+ *
+ * It is also the one film class that goes *off* by itself, on the animation's
+ * own end event. Everything else here is put on and taken off by a bind.
+ *
+ * How long it lasts is the stylesheet's business and deliberately not stated
+ * here. The class is not what makes the photograph visible — `film-emerge` fills
+ * `backwards` rather than `both`, so an item is opaque before the animation and
+ * opaque after it, and only the animation itself ever takes that away. A build
+ * with no stylesheet, a harness that runs no animations, an `animationend` that
+ * never arrives: every one of those shows the photograph. The failure mode of a
+ * duration the renderer also knew would be a picture nobody could see.
+ */
+export const IS_EMERGING = "is-emerging";
+
+/**
+ * The most a develop is held back so that a trayful do not come up in lockstep.
+ *
+ * Small on purpose. This is the difference between prints in a tray and a
+ * synchronised blink, not a queue: a board that opens cold has every photograph
+ * on screen landing within a few frames of each other, and without the scatter
+ * the whole viewport flashes as one object.
+ */
+const EMERGE_STAGGER_MS = 260;
+
+/**
+ * This item's share of that scatter, in milliseconds.
+ *
+ * Off the item's seed, like the grain offset and the sheet tint, so a given
+ * photograph always comes up in the same place in the order — which matters
+ * because a develop can be watched twice, once per window, and two peers
+ * dealing the same board in two different orders would look like a race.
+ */
+export function emergeDelay(seed: number): number {
+  return Math.round(valueAt(seed, "emerge") * EMERGE_STAGGER_MS);
+}
 
 /**
  * Silver-halide grain. Generated once and shared by every waiting photograph;

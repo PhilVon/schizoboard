@@ -149,7 +149,8 @@
  * spinner in it: the point of section 7.5 is that an item with no photograph yet
  * is an object on a corkboard, not a widget in a state.
  */
-.item-polaroid.is-waiting .pol-window {
+.item-polaroid.is-waiting .pol-window,
+.item-polaroid.is-emerging .pol-window {
   background:
     /* The bloom, off the top left, which is where every shadow on this board
      * agrees the light is (DESIGN 4.1) — so the film reads as a surface
@@ -175,7 +176,8 @@
   pointer-events: none;
 }
 
-.item-polaroid.is-waiting .pol-film {
+.item-polaroid.is-waiting .pol-film,
+.item-polaroid.is-emerging .pol-film {
   display: block;
 }
 
@@ -240,6 +242,91 @@
   }
   50% {
     opacity: 1;
+  }
+}
+
+/*
+ * Emerging: the print comes up.
+ *
+ * The other half of the same idea, and worth naming carefully against it.
+ * `is-developing` is the *transfer* — a wash rising up the film as chunks land,
+ * and it says nothing about the picture because at that point this machine has
+ * not got the picture. This is what happens the moment it has: the bytes are on
+ * the disk, the decode has landed, and a photograph that has never been on this
+ * screen before rises out of the emulsion instead of being switched on.
+ *
+ * The emulsion is what it rises out of, which is why both selectors above
+ * accept `is-emerging` as well as `is-waiting`. Take the film off first and the
+ * window falls back to its flat grey backing, and the photograph would then fade
+ * up out of a grey rectangle — a loading placeholder with a transition on it,
+ * which is the thing section 7.5 is written to avoid. The film has to stay under
+ * the photograph for exactly as long as the photograph is see-through.
+ *
+ * **Not a plain opacity ramp.** A print in a tray does not get less transparent;
+ * it gains density and contrast, and colour is the last thing to arrive. So the
+ * middle of this is a flat, washed, warm ghost of the picture — which is also
+ * what the emulsion underneath already looks like — and the snap into full
+ * contrast and colour is the last third. Cross-fading two finished images would
+ * give the same start and end and a muddy blend in between; this way the
+ * midpoint is a photograph at a stage, rather than two photographs at once.
+ *
+ * The delay is per item, off its seed (`film.ts`), so that a viewport of
+ * photographs arriving together comes up as a scatter rather than as one flash.
+ */
+.item-polaroid.is-emerging .pol-photo {
+  /*
+   * `backwards`, and that is a correctness choice rather than a taste one. It
+   * holds the *first* keyframe through the stagger delay — without it a
+   * photograph would show at full strength for up to a quarter second and then
+   * blink out to start developing. And it deliberately does not fill `forwards`:
+   * the moment the animation is over the photograph is back on its own styles,
+   * fully opaque, so a stuck class, a missing stylesheet, or an `animationend`
+   * that never arrives can leave the emulsion on top of nothing at all — never a
+   * picture nobody can see.
+   */
+  animation: film-emerge 1150ms cubic-bezier(0.22, 0.61, 0.3, 1) var(--emerge-delay, 0ms) backwards;
+}
+
+@keyframes film-emerge {
+  0% {
+    opacity: 0;
+    filter: sepia(0.7) saturate(0.2) contrast(0.55) brightness(1.14);
+  }
+  38% {
+    opacity: 0.42;
+    filter: sepia(0.62) saturate(0.32) contrast(0.6) brightness(1.1);
+  }
+  72% {
+    opacity: 0.88;
+    filter: sepia(0.3) saturate(0.72) contrast(0.84) brightness(1.03);
+  }
+  100% {
+    opacity: 1;
+    filter: sepia(0) saturate(1) contrast(1) brightness(1);
+  }
+}
+
+/*
+ * And the grain clears with it. `both`, unlike the photograph above: this one
+ * has to hold its last keyframe until the class comes off, or the grain would
+ * snap back to full strength for the frame between the animation ending and the
+ * `animationend` handler running.
+ *
+ * Later than the picture, on purpose. The emulsion is the last thing to go, so
+ * the grain is still faintly over the photograph when the photograph is already
+ * sharp — which is the half-second that reads as film rather than as a fade.
+ */
+.item-polaroid.is-emerging .pol-film {
+  animation: film-clear 1150ms ease-in var(--emerge-delay, 0ms) both;
+}
+
+@keyframes film-clear {
+  0%,
+  30% {
+    opacity: 1;
+  }
+  100% {
+    opacity: 0;
   }
 }
 
