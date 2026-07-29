@@ -170,8 +170,95 @@ describe("pin layout", () => {
     scene.putPin(pin("p1", "a", 0, 0));
     expect(scene.pinCount("a")).toBe(1);
     scene.putPin(pin("p2", "a", 5, 0));
-    scene.putPin(pin("p3", null, 5, 0));
     expect(scene.pinCount("a")).toBe(2);
+    // A free pin inside the paper holds it too (T-176). It used to be invisible
+    // here, because the count was of pins that *named* this item as a parent —
+    // which is why an item with a pin plainly sitting on it lay flat.
+    scene.putPin(pin("p3", null, 5, 0));
+    expect(scene.pinCount("a")).toBe(3);
+    // And a free pin outside it does not.
+    scene.putPin(pin("p4", null, 9000, 0));
+    expect(scene.pinCount("a")).toBe(3);
+  });
+});
+
+/**
+ * Geometry, not parentage (T-176).
+ *
+ * > a pin may end up over two items if a pin or an item with a pin was moved
+ * > or an item rotated. my thinking is a pin should effect any item under it.
+ *
+ * `parent` still says whose coordinate frame a pin's numbers are in, and DESIGN
+ * 2.2 is right that it must stay singular. What it stopped saying is what the
+ * pin *holds*.
+ */
+describe("which items a pin is pushed through", () => {
+  const pin = (id: string, parent: string | null, lx: number, ly: number) => ({
+    id,
+    parent,
+    lx,
+    ly,
+    kind: "pushpin",
+    color: "#c8352f",
+    wx: 0,
+    wy: 0,
+  });
+
+  it("holds every item it lies inside, not only the one it is parented to", () => {
+    const scene = new Scene();
+    scene.putItem(cold("under"), pose({ x: 0, y: 0, w: 200, h: 200 }));
+    scene.putItem(cold("over"), pose({ x: 60, y: 0, w: 200, h: 200 }));
+    // Parented to `over`, at a point that also lands inside `under`.
+    scene.putPin(pin("p", "over", -40, 0));
+    expect([...scene.pinsOf("over")]).toEqual(["p"]);
+    expect([...scene.pinsOf("under")]).toEqual(["p"]);
+    // And the frame is still singular, which is the half DESIGN 2.2 is about.
+    expect([...scene.pinsParentedTo("over")]).toEqual(["p"]);
+    expect([...scene.pinsParentedTo("under")]).toEqual([]);
+  });
+
+  it("lets an item dragged over a stationary pin be held by it", () => {
+    // The case the human described, and the one a parent index cannot see: no
+    // pin was written to at all.
+    const scene = new Scene();
+    scene.putPin(pin("p", null, 500, 500));
+    scene.putItem(cold("a"), pose({ x: 0, y: 0, w: 200, h: 200 }));
+    expect(scene.pinCount("a")).toBe(0);
+
+    scene.setPose("a", { x: 500, y: 500 });
+    expect(scene.pinCount("a")).toBe(1);
+    expect(scene.solePin("a")?.id).toBe("p");
+  });
+
+  it("lets go when the item is dragged out from under it", () => {
+    const scene = new Scene();
+    scene.putPin(pin("p", null, 0, 0));
+    scene.putItem(cold("a"), pose({ x: 0, y: 0, w: 200, h: 200 }));
+    expect(scene.pinCount("a")).toBe(1);
+    scene.setPose("a", { x: 5000 });
+    expect(scene.pinCount("a")).toBe(0);
+  });
+
+  it("counts a corner the rotation swung away, and not one it swung under", () => {
+    // The exact test is against the rotated rectangle, not the box round it, so
+    // a pin near a corner changes hands as the paper turns.
+    const scene = new Scene();
+    scene.putItem(cold("a"), pose({ x: 0, y: 0, w: 200, h: 40, rot: 0 }));
+    scene.putPin(pin("p", null, 0, 60));
+    expect(scene.pinCount("a")).toBe(0);
+    scene.setPose("a", { rot: Math.PI / 2 });
+    expect(scene.pinCount("a")).toBe(1);
+  });
+
+  it("stops holding anything once the item is gone", () => {
+    const scene = new Scene();
+    scene.putItem(cold("a"), pose({ w: 200, h: 200 }));
+    scene.putPin(pin("p", null, 0, 0));
+    expect(scene.pinCount("a")).toBe(1);
+    scene.removeItem("a");
+    // Not a stale set left behind by a rebuild that no longer visits it.
+    expect(scene.pinCount("a")).toBe(0);
+    expect([...scene.pinsOf("a")]).toEqual([]);
   });
 });
 
@@ -181,6 +268,15 @@ describe("pin layout", () => {
  * only source of truth (AC-56)?
  */
 describe("the reverse pin index", () => {
+  /**
+   * The size of the *parent* index. Every test in this block is about that one
+   * — none of these items exists in the scene at all, which is the point: the
+   * index tracks `pin.parent`, a name, whether or not it resolves. `pinCount`
+   * is the geometric question now (T-176) and would answer nothing here.
+   */
+  const parentCount = (scene: Scene, itemId: string): number =>
+    scene.pinsParentedTo(itemId).size;
+
   const pin = (id: string, parent: string | null) => ({
     id,
     parent,
@@ -195,27 +291,27 @@ describe("the reverse pin index", () => {
   it("follows a pin re-parented from one item to another", () => {
     const scene = new Scene();
     scene.putPin(pin("p", "a"));
-    expect([...scene.pinsOf("a")]).toEqual(["p"]);
+    expect([...scene.pinsParentedTo("a")]).toEqual(["p"]);
 
     scene.putPin(pin("p", "b"));
-    expect(scene.pinCount("a")).toBe(0);
-    expect([...scene.pinsOf("b")]).toEqual(["p"]);
+    expect(parentCount(scene, "a")).toBe(0);
+    expect([...scene.pinsParentedTo("b")]).toEqual(["p"]);
   });
 
   it("follows a pin dragged off onto bare cork, and back on", () => {
     const scene = new Scene();
     scene.putPin(pin("p", "a"));
     scene.putPin(pin("p", null));
-    expect(scene.pinCount("a")).toBe(0);
+    expect(parentCount(scene, "a")).toBe(0);
     scene.putPin(pin("p", "a"));
-    expect(scene.pinCount("a")).toBe(1);
+    expect(parentCount(scene, "a")).toBe(1);
   });
 
   it("does not double-count a pin whose parent did not change", () => {
     const scene = new Scene();
     scene.putPin(pin("p", "a"));
     scene.putPin(pin("p", "a"));
-    expect(scene.pinCount("a")).toBe(1);
+    expect(parentCount(scene, "a")).toBe(1);
   });
 
   it("forgets a deleted pin", () => {
@@ -224,7 +320,7 @@ describe("the reverse pin index", () => {
     scene.putPin(pin("p2", "a"));
     expect(scene.removePin("p1")).toBe(true);
     expect(scene.removePin("p1")).toBe(false);
-    expect([...scene.pinsOf("a")]).toEqual(["p2"]);
+    expect([...scene.pinsParentedTo("a")]).toEqual(["p2"]);
   });
 
   /**
@@ -236,7 +332,7 @@ describe("the reverse pin index", () => {
     scene.putItem(cold("a"), pose());
     scene.putPin(pin("p", "a"));
     scene.removeItem("a");
-    expect(scene.pinCount("a")).toBe(1);
+    expect(parentCount(scene, "a")).toBe(1);
   });
 
   it("hands an unpinned item an empty set rather than nothing", () => {

@@ -290,8 +290,12 @@ describe("swinging and settling", () => {
    */
   it("places a board that arrives mid-session, one dirty item at a time", () => {
     const ids = ["a", "b", "c"];
+    // Spread out, which they were not until T-176 made pin count geometric.
+    // Three items at the same coordinates are three items each holding all
+    // three pins, so all three came out rigid and none of them swung — a true
+    // answer to a question this test is not asking.
     const slots = ids.map((id, i) => {
-      const slot = put(id, { rot: 0.35 + i * 0.1 });
+      const slot = put(id, { x: i * 400, rot: 0.35 + i * 0.1 });
       pin(`pin-${id}`, id, 0, -80);
       return slot;
     });

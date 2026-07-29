@@ -84,7 +84,11 @@ export function threadFrom(scene: Scene, from: string): Thread {
     // than broken (DATA-MODEL section 8.1), so it simply has no item edge.
     if (pin.parent !== null && !items.has(pin.parent) && scene.has(pin.parent)) {
       items.add(pin.parent);
-      for (const sibling of scene.pinsOf(pin.parent)) {
+      // Parentage, deliberately, and the one caller that still wants it: this
+      // walk entered through `pin.parent`, so it goes back out the same edge.
+      // `pinsOf` is the geometric set now (T-176) and would pull in pins that
+      // merely lie over the item without being in its frame.
+      for (const sibling of scene.pinsParentedTo(pin.parent)) {
         if (pins.has(sibling)) continue;
         pins.add(sibling);
         queue.push(sibling);

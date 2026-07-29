@@ -31,13 +31,22 @@
  */
 
 import { shortest } from "@/lib/angle";
+import { CellGrid } from "@/lib/cellgrid";
 import type { InkSample, InkSurface } from "@/lib/ink";
-import { rotateOut, type Point } from "@/lib/rotate";
+import { rotateIn, rotateOut, type Point } from "@/lib/rotate";
 
 const INITIAL_CAPACITY = 256;
 
 /** Reused by `layoutPins`; see the note there. */
 const scratch: Point = { x: 0, y: 0 };
+
+/** Reused by `layoutOver`, which runs over every item on every frame anything
+ *  moved and must not mint a rectangle per item. */
+const overRect = { minX: 0, minY: 0, maxX: 0, maxY: 0 };
+
+/** The pin `layoutOver` is currently placing, in board coordinates. Held here
+ *  rather than passed, for the reason `overRect` is. */
+const overPoint: Point = { x: 0, y: 0 };
 
 /** Handed back by `pinsOf` and `stringsThrough` when the index has no entry, so
  *  a caller never has to distinguish "none" from "not indexed". */
@@ -392,6 +401,63 @@ export class Scene {
   private readonly byParent = new Map<string, Set<string>>();
 
   /**
+   * Which pins each item is actually *pushed through* — the geometric answer,
+   * and the one the physics asks (T-176).
+   *
+   * > pins currently only effect their parent, however a pin may end up over
+   * > two items if a pin or an item with a pin was moved or an item rotated. my
+   * > thinking is a pin should effect any item under it.
+   *
+   * `byParent` above cannot answer that, and the gap between the two is
+   * visible on the board: an item with a pin plainly sitting on it lies flat,
+   * because the pin names something else. Parent is the coordinate *frame* — it
+   * says whose local space the pin's numbers are in and therefore what it
+   * travels with — and DESIGN 2.2 is right that it must stay singular. What it
+   * is not is the answer to "what does this pin hold", which is a question about
+   * where the pin *is*.
+   *
+   * So the two indexes now say different things and both are needed. A pin
+   * belongs to one frame and holds however many items it is stuck through.
+   * `pinsParentedTo` is the first; `pinsOf`, `pinCount` and `solePin` are the
+   * second, because every one of their callers is asking about physics.
+   *
+   * Rebuilt in the LAYOUT phase rather than maintained by `putPin`, because
+   * nothing about a pin has to change for the answer to: an item dragged over a
+   * stationary pin is now on it, and no pin was written to. Sets are cleared
+   * and refilled rather than replaced, so a still board allocates nothing.
+   */
+  private readonly byOver = new Map<string, Set<string>>();
+
+  /**
+   * Items indexed by the box they cover, so [`layoutOver`] can ask what a pin
+   * is inside without testing it against every item on the board.
+   *
+   * Slot-keyed, which is what `CellGrid` is built for, and the second thing on
+   * this board to want one — `render/cull.ts` has the other. Not shared with it:
+   * that grid is the culler's own and lives on the far side of the one-way data
+   * flow, and this one has to be right in the LAYOUT phase, which is two phases
+   * earlier.
+   */
+  private readonly overGrid = new CellGrid(512);
+
+  /**
+   * Whether [`byOver`] is behind the scene, so the next question rebuilds it.
+   *
+   * Rebuilt on demand rather than in a phase, and that is not a micro-decision.
+   * The obvious home is the LAYOUT phase, next to the pin world positions this
+   * reads — but `sim/torsion.ts` asks the physics question in phase *3*, and
+   * `sim/ropes.ts` already carries a comment about that exact hazard. An index
+   * built one phase after its readers is an index that is silently a frame stale
+   * for the thing that cares most, and every test that puts a pin down would
+   * have to know to run a phase before asking what it holds.
+   *
+   * So: anything that moves an item or a pin sets this, and the first question
+   * afterwards pays for the rebuild. At most one rebuild per frame however many
+   * callers ask, and a still board pays a boolean.
+   */
+  private overStale = true;
+
+  /**
    * The reverse of a string's node list: which strings run through each pin.
    *
    * The other half of the same idea as `byParent`, and derived in the same
@@ -621,6 +687,8 @@ export class Scene {
 
   /** Insert or replace. Returns the slot. */
   putItem(cold: ItemCold, pose: ItemPose): number {
+    // Geometry in, so what is over what may have changed.
+    this.overStale = true;
     let slot = this.slots.get(cold.id);
     if (slot === undefined) {
       const reused = this.freeSlots.pop();
@@ -649,6 +717,7 @@ export class Scene {
   setPose(id: string, pose: Partial<ItemPose>): boolean {
     const slot = this.slots.get(id);
     if (slot === undefined) return false;
+    this.overStale = true;
     if (pose.x !== undefined) this.x[slot] = pose.x;
     if (pose.y !== undefined) this.y[slot] = pose.y;
     if (pose.rot !== undefined) this.rot[slot] = pose.rot;
@@ -660,6 +729,7 @@ export class Scene {
   removeItem(id: string): boolean {
     const slot = this.slots.get(id);
     if (slot === undefined) return false;
+    this.overStale = true;
     // Ink goes with the item, which is the opposite of what happens to its pins
     // — and the asymmetry is the document's, not a choice made here. A pin is
     // top-level and outlives its item (`Shift`+`Delete`); a stroke is nested
@@ -668,6 +738,13 @@ export class Scene {
     // through the observer, in the same entry.
     this.unfile(this.strokes.get(id));
     this.strokes.delete(id);
+    // Dropped rather than cleared, unlike every other frame: `layoutOver`
+    // rebuilds from `slots`, and an item that has left it would never be visited
+    // again — so a set left behind would answer `pinCount` with the pins that
+    // held this item at the moment it was deleted, for as long as the session
+    // lasted. The grid entry can stay: a freed slot is guarded by its null id,
+    // and re-indexed from scratch if the slot is reused.
+    this.byOver.delete(id);
     this.slots.delete(id);
     this.ids[slot] = null;
     this.coldBySlot[slot] = null;
@@ -830,6 +907,7 @@ export class Scene {
   putPin(pin: PinNode): void {
     const existing = this.pins.get(pin.id);
     if (existing && existing.parent !== pin.parent) this.unindex(existing.parent, pin.id);
+    this.overStale = true;
     this.pins.set(pin.id, pin);
     if (pin.parent === null) return;
     let held = this.byParent.get(pin.parent);
@@ -840,6 +918,7 @@ export class Scene {
   removePin(id: string): boolean {
     const pin = this.pins.get(id);
     if (!pin) return false;
+    this.overStale = true;
     this.pins.delete(id);
     this.unindex(pin.parent, id);
     return true;
@@ -865,6 +944,79 @@ export class Scene {
       if (changedItems && pin.parent !== null && !changedItems.has(pin.parent)) continue;
       this.layoutPin(pin);
     }
+    this.overStale = true;
+  }
+
+  /**
+   * Rebuild [`byOver`]: which items each pin is currently pushed through.
+   *
+   * Every pin, every time, and *not* filtered by `changedItems` the way the
+   * sweep above is. That filter is sound for world positions, because a pin only
+   * moves when its own parent does — and it is exactly wrong here, because the
+   * common case this whole task is about is a pin that did not move at all and
+   * an item that was dragged over it. Filtering by what moved would answer for
+   * the item and miss the pin.
+   *
+   * The cost is therefore one point query per pin per frame that anything moved,
+   * against a grid that only re-buckets the items whose cells actually changed.
+   * That is the same order as the sweep above and as the culler's own pass.
+   */
+  private layoutOver(): void {
+    this.overStale = false;
+    for (const [id, slot] of this.slots) {
+      const cos = Math.abs(Math.cos(this.renderRot(slot)));
+      const sin = Math.abs(Math.sin(this.renderRot(slot)));
+      const w = this.w[slot]!;
+      const h = this.h[slot]!;
+      // The upright box around the rotated one. Bigger than the item, which is
+      // the safe direction: the grid only ever produces candidates, and the
+      // exact test below rejects the corners it over-claims.
+      const hw = (cos * w + sin * h) / 2;
+      const hh = (sin * w + cos * h) / 2;
+      const cx = this.renderX(slot);
+      const cy = this.renderY(slot);
+      overRect.minX = cx - hw;
+      overRect.minY = cy - hh;
+      overRect.maxX = cx + hw;
+      overRect.maxY = cy + hh;
+      this.overGrid.place(slot, overRect);
+      // Cleared rather than deleted, so the Set survives to be refilled and a
+      // board at rest allocates nothing at all.
+      this.byOver.get(id)?.clear();
+    }
+
+    for (const pin of this.pins.values()) {
+      // Computed, not read off the pin: see [`pinWorld`].
+      this.pinWorld(pin, overPoint);
+      const cx = Math.floor(overPoint.x / this.overGrid.cell);
+      const cy = Math.floor(overPoint.y / this.overGrid.cell);
+      const bucket = this.overGrid.bucketAt(cx, cy);
+      if (bucket) for (const slot of bucket) this.fileOver(pin, slot);
+      // An item too big to bucket is a candidate for everything — see
+      // `CellGrid.oversized`. Nothing this application makes is that size.
+      for (const slot of this.overGrid.oversized) this.fileOver(pin, slot);
+    }
+  }
+
+  /** File `pin`, whose world position is in `overPoint`, against the item in
+   *  `slot` — if it really is inside it. */
+  private fileOver(pin: PinNode, slot: number): void {
+    const id = this.ids[slot];
+    if (id === null || id === undefined) return;
+    const angle = this.renderRot(slot);
+    rotateIn(
+      overPoint.x,
+      overPoint.y,
+      this.renderX(slot),
+      this.renderY(slot),
+      Math.cos(angle),
+      Math.sin(angle),
+      scratch,
+    );
+    if (Math.abs(scratch.x) > this.w[slot]! / 2 || Math.abs(scratch.y) > this.h[slot]! / 2) return;
+    let over = this.byOver.get(id);
+    if (!over) this.byOver.set(id, (over = new Set()));
+    over.add(pin.id);
   }
 
   /**
@@ -882,16 +1034,33 @@ export class Scene {
    * later and neither minds, because it is a pure function of the pose.
    */
   layoutPin(pin: PinNode): void {
+    this.pinWorld(pin, scratch);
+    pin.wx = scratch.x;
+    pin.wy = scratch.y;
+  }
+
+  /**
+   * Where a pin is right now, into `out`, **without** writing it down.
+   *
+   * The read-only half of `layoutPin`, and the distinction is load-bearing for
+   * one caller. `layoutPins(changedItems)` deliberately leaves the world
+   * position of a pin whose item did not move untouched, so [`layoutOver`] —
+   * which runs over every pin whether or not it moved — must not be the thing
+   * that quietly refreshes them all. It also cannot simply *read* `wx`/`wy`,
+   * because it can be asked before the LAYOUT phase has ever run and would then
+   * be indexing every pin at the origin. So it computes, and does not store.
+   */
+  private pinWorld(pin: PinNode, out: Point): Point {
     if (pin.parent === null) {
-      pin.wx = pin.lx;
-      pin.wy = pin.ly;
-      return;
+      out.x = pin.lx;
+      out.y = pin.ly;
+      return out;
     }
     const slot = this.slots.get(pin.parent);
     if (slot === undefined) {
-      pin.wx = pin.lx;
-      pin.wy = pin.ly;
-      return;
+      out.x = pin.lx;
+      out.y = pin.ly;
+      return out;
     }
     // Rendered rotation about the rendered centre: a pin stays on the
     // photograph while the photograph swings — and, because `drift` is
@@ -900,35 +1069,54 @@ export class Scene {
     // is what makes it look pushed into the cork rather than sliding across
     // it.
     const angle = this.renderRot(slot);
-    // Into the shared scratch and straight back out again — this runs over
-    // every pin on the board on every frame anything moved, so it must not
-    // mint an object per pin.
-    rotateOut(
+    // Into the caller's object — this runs over every pin on the board on every
+    // frame anything moved, so it must not mint one per pin.
+    return rotateOut(
       pin.lx,
       pin.ly,
       this.renderX(slot),
       this.renderY(slot),
       Math.cos(angle),
       Math.sin(angle),
-      scratch,
+      out,
     );
-    pin.wx = scratch.x;
-    pin.wy = scratch.y;
   }
 
-  /** How many pins hold this item — its physics, per DESIGN section 2.2. */
+  /**
+   * How many pins hold this item — its physics, per DESIGN section 2.2.
+   *
+   * Geometric, not parental: every pin actually stuck through the paper counts,
+   * whoever's frame its coordinates happen to be in. See [`byOver`], and note
+   * that this and `pinsParentedTo` are now different questions with different
+   * answers.
+   */
   pinCount(itemId: string): number {
-    return this.byParent.get(itemId)?.size ?? 0;
+    if (this.overStale) this.layoutOver();
+    return this.byOver.get(itemId)?.size ?? 0;
   }
 
   /**
    * Which pins hold this item. Empty for an unpinned one — never null, so a
    * caller can iterate without asking first.
    *
-   * Live rather than a copy: the set is the index's own, and `putPin` mutates
-   * it. Read it and let it go; do not keep it across a frame.
+   * Live rather than a copy: the set is the index's own, and the LAYOUT phase
+   * clears and refills it. Read it and let it go; do not keep it across a frame.
    */
   pinsOf(itemId: string): ReadonlySet<string> {
+    if (this.overStale) this.layoutOver();
+    return this.byOver.get(itemId) ?? EMPTY_IDS;
+  }
+
+  /**
+   * Which pins store their coordinates in this item's frame — the *parent*
+   * relationship, which is no longer the same set as the one above.
+   *
+   * One caller, and it is the one place where parentage is genuinely the
+   * question being asked: `state/thread.ts` follows the connected component out
+   * of a pin, into the item it is pushed into, and back out to that item's other
+   * pins, and it enters through `pin.parent`. Physics wants `pinsOf`.
+   */
+  pinsParentedTo(itemId: string): ReadonlySet<string> {
     return this.byParent.get(itemId) ?? EMPTY_IDS;
   }
 
@@ -938,10 +1126,13 @@ export class Scene {
    *
    * Two things want it and want it for the same reason: an item on one pin
    * hangs from that pin, and turns about it — so both `sim/torsion.ts` and the
-   * rotation gesture need to know which point that is.
+   * rotation gesture need to know which point that is. Which means this one had
+   * to become geometric with the rest: an item hanging from a pin it does not
+   * parent still turns about that pin, because that is where it is nailed.
    */
   solePin(itemId: string): PinNode | null {
-    const held = this.byParent.get(itemId);
+    if (this.overStale) this.layoutOver();
+    const held = this.byOver.get(itemId);
     if (!held || held.size !== 1) return null;
     for (const id of held) return this.pins.get(id) ?? null;
     return null;
@@ -1176,6 +1367,9 @@ export class Scene {
     this.boardInk.clear();
     this.strokeAt.clear();
     this.byParent.clear();
+    this.byOver.clear();
+    this.overGrid.clear();
+    this.overStale = true;
     this.byPin.clear();
     this.ids.fill(null);
     this.coldBySlot.fill(null);
