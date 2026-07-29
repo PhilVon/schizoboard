@@ -26,7 +26,8 @@ import { beforeEach, describe, expect, it } from "vitest";
 
 import { openBoardDoc, type BoardDoc } from "@/crdt/doc";
 import { createItems } from "@/crdt/ops/items";
-import { createPin, placePin } from "@/crdt/ops/pins";
+import { setItemPoses } from "@/crdt/ops/items";
+import { createPin, placePin, rehomePins } from "@/crdt/ops/pins";
 import { readItem, readPin, type ItemType } from "@/crdt/schema";
 import { UndoHistory } from "@/crdt/undo";
 
@@ -110,6 +111,101 @@ describe("putting a pin down", () => {
     expect(readPin(note.pinId, board.pins.get(note.pinId)!)!.parent).toBe(note.itemId);
     expect(pose(note.itemId)).toEqual([0, 0, 0]);
     expect(pose(card.itemId)).toEqual([400, 0, 0]);
+    history.destroy();
+  });
+});
+
+/**
+ * T-193. `rehomePins` is the only pin write on the board that nobody asked for:
+ * it fires off the back of somebody moving a *different* object, because the
+ * frame a pin's numbers live in stopped being a choice and became a fact about
+ * where the pin is (D-31).
+ *
+ * So the things worth asserting are not about geometry — `Scene.rehomes`
+ * computes that and `state/scene.test.ts` tests it. They are about the write:
+ * that it is one update, that it declines to invent anything, and that undo
+ * takes the frame back with whatever moved.
+ */
+describe("re-homing a pin onto the paper it is stuck through", () => {
+  it("re-parents in one update, coordinates and all", () => {
+    const note = hanging("note", 0);
+    const card = hanging("card", 400);
+
+    let updates = 0;
+    board.doc.on("update", () => updates++);
+    rehomePins(board, [{ id: note.pinId, parent: card.itemId, lx: 20, ly: -30 }]);
+    expect(updates).toBe(1);
+
+    const moved = readPin(note.pinId, board.pins.get(note.pinId)!)!;
+    expect([moved.parent, moved.lx, moved.ly]).toEqual([card.itemId, 20, -30]);
+  });
+
+  it("writes nothing at all when every pin already agrees", () => {
+    const note = hanging("note", 0);
+    let updates = 0;
+    board.doc.on("update", () => updates++);
+    // The common case by a wide margin: the scan runs behind every committed
+    // drag and almost always has nothing to say.
+    rehomePins(board, []);
+    rehomePins(board, [{ id: note.pinId, parent: note.itemId, lx: 999, ly: 999 }]);
+    expect(updates).toBe(0);
+    const still = readPin(note.pinId, board.pins.get(note.pinId)!)!;
+    expect([still.lx, still.ly]).not.toEqual([999, 999]);
+  });
+
+  it("leaves a pin alone rather than freeing it onto a parent that is not there", () => {
+    // A named parent this client has not got is a race, not a free pin. Writing
+    // null would move the pin, and moving a pin is the one thing this must
+    // never do.
+    const note = hanging("note", 0);
+    rehomePins(board, [{ id: note.pinId, parent: "nobody", lx: 5, ly: 5 }]);
+    const still = readPin(note.pinId, board.pins.get(note.pinId)!)!;
+    expect(still.parent).toBe(note.itemId);
+  });
+
+  it("refuses a coordinate that is not a number", () => {
+    const note = hanging("note", 0);
+    rehomePins(board, [{ id: note.pinId, parent: null, lx: Number.NaN, ly: 0 }]);
+    expect(readPin(note.pinId, board.pins.get(note.pinId)!)!.parent).toBe(note.itemId);
+  });
+
+  it("rides the undo entry of the write in front of it", () => {
+    // The hazard T-176 named when it declined to build this: an undo entry
+    // where a move is secretly also a re-parent. It is defused by being the
+    // *same* entry — one Ctrl+Z puts the paper and the pin's frame back
+    // together, so the pin lands where it started rather than being towed back
+    // by an item it had not been stuck through yet.
+    const note = hanging("note", 0);
+    const card = hanging("card", 400);
+    const history = new UndoHistory(board);
+
+    setItemPoses(board, new Map([[card.itemId, { x: 0, y: 0, rot: 0 }]]));
+    rehomePins(board, [{ id: note.pinId, parent: card.itemId, lx: 20, ly: -30 }]);
+    expect(readPin(note.pinId, board.pins.get(note.pinId)!)!.parent).toBe(card.itemId);
+
+    history.undo();
+    expect(readPin(note.pinId, board.pins.get(note.pinId)!)!.parent).toBe(note.itemId);
+    expect(pose(card.itemId)).toEqual([400, 0, 0]);
+    history.destroy();
+  });
+
+  it("is a separate entry if a boundary gets between it and its cause", () => {
+    // Why `app/main.ts` queues `undo.boundary()` rather than calling it, and
+    // why the re-home is pushed onto the write queue immediately behind the
+    // edit that caused it. Let the boundary land in between and the pin's frame
+    // becomes its own Ctrl+Z — one that appears to move a pin nobody touched.
+    const note = hanging("note", 0);
+    const card = hanging("card", 400);
+    const history = new UndoHistory(board);
+
+    setItemPoses(board, new Map([[card.itemId, { x: 0, y: 0, rot: 0 }]]));
+    history.boundary();
+    rehomePins(board, [{ id: note.pinId, parent: card.itemId, lx: 20, ly: -30 }]);
+
+    history.undo();
+    expect(readPin(note.pinId, board.pins.get(note.pinId)!)!.parent).toBe(note.itemId);
+    // Still moved: the undo spent itself on the re-home alone.
+    expect(pose(card.itemId)).toEqual([0, 0, 0]);
     history.destroy();
   });
 });

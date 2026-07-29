@@ -796,3 +796,162 @@ describe("Scene stroke surfaces", () => {
     expect(scene.strokeSurface("s1")).toBeNull();
   });
 });
+
+/**
+ * T-193, the second clause of the pin request: a pin travels with the topmost
+ * item it is pushed through, not with whoever placed it.
+ *
+ * `pinsOf` above answers "what does this pin hold". These answer "whose frame
+ * should it be in", which is the same query read the other way round and
+ * reduced to one item — and the two must never disagree about which items are
+ * in play, only about how many of them matter.
+ */
+describe("the item a pin should travel with", () => {
+  const pin = (id: string, parent: string | null, lx: number, ly: number) => ({
+    id,
+    parent,
+    lx,
+    ly,
+    kind: "pushpin",
+    color: "#c8352f",
+    wx: 0,
+    wy: 0,
+  });
+
+  it("is the one that paints over the others, not the one it is parented to", () => {
+    const scene = new Scene();
+    scene.putItem(cold("under", { z: "a0" }), pose({ x: 0, y: 0, w: 200, h: 200 }));
+    scene.putItem(cold("over", { z: "a1" }), pose({ x: 60, y: 0, w: 200, h: 200 }));
+    scene.putPin(pin("p", "under", 40, 0));
+    expect([...scene.pinsOf("over")]).toEqual(["p"]);
+    expect(scene.topOver("p")).toBe("over");
+  });
+
+  it("is nothing at all when the pin is in bare cork", () => {
+    const scene = new Scene();
+    scene.putItem(cold("a"), pose({ x: 0, y: 0, w: 100, h: 100 }));
+    scene.putPin(pin("p", null, 500, 500));
+    expect(scene.topOver("p")).toBeNull();
+  });
+
+  it("breaks a z tie the way the renderer does", () => {
+    // Two peers minting the same key is invariant 9's case, and the whole point
+    // of the tie-break is that every client resolves it identically. A topmost
+    // that disagreed with `render/items/dom.ts` would re-home a pin onto the
+    // item the user can see it is not on top of.
+    const scene = new Scene();
+    scene.putItem(cold("a", { z: "a0", createdBy: 7 }), pose({ w: 200, h: 200 }));
+    scene.putItem(cold("b", { z: "a0", createdBy: 9 }), pose({ w: 200, h: 200 }));
+    expect(scene.topOver("p")).toBeNull();
+    scene.putPin(pin("p", null, 0, 0));
+    expect(scene.topOver("p")).toBe("b");
+  });
+
+  it("changes answer when the stack is reordered and nothing moves", () => {
+    const scene = new Scene();
+    scene.putItem(cold("a", { z: "a0" }), pose({ w: 200, h: 200 }));
+    scene.putItem(cold("b", { z: "a1" }), pose({ w: 200, h: 200 }));
+    scene.putPin(pin("p", null, 0, 0));
+    expect(scene.topOver("p")).toBe("b");
+    // What `sendToBack` does: a new key, no coordinate touched anywhere.
+    scene.putItem(cold("b", { z: "Zz" }), pose({ w: 200, h: 200 }));
+    expect(scene.topOver("p")).toBe("a");
+  });
+
+  it("forgets a pin that has left the board", () => {
+    const scene = new Scene();
+    scene.putItem(cold("a"), pose({ w: 200, h: 200 }));
+    scene.putPin(pin("p", null, 0, 0));
+    expect(scene.topOver("p")).toBe("a");
+    scene.removePin("p");
+    expect(scene.topOver("p")).toBeNull();
+  });
+});
+
+describe("Scene.rehomes", () => {
+  const pin = (id: string, parent: string | null, lx: number, ly: number) => ({
+    id,
+    parent,
+    lx,
+    ly,
+    kind: "pushpin",
+    color: "#c8352f",
+    wx: 0,
+    wy: 0,
+  });
+
+  it("says nothing about a board that already agrees", () => {
+    const scene = new Scene();
+    scene.putItem(cold("a"), pose({ w: 200, h: 200 }));
+    scene.putPin(pin("p", "a", 10, 10));
+    expect(scene.rehomes([])).toEqual([]);
+  });
+
+  it("adopts a free pin an item has been dragged over, without moving it", () => {
+    const scene = new Scene();
+    scene.putPin(pin("p", null, 500, 500));
+    scene.putItem(cold("a"), pose({ x: 0, y: 0, w: 200, h: 200 }));
+    expect(scene.rehomes([])).toEqual([]);
+
+    scene.setPose("a", { x: 480, y: 460 });
+    const [home] = scene.rehomes([]);
+    expect(home).toEqual({ id: "p", parent: "a", lx: 20, ly: 40 });
+    // The whole safety argument in one assertion: the numbers change frame and
+    // the pin does not move.
+    scene.putPin(pin("p", home!.parent, home!.lx, home!.ly));
+    scene.layoutPins();
+    const moved = scene.pins.get("p")!;
+    expect(moved.wx).toBeCloseTo(500);
+    expect(moved.wy).toBeCloseTo(500);
+  });
+
+  it("hands a pin back to the cork when the paper shrinks off it", () => {
+    // A parented pin cannot be left behind by its own paper *moving* — that is
+    // the whole point of item-local coordinates. It comes off when the paper
+    // stops reaching it, which a resize does.
+    const scene = new Scene();
+    scene.putItem(cold("a"), pose({ x: 0, y: 0, w: 200, h: 200 }));
+    scene.putPin(pin("p", "a", 80, 0));
+    expect(scene.rehomes([])).toEqual([]);
+
+    scene.setPose("a", { w: 100, h: 100 });
+    // Board coordinates, and the ones the pin is actually drawn at — not the
+    // item-local pair reinterpreted.
+    expect(scene.rehomes([])).toEqual([{ id: "p", parent: null, lx: 80, ly: 0 }]);
+  });
+
+  it("hands a pin back to the cork when the paper it names is gone", () => {
+    // DATA-MODEL 8.1: a pin whose parent has left "renders as free-floating at
+    // its last known board position". This writes that down rather than
+    // re-deriving it on every read.
+    const scene = new Scene();
+    scene.putItem(cold("a"), pose({ x: 300, y: 0, w: 200, h: 200 }));
+    scene.putPin(pin("p", "a", 20, 40));
+    expect(scene.rehomes([])).toEqual([]);
+
+    scene.removeItem("a");
+    expect(scene.rehomes([])).toEqual([{ id: "p", parent: null, lx: 20, ly: 40 }]);
+  });
+
+  it("converts through the new parent's rotation", () => {
+    const scene = new Scene();
+    scene.putPin(pin("p", null, 100, 0));
+    scene.putItem(cold("a"), pose({ x: 0, y: 0, w: 400, h: 400, rot: Math.PI / 2 }));
+    const [home] = scene.rehomes([]);
+    // A quarter turn puts the board's +x on the item's -y.
+    expect(home!.parent).toBe("a");
+    expect(home!.lx).toBeCloseTo(0);
+    expect(home!.ly).toBeCloseTo(-100);
+  });
+
+  it("empties the array it is given rather than minting one", () => {
+    const scene = new Scene();
+    scene.putItem(cold("a"), pose({ w: 200, h: 200 }));
+    scene.putPin(pin("p", null, 0, 0));
+    const out = scene.rehomes([]);
+    expect(out).toHaveLength(1);
+    scene.putPin(pin("p", "a", 0, 0));
+    expect(scene.rehomes(out)).toBe(out);
+    expect(out).toHaveLength(0);
+  });
+});
