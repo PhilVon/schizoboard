@@ -48,6 +48,10 @@ const overRect = { minX: 0, minY: 0, maxX: 0, maxY: 0 };
  *  rather than passed, for the reason `overRect` is. */
 const overPoint: Point = { x: 0, y: 0 };
 
+/** And the pivot the note being written on turns about — its own, because the
+ *  flatten runs inside a call that has already lent `scratch` out. */
+const flatPivot: Point = { x: 0, y: 0 };
+
 /** Handed back by `pinsOf` and `stringsThrough` when the index has no entry, so
  *  a caller never has to distinguish "none" from "not indexed". */
 const EMPTY_IDS: ReadonlySet<string> = new Set<string>();
@@ -606,15 +610,19 @@ export class Scene {
     // about its centre and there is nothing to translate. The same rule the
     // rotation gesture uses, from the same place (T-105).
     const pin = this.solePin(itemId!);
-    if (pin) {
+    // `pinPivot`, not `pin.lx`/`pin.ly` — the pin holding this note need not be
+    // one it parents (T-188), and un-rotating a note to write on it about a point
+    // in the wrong frame takes the note off the screen instead of laying it flat.
+    const at = pin === null ? null : this.pinPivot(pin.id, slot, flatPivot);
+    if (at) {
       const settled = this.settledRot(slot);
       const drawn = shortest(settled) * (1 - t);
       const c0 = Math.cos(settled);
       const s0 = Math.sin(settled);
       const c1 = Math.cos(drawn);
       const s1 = Math.sin(drawn);
-      dx = pin.lx * (c0 - c1) - pin.ly * (s0 - s1);
-      dy = pin.lx * (s0 - s1) + pin.ly * (c0 - c1);
+      dx = at.x * (c0 - c1) - at.y * (s0 - s1);
+      dy = at.x * (s0 - s1) + at.y * (c0 - c1);
     }
 
     if (this.flatSlot === slot && this.flatT === t && this.flatDX === dx && this.flatDY === dy) {
@@ -1108,35 +1116,49 @@ export class Scene {
   }
 
   /**
-   * Where a pin sits in an item's own un-rotated frame, into `out`.
+   * Where a pin sits on an item, in the item's own settled frame, into `out`.
    *
-   * The companion to [`pinsOf`], and the two are almost always asked together:
-   * that one says which pins are pushed through a sheet, and this says whereabouts
-   * — which is the question anything about the *shape* of the sheet has to ask.
-   * `render/items/curl.ts` is the caller, because a corner with a pin near it is
-   * held flat and a corner without one is not (DESIGN section 4.4).
+   * The companion to [`pinsOf`] and [`solePin`], and it exists because those two
+   * became *geometric* in T-176 while everything downstream of them went on
+   * reading `pin.lx`/`pin.ly` as if the pin were parented to the item it holds.
+   * That is only true when it is. For a free pin those are board coordinates and
+   * for one parented elsewhere they are a third item's — so a note that had been
+   * dragged over a pin was turning about a point thousands of units away and
+   * being flung off the board by a few degrees of swing (T-188).
    *
-   * Computed rather than read off `pin.wx`/`wy`, for [`pinWorld`]'s reason: those
-   * are only refreshed for pins whose item moved, so a pin belonging to a still
-   * item that another item has been dragged *over* has a world position from
-   * whenever it last moved, which may be never.
+   * **Settled, not drawn.** `rot[slot]` and `x`/`y`, never `renderRot` or
+   * `renderX`/`renderY`. Everything that asks this is computing something the
+   * swing is then applied *to* — the equilibrium angle, the drift that holds the
+   * pivot still, which corners are held flat — so a pivot read off the drawn pose
+   * would be a function of the swing it is used to produce. That is a loop, and
+   * this is the line that is not allowed to close it.
+   *
+   * A pin this item parents short-circuits, and that is correctness rather than
+   * speed: its world position is computed from the *drawn* pose of its parent, so
+   * sending it out to the world and back through the settled frame would return
+   * the swing rather than remove it.
    *
    * By slot, like `boundsAt`, because every caller already has one — it took a
-   * `pinsOf` to get here — and a lookup per pin per frame to turn it back into an
-   * id would be paid on the DOM phase's walk of the whole viewport.
+   * `pinsOf` or a `solePin` to get here — and a lookup per pin per frame to turn
+   * it back into an id would be paid on the DOM phase's walk of the viewport.
    */
-  pinInItem(pinId: string, slot: number, out: Point): Point | null {
+  pinPivot(pinId: string, slot: number, out: Point): Point | null {
     const pin = this.pins.get(pinId);
     if (pin === undefined) return null;
+    if (pin.parent !== null && pin.parent === this.ids[slot]) {
+      out.x = pin.lx;
+      out.y = pin.ly;
+      return out;
+    }
     this.pinWorld(pin, out);
-    const angle = this.renderRot(slot);
+    const angle = this.rot[slot]!;
     // Safe to read `out` back: `rotateIn` takes its inputs as scalars, so the
     // source and the destination being the same object costs nothing.
     return rotateIn(
       out.x,
       out.y,
-      this.renderX(slot),
-      this.renderY(slot),
+      this.x[slot]!,
+      this.y[slot]!,
       Math.cos(angle),
       Math.sin(angle),
       out,

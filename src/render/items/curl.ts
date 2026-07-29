@@ -157,7 +157,7 @@ export function cornerCurl(
   let gapBL = Infinity;
 
   for (const pinId of scene.pinsOf(id)) {
-    if (scene.pinInItem(pinId, slot, at) === null) continue;
+    if (scene.pinPivot(pinId, slot, at) === null) continue;
     const left = (at.x + hw) ** 2;
     const right = (at.x - hw) ** 2;
     const top = (at.y + hh) ** 2;

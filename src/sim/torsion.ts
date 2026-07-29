@@ -64,6 +64,7 @@
  */
 
 import { shortest } from "@/lib/angle";
+import type { Point } from "@/lib/rotate";
 import type { DirtySets } from "@/state/dirty";
 import type { Scene } from "@/state/scene";
 import {
@@ -76,6 +77,9 @@ import {
   SWING_SLEEP_RATE,
   SWING_SLEEP_STEPS,
 } from "@/sim/tuning";
+
+/** Where the pin is on the paper, reused per item per frame — see `restOf`. */
+const pivot: Point = { x: 0, y: 0 };
 
 /**
  * The swing offset at which the item hangs plumb, given where its pin is in
@@ -375,10 +379,17 @@ export class Torsion {
     // what an item is hanging from.
     const pin = scene.solePin(id);
     if (!pin) return null;
-    const omega = naturalRate(pin.lx, pin.ly, scene.w[slot]!, scene.h[slot]!);
-    const eq =
-      omega === 0 ? scene.swing[slot]! : equilibriumSwing(pin.lx, pin.ly, scene.rot[slot]!);
-    return { eq, omega, lx: pin.lx, ly: pin.ly };
+    // Not `pin.lx`/`pin.ly`, and that was T-188. Since T-176 the pin holding an
+    // item need not be the pin it *parents*, and for a free one those two numbers
+    // are board coordinates — used as a local pivot they put the point this item
+    // turns about thousands of units outside it, which turns a few degrees of
+    // swing into thousands of units of translation and throws the item off the
+    // board. `pinPivot` is the same question asked correctly.
+    const at = scene.pinPivot(pin.id, slot, pivot);
+    if (!at) return null;
+    const omega = naturalRate(at.x, at.y, scene.w[slot]!, scene.h[slot]!);
+    const eq = omega === 0 ? scene.swing[slot]! : equilibriumSwing(at.x, at.y, scene.rot[slot]!);
+    return { eq, omega, lx: at.x, ly: at.y };
   }
 
   /**

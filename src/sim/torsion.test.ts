@@ -608,3 +608,86 @@ describe("letting go", () => {
     expect(sim.awake).toBe(0);
   });
 });
+
+/**
+ * T-188. Since T-176 the pin holding an item need not be the pin it *parents* —
+ * a free one, or one belonging to a neighbour the item has been dragged over —
+ * and `pin.lx`/`pin.ly` are only a pivot in this item's frame when it is.
+ *
+ * Phil found it from the board: "a note with no pin dragged over a pin starts to
+ * move erratically like movements are multiplied", the same on rotating an item
+ * over one, and then a jitter it could not settle out of.
+ */
+describe("a pin the item does not parent", () => {
+  /** Far from the origin, which is the only thing that separates a pin's board
+   *  coordinates from its coordinates on the paper. */
+  const FAR = 12000;
+
+  it("hangs about where the pin actually is, not about its board coordinates", () => {
+    const slot = put("a", { x: 0, y: FAR, rot: 0.25 });
+    // Free, and inside the note: 50 above its centre and 40 to the right.
+    pin("p", null, 40, FAR - 50);
+    scene.layoutPins();
+    expect(scene.pinCount("a")).toBe(1);
+
+    for (let i = 0; i < 90; i++) frame(i === 0 ? ["a"] : []);
+
+    // The drift is "put the pivot back where it was", so it cannot exceed twice
+    // the pivot's distance from the centre — about 64 units here. It came out at
+    // 23,719, because the pivot used was the pin's board y.
+    expect(Math.hypot(scene.driftX[slot]!, scene.driftY[slot]!)).toBeLessThan(130);
+    // And the note is still on the board, near where it was put.
+    expect(Math.abs(scene.renderY(slot) - FAR)).toBeLessThan(130);
+  });
+
+  it("comes to rest instead of fighting itself off the pin and back on", () => {
+    const slot = put("a", { x: 0, y: FAR, rot: 0.4 });
+    pin("p", null, 30, FAR - 60);
+    scene.layoutPins();
+
+    for (let i = 0; i < 400; i++) frame(i === 0 ? ["a"] : []);
+    const at = scene.renderY(slot);
+    const swing = scene.swing[slot]!;
+    for (let i = 0; i < 40; i++) frame();
+    // A translation big enough to carry the note off its own pin makes solePin
+    // null, which zeroes the drift, which drops it back under the pin — the two
+    // things Phil saw fighting. Settled, it simply stops.
+    expect(scene.renderY(slot)).toBeCloseTo(at, 4);
+    expect(scene.swing[slot]).toBeCloseTo(swing, 6);
+    expect(scene.pinCount("a")).toBe(1);
+    // And it came to rest *here*, rather than coming to rest a long way away.
+    // Without this the assertions above pass on the broken pivot too: it flings
+    // the note off the board on the first frame and then holds it there, which
+    // is stillness of a sort.
+    expect(Math.abs(scene.renderY(slot) - FAR)).toBeLessThan(140);
+  });
+
+  it("agrees with a parented pin at the same place on the paper", () => {
+    // The two are the same physical arrangement written down two ways, so they
+    // have to hang identically. This is the assertion that says `pinPivot` is a
+    // change of frame rather than a different rule for free pins.
+    const rot = 0.3;
+    const own = put("own", { x: 0, y: FAR, rot });
+    pin("p1", "own", 40, -50);
+
+    // The same point on the paper, written in board coordinates — which means
+    // through the item's rotation, since that is what "on the paper" means for a
+    // sheet lying at an angle. Placing it at the raw offset instead puts it
+    // somewhere else on the paper, and the two would rightly hang differently.
+    const over = put("over", { x: 4000, y: FAR, rot });
+    pin(
+      "p2",
+      null,
+      4000 + 40 * Math.cos(rot) - -50 * Math.sin(rot),
+      FAR + 40 * Math.sin(rot) + -50 * Math.cos(rot),
+    );
+    scene.layoutPins();
+    expect(scene.pinCount("own")).toBe(1);
+    expect(scene.pinCount("over")).toBe(1);
+
+    for (let i = 0; i < 120; i++) frame(i === 0 ? ["own", "over"] : []);
+    expect(scene.swing[over]).toBeCloseTo(scene.swing[own]!, 6);
+    expect(scene.driftX[over]).toBeCloseTo(scene.driftX[own]!, 4);
+    expect(scene.driftY[over]).toBeCloseTo(scene.driftY[own]!, 4);
+  });
+});
