@@ -644,14 +644,15 @@ async function boot(): Promise<void> {
      * document calls a pin's stored position — and for a free pin the two are
      * the same numbers, which is exactly why only free pins are ever in here.
      */
-    movePins: (positions) => {
+    movePins: (positions, phase) => {
       const snapshot = new Map<string, { lx: number; ly: number }>();
       for (const [id, at] of positions) snapshot.set(id, { lx: at.x, ly: at.y });
       queued.push(() => movePins(board, snapshot));
       // Free pins carried along by a thread drag, which is the one way a pin
       // travels without anybody choosing a parent for it — so it is also the one
       // way a pin can be set down on paper that nothing has told it about.
-      rehome();
+      // Phased like the pose writes, and skipped mid-drag for the same reason.
+      if (phase !== "live") rehome();
     },
     /**
      * One finished stroke, and the near end of the wet/dry handoff.
