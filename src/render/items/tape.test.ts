@@ -20,7 +20,23 @@ function bits(mask: number): number {
 
 describe("tapedCorners", () => {
   it("is stable for a seed", () => {
-    expect(tapedCorners(7)).toBe(tapedCorners(7));
+    expect(tapedCorners(7, 0)).toBe(tapedCorners(7, 0));
+  });
+
+  it("tapes nothing that is pinned", () => {
+    // Tape and a pin are alternatives, not layers: nobody tapes down a
+    // photograph they have already put a pin through. So this is also the rule
+    // that says what the strips are *for* — a taped item is one that would
+    // otherwise be held by nothing at all.
+    let everTaped = 0;
+    for (let seed = 1; seed <= 2000; seed++) {
+      expect(tapedCorners(seed, 1)).toBe(0);
+      expect(tapedCorners(seed, 4)).toBe(0);
+      if (tapedCorners(seed, 0)) everTaped++;
+    }
+    // The pin count is the only thing that changed, so this is not vacuous:
+    // plenty of these same seeds are taped when nothing is holding them.
+    expect(everTaped).toBeGreaterThan(200);
   });
 
   it("tapes some of a board and not all of it", () => {
@@ -28,14 +44,14 @@ describe("tapedCorners", () => {
     // policing is that tape is neither everywhere — which is a pattern, not a
     // board — nor so rare that nobody ever sees one.
     let taped = 0;
-    for (let seed = 1; seed <= 2000; seed++) if (tapedCorners(seed)) taped++;
+    for (let seed = 1; seed <= 2000; seed++) if (tapedCorners(seed, 0)) taped++;
     expect(taped).toBeGreaterThan(2000 * 0.15);
     expect(taped).toBeLessThan(2000 * 0.55);
   });
 
   it("puts on one strip or two, never more", () => {
     for (let seed = 1; seed <= 2000; seed++) {
-      expect(bits(tapedCorners(seed))).toBeLessThanOrEqual(MAX_TAPES);
+      expect(bits(tapedCorners(seed, 0))).toBeLessThanOrEqual(MAX_TAPES);
     }
   });
 
@@ -44,7 +60,7 @@ describe("tapedCorners", () => {
     // edge is a thing nobody does and it looks like it.
     const adjacent = [TAPE_TL | TAPE_BL, TAPE_TR | TAPE_BR, TAPE_BL | TAPE_BR];
     for (let seed = 1; seed <= 2000; seed++) {
-      const mask = tapedCorners(seed);
+      const mask = tapedCorners(seed, 0);
       if (bits(mask) !== 2) continue;
       expect(adjacent).not.toContain(mask);
     }

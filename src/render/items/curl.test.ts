@@ -28,33 +28,28 @@ function pin(id: string, parent: string | null, lx: number, ly: number): PinNode
   return { id, parent, lx, ly, kind: "pushpin", color: "#f00", wx: 0, wy: 0 };
 }
 
-/**
- * A seed with no tape on it, so that the pin cases below are about pins. Found
- * rather than written down, since `tapedCorners` is free to change its mind
- * about which third of a board is taped.
- */
-const BARE = (() => {
-  for (let seed = 1; seed < 1000; seed++) if (tapedCorners(seed) === 0) return seed;
-  throw new Error("every seed is taped");
-})();
-
-/** And one that is, for the case that is about tape. */
+/** A seed that would be taped if nothing else were holding the sheet. */
 const TAPED = (() => {
-  for (let seed = 1; seed < 1000; seed++) if (tapedCorners(seed) !== 0) return seed;
+  for (let seed = 1; seed < 1000; seed++) if (tapedCorners(seed, 0) !== 0) return seed;
   throw new Error("no seed is taped");
 })();
 
-/** A sheet, its pins, and the four corner curls that come out. */
+/**
+ * A sheet, its pins, and the four corner curls that come out.
+ *
+ * `taped` is what the caller decided, exactly as `place` decides it — nothing
+ * here re-derives it, because that is the point of it being an argument.
+ */
 function curls(
   pins: readonly PinNode[],
   over: Partial<ItemPose> = {},
-  seed = BARE,
+  taped = 0,
 ): Float32Array {
   const scene = new Scene();
-  const slot = scene.putItem(cold("sheet", { seed }), pose(over));
+  const slot = scene.putItem(cold("sheet"), pose(over));
   for (const p of pins) scene.putPin(p);
   const out = new Float32Array(4);
-  cornerCurl(scene, "sheet", slot, seed, out);
+  cornerCurl(scene, "sheet", slot, taped, out);
   return out;
 }
 
@@ -173,8 +168,10 @@ describe("cornerCurl", () => {
   it("holds a taped corner as flat as a pinned one", () => {
     // Tape is one of the two things that hold a sheet down, so a corner with a
     // strip across it must not be drawn lifting off the cork from underneath it.
-    const taped = tapedCorners(TAPED);
-    const out = curls([], {}, TAPED);
+    // And a taped sheet is by definition an unpinned one, so this is the loose
+    // case with two of its corners answered by something other than a pin.
+    const taped = tapedCorners(TAPED, 0);
+    const out = curls([], {}, taped);
     for (let c = 0; c < 4; c++) {
       expect(out[c]).toBe(taped & (1 << c) ? 0 : 1);
     }

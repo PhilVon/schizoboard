@@ -5,6 +5,7 @@
 import { beforeEach, describe, expect, it } from "vitest";
 
 import { DomItemLayer, type AssetResolver, type AssetView } from "@/render/items/dom";
+import { tapedCorners } from "@/render/items/tape";
 import { DirtySets } from "@/state/dirty";
 import { Scene, type ItemCold, type ItemPose } from "@/state/scene";
 
@@ -218,7 +219,7 @@ describe("DomItemLayer", () => {
     scene.lift[scene.slotOf("a")!] = 1;
     dirty.item("a");
     layer.sync(scene, dirty, null);
-    // "it scales up by about 2%" â€” DESIGN 3.2.
+    // "it scales up by about 2%" — DESIGN 3.2.
     expect(el.style.transform).toContain("scale(1.02)");
     expect(el.classList.contains("is-lifted")).toBe(true);
   });
@@ -273,7 +274,7 @@ describe("DomItemLayer", () => {
     late.destroy();
   });
 
-  // Three tests about selection chrome used to live here â€” one of them about a
+  // Three tests about selection chrome used to live here — one of them about a
   // culled-and-remounted item coming back still outlined, which is what the
   // layer's copy of the selection existed for. The chrome is `render/overlay.ts`
   // now (T-91) and none of it is the layer's business; `overlay.test.ts` covers
@@ -440,7 +441,7 @@ describe("asset variants", () => {
 
     await new Promise((r) => setTimeout(r, 0));
     // The pooled node must be blank, not wearing the photograph of the item it
-    // used to be â€” the whole hazard of recycling.
+    // used to be — the whole hazard of recycling.
     expect(photo.hasAttribute("src")).toBe(false);
     layer.destroy();
   });
@@ -635,7 +636,7 @@ describe("ink", () => {
     layer.sync(scene, dirty, null);
 
     // Without a budget, one debounced zoom-end repaints every ink canvas on
-    // screen inside one frame â€” the shape of the 777 ms frame D-12 measured.
+    // screen inside one frame — the shape of the 777 ms frame D-12 measured.
     layer.paintInk(scene, dirty);
     expect(layer.inked).toBe(3);
     layer.paintInk(scene, dirty);
@@ -672,13 +673,13 @@ describe("ink", () => {
    * The second is what makes the interim a *stretch* rather than a jump. The
    * canvas's CSS size is in the item's own units, so a canvas that has not been
    * repainted yet is displayed at exactly the size it always was and the browser
-   * scales the pixels it has â€” which is what DESIGN section 9.3 asks for while
+   * scales the pixels it has — which is what DESIGN section 9.3 asks for while
    * `paintInk`'s budget works through the board.
    */
   /**
    * T-136 in the DOM half: the canvas covers the overlap of the ink and the
    * paper, so a stroke that ran off the edge costs no pixels for the part that
-   * cannot be drawn â€” and a resize has to re-raster, because the clip is a
+   * cannot be drawn — and a resize has to re-raster, because the clip is a
    * function of a size that just changed.
    */
   it("sizes the canvas to the paper, not to ink that ran off it", () => {
@@ -788,7 +789,7 @@ describe("ink", () => {
       dirty.clear();
 
       const left = ["a", "b", "c", "d", "e"].find((id) => layer.awaitingInk(id))!;
-      // The item is culled while its re-raster is still queued â€” which is the
+      // The item is culled while its re-raster is still queued — which is the
       // one way an id in the queue stops having a node. Nothing is going to
       // appear where it was, so nothing is worth waiting for and the marker's
       // overlay copy stops now rather than hanging on the board forever.
@@ -912,7 +913,7 @@ describe("undeveloped film", () => {
   it("does not hand a recycled node the last item's tear", () => {
     // The tear has two ways on, and only one of them is a phase. A decode that
     // failed is invisible to `paintFilm`'s guard, so a node torn by a broken
-    // file and pooled would carry the tear onto whatever it is recycled onto â€”
+    // file and pooled would carry the tear onto whatever it is recycled onto —
     // and both items being `ready` is exactly what stops anything repainting it.
     let view: AssetView = { url: "asset://sha256/abc", phase: "ready", fraction: 0 };
     const layer = new DomItemLayer(host, () => view);
@@ -941,8 +942,8 @@ describe("undeveloped film", () => {
     // The other half of the recycling problem, and the one that decides which
     // of the two things `release` does is load-bearing. Sweeping the classes off
     // a released node is not enough on its own: the next item to get that node
-    // is very often in the *same* phase â€” a viewport full of one board's worth
-    // of arriving photographs is exactly that â€” and `paintFilm` would look at a
+    // is very often in the *same* phase — a viewport full of one board's worth
+    // of arriving photographs is exactly that — and `paintFilm` would look at a
     // phase that matches the one it last painted and decline to paint anything.
     // The node would come back stripped and never be dressed again.
     const view: AssetView = { url: "", phase: "transferring", fraction: 0.6 };
@@ -966,7 +967,7 @@ describe("undeveloped film", () => {
   });
 
   it("gives each waiting photograph its own crystals", () => {
-    // One shared grain tile, offset per item â€” twenty blank films showing the
+    // One shared grain tile, offset per item — twenty blank films showing the
     // identical speckle read as one repeated texture rather than as twenty
     // pieces of film.
     const layer = new DomItemLayer(host, () => ({ url: "", phase: "requesting", fraction: 0 }));
@@ -983,8 +984,8 @@ describe("undeveloped film", () => {
   /**
    * The print coming up (T-174).
    *
-   * Everything here turns on one question â€” has this item's photograph ever been
-   * on this screen â€” and every test below is a way of getting that question
+   * Everything here turns on one question — has this item's photograph ever been
+   * on this screen — and every test below is a way of getting that question
    * wrong. Nothing checks what the animation looks like: that is a stylesheet,
    * and happy-dom runs no animations, which is also why the class only ever
    * comes off by hand in here.
@@ -1024,7 +1025,7 @@ describe("undeveloped film", () => {
   it("does not develop a photograph a second time", () => {
     // The one this feature lives or dies by. Culling unmounts an item that
     // leaves the viewport and mounts it again when it comes back, and the
-    // cached `<img>` fires `load` again on the way in â€” so a develop keyed on
+    // cached `<img>` fires `load` again on the way in — so a develop keyed on
     // "was it waiting a moment ago" would fade every photograph up afresh every
     // time the board was panned.
     const layer = new DomItemLayer(host, (sha) => ready(`asset://sha256/${sha}`));
@@ -1131,7 +1132,7 @@ describe("undeveloped film", () => {
     expect(landed().item.classList.contains("is-waiting")).toBe(false);
 
     // And the first sight was spent on it. Zooming in on a photograph that has
-    // been on the board for an hour must not develop it â€” that would be a board
+    // been on the board for an hour must not develop it — that would be a board
     // that brings things up at random, long after they arrived.
     dirty.clear();
     dirty.item("a");
@@ -1251,5 +1252,71 @@ describe("paper curl at unpinned corners", () => {
     layer.sync(scene, dirty, null);
     const item = host.querySelector<HTMLElement>(".item-polaroid")!;
     expect(item.style.getPropertyValue("--curl-tl")).toBe("");
+  });
+});
+
+describe("tape", () => {
+  /** A seed that is taped when nothing else is holding the sheet. */
+  const TAPED = (() => {
+    for (let seed = 1; seed < 1000; seed++) if (tapedCorners(seed, 0) !== 0) return seed;
+    throw new Error("no seed is taped");
+  })();
+
+  function strips(mask: number): number {
+    let n = 0;
+    for (let i = 0; i < 4; i++) if (mask & (1 << i)) n++;
+    return n;
+  }
+
+  function showing(): number {
+    return [...host.querySelectorAll<HTMLElement>(".item-tape")].filter(
+      (el) => el.style.display === "block",
+    ).length;
+  }
+
+  it("tapes a sheet nothing else is holding", () => {
+    add("a", { type: "note", seed: TAPED }, { w: 240, h: 190 });
+    layer.sync(scene, dirty, null);
+    expect(showing()).toBe(strips(tapedCorners(TAPED, 0)));
+  });
+
+  it("takes the tape off the moment a pin goes through it", () => {
+    // Tape and a pin are alternatives, not layers. And the frame this arrives on
+    // touches `dirty.pins` and nothing else — the sheet is not dirty and its
+    // pose has not changed — which is the same gate the curl needed.
+    add("a", { type: "note", seed: TAPED }, { w: 240, h: 190 });
+    layer.sync(scene, dirty, null);
+    expect(showing()).toBeGreaterThan(0);
+
+    dirty.clear();
+    scene.putPin({
+      id: "p",
+      parent: null,
+      lx: 0,
+      ly: 0,
+      kind: "pushpin",
+      color: "#f00",
+      wx: 0,
+      wy: 0,
+    });
+    dirty.pin("p");
+    layer.sync(scene, dirty, null);
+    expect(showing()).toBe(0);
+  });
+
+  it("gives a recycled node no memory of the last item's strips", () => {
+    add("a", { type: "note", seed: TAPED }, { w: 240, h: 190 });
+    layer.sync(scene, dirty, null);
+    expect(showing()).toBeGreaterThan(0);
+
+    dirty.clear();
+    dirty.item("a");
+    layer.sync(scene, dirty, new Set());
+    scene.removeItem("a");
+    // Seed 1 is not taped, and it comes back on the node the taped one left.
+    expect(tapedCorners(1, 0)).toBe(0);
+    add("b", { type: "note", seed: 1 }, { w: 240, h: 190 });
+    layer.sync(scene, dirty, null);
+    expect(showing()).toBe(0);
   });
 });

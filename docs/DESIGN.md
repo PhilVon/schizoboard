@@ -393,7 +393,11 @@ Over the image: a subtle gloss gradient, a hint of vignette, and optional aging 
 
 Every polaroid is rotated a few degrees, seeded per item. Optional tape at one or two corners, slightly translucent, with its own small shadow and a barely-visible torn edge.
 
-Tape is not only a print's, though this is where it is written down: §2.1 says the archetypes differ only in styling and defaults, and a note taped to a board is as ordinary as a photograph taped to one. It is also not decoration — tape is one of the two things that hold a sheet down, so a taped corner does not curl (§4.4). Two strips go on as a pair, across the top or diagonally opposite, because two adjacent down one side is a thing nobody does and it looks like it.
+Tape is not only a print's, though this is where it is written down: §2.1 says the archetypes differ only in styling and defaults, and a note taped to a board is as ordinary as a photograph taped to one. It is also not decoration — tape is one of the two things that hold a sheet down, so a taped corner does not curl (§4.4).
+
+**Nothing pinned is taped.** The two are alternatives, not layers; nobody tapes down a photograph they have already put a pin through. That is what tape is *for* here — a taped item is one that would otherwise be held by nothing at all, which is exactly the item whose corners would all be curling. It follows that pulling the last pin out of something makes tape appear on it, and putting the pin back takes it away: the same answer the curl gives to the same gesture, at the corners the item's seed always meant.
+
+Two strips go on as a pair, across the top or diagonally opposite, because two adjacent down one side is a thing nobody does and it looks like it.
 
 **"Its own small shadow" is not a cast one.** Every other shadow in this application is an offset copy of a silhouette, and that is the shadow of something held *above* a surface — tape is the one object here stuck flat to one, and drawn that way it read as a plank lying across the corner. What tape has is a cross-section: a shine along the edge nearer the light and a hairline of its own thickness along the edge away from it, with nothing in between, because the middle is in contact. The light decides only which way up that profile is drawn.
 

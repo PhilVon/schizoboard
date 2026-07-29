@@ -175,6 +175,14 @@ interface View {
    */
   setCurl(corners: Float32Array, faces: Float32Array): void;
   /**
+   * Which corners are taped, as `tape.ts`'s mask.
+   *
+   * Offered on the same pass as the curl and not written at bind, because the
+   * answer is not the seed's alone: nothing pinned is taped, and whether an item
+   * is pinned changes with no write to that item at all.
+   */
+  setTape(seed: number, corners: number): void;
+  /**
    * The item's committed ink. Identical on both archetypes, which is right —
    * every kind of paper on this board can be drawn on (DESIGN section 2.1).
    */
@@ -251,6 +259,10 @@ class TapeSet {
   private readonly angles = new Float32Array(MAX_TAPES);
   private live = 0;
   private litFor = Number.NaN;
+  /** What the strips currently on show were dressed for. `-1` is never a seed
+   *  and never a mask, so the first offer always lands. */
+  private boundSeed = -1;
+  private boundMask = -1;
 
   constructor() {
     for (let i = 0; i < MAX_TAPES; i++) {
@@ -268,8 +280,17 @@ class TapeSet {
     }
   }
 
-  bind(seed: number): void {
-    const mask = tapedCorners(seed);
+  /**
+   * Dress the strips this item has, if they are not the ones it already had.
+   *
+   * Guarded on both, because this runs on the same pass as the curl — every
+   * frame anything on the board moves — and re-tearing the ends off two strips
+   * sixty times a second is work for a picture that has not changed.
+   */
+  bind(seed: number, mask: number): void {
+    if (seed === this.boundSeed && mask === this.boundMask) return;
+    this.boundSeed = seed;
+    this.boundMask = mask;
     let n = 0;
     for (let c = 0; c < CORNER_ANCHOR.length; c++) {
       if ((mask & (1 << c)) === 0) continue;
@@ -316,6 +337,8 @@ class TapeSet {
     for (const el of this.nodes) el.style.display = "none";
     this.live = 0;
     this.litFor = Number.NaN;
+    this.boundSeed = -1;
+    this.boundMask = -1;
   }
 }
 
@@ -481,7 +504,6 @@ class PolaroidView implements View {
     const develop = Math.round(asset.fraction * 100);
     const sameFilm = asset.phase === this.boundPhase && develop === this.boundDevelop;
     if (this.boundCold === cold && asset.url === this.boundAsset && sameFilm) return;
-    const sameItem = this.boundCold === cold;
     this.boundCold = cold;
     if (!sameFilm) {
       this.boundPhase = asset.phase;
@@ -505,11 +527,6 @@ class PolaroidView implements View {
     writeHand(this.caption, cold.text, cold.seed);
     this.caption.classList.toggle("is-empty", cold.text.length === 0);
     this.el.style.filter = sheetTint(cold.seed);
-    // Guarded on the item and not merely on this bind, unlike the three lines
-    // above: a develop runs this method once a chunk, and re-tearing the ends
-    // off two strips sixty times a second is work for a picture that has not
-    // changed.
-    if (!sameItem) this.tape.bind(cold.seed);
   }
 
   /**
@@ -662,6 +679,10 @@ class PolaroidView implements View {
    * that somebody bent it. The pins hold this one exactly as much either way.
    */
   setCurl(): void {}
+
+  setTape(seed: number, corners: number): void {
+    this.tape.bind(seed, corners);
+  }
 
   adopt(field: HTMLTextAreaElement | null): void {
     if (field === null) {
@@ -832,7 +853,6 @@ class PaperView implements View {
     this.grain.style.backgroundPosition = grainPosition(cold.seed);
     this.surface.style.filter = sheetTint(cold.seed);
     writeHand(this.body, cold.text, cold.seed);
-    this.tape.bind(cold.seed);
   }
 
   transform(x: number, y: number, rot: number, w: number, h: number, lift: number): void {
@@ -872,6 +892,10 @@ class PaperView implements View {
       this.written[n + c] = face;
       this.el.style.setProperty(FACE_PROPS[c]!, face.toFixed(2));
     }
+  }
+
+  setTape(seed: number, corners: number): void {
+    this.tape.bind(seed, corners);
   }
 
   adopt(field: HTMLTextAreaElement | null): void {
@@ -1284,7 +1308,12 @@ export class DomItemLayer implements ItemLayer {
     // `isNew` is in here because a sheet that has just come back into the
     // viewport has never been told, whatever the dirty sets say.
     if (recurl || isNew) {
-      cornerCurl(scene, id, slot, cold.seed, this.corners);
+      // One question, two answers off it. Nothing pinned is taped (`tape.ts`),
+      // and a taped corner does not curl (`curl.ts`) — so asking twice would be
+      // two chances to disagree about the same sheet.
+      const taped = tapedCorners(cold.seed, scene.pinCount(id));
+      view.setTape(cold.seed, taped);
+      cornerCurl(scene, id, slot, taped, this.corners);
       cornerFace(scene.renderRot(slot), this.corners, this.faces);
       view.setCurl(this.corners, this.faces);
     }

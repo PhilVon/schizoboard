@@ -85,11 +85,26 @@ export function tapeFlip(worldAngle: number, lightX: number, lightY: number): nu
 /**
  * Which corners of this item are taped, as a mask of the four flags above.
  *
+ * **Nothing pinned is taped.** Phil's, on signing T-80 off, and it is the rule
+ * that makes the header above true rather than merely tidy: tape is one of the
+ * two things that hold something to this board, and the two are alternatives.
+ * Nobody tapes down a photograph they have already put a pin through. It also
+ * settles what the strips are *for* — a taped item is one that would otherwise
+ * be held by nothing, which is exactly the item whose corners would all be
+ * curling (`curl.ts`).
+ *
+ * The consequence, which is worth knowing rather than fixing: pull the last pin
+ * out of an item and its tape appears. That is the same answer the curl gives to
+ * the same gesture — the sheet has to be held by *something* — and it arrives at
+ * the corners the seed always meant, so putting the pin back takes it away
+ * again.
+ *
  * Two tapes go on as a pair rather than at two unrelated corners, because that
  * is how a hand does it: across the top, or diagonally opposite. Two adjacent
  * down one side is a thing nobody does and it looks like it.
  */
-export function tapedCorners(seed: number): number {
+export function tapedCorners(seed: number, pinCount: number): number {
+  if (pinCount > 0) return 0;
   if (valueAt(seed, "tape") >= TAPE_CHANCE) return 0;
   if (valueAt(seed, "tape-pair") < 0.55) {
     const which = valueAt(seed, "tape-which");

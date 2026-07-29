@@ -44,7 +44,6 @@
 
 import type { Point } from "@/lib/rotate";
 import { counterRotate, LIGHT_DX, LIGHT_DY } from "@/render/items/shadow";
-import { tapedCorners } from "@/render/items/tape";
 import type { Scene } from "@/state/scene";
 
 /**
@@ -147,7 +146,7 @@ export function cornerCurl(
   scene: Scene,
   id: string,
   slot: number,
-  seed: number,
+  taped: number,
   out: Float32Array,
 ): void {
   const hw = scene.w[slot]! / 2;
@@ -180,7 +179,11 @@ export function cornerCurl(
   // one of the two things on this board that hold a sheet down, so leaving it
   // out would draw a corner visibly lifting off the cork from underneath the
   // strip stuck over it.
-  const taped = tapedCorners(seed);
+  //
+  // Handed in rather than derived here, because whether an item is taped at all
+  // depends on whether it is pinned, and that is a question about the scene at
+  // this moment rather than about the seed. The caller asks it once and both
+  // this and the strips themselves are drawn off the one answer.
   for (let c = 0; c < out.length; c++) if (taped & (1 << c)) out[c] = 0;
 }
 
