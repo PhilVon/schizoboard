@@ -549,6 +549,75 @@
   opacity: 0.3;
 }
 
+/*
+ * The pulp along a torn head — DESIGN 4.4's "proper rough tear on one side".
+ *
+ * The silhouette is `render/items/edge.ts`'s clip path and this is the other
+ * half of the same edge: paper torn across its grain does not present a clean
+ * line, it opens and shows the fibre inside, which is lighter and flatter than
+ * the sized face of the sheet. So a light band right at the lip, fading inward,
+ * and a faint dirty line where the fibre ends and the face begins.
+ *
+ * Lengths here are board units like everywhere else in this file, so the band is
+ * the same physical depth on a scrap and on a poster — the same reasoning the
+ * clip path's `px` offsets are written down for.
+ *
+ * Which side, if any, is `data-tear`, written by the view from the stock. There
+ * is no rule for a sheet with no tear, so an untorn sheet costs an empty div.
+ */
+.paper-tear {
+  position: absolute;
+  pointer-events: none;
+}
+
+.item-paper[data-tear="top"] .paper-tear {
+  inset: 0 0 auto 0;
+  height: 13px;
+  background: linear-gradient(
+    to bottom,
+    rgba(255, 253, 247, 0.9) 0%,
+    rgba(255, 252, 244, 0.52) 34%,
+    rgba(176, 158, 128, 0.16) 76%,
+    rgba(150, 132, 104, 0) 100%
+  );
+}
+
+.item-paper[data-tear="bottom"] .paper-tear {
+  inset: auto 0 0 0;
+  height: 13px;
+  background: linear-gradient(
+    to top,
+    rgba(255, 253, 247, 0.9) 0%,
+    rgba(255, 252, 244, 0.52) 34%,
+    rgba(176, 158, 128, 0.16) 76%,
+    rgba(150, 132, 104, 0) 100%
+  );
+}
+
+.item-paper[data-tear="left"] .paper-tear {
+  inset: 0 auto 0 0;
+  width: 13px;
+  background: linear-gradient(
+    to right,
+    rgba(255, 253, 247, 0.9) 0%,
+    rgba(255, 252, 244, 0.52) 34%,
+    rgba(176, 158, 128, 0.16) 76%,
+    rgba(150, 132, 104, 0) 100%
+  );
+}
+
+.item-paper[data-tear="right"] .paper-tear {
+  inset: 0 0 0 auto;
+  width: 13px;
+  background: linear-gradient(
+    to left,
+    rgba(255, 253, 247, 0.9) 0%,
+    rgba(255, 252, 244, 0.52) 34%,
+    rgba(176, 158, 128, 0.16) 76%,
+    rgba(150, 132, 104, 0) 100%
+  );
+}
+
 .paper-text {
   position: absolute;
   inset: 0;

@@ -399,6 +399,10 @@ Paper stock varies: white, cream, yellow legal, graph, index card. Each has its 
 
 Edges are the tell. A machine-cut rectangle reads as a UI element; a torn or slightly irregular edge reads as paper. Notes get a subtly ragged edge by default, generated from the item seed, and a "torn" style with a proper rough tear on one side.
 
+Which side, and whether there is one at all, turned out to belong to the stock rather than to a coin flip — this section's own first line says each stock has its own edge treatment, and T-80 took it literally. A legal pad is gummed at the head, so every sheet leaves it torn along the top; graph paper comes out of a book and tears down the left against the wire; an index card is die-cut and is very nearly straight. That is worth more than a random minority of torn notes, because the edge and the ruling then agree about what the object is. `style.torn` keeps the job DATA-MODEL gives it — overriding a default rather than being the only source of one.
+
+Two things separate a tear from a cut, and both are in the geometry rather than in the shading: the run has to be irregular in *both* axes — vertices at uneven intervals, each off the line by its own amount — and the torn lip has to show the fibre inside, which is lighter and flatter than the sized face of the sheet. Evenly spaced vertices are a sawtooth however deep they go, which is the same finding §7.5's torn photograph had already written down.
+
 Paper curls very slightly at unpinned corners — implemented as a gradient and a shadow, not geometry — which is why a one-pin note looks like it's hanging and a four-pin note looks flat.
 
 ### 4.5 Pins

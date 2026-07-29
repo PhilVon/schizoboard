@@ -9,8 +9,9 @@
  * each sheet samples it from a different offset derived from its seed, so no
  * two are identical and the cost is one bitmap rather than one per item.
  *
- * Edge treatment — ragged edges, tape, curl at unpinned corners — is T-80.
- * What is here is stock, tint and grain.
+ * What is here is stock, tint and grain. The rest of what DESIGN 4.4 makes a
+ * property of the stock — its edge treatment, and which side it leaves the pad
+ * along — is `edge.ts`, which reads the stock this file names.
  */
 
 import { grainOffset, mulberry32, valueAt } from "@/lib/seed";

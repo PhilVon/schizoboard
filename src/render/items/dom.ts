@@ -46,6 +46,7 @@ import {
   stockBase,
   stockRuling,
 } from "@/render/items/paper";
+import { edgeClipPath, tearEdge } from "@/render/items/edge";
 import { ItemInk } from "@/render/ink/canvas";
 import { TextEditor, type ItemEditorHooks } from "@/render/items/editor";
 import { clearHand, writeHand } from "@/render/items/hand";
@@ -597,6 +598,7 @@ class PaperView implements View {
   private readonly shadow = new ShadowNode();
   private readonly surface: HTMLDivElement;
   private readonly grain: HTMLDivElement;
+  private readonly tear: HTMLDivElement;
   private readonly body: HTMLDivElement;
   private boundCold: ItemCold | null = null;
   /** The editor's field while this item is the one being written on (T-179). */
@@ -615,10 +617,19 @@ class PaperView implements View {
     this.grain = document.createElement("div");
     this.grain.className = "paper-grain";
 
+    // The pulp along a torn head. Always in the tree and shown only when the
+    // stock says this sheet came off a pad, for the reason `.pol-film` is: a
+    // node created on demand is a `createElement` on a mount, and the pool
+    // exists so a mount is a few attribute writes.
+    this.tear = document.createElement("div");
+    this.tear.className = "paper-tear";
+
     this.body = document.createElement("div");
     this.body.className = "paper-text";
 
-    this.surface.append(this.grain, this.body);
+    // Above the ruling, which a tear destroys, and below the writing, which sits
+    // on the paper whatever the paper has been through.
+    this.surface.append(this.grain, this.tear, this.body);
     this.el.append(this.shadow.el, this.surface);
   }
 
@@ -627,6 +638,13 @@ class PaperView implements View {
     this.boundCold = cold;
     const stock = defaultStock(cold.type, cold.seed);
     this.el.dataset["stock"] = stock;
+    // The silhouette, and where the pulp shows. Both are the stock's and the
+    // seed's, so both are written here rather than in `transform` — the
+    // percentages in the path carry a resize on their own.
+    this.surface.style.clipPath = edgeClipPath(stock, cold.seed);
+    const tear = tearEdge(stock);
+    if (tear) this.el.dataset["tear"] = tear;
+    else delete this.el.dataset["tear"];
     this.surface.style.background = stockBase(stock);
     this.surface.style.backgroundImage = stockRuling(stock);
     this.grain.style.backgroundImage = `url(${paperGrainUrl(cold.seed)})`;
@@ -669,6 +687,13 @@ class PaperView implements View {
     clearHand(this.body);
     this.boundCold = null;
     this.el.classList.remove("is-lifted");
+    // A released node is left clean, so nothing downstream has to reason about
+    // what it was. Nothing depends on it here — `boundCold` is null above, so
+    // whatever this node is recycled onto is guaranteed a bind, and a bind
+    // writes both of these — but a pooled node wearing the last sheet's tear is
+    // exactly the class of bug the polaroid's release is a paragraph long about.
+    delete this.el.dataset["tear"];
+    this.surface.style.removeProperty("clip-path");
     this.adopt(null);
     this.shadow.reset();
     this.ink.release();
