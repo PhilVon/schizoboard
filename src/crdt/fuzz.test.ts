@@ -413,15 +413,21 @@ const OPERATIONS: readonly Operation[] = [
       // geometry it can be wrong about.
       const chord = rng.range(40, 600);
       const t = rng.range(0.1, 0.9);
-      const index = rng.int(5);
+      // The gap is named by the node it starts at. One roll in five names a
+      // node that is not in this run, because the refusal is a path worth
+      // fuzzing too: it must leave no pin behind (T-172).
+      const read = readString(stringId, board.strings.get(stringId) as YMap);
+      const after = rng.chance(0.2) || read === null || read.nodes.length === 0
+        ? "gone"
+        : (rng.pick(read.nodes.map((node) => node.nodeId)) ?? "gone");
       insertPinIntoString(
         board,
         stringId,
-        index,
+        after,
         { parent: rng.chance(0.4) ? rng.pick(itemIds(board)) : null, lx: coord(rng), ly: coord(rng) },
         { chord, first: chord * t, second: chord * (1 - t), t },
       );
-      return `insertPinIntoString ${stringId} @${index}`;
+      return `insertPinIntoString ${stringId} after ${after}`;
     },
   },
   {

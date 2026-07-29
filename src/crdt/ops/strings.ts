@@ -260,6 +260,27 @@ function nodesOf(board: BoardDoc, stringId: string): Y.Array<YMap> | null {
 }
 
 /**
+ * The node with this id, and where it currently sits — the one way anything in
+ * here turns a gap the user pointed at into a position to write.
+ *
+ * Every verb that edits *one gap* names it by the id of the node it starts at,
+ * and this is why: an index computed on one frame and written on the next is an
+ * index a concurrent insert may have moved. Resolving it here, inside the
+ * caller's transaction, is what makes the two the same instant.
+ *
+ * `null` means the run no longer has that node, which callers treat as a
+ * refusal rather than clamping to a neighbour — a gap whose start node has been
+ * deleted is not a gap the user aimed at.
+ */
+function findNode(nodes: Y.Array<YMap>, nodeId: string): { at: number; node: YMap } | null {
+  for (let i = 0; i < nodes.length; i++) {
+    const node = nodes.get(i);
+    if (node?.get("nodeId") === nodeId) return { at: i, node };
+  }
+  return null;
+}
+
+/**
  * Extend a run by one pin — the string tool's main verb, one click at a time.
  *
  * The slack of the gap this creates is taken from the node that now precedes
@@ -376,11 +397,23 @@ export function insertStringNode(
  * written inside this transaction, is what keeps the paper and the pin still at
  * the moment the transients stop applying, and keeps it one undo entry. It
  * comes from the caller for the same reason the slack does.
+ *
+ * `after` names the gap the same way `setNodeSlack` does — by the id of the
+ * node it starts at — and for the identical reason, which took a second telling
+ * to land here. The gesture measures the gap on the frame of the press and the
+ * write does not run until `app/main.ts` flushes phase 9, so an index would be
+ * a number a peer's insert or deletion may have moved underneath it. The loop
+ * would then be pulled out of the wrong segment, silently and plausibly. The
+ * id survives both, because it is what a `Y.Array` moves *around*.
+ *
+ * A node that has gone is a refusal rather than a clamp. Clamping would put the
+ * pin in a gap adjacent to the one the user grabbed, which is a worse answer
+ * than none: the gesture is visibly about one specific piece of string.
  */
 export function insertPinIntoString(
   board: BoardDoc,
   stringId: string,
-  index: number,
+  after: string,
   anchor: StringAnchor,
   split: SegmentSplit,
   settle?: ReadonlyMap<string, Pose>,
@@ -388,6 +421,11 @@ export function insertPinIntoString(
   return mutate(board, Origin.LOCAL_USER, () => {
     const nodes = nodesOf(board, stringId);
     if (!nodes) return null;
+    // Resolved before a single write, because `mutate` is a transaction and not
+    // a rollback: refusing after the pin was built would leave it in the cork
+    // with nothing hanging on it.
+    const previous = findNode(nodes, after);
+    if (!previous) return null;
     if (settle) writePoses(board, settle);
 
     let pin: string;
@@ -400,18 +438,14 @@ export function insertPinIntoString(
       pin = built.id;
     }
 
-    const at = Math.max(0, Math.min(index, nodes.length));
-    // Read the parent's slack before anything is written, so the division and
-    // the write it feeds see one state — DATA-MODEL section 5.4.
-    const previous = at > 0 ? nodes.get(at - 1) : undefined;
-    const parent =
-      typeof previous?.get("slackAfter") === "number"
-        ? (previous.get("slackAfter") as number)
-        : DEFAULT_SLACK;
-    const [before, after] = splitSlack(split.chord, parent, split.first, split.second, split.t);
+    // Read the gap's slack before anything is written, so the division and the
+    // write it feeds see one state — DATA-MODEL section 5.4.
+    const current = previous.node.get("slackAfter");
+    const parent = typeof current === "number" ? current : DEFAULT_SLACK;
+    const [first, second] = splitSlack(split.chord, parent, split.first, split.second, split.t);
 
-    nodes.insert(at, [buildNode(pin, after)]);
-    if (previous) previous.set("slackAfter", clampSlack(before));
+    nodes.insert(previous.at + 1, [buildNode(pin, second)]);
+    previous.node.set("slackAfter", clampSlack(first));
     return pin;
   });
 }
@@ -465,12 +499,7 @@ export function setNodeSlack(
   mutate(board, Origin.LOCAL_USER, () => {
     const nodes = nodesOf(board, stringId);
     if (!nodes) return;
-    for (const node of nodes) {
-      if (node.get("nodeId") === nodeId) {
-        node.set("slackAfter", clampSlack(slack));
-        return;
-      }
-    }
+    findNode(nodes, nodeId)?.node.set("slackAfter", clampSlack(slack));
   });
 }
 
@@ -504,15 +533,13 @@ export function scaleNodeSlack(
   mutate(board, Origin.LOCAL_USER, () => {
     const nodes = nodesOf(board, stringId);
     if (!nodes) return;
-    for (const node of nodes) {
-      if (node.get("nodeId") !== nodeId) continue;
-      const current = node.get("slackAfter");
-      node.set(
-        "slackAfter",
-        clampSlack((typeof current === "number" ? current : DEFAULT_SLACK) * factor),
-      );
-      return;
-    }
+    const found = findNode(nodes, nodeId);
+    if (!found) return;
+    const current = found.node.get("slackAfter");
+    found.node.set(
+      "slackAfter",
+      clampSlack((typeof current === "number" ? current : DEFAULT_SLACK) * factor),
+    );
   });
 }
 

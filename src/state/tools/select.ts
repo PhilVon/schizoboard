@@ -297,7 +297,16 @@ export class SelectTool implements Tool {
    * rather than wherever they were when the string was grabbed.
    */
   private loopString: string | null = null;
-  private loopIndex = 0;
+  /**
+   * The node the grabbed segment starts at, by id — the new pin goes behind it.
+   *
+   * By id and not by position, for the same reason `loopFrom`/`loopTo` are pin
+   * ids: this is captured at the press and not spent until the release queues a
+   * write, and a peer inserting anywhere earlier in the run renumbers a position
+   * inside that window. The gesture would then pull a loop out of a segment
+   * nobody grabbed, with nothing on screen to say so.
+   */
+  private loopAfter: string | null = null;
   /** Arc-length fraction along the grabbed segment — where the user took hold
    *  of the string, which is what the split divides the sag at. */
   private loopT = 0;
@@ -1153,10 +1162,12 @@ export class SelectTool implements Tool {
    * Take hold of the segment the press landed on: which string, where in its
    * run the new node goes, and which two pins the split is between.
    *
-   * `node` is the index of the node the segment *starts* at, so the insert goes
-   * at `node + 1` — and on the wrap segment of a closed run that is the end of
-   * the run, which is where a node between the last pin and the first one
-   * belongs (DATA-MODEL section 5.2).
+   * `hit.node` is the index of the node the segment *starts* at, and it is read
+   * once, here, on the frame of the press — what is kept is that node's id, so
+   * that the write at the release still means this segment. On the wrap segment
+   * of a closed run the node it starts at is the last one, and inserting behind
+   * the last node is the end of the run, which is where a node between the last
+   * pin and the first one belongs (DATA-MODEL section 5.2).
    *
    * Returns false if the run or either of its pins has gone — a collaborator
    * can delete the string between the press and the pointer moving, and pulling
@@ -1171,7 +1182,7 @@ export class SelectTool implements Tool {
     if (!ctx.scene.pins.has(from.pin) || !ctx.scene.pins.has(to.pin)) return false;
 
     this.loopString = hit.string;
-    this.loopIndex = hit.node + 1;
+    this.loopAfter = from.nodeId;
     this.loopT = hit.t;
     this.loopFrom = from.pin;
     this.loopTo = to.pin;
@@ -1214,9 +1225,10 @@ export class SelectTool implements Tool {
    */
   private commitLoop(at: PointerSample, ctx: ToolContext): void {
     const stringId = this.loopString;
+    const after = this.loopAfter;
     const from = this.loopFrom;
     const to = this.loopTo;
-    if (stringId === null || from === null || to === null) return;
+    if (stringId === null || after === null || from === null || to === null) return;
     const a = ctx.scene.pins.get(from);
     const b = ctx.scene.pins.get(to);
     if (!a || !b) return;
@@ -1228,12 +1240,13 @@ export class SelectTool implements Tool {
     // revert `Esc` gives and the same rule the `Alt` pull follows.
     if ("pin" in drop.anchor && (drop.anchor.pin === from || drop.anchor.pin === to)) return;
 
-    // Chords only. The slack this gets divided against is read by the op, in
-    // the transaction that writes it — `this.loopSlack` is what the segment had
-    // when the drag started, and the write does not land until the next flush.
+    // Chords only, and the node the gap starts at by id. Both the slack this
+    // gets divided against and the position it lands at are the op's to read in
+    // the transaction that writes them: what this tool holds is a press old, and
+    // the write does not land until the next flush.
     ctx.write.insertPin(
       stringId,
-      this.loopIndex,
+      after,
       drop.anchor,
       {
         chord: Math.hypot(b.wx - a.wx, b.wy - a.wy),
@@ -1248,6 +1261,7 @@ export class SelectTool implements Tool {
   /** Let go of the segment. Nothing to put back: nothing was written. */
   private resetLoop(): void {
     this.loopString = null;
+    this.loopAfter = null;
     this.loopFrom = null;
     this.loopTo = null;
   }

@@ -17,7 +17,7 @@ import { beforeEach, describe, expect, it } from "vitest";
 
 import { openBoardDoc, type BoardDoc } from "@/crdt/doc";
 import { createItems } from "@/crdt/ops/items";
-import { createPin, movePin } from "@/crdt/ops/pins";
+import { createPin, deletePins, movePin } from "@/crdt/ops/pins";
 import { UndoHistory } from "@/crdt/undo";
 import { splitSlack } from "@/lib/slack";
 import {
@@ -56,6 +56,11 @@ function pins(id: string): string[] {
 
 function slacks(id: string): number[] {
   return nodes(id).map((n) => n.slackAfter);
+}
+
+/** The id of the `i`th node — how a gap is named, so how an insert is aimed. */
+function nodeAt(id: string, i: number): string {
+  return nodes(id)[i]!.nodeId;
 }
 
 /** Two free pins, 200 board units apart. */
@@ -480,7 +485,7 @@ describe("pushing a pin into the middle of a run", () => {
     board.doc.on("update", () => updates++);
 
     const made = insertPinIntoString(
-      board, id, 1, { parent: null, lx: 100, ly: 60 }, EVEN_SPLIT,
+      board, id, nodeAt(id, 0), { parent: null, lx: 100, ly: 60 }, EVEN_SPLIT,
     )!;
     expect(updates).toBe(1);
     expect(board.pins.has(made)).toBe(true);
@@ -501,7 +506,7 @@ describe("pushing a pin into the middle of a run", () => {
     const [a, b] = twoPins();
     const id = createString(board, { pins: [a, b], slack: 0.3 })!;
     const [before, after] = splitSlack(CUT.chord, 0.3, CUT.first, CUT.second, CUT.t);
-    insertPinIntoString(board, id, 1, { parent: null, lx: 90, ly: 70 }, CUT);
+    insertPinIntoString(board, id, nodeAt(id, 0), { parent: null, lx: 90, ly: 70 }, CUT);
     expect(slacks(id)[0]).toBeCloseTo(before, 12);
     expect(slacks(id)[1]).toBeCloseTo(after, 12);
   });
@@ -523,7 +528,7 @@ describe("pushing a pin into the middle of a run", () => {
 
     // ...and then somebody else pulls a lot more slack into it.
     setStringSlack(board, [id], 0.9);
-    insertPinIntoString(board, id, 1, { parent: null, lx: 90, ly: 70 }, CUT);
+    insertPinIntoString(board, id, nodeAt(id, 0), { parent: null, lx: 90, ly: 70 }, CUT);
 
     const [before, after] = splitSlack(CUT.chord, 0.9, CUT.first, CUT.second, CUT.t);
     expect(slacks(id)[0]).toBeCloseTo(before, 12);
@@ -542,7 +547,7 @@ describe("pushing a pin into the middle of a run", () => {
   it("conserves the rest length it split, so the sag does not jump", () => {
     const [a, b] = twoPins();
     const id = createString(board, { pins: [a, b], slack: 0.35 })!;
-    insertPinIntoString(board, id, 1, { parent: null, lx: 90, ly: 70 }, CUT);
+    insertPinIntoString(board, id, nodeAt(id, 0), { parent: null, lx: 90, ly: 70 }, CUT);
 
     const [before, after] = slacks(id);
     const restBefore = CUT.chord * (1 + 0.35);
@@ -554,7 +559,7 @@ describe("pushing a pin into the middle of a run", () => {
     const [a, b] = twoPins();
     const id = createString(board, { pins: [a, b] })!;
     const made = insertPinIntoString(
-      board, id, 1, { parent: "note-1", lx: 10, ly: -20 }, EVEN_SPLIT,
+      board, id, nodeAt(id, 0), { parent: "note-1", lx: 10, ly: -20 }, EVEN_SPLIT,
     )!;
     expect(board.pins.get(made)!.get("parent")).toBe("note-1");
   });
@@ -578,7 +583,7 @@ describe("pushing a pin into the middle of a run", () => {
     let updates = 0;
     board.doc.on("update", () => updates++);
     const made = insertPinIntoString(
-      board, id, 1, { parent: itemId, lx: 10, ly: -20 }, EVEN_SPLIT,
+      board, id, nodeAt(id, 0), { parent: itemId, lx: 10, ly: -20 }, EVEN_SPLIT,
       new Map([[itemId, { x: 30, y: 40, rot: 0.5 }]]),
     )!;
     expect(updates).toBe(1);
@@ -599,7 +604,7 @@ describe("pushing a pin into the middle of a run", () => {
     const [a, b] = twoPins();
     const hub = createPin(board, { parent: null, lx: 100, ly: 100 });
     const id = createString(board, { pins: [a, b] })!;
-    expect(insertPinIntoString(board, id, 1, { pin: hub }, EVEN_SPLIT)).toBe(hub);
+    expect(insertPinIntoString(board, id, nodeAt(id, 0), { pin: hub }, EVEN_SPLIT)).toBe(hub);
     expect(pins(id)).toEqual([a, hub, b]);
     expect(board.pins.size).toBe(3);
   });
@@ -607,12 +612,67 @@ describe("pushing a pin into the middle of a run", () => {
   it("makes no pin at all when the string has gone", () => {
     const [a, b] = twoPins();
     const id = createString(board, { pins: [a, b] })!;
+    const gap = nodeAt(id, 0);
     deleteStrings(board, [id]);
     const before = board.pins.size;
     expect(
-      insertPinIntoString(board, id, 1, { parent: null, lx: 0, ly: 0 }, EVEN_SPLIT),
+      insertPinIntoString(board, id, gap, { parent: null, lx: 0, ly: 0 }, EVEN_SPLIT),
     ).toBeNull();
     expect(board.pins.size).toBe(before);
+  });
+
+  /**
+   * The gap itself is gone, though the string is not: a collaborator deleted
+   * the pin at the near end of the segment while the loop was out, and the
+   * janitor took its node with it.
+   *
+   * A refusal rather than a clamp to the neighbouring gap, and — the part worth
+   * a test — a refusal that costs nothing. The pin is built *after* the anchor
+   * resolves precisely so that this cannot leave one loose in the cork, which is
+   * a mistake `mutate` would not undo for us: it is a transaction, not a
+   * rollback.
+   */
+  it("refuses, and builds no pin, when the gap it was aimed at has gone", () => {
+    const [a, b] = twoPins();
+    const c = createPin(board, { parent: null, lx: 400, ly: 0 });
+    const id = createString(board, { pins: [a, b, c] })!;
+    const gap = nodeAt(id, 0);
+
+    // The near pin of the grabbed segment goes, and its node with it.
+    deletePins(board, [a]);
+    const before = board.pins.size;
+
+    expect(
+      insertPinIntoString(board, id, gap, { parent: null, lx: 100, ly: 60 }, EVEN_SPLIT),
+    ).toBeNull();
+    expect(board.pins.size).toBe(before);
+    expect(pins(id)).toEqual([b, c]);
+  });
+
+  /**
+   * The point of naming the gap by id. A peer inserts a node *earlier* in the
+   * run between the press and the flush, which renumbers every position after
+   * it — and the write must still land in the segment the user actually grabbed.
+   *
+   * Under the old signature the index `1` meant "after `a`" when it was measured
+   * and "after the peer's pin" by the time it was written, so the loop came out
+   * of the wrong piece of string with nothing on screen to say so.
+   */
+  it("lands in the segment that was grabbed, not the one that index now names", () => {
+    const [a, b] = twoPins();
+    const c = createPin(board, { parent: null, lx: 400, ly: 0 });
+    const id = createString(board, { pins: [a, b, c], slack: 0.3 })!;
+    // The gesture grabs the middle segment, b→c, and names it by `b`'s node.
+    const gap = nodeAt(id, 1);
+
+    // ...and before the flush, somebody pushes a pin into the *first* segment.
+    const peer = createPin(board, { parent: null, lx: 100, ly: 0 });
+    insertPinIntoString(board, id, nodeAt(id, 0), { pin: peer }, EVEN_SPLIT);
+
+    const made = insertPinIntoString(
+      board, id, gap, { parent: null, lx: 300, ly: 60 }, EVEN_SPLIT,
+    )!;
+    expect(pins(id)).toEqual([a, peer, b, made, c]);
   });
 
   /** AC-71: Esc mid-drag reverts topology completely. Nothing is written until
@@ -623,7 +683,7 @@ describe("pushing a pin into the middle of a run", () => {
     const id = createString(board, { pins: [a, b], slack: 0.3 })!;
     const history = new UndoHistory(board);
     const made = insertPinIntoString(
-      board, id, 1, { parent: null, lx: 100, ly: 60 }, EVEN_SPLIT,
+      board, id, nodeAt(id, 0), { parent: null, lx: 100, ly: 60 }, EVEN_SPLIT,
     )!;
     expect(board.pins.has(made)).toBe(true);
 

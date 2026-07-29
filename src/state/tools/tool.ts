@@ -232,10 +232,19 @@ export interface BoardWriter {
    * Push a pin into the middle of a run — the headline gesture (DESIGN section
    * 3.4), as one transaction so that undoing it takes the pin with it.
    *
-   * `index` is where in the run the new node goes; `split` says where the cut
-   * fell. Those measurements are the tool's and not the op's, because they are
-   * geometry — the chords come from where the neighbouring pins actually are,
-   * and `crdt/` may not read the scene.
+   * `after` is the id of the node the grabbed segment *starts* at — the new one
+   * goes immediately behind it — and `split` says where the cut fell. Those
+   * measurements are the tool's and not the op's, because they are geometry:
+   * the chords come from where the neighbouring pins actually are, and `crdt/`
+   * may not read the scene.
+   *
+   * An id rather than a position in the run, for the reason `setNodeSlack`
+   * below states at length and this gesture is the worst case of: the segment
+   * is grabbed on one frame and the write is queued to the next flush, so an
+   * index is a handle a peer's insert invalidates in between — and the loop
+   * would come out of the neighbouring segment with nothing to show it had. The
+   * op refuses outright if the node has gone, rather than clamping to a gap the
+   * user did not point at.
    *
    * What the tool deliberately does *not* send is the two slack ratios the cut
    * produces. It used to, and that was wrong: the tool knows the segment's slack
@@ -254,7 +263,7 @@ export interface BoardWriter {
    */
   insertPin(
     stringId: string,
-    index: number,
+    after: string,
     anchor: StringAnchor,
     split: SegmentSplit,
     settle?: ReadonlyMap<string, WritePose>,

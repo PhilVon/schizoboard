@@ -33,7 +33,7 @@ type Write =
   | {
       kind: "insert";
       stringId: string;
-      index: number;
+      after: string;
       anchor: StringAnchor;
       split: SegmentSplit;
       settle: Map<string, WritePose>;
@@ -261,11 +261,11 @@ beforeEach(() => {
       },
       // The other one: a loop pulled out of the middle of a string, which makes
       // a pin and the node that carries it in one transaction (DESIGN 3.4).
-      insertPin: (stringId, index, anchor, split, settle) => {
+      insertPin: (stringId, after, anchor, split, settle) => {
         writes.push({
           kind: "insert",
           stringId,
-          index,
+          after,
           anchor: { ...anchor },
           split: { ...split },
           settle: new Map(settle),
@@ -1676,8 +1676,10 @@ describe("pulling a pin out of a string", () => {
     const write = lastInsert();
     expect(writes).toHaveLength(1);
     expect(write.stringId).toBe("s");
-    // The segment starts at node 0, so the new node goes between it and node 1.
-    expect(write.index).toBe(1);
+    // Named by the node the grabbed segment starts at, not by the position that
+    // node happened to be at when the press landed (T-172). The op puts the new
+    // one immediately behind it.
+    expect(write.after).toBe("s-n0");
     expect(write.anchor).toEqual({ parent: null, lx: 100, ly: 20 });
   });
 
@@ -1795,7 +1797,10 @@ describe("pulling a pin out of a string", () => {
     down(50, 100);
     move(20, 100);
     up(20, 100);
-    expect(lastInsert().index).toBe(3);
+    // The wrap segment starts at the last node, and "behind the last node" is
+    // the end of the run — which is where a node between the last pin and the
+    // first one belongs (DATA-MODEL section 5.2).
+    expect(lastInsert().after).toBe("s-n2");
   });
 
   /** AC-71. Nothing is written until the release, so the revert is that there
