@@ -127,6 +127,10 @@ Three consequences worth stating separately:
 
 **Pin count is the item's physics.** Zero pins and the item lies loose on the cork. One pin and it hangs, swinging gently on a torsion spring and settling to equilibrium. Two or more and it's rigid. The user never sets a physics mode; they add and remove pins, and the behaviour follows. This turns "items get one pin by default, add and remove as you see fit" from bookkeeping into something you can feel.
 
+**And that count is geometric, not parental.** A pin holds every item it is actually stuck through, whoever's frame its coordinates are stored in — so a photograph dragged over a pin in the bare cork hangs from it, and a pin in the overlap of two items holds both. The two states above are about the *frame*: `parent` says whose local space the pin's numbers are in, and therefore what the pin travels with, and it stays singular for exactly the reason this section gives. What it never was is the answer to "what does this pin hold", which is a question about where the pin *is*. Before the two were separated an item with a pin plainly sitting on it lay flat, because the pin named something else.
+
+A pin therefore belongs to one frame and holds however many items it is pushed through. It still travels with its parent alone: slide the top photograph out from under a pin and it comes away, leaving the pin and whatever else it was holding behind — which is what a pin in a cork board does.
+
 **Pins outlive items.** `Shift+Delete` removes an item but leaves its pins free-floating in the cork, so the web of string survives with a hole in it. Evidence removed, thread remains. Nearly free to implement, because it's just a re-parent to `null`.
 
 ### 2.3 Strings
