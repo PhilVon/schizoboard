@@ -44,6 +44,7 @@
 
 import type { Point } from "@/lib/rotate";
 import { counterRotate, LIGHT_DX, LIGHT_DY } from "@/render/items/shadow";
+import { tapedCorners } from "@/render/items/tape";
 import type { Scene } from "@/state/scene";
 
 /**
@@ -142,7 +143,13 @@ const at: Point = { x: 0, y: 0 };
  * at every corner, which is right and is also what the loop below does by
  * itself: a loose sheet lying on the cork is exactly the thing that lifts.
  */
-export function cornerCurl(scene: Scene, id: string, slot: number, out: Float32Array): void {
+export function cornerCurl(
+  scene: Scene,
+  id: string,
+  slot: number,
+  seed: number,
+  out: Float32Array,
+): void {
   const hw = scene.w[slot]! / 2;
   const hh = scene.h[slot]! / 2;
   let gapTL = Infinity;
@@ -168,6 +175,13 @@ export function cornerCurl(scene: Scene, id: string, slot: number, out: Float32A
   out[1] = curlAt(Math.sqrt(gapTR));
   out[2] = curlAt(Math.sqrt(gapBR));
   out[3] = curlAt(Math.sqrt(gapBL));
+
+  // And a corner with tape across it is held by the tape (`tape.ts`). Tape is
+  // one of the two things on this board that hold a sheet down, so leaving it
+  // out would draw a corner visibly lifting off the cork from underneath the
+  // strip stuck over it.
+  const taped = tapedCorners(seed);
+  for (let c = 0; c < out.length; c++) if (taped & (1 << c)) out[c] = 0;
 }
 
 /**

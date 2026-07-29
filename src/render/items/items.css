@@ -460,6 +460,70 @@
   display: none;
 }
 
+/* --- tape. DESIGN 4.3, and render/items/tape.ts --------------------------- */
+
+/*
+ * > Optional tape at one or two corners, slightly translucent, with its own
+ * > small shadow and a barely-visible torn edge.
+ *
+ * Size, position, angle and torn ends are written per strip by the view, since
+ * all four are the item's seed and its corners. What is here is what tape is
+ * made of.
+ *
+ * `display: none` is the resting state and the view turns the ones it wants on:
+ * both nodes exist for the life of a view, and two thirds of a board has no
+ * tape on it.
+ */
+.item-tape {
+  position: absolute;
+  display: none;
+  pointer-events: none;
+  transform-origin: 50% 50%;
+}
+
+/*
+ * The strip — one node, and its whole appearance is a cross-section drawn
+ * across its width.
+ *
+ * There is no cast shadow here and there was: an offset copy of the silhouette,
+ * made the way every other shadow on this board is made. It is wrong for this
+ * one object. An offset copy is the shadow of something held *above* a surface,
+ * and tape is stuck flat to one — it read as a plank lying across the corner.
+ *
+ * So DESIGN 4.3's "own small shadow" is the strip's own thickness: a hairline
+ * where it meets the surface on the far side from the light, with the shine
+ * along the near edge, and nothing in between because the middle is in contact.
+ * The view mirrors the whole profile with `scaleY(-1)` when the strip is lying
+ * the other way up, so the shine always faces the light (`tapeFlip`).
+ *
+ * Translucent, so what it is stuck over shows through slightly desaturated — an
+ * opaque strip reads as a sticker.
+ */
+.tape-strip {
+  position: absolute;
+  inset: 0;
+  transform-origin: 50% 50%;
+  background:
+    linear-gradient(
+      to bottom,
+      rgba(255, 255, 255, 0.42) 0%,
+      rgba(255, 255, 255, 0.3) 9%,
+      rgba(255, 255, 255, 0.05) 34%,
+      rgba(198, 194, 182, 0.1) 68%,
+      rgba(120, 100, 74, 0.16) 88%,
+      rgba(52, 36, 20, 0.34) 100%
+    ),
+    /*
+     * A flat fill, and a thin one — 0.26 rather than the 0.4 this started at.
+     * Tape stuck over cork should still show the cork: at 0.4 the half of a
+     * strip that overhangs the item was a solid pale bar against the texture,
+     * which is the one thing that says sticker rather than tape. What carries
+     * it instead is the sheen above, which is a property of the roll and reads
+     * the same over paper and over cork.
+     */
+    linear-gradient(rgba(238, 236, 228, 0.26), rgba(238, 236, 228, 0.26));
+}
+
 /* --- handwriting. DESIGN 3.6, and render/items/hand.ts -------------------- */
 
 /*

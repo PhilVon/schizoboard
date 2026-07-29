@@ -393,6 +393,10 @@ Over the image: a subtle gloss gradient, a hint of vignette, and optional aging 
 
 Every polaroid is rotated a few degrees, seeded per item. Optional tape at one or two corners, slightly translucent, with its own small shadow and a barely-visible torn edge.
 
+Tape is not only a print's, though this is where it is written down: §2.1 says the archetypes differ only in styling and defaults, and a note taped to a board is as ordinary as a photograph taped to one. It is also not decoration — tape is one of the two things that hold a sheet down, so a taped corner does not curl (§4.4). Two strips go on as a pair, across the top or diagonally opposite, because two adjacent down one side is a thing nobody does and it looks like it.
+
+**"Its own small shadow" is not a cast one.** Every other shadow in this application is an offset copy of a silhouette, and that is the shadow of something held *above* a surface — tape is the one object here stuck flat to one, and drawn that way it read as a plank lying across the corner. What tape has is a cross-section: a shine along the edge nearer the light and a hairline of its own thickness along the edge away from it, with nothing in between, because the middle is in contact. The light decides only which way up that profile is drawn.
+
 ### 4.4 Notes, cards and scraps
 
 Paper stock varies: white, cream, yellow legal, graph, index card. Each has its own grain texture at low opacity, its own edge treatment, and its own slight colour variation across the sheet.

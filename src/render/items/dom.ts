@@ -72,6 +72,15 @@ import {
   shadowSprite,
   type Elevation,
 } from "@/render/items/shadow";
+import {
+  MAX_TAPES,
+  TAPE_LENGTH,
+  TAPE_WIDTH,
+  tapeAngle,
+  tapeClipPath,
+  tapedCorners,
+  tapeFlip,
+} from "@/render/items/tape";
 import type { ItemLayer } from "@/render/items/view";
 import type { AssetPhase } from "@/state/assets";
 import type { DirtySets } from "@/state/dirty";
@@ -222,6 +231,105 @@ class ShadowNode {
   }
 }
 
+/**
+ * The one or two strips of tape holding an item down — DESIGN section 4.3, and
+ * `tape.ts` for which corners get one and why both archetypes can.
+ *
+ * Both nodes exist for the life of the view and are hidden rather than created,
+ * which is the same rule `.pol-film` is built under: a `createElement` on a
+ * mount is exactly what the pool exists to avoid, and two thirds of a board have
+ * no tape on them at all.
+ *
+ * Positioned on the corner of the **paper** — `--edge-*`, which the paper view
+ * writes and a polaroid leaves at its `0px` fallback, because a print's frame
+ * really is a rectangle.
+ */
+class TapeSet {
+  readonly nodes: HTMLDivElement[] = [];
+  private readonly strips: HTMLDivElement[] = [];
+  /** Each live strip's own angle, needed to take the light back out of it. */
+  private readonly angles = new Float32Array(MAX_TAPES);
+  private live = 0;
+  private litFor = Number.NaN;
+
+  constructor() {
+    for (let i = 0; i < MAX_TAPES; i++) {
+      const el = document.createElement("div");
+      el.className = "item-tape";
+      // Written here rather than in the stylesheet so that the length a hand
+      // tears off a roll is stated once, in the module that knows about tape.
+      el.style.width = `${TAPE_LENGTH}px`;
+      el.style.height = `${TAPE_WIDTH}px`;
+      const strip = document.createElement("div");
+      strip.className = "tape-strip";
+      el.append(strip);
+      this.nodes.push(el);
+      this.strips.push(strip);
+    }
+  }
+
+  bind(seed: number): void {
+    const mask = tapedCorners(seed);
+    let n = 0;
+    for (let c = 0; c < CORNER_ANCHOR.length; c++) {
+      if ((mask & (1 << c)) === 0) continue;
+      const el = this.nodes[n]!;
+      const anchor = CORNER_ANCHOR[c]!;
+      el.style.left = anchor[0];
+      el.style.top = anchor[1];
+      const angle = tapeAngle(seed, 1 << c, n);
+      this.angles[n] = angle;
+      // Centred on the corner, so half the strip is on the item and half is on
+      // the cork — which is the only way round that holds anything.
+      el.style.transform = `translate(-50%, -50%) rotate(${angle.toFixed(4)}rad)`;
+      this.strips[n]!.style.clipPath = tapeClipPath(seed, n);
+      el.style.display = "block";
+      n++;
+    }
+    for (let i = n; i < MAX_TAPES; i++) this.nodes[i]!.style.display = "none";
+    this.live = n;
+    // The strips have moved, so whichever way up they were lying is no longer
+    // an answer about these ones.
+    this.litFor = Number.NaN;
+  }
+
+  /**
+   * Turn each strip so that its lit edge faces the light.
+   *
+   * Out of *two* rotations, not one: a strip is rotated inside an item that is
+   * itself rotated, so the light has to come back through both or a taped
+   * photograph would be lit from one direction and its tape from another.
+   *
+   * A mirror rather than an offset copy, because tape is stuck flat and has no
+   * cast shadow to give — see [`tapeFlip`], and Phil, who said so.
+   */
+  update(rot: number): void {
+    if (rot === this.litFor) return;
+    this.litFor = rot;
+    for (let i = 0; i < this.live; i++) {
+      const flip = tapeFlip(rot + this.angles[i]!, LIGHT_DX, LIGHT_DY);
+      this.strips[i]!.style.transform = flip < 0 ? "scaleY(-1)" : "";
+    }
+  }
+
+  release(): void {
+    for (const el of this.nodes) el.style.display = "none";
+    this.live = 0;
+    this.litFor = Number.NaN;
+  }
+}
+
+/**
+ * Where each corner is, as a pair of CSS lengths — the paper's corner where the
+ * silhouette moved it and the box's where nothing did.
+ */
+const CORNER_ANCHOR: readonly (readonly [string, string])[] = [
+  ["var(--edge-tl-x, 0px)", "var(--edge-tl-y, 0px)"],
+  ["calc(100% - var(--edge-tr-x, 0px))", "var(--edge-tr-y, 0px)"],
+  ["calc(100% - var(--edge-br-x, 0px))", "calc(100% - var(--edge-br-y, 0px))"],
+  ["var(--edge-bl-x, 0px)", "calc(100% - var(--edge-bl-y, 0px))"],
+];
+
 /** Shared by both views: position, rotation, size, and the carry. */
 function writeTransform(
   el: HTMLDivElement,
@@ -285,6 +393,7 @@ class PolaroidView implements View {
   private boundDevelop = -1;
 
   private readonly shadow = new ShadowNode();
+  private readonly tape = new TapeSet();
   private readonly frame: HTMLDivElement;
   private readonly film: HTMLDivElement;
   readonly ink: ItemInk;
@@ -348,7 +457,8 @@ class PolaroidView implements View {
 
     window_.append(this.photo, this.film, gloss);
     this.frame.append(window_, this.caption);
-    this.el.append(this.shadow.el, this.frame);
+    // Tape last, because it is stuck over the front of the print.
+    this.el.append(this.shadow.el, this.frame, ...this.tape.nodes);
   }
 
   bind(cold: ItemCold, assetUrl: AssetResolver, screenPx: number): void {
@@ -371,6 +481,7 @@ class PolaroidView implements View {
     const develop = Math.round(asset.fraction * 100);
     const sameFilm = asset.phase === this.boundPhase && develop === this.boundDevelop;
     if (this.boundCold === cold && asset.url === this.boundAsset && sameFilm) return;
+    const sameItem = this.boundCold === cold;
     this.boundCold = cold;
     if (!sameFilm) {
       this.boundPhase = asset.phase;
@@ -394,6 +505,11 @@ class PolaroidView implements View {
     writeHand(this.caption, cold.text, cold.seed);
     this.caption.classList.toggle("is-empty", cold.text.length === 0);
     this.el.style.filter = sheetTint(cold.seed);
+    // Guarded on the item and not merely on this bind, unlike the three lines
+    // above: a develop runs this method once a chunk, and re-tearing the ends
+    // off two strips sixty times a second is work for a picture that has not
+    // changed.
+    if (!sameItem) this.tape.bind(cold.seed);
   }
 
   /**
@@ -534,6 +650,7 @@ class PolaroidView implements View {
     // the old sprite's offset for a frame and the shadow jumps sideways.
     setCarried(this.el, this.shadow, lift);
     this.shadow.update(rot);
+    this.tape.update(rot);
   }
 
   /**
@@ -597,6 +714,7 @@ class PolaroidView implements View {
     // nothing downstream has to reason about what it was.
     this.el.style.removeProperty("--develop");
     this.el.style.removeProperty("--emerge-delay");
+    this.tape.release();
     this.boundPhase = null;
     this.boundDevelop = -1;
     this.el.classList.remove("is-lifted", "is-waiting", IS_EMERGING, ...FILM_CLASSES);
@@ -625,6 +743,7 @@ class PaperView implements View {
   readonly archetype = "paper" as const;
   readonly el: HTMLDivElement;
   private readonly shadow = new ShadowNode();
+  private readonly tape = new TapeSet();
   private readonly surface: HTMLDivElement;
   private readonly grain: HTMLDivElement;
   private readonly tear: HTMLDivElement;
@@ -680,7 +799,9 @@ class PaperView implements View {
     // Above the ruling, which a tear destroys, and below the writing, which sits
     // on the paper whatever the paper has been through.
     this.surface.append(this.grain, this.tear, this.body, this.bend);
-    this.el.append(this.shadow.el, this.surface, this.lift);
+    // Tape last, because it is stuck over the front of the sheet — and over the
+    // curl, since a taped corner is a corner that is not lifting.
+    this.el.append(this.shadow.el, this.surface, this.lift, ...this.tape.nodes);
   }
 
   bind(cold: ItemCold, _assetUrl: AssetResolver, _screenPx: number): void {
@@ -711,6 +832,7 @@ class PaperView implements View {
     this.grain.style.backgroundPosition = grainPosition(cold.seed);
     this.surface.style.filter = sheetTint(cold.seed);
     writeHand(this.body, cold.text, cold.seed);
+    this.tape.bind(cold.seed);
   }
 
   transform(x: number, y: number, rot: number, w: number, h: number, lift: number): void {
@@ -720,6 +842,7 @@ class PaperView implements View {
     // the old sprite's offset for a frame and the shadow jumps sideways.
     setCarried(this.el, this.shadow, lift);
     this.shadow.update(rot);
+    this.tape.update(rot);
     if (rot !== this.liftRot) {
       this.liftRot = rot;
       const throw_ = counterRotate(LIGHT_DX * CURL_THROW, LIGHT_DY * CURL_THROW, rot);
@@ -791,6 +914,7 @@ class PaperView implements View {
     }
     this.written.fill(-9);
     this.liftRot = Number.NaN;
+    this.tape.release();
     this.adopt(null);
     this.shadow.reset();
     this.ink.release();
@@ -1160,7 +1284,7 @@ export class DomItemLayer implements ItemLayer {
     // `isNew` is in here because a sheet that has just come back into the
     // viewport has never been told, whatever the dirty sets say.
     if (recurl || isNew) {
-      cornerCurl(scene, id, slot, this.corners);
+      cornerCurl(scene, id, slot, cold.seed, this.corners);
       cornerFace(scene.renderRot(slot), this.corners, this.faces);
       view.setCurl(this.corners, this.faces);
     }

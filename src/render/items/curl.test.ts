@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import { cornerCurl, cornerFace, curlAt } from "@/render/items/curl";
+import { tapedCorners } from "@/render/items/tape";
 import { Scene, type ItemCold, type ItemPose, type PinNode } from "@/state/scene";
 
 const [TL, TR, BR, BL] = [0, 1, 2, 3];
@@ -27,13 +28,33 @@ function pin(id: string, parent: string | null, lx: number, ly: number): PinNode
   return { id, parent, lx, ly, kind: "pushpin", color: "#f00", wx: 0, wy: 0 };
 }
 
+/**
+ * A seed with no tape on it, so that the pin cases below are about pins. Found
+ * rather than written down, since `tapedCorners` is free to change its mind
+ * about which third of a board is taped.
+ */
+const BARE = (() => {
+  for (let seed = 1; seed < 1000; seed++) if (tapedCorners(seed) === 0) return seed;
+  throw new Error("every seed is taped");
+})();
+
+/** And one that is, for the case that is about tape. */
+const TAPED = (() => {
+  for (let seed = 1; seed < 1000; seed++) if (tapedCorners(seed) !== 0) return seed;
+  throw new Error("no seed is taped");
+})();
+
 /** A sheet, its pins, and the four corner curls that come out. */
-function curls(pins: readonly PinNode[], over: Partial<ItemPose> = {}): Float32Array {
+function curls(
+  pins: readonly PinNode[],
+  over: Partial<ItemPose> = {},
+  seed = BARE,
+): Float32Array {
   const scene = new Scene();
-  const slot = scene.putItem(cold("sheet"), pose(over));
+  const slot = scene.putItem(cold("sheet", { seed }), pose(over));
   for (const p of pins) scene.putPin(p);
   const out = new Float32Array(4);
-  cornerCurl(scene, "sheet", slot, out);
+  cornerCurl(scene, "sheet", slot, seed, out);
   return out;
 }
 
@@ -147,6 +168,16 @@ describe("cornerCurl", () => {
     const upright = curls([pin("a", "sheet", -110, -85)]);
     const sideways = curls([pin("a", "sheet", -110, -85)], { rot: Math.PI / 2 });
     expect([...sideways]).toEqual([...upright]);
+  });
+
+  it("holds a taped corner as flat as a pinned one", () => {
+    // Tape is one of the two things that hold a sheet down, so a corner with a
+    // strip across it must not be drawn lifting off the cork from underneath it.
+    const taped = tapedCorners(TAPED);
+    const out = curls([], {}, TAPED);
+    for (let c = 0; c < 4; c++) {
+      expect(out[c]).toBe(taped & (1 << c) ? 0 : 1);
+    }
   });
 
   it("holds the far corners of a small sheet with one pin in the middle", () => {
