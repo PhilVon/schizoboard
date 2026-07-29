@@ -17,6 +17,7 @@ import { MIN_ITEM_SIZE, readItem, readPin, type ItemType, type YMap } from "@/cr
 import { keyAbove } from "@/crdt/zindex";
 import { highestZ } from "@/crdt/ops/z";
 import { newSeed, scatterAngle } from "@/lib/seed";
+import { diffText } from "@/lib/textdiff";
 
 export interface CreateItemInput {
   type: ItemType;
@@ -287,6 +288,42 @@ export function setItemAsset(
 export function itemText(board: BoardDoc, itemId: string): Y.Text | null {
   const text = board.items.get(itemId)?.get("text");
   return text instanceof Y.Text ? text : null;
+}
+
+/**
+ * Bring an item's text to `next` — as the one splice that gets there, never as
+ * a replacement.
+ *
+ * > Note text is a `Y.Text`, because two people can type in the same note.
+ * > — DESIGN section 9.3
+ *
+ * Which is only true if this writes like one. `text.delete(0, len)` followed by
+ * `text.insert(0, next)` produces the same string on this machine and throws
+ * away every concurrent edit on the other one — the peer's characters are
+ * inside the range being deleted, so a merge that should have interleaved two
+ * people's typing keeps whichever transaction landed second, entire. The
+ * splice touches only the characters that actually changed, so a peer typing
+ * at the other end of the same note is untouched by it.
+ *
+ * The current value is read **inside** the transaction rather than passed in,
+ * for the reason `insertPin` gives at length: the caller measured `next`
+ * against a field it read a frame ago, and a peer's insert in between would
+ * otherwise be diffed away as though the local person had deleted it.
+ *
+ * `Origin.LOCAL_USER`, which is tracked by the undo manager and carries its
+ * 400 ms capture window — so "text edits are character-level and merge into
+ * sensible entries by typing pause" (DESIGN section 3.6) is what the existing
+ * undo grouping already does, with nothing added here.
+ */
+export function setItemText(board: BoardDoc, itemId: string, next: string): void {
+  mutate(board, Origin.LOCAL_USER, () => {
+    const text = itemText(board, itemId);
+    if (!text) return;
+    const edit = diffText(text.toString(), next);
+    if (!edit) return;
+    if (edit.remove > 0) text.delete(edit.at, edit.remove);
+    if (edit.insert.length > 0) text.insert(edit.at, edit.insert);
+  });
 }
 
 /**

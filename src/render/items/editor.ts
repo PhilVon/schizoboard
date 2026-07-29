@@ -43,6 +43,8 @@
  * would be inherited by whichever note got the node next.
  */
 
+import { diffText, mapCaret } from "@/lib/textdiff";
+
 /** What the layer's owner is told. Neither call may write the DOM. */
 export interface ItemEditorHooks {
   /** The field's whole value, on every input event. */
@@ -143,6 +145,37 @@ export class TextEditor {
     this.editing = itemId;
     this.field.value = text;
     this.pendingFocus = true;
+  }
+
+  /**
+   * What the document now says this item's text is, arriving while somebody is
+   * writing on it (T-180).
+   *
+   * Almost always the echo of what was just typed, and those cost one string
+   * comparison. The case worth the rest of the code is a **peer** typing into
+   * the same note: the merged text is different from what is in the field, and
+   * replacing the value outright would send the caret to the end of the note
+   * mid-word. So the difference is found as one splice and the selection is
+   * carried over it — both ends, so a live selection survives somebody else's
+   * edit ahead of it too.
+   *
+   * There is no second Yjs observer behind this. `crdt/binding.ts` is still the
+   * only one; a text change re-runs `syncItem`, which mints a fresh `ItemCold`
+   * and dirties the item, and the item layer hands that text here in the DOM
+   * phase like any other bound field.
+   */
+  receive(text: string): void {
+    if (this.editing === null) return;
+    const edit = diffText(this.field.value, text);
+    if (!edit) return;
+    const start = this.field.selectionStart;
+    const end = this.field.selectionEnd;
+    const scroll = this.field.scrollTop;
+    this.field.value = text;
+    this.field.setSelectionRange(mapCaret(start, edit), mapCaret(end, edit));
+    // Writing `value` scrolls a textarea back to the top, which on a note long
+    // enough to need scrolling is the whole point of Q-93 undone by a peer.
+    this.field.scrollTop = scroll;
   }
 
   /** Give the paper back. Safe to call when nothing is open. */

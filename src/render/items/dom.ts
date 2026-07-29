@@ -863,6 +863,10 @@ export class DomItemLayer implements ItemLayer {
       // the resolver does with it is the resolver's business.
       const screenPx = Math.max(scene.w[slot]!, scene.h[slot]!) * this.rasterScale;
       view.bind(cold, this.assetUrl, screenPx);
+      // The same text the static node just took, offered to the caret as well
+      // — this is how a peer's typing reaches an open field (T-180). It is a
+      // string comparison for the local echo, which is every other case.
+      if (this.editor?.itemId === id) this.editor.receive(cold.text);
       view.transform(
         // The rendered centre, not the stored one: a hanging item turns about
         // its pin, and `drift` is the half of that which is a translation

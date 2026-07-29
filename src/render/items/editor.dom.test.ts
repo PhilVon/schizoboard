@@ -275,6 +275,80 @@ describe("the ways a parked field can be lost", () => {
   });
 });
 
+/**
+ * T-180, the half that only shows up with two people. A note's text arriving
+ * from the document while somebody has the caret in it.
+ */
+describe("a peer typing into the note you are writing in", () => {
+  function bindText(id: string, text: string): void {
+    scene.putItem({ ...scene.cold(id)!, text }, scene.poseOf(id)!);
+    dirty.item(id);
+    layer.sync(scene, dirty, null);
+  }
+
+  it("costs nothing when it is only the echo of what was typed", () => {
+    add("a", { text: "hello" });
+    layer.sync(scene, dirty, null);
+    layer.edit("a", "hello");
+    const f = field()!;
+    f.setSelectionRange(2, 2);
+
+    bindText("a", "hello");
+    expect(f.value).toBe("hello");
+    expect(f.selectionStart).toBe(2);
+  });
+
+  it("brings the merged text in without moving the caret to the end", () => {
+    add("a", { text: "world" });
+    layer.sync(scene, dirty, null);
+    layer.edit("a", "world");
+    const f = field()!;
+    // The caret sits after "wor".
+    f.setSelectionRange(3, 3);
+
+    // Somebody else types "hello " at the front.
+    bindText("a", "hello world");
+
+    expect(f.value).toBe("hello world");
+    // Still after "wor", which is now at 9 — not at the end, and not left at 3
+    // in the middle of their word.
+    expect(f.selectionStart).toBe(9);
+    expect(f.value.slice(0, f.selectionStart)).toBe("hello wor");
+  });
+
+  it("carries a selection over an edit ahead of it, both ends", () => {
+    add("a", { text: "one two three" });
+    layer.sync(scene, dirty, null);
+    layer.edit("a", "one two three");
+    const f = field()!;
+    // "three" selected.
+    f.setSelectionRange(8, 13);
+
+    bindText("a", "ZERO one two three");
+
+    expect(f.value.slice(f.selectionStart, f.selectionEnd)).toBe("three");
+  });
+
+  it("leaves a caret before the change exactly where it was", () => {
+    add("a", { text: "one two" });
+    layer.sync(scene, dirty, null);
+    layer.edit("a", "one two");
+    const f = field()!;
+    f.setSelectionRange(3, 3);
+
+    bindText("a", "one two three");
+    expect(f.selectionStart).toBe(3);
+  });
+
+  it("says nothing to a field that is not open", () => {
+    add("a", { text: "one" });
+    layer.sync(scene, dirty, null);
+    bindText("a", "one two");
+    expect(layer.editing).toBeNull();
+    expect(field()).toBeNull();
+  });
+});
+
 describe("a polaroid's caption", () => {
   it("gets the field in the frame, wearing the caption's class and its size", () => {
     add("a", { type: "polaroid", text: "" }, { w: 300, h: 360 });

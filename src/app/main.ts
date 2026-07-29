@@ -250,8 +250,17 @@ async function boot(): Promise<void> {
    * scratchpad, and closing it throws the text away.
    */
   const items = new DomItemLayer(world.layers.world, assetUrl, {
-    onInput: () => {
-      // T-180.
+    /**
+     * Straight to the document, not queued to phase 9 like a tool's writes.
+     *
+     * The queue exists so a *tool* cannot change the document out from under
+     * the renderer halfway through a frame — it runs in phase 1 and the flush
+     * is phase 9. An `input` event is not in a frame at all; it fires between
+     * them, exactly as the paste handler does, and holding a keystroke back
+     * for a frame would only make the caret and the paper disagree.
+     */
+    onInput: (id, text) => {
+      ops.setItemText(board, id, text);
     },
     onClosed: (id) => {
       // Let the paper back down. The clock runs from wherever it got to, so
