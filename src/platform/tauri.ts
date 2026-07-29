@@ -17,6 +17,9 @@ import { listen } from "@tauri-apps/api/event";
 import type {
   AssetMeta,
   AssetVariant,
+  BundleOpened,
+  BundleSpec,
+  BundleWritten,
   ClipboardKind,
   ClipboardManifest,
   ClipboardPayload,
@@ -144,6 +147,44 @@ export class TauriPlatform implements Platform {
 
   docCompact(snapshot: Uint8Array): Promise<void> {
     return invoke<void>("doc_compact", snapshot);
+  }
+
+  /**
+   * A little JSON in front of a lot of bytes: `[u32 le length][json][snapshot]`,
+   * the same framing `docLoad` reads back and for the same reason.
+   *
+   * Tauri's raw body is all-or-nothing — a command takes a raw payload or it
+   * takes JSON arguments, never both — and the snapshot has to be raw. Sending
+   * it as a JSON array of numbers is the mistake ARCHITECTURE section 4.3
+   * already rejected for photographs, and putting the manifest in a header
+   * makes a five-hundred-photograph board's asset list thirty kilobytes of
+   * header. `bundle::split_payload` is the other end.
+   */
+  async bundleSaveAs(spec: BundleSpec, snapshot: Uint8Array): Promise<BundleWritten | null> {
+    const json = new TextEncoder().encode(JSON.stringify(spec));
+    const payload = new Uint8Array(4 + json.byteLength + snapshot.byteLength);
+    new DataView(payload.buffer).setUint32(0, json.byteLength, true);
+    payload.set(json, 4);
+    payload.set(snapshot, 4 + json.byteLength);
+    return invoke<BundleWritten | null>("bundle_save_as", payload);
+  }
+
+  async bundleOpen(): Promise<BundleOpened | null> {
+    const body = await invoke<ArrayBuffer | Uint8Array>("bundle_open");
+    const bytes = body instanceof Uint8Array ? body : new Uint8Array(body);
+    // An empty body is a cancelled dialog — a `Response` has no room for the
+    // `null` the save side can return.
+    if (bytes.byteLength === 0) return null;
+
+    const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+    const length = view.getUint32(0, true);
+    if (4 + length > bytes.byteLength) {
+      throw new Error("bundle_open returned a truncated manifest");
+    }
+    const opened = JSON.parse(
+      new TextDecoder().decode(bytes.subarray(4, 4 + length)),
+    ) as Omit<BundleOpened, "snapshot">;
+    return { ...opened, snapshot: bytes.subarray(4 + length) };
   }
 
   clipboardReadManifest(): Promise<ClipboardManifest> {

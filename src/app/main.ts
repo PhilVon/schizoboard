@@ -10,7 +10,16 @@
  */
 
 import { Binding } from "@/crdt/binding";
-import { boardSeed, encodedSize, initialiseBoard, openBoardDoc, snapshot } from "@/crdt/doc";
+import {
+  boardSchemaVersion,
+  boardSeed,
+  boardTitle,
+  encodedSize,
+  initialiseBoard,
+  openBoardDoc,
+  referencedAssets,
+  snapshot,
+} from "@/crdt/doc";
 import * as ops from "@/crdt/ops";
 import {
   bringToFront,
@@ -1066,6 +1075,64 @@ async function boot(): Promise<void> {
     }
   };
 
+  /**
+   * Zip the whole board up somewhere the user picks (T-84).
+   *
+   * The three things Rust is told are all reads of the document, taken here
+   * rather than in the shell because only this side can read a document at all
+   * — `referencedAssets` is the same set the janitor spares, so what survives
+   * collection is what a bundle embeds.
+   *
+   * Reads them at pick time, not at menu-open time. The rows are a snapshot and
+   * every other one here is too, but a board can perfectly well have a
+   * photograph arrive from a peer between the right-click and the dialog
+   * closing, and the version that goes in the file should be the later one.
+   *
+   * ## The three things that can come back
+   *
+   * A cancelled dialog is `null` and says nothing — the user changed their
+   * mind, and a line telling them so would be the application narrating its own
+   * inaction.
+   *
+   * A complete export says how much went in it, because "it saved" and "it
+   * saved and it is 40 MB of photographs" are different pieces of news to
+   * somebody about to attach it to something.
+   *
+   * An export missing a photograph says *which count*, out loud. DESIGN section
+   * 11.1's fourth risk is a board state a user can genuinely be in and the file
+   * is still worth having, so this is not an error — but "export always embeds
+   * assets" is a promise the file is quietly not keeping, and the person
+   * handing it over is the one who needs to know that.
+   */
+  const exportBoard = async (): Promise<void> => {
+    try {
+      const written = await native.bundleSaveAs(
+        {
+          schemaVersion: boardSchemaVersion(board),
+          title: boardTitle(board),
+          assets: referencedAssets(board),
+        },
+        snapshot(board),
+      );
+      if (written === null) return;
+      const size = `${Math.max(1, Math.round(written.bytes / 1024 / 1024))} MB`;
+      if (written.missing.length > 0) {
+        flash.say(
+          `Board exported (${size}) — without ${written.missing.length} ` +
+            `photograph${written.missing.length === 1 ? "" : "s"} this machine does not have`,
+        );
+        return;
+      }
+      flash.say(`Board exported (${size}) — ${written.embedded} photographs are inside it`);
+    } catch (error) {
+      // Names the console for the same reason `copyInvite` does: there is
+      // genuinely somewhere to go, and a line that only apologises leaves
+      // somebody with no next move.
+      console.warn("[bundle] the board could not be exported", error);
+      flash.say("The board could not be exported — the reason is in the console");
+    }
+  };
+
   root.addEventListener("contextmenu", (e) => {
     e.preventDefault();
     // A right-click on the menu itself, or on the HUD. Chrome takes its own.
@@ -1173,6 +1240,7 @@ async function boot(): Promise<void> {
         [...selection.strings],
         { link: invite, copy: copyInvite },
         { on: prefs.ageing(), set: setAgeing },
+        native.kind === "tauri" ? { export: () => void exportBoard() } : null,
       ),
     );
   });
