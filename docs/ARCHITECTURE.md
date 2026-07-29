@@ -160,7 +160,10 @@ doc_append_update(bytes)               // fire-and-forget, coalesced in JS
 doc_load()                 → { snapshot, updates[] }
 doc_compact(snapshot)
 
-bundle_open(path) / bundle_save_as(path) / bundle_recent()
+// no path in either direction, for the reason `asset_export` gives below
+bundle_save_as(manifest, snapshot) → { embedded, missing[], bytes } | null
+bundle_open()              → { manifest, snapshot, ingested[], missing[] } | null
+bundle_recent()                              // not built — see T-84's note
 
 clipboard_read_manifest()  → { kinds: [...] }
 clipboard_read_item(kind)  → { sha256 } | { text } | { html, srcUrl }
@@ -186,6 +189,10 @@ Binary payloads use raw request/response bodies, never JSON arrays. `doc_append_
 The frontend still has to pass the asset's `origName`, because the document holds it and Rust holds no schema to read it from — a dialog offering a hash is a dialog nobody recognises their own photograph in. That is the one caller-supplied string in this command, and it crosses as a *name*, which is the difference that makes it safe: a name has recognisably wrong answers where a path has none. Rust reduces it to a bare filename before the dialog sees it and takes the extension from the bytes rather than from the suggestion, so `..\..\Startup\holiday.exe` reaches the user as `holiday.jpg` in whichever directory they were already looking at.
 
 Prefer this shape wherever the boundary is asked for a location: take the *intent* from the webview and let the native side obtain the location.
+
+**Both bundle commands took the advice** (T-84). `bundle_save_as` was written above as `bundle_save_as(path)` and does not take one: it takes the board's title, on exactly the standing `origName` has — a suggestion `safe_stem` reduces before the dialog shows it — and the save dialog supplies the rest. `bundle_open` takes nothing at all and opens a picker. Between them and `asset_export` that is every place in the application where a file is chosen, and none of them lets the webview name one.
+
+What crosses instead is a manifest and a snapshot, framed as `[u32 le length][json][snapshot]` in one raw body, because Tauri's raw payload is all-or-nothing and a document sent as a JSON array of numbers is the mistake §4.3 already rejected for photographs. Rust reads the manifest and never the snapshot: it is handed a title, a schema version and a list of hashes, which is the whole of what a bundle is from a side that owns bytes and no schema.
 
 **Ingestion returns as soon as the hash and dimensions are known**, so the item appears instantly at the correct size while variants generate in the background and an `asset:ready` event follows.
 
