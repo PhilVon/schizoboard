@@ -58,7 +58,7 @@ import {
   type HandleFrame,
   type HandleId,
 } from "@/state/handles";
-import type { ItemPose } from "@/state/scene";
+import type { ItemPose, StringNode, StringNodes } from "@/state/scene";
 import type { SelectionSnapshot } from "@/state/selection";
 import { threadFrom } from "@/state/thread";
 import {
@@ -252,6 +252,36 @@ function freePinsIn(ctx: ToolContext, rect: Bounds): string[] {
     }
   }
   return found;
+}
+
+/**
+ * The node a grabbed segment *ends* at: the next one along whose pin still
+ * resolves, wrapping round a closed run.
+ *
+ * Not `from + 1`, which is what this used to assume. Since T-77 a rope segment
+ * runs from each resolving node to the next resolving one, *however many dead
+ * ones lie between* — DATA-MODEL section 8.1's "a string node pointing at a
+ * missing pin is skipped at render time". So on a run that a peer's delete left
+ * a node behind in, the node immediately after the segment's start is quite
+ * possibly the dead one, and reading it as the far end refused the whole
+ * gesture on a string that draws, hovers and reports a hit perfectly well.
+ *
+ * `sim/ropes.ts` makes this exact walk when it builds the segment; this is the
+ * tool asking the same question of the scene, which is the side of the seam it
+ * is allowed to read. The two must agree, or the loop is measured against a pin
+ * the string is not actually drawn to.
+ *
+ * Wrapping unconditionally is safe on an open run: there, a node is only ever a
+ * segment's start if some later node resolves, so the walk finds one before it
+ * gets round. Null means nothing does — a run with no drawable segment left,
+ * which is no gesture rather than a bad one.
+ */
+function farNode(ctx: ToolContext, run: StringNodes, from: number): StringNode | null {
+  for (let step = 1; step < run.nodes.length; step++) {
+    const node = run.nodes[(from + step) % run.nodes.length];
+    if (node && ctx.scene.pins.has(node.pin)) return node;
+  }
+  return null;
 }
 
 export class SelectTool implements Tool {
@@ -1169,6 +1199,11 @@ export class SelectTool implements Tool {
    * the last node is the end of the run, which is where a node between the last
    * pin and the first one belongs (DATA-MODEL section 5.2).
    *
+   * The segment's far end is `farNode`, not the next node along: since T-77 a
+   * segment steps over nodes whose pins have gone, and this has to step over
+   * the same ones or it measures the loop against a pin the string is not drawn
+   * to — which, when that pin does not exist, refused the gesture outright.
+   *
    * Returns false if the run or either of its pins has gone — a collaborator
    * can delete the string between the press and the pointer moving, and pulling
    * a loop out of nothing should be no gesture at all rather than a write.
@@ -1177,9 +1212,9 @@ export class SelectTool implements Tool {
     const run = ctx.scene.strings.get(hit.string);
     if (!run) return false;
     const from = run.nodes[hit.node];
-    const to = run.nodes[(hit.node + 1) % run.nodes.length];
-    if (!from || !to) return false;
-    if (!ctx.scene.pins.has(from.pin) || !ctx.scene.pins.has(to.pin)) return false;
+    if (!from || !ctx.scene.pins.has(from.pin)) return false;
+    const to = farNode(ctx, run, hit.node);
+    if (!to) return false;
 
     this.loopString = hit.string;
     this.loopAfter = from.nodeId;

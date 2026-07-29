@@ -124,6 +124,14 @@ function hitPin(sx: number, sy: number): string | null {
  * these tests need: what is being exercised here is which node the insert lands
  * at and what the tool does with `t`, not the sag. The real one hit-tests the
  * particles, and `sim/ropes.test.ts` is where that is proved.
+ *
+ * It does have to agree with the real one about *topology*, though, and for a
+ * while it did not. A segment runs from each **resolving** node to the next
+ * resolving one, however many dead ones lie between (T-77, DATA-MODEL section
+ * 8.1); this stub built one per adjacent pair and skipped any that touched a
+ * missing pin. That is the pre-T-77 shape, and it is why nothing here noticed
+ * that the loop gesture had stopped working on a run a peer's delete had left a
+ * node behind in — the harness could not produce the segment that broke it.
  */
 /** How many times it has been asked — the wheel's no-selection fast path is
  *  about *not* asking, which is not observable from the answer. */
@@ -134,10 +142,19 @@ function hitString(bx: number, by: number, reach: number): StringHit | null {
   let best: StringHit | null = null;
   let bestDistance = reach;
   for (const [id, run] of scene.strings) {
-    const spans = run.closed ? run.nodes.length : run.nodes.length - 1;
-    for (let i = 0; i < spans; i++) {
+    const resolving: number[] = [];
+    for (let i = 0; i < run.nodes.length; i++) {
+      if (scene.pins.has(run.nodes[i]!.pin)) resolving.push(i);
+    }
+    const spans = run.closed ? resolving.length : resolving.length - 1;
+    if (resolving.length < 2) continue;
+    for (let k = 0; k < spans; k++) {
+      // `node` is the index in the *run*, which is what an insert is aimed by —
+      // not `k`, which stopped being the same number when a segment could span
+      // more than one node.
+      const i = resolving[k]!;
       const a = scene.pins.get(run.nodes[i]!.pin);
-      const b = scene.pins.get(run.nodes[(i + 1) % run.nodes.length]!.pin);
+      const b = scene.pins.get(run.nodes[resolving[(k + 1) % resolving.length]!]!.pin);
       if (!a || !b) continue;
       const dx = b.wx - a.wx;
       const dy = b.wy - a.wy;
@@ -1785,6 +1802,64 @@ describe("pulling a pin out of a string", () => {
     const sin = Math.sin(pose.rot ?? 0);
     expect(pose.x + anchor.lx * cos - anchor.ly * sin).toBeCloseTo(dropX, 3);
     expect(pose.y + anchor.lx * sin + anchor.ly * cos).toBeCloseTo(dropY, 3);
+  });
+
+  /**
+   * A segment that spans a node whose pin has gone — T-173.
+   *
+   * The state is a peer's delete meeting a concurrent edit to the same run: the
+   * pin record goes, no cascade reaches the node, and the janitor is the only
+   * thing that will ever collect it (T-76). Until it does, `sim/ropes.ts` steps
+   * over the dead node and draws one segment across both gaps, so the string is
+   * visible, hoverable and reports a hit — and the gesture read the node right
+   * after the segment's start as its far end, found the dead one there, and
+   * refused. Silently, on a string the user can see perfectly well.
+   *
+   * Measured in the running app before it was fixed: 3 document nodes, 2 of
+   * them resolving, 1 rope span drawn, a hover hit at t=0.5, and the release
+   * wrote nothing.
+   */
+  describe("a segment that spans a node whose pin has gone", () => {
+    /** p0 --- (p1, deleted by a peer) --- p2, all on one line. */
+    function spanning(): void {
+      putPin("p0", null, 0, 0);
+      putPin("p2", null, 400, 0);
+      putString("s", ["p0", "p1", "p2"]);
+    }
+
+    it("still lets a loop be pulled out of it", () => {
+      spanning();
+      down(200, 0);
+      move(200, 40);
+      up(200, 40);
+
+      const write = lastInsert();
+      expect(write.stringId).toBe("s");
+      // Aimed by the node the segment *starts* at, which resolves and is the
+      // gap whose slack the split divides (T-172).
+      expect(write.after).toBe("s-n0");
+      expect(write.anchor).toEqual({ parent: null, lx: 200, ly: 40 });
+    });
+
+    /**
+     * And the chords are measured to the pin the string is actually drawn to,
+     * not to the dead one in between. `p2` is at 400, so a grab at the midpoint
+     * splits a 400 chord — reading the far end as `p1` would have measured
+     * against a pin with no position at all.
+     */
+    it("measures the split against the pin the segment really ends at", () => {
+      spanning();
+      down(200, 0);
+      move(200, 40);
+
+      expect(tool.heldSegment).toEqual({ string: "s", a: "p0", b: "p2" });
+
+      up(200, 40);
+      const { split } = lastInsert();
+      expect(split.chord).toBeCloseTo(400, 9);
+      expect(split.first).toBeCloseTo(Math.hypot(200, 40), 9);
+      expect(split.second).toBeCloseTo(Math.hypot(200, 40), 9);
+    });
   });
 
   it("puts the wrap segment's node at the end of a closed run", () => {
