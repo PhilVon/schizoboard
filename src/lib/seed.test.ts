@@ -54,6 +54,69 @@ describe("seed derivations", () => {
     expect(Math.abs(r)).toBeLessThan(0.06);
   });
 
+  it("wanders rather than jitters, so neighbouring letters move together", () => {
+    // The failure this rules out is white noise. Independent noise per
+    // character is invisible at an amplitude that looks natural and reads as a
+    // ransom note at any amplitude you can see, because every third letter ends
+    // up displaced away from both its neighbours. Two letters side by side must
+    // be close; two a couple of syllables apart need not be.
+    const n = 4000;
+    let near = 0;
+    let far = 0;
+    for (let i = 0; i < n; i++) {
+      const here = charJitter(SEED, i).dy;
+      near += Math.abs(charJitter(SEED, i + 1).dy - here);
+      far += Math.abs(charJitter(SEED, i + 8).dy - here);
+    }
+    expect(near).toBeLessThan(far / 2.5);
+  });
+
+  it("eases into each control point, so there is no kink every fourth letter", () => {
+    // Cosine interpolation flattens where the segments meet; a linear blend
+    // makes every step the same size and leaves a corner at every control
+    // point, which is a pattern at exactly the scale this is meant to hide.
+    const dy = (i: number): number => charJitter(SEED, i).dy;
+    let across = 0;
+    let middle = 0;
+    for (let point = 0; point < 800; point++) {
+      const base = point * 4;
+      across += Math.abs(dy(base + 1) - dy(base));
+      middle += Math.abs(dy(base + 2) - dy(base + 1));
+    }
+    expect(across).toBeLessThan(middle / 1.5);
+  });
+
+  it("gives each letter its own slant, so four in a row do not share an angle", () => {
+    // Slant is the part of a hand that genuinely does vary letter to letter,
+    // and it is what stops the drift reading as a wave. So rotation must
+    // decorrelate between neighbours faster than the baseline does.
+    const churn = (pick: (index: number) => number): number => {
+      let near = 0;
+      let far = 0;
+      for (let i = 0; i < 3000; i++) {
+        near += Math.abs(pick(i + 1) - pick(i));
+        far += Math.abs(pick(i + 8) - pick(i));
+      }
+      return near / far;
+    };
+    const rot = churn((i) => charJitter(SEED, i).rot);
+    const baseline = churn((i) => charJitter(SEED, i).dy);
+    expect(rot).toBeGreaterThan(baseline * 1.5);
+  });
+
+  it("keeps every letter on the line it belongs to", () => {
+    // The upper bound on "slight". DESIGN 11.2 asks whether per-character
+    // jitter holds up at small sizes or turns to mush, and mush is what these
+    // numbers growing looks like.
+    for (let i = 0; i < 3000; i++) {
+      const j = charJitter(SEED ^ (i * 2654435761), i);
+      expect(Math.abs(j.dy)).toBeLessThanOrEqual(0.06);
+      expect(Math.abs(j.dx)).toBeLessThanOrEqual(0.02);
+      expect(Math.abs(j.rot)).toBeLessThanOrEqual((2.5 * Math.PI) / 180);
+      expect(Math.abs(j.scale - 1)).toBeLessThanOrEqual(0.035);
+    }
+  });
+
   it("indexes jitter by character, so inserting text does not reshuffle it", () => {
     // "hello" -> "Xhello": every original character shifts by one index. What
     // must not happen is every *remaining* character getting new jitter, which

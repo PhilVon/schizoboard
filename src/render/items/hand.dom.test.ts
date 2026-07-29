@@ -160,11 +160,26 @@ describe("handwriting", () => {
 
   it("stops building boxes past what the paper can show, and keeps the text", () => {
     const el = host();
-    const long = Array.from({ length: 400 }, (_, i) => `word${i}`).join(" ");
+    // The tail carries markup too: past the cap the text goes in as one run,
+    // which is the other place an escape is the only thing standing between a
+    // peer's note and a parsed tag.
+    const long = Array.from({ length: 400 }, (_, i) => `w<b>ord${i}`).join(" ");
     writeHand(el, long, SEED);
     expect(el.textContent).toBe(long);
+    expect(el.querySelector("b")).toBeNull();
     expect(glyphs(el).length).toBeLessThanOrEqual(512);
     expect(glyphs(el).length).toBeGreaterThan(400);
+  });
+
+  it("treats text that looks like markup as text", () => {
+    // The whole cost of building this as one string. Note text arrives from a
+    // peer's document, so it is the one untrusted thing in it.
+    const el = host();
+    const nasty = `<img src=x onerror="boom"> & <b>bold</b>`;
+    writeHand(el, nasty, SEED);
+    expect(el.textContent).toBe(nasty);
+    expect(el.querySelector("img")).toBeNull();
+    expect(el.querySelector("b")).toBeNull();
   });
 
   it("does not split an emoji down the middle of its surrogate pair", () => {

@@ -52,6 +52,38 @@
  * The counterpart is `clearHand`, which a released view owes: these nodes are
  * pooled, and a node emptied without clearing the record would recognise the
  * next item's identical text as already written and stay blank.
+ *
+ * ## One `innerHTML` write, and why it is worth the care it needs
+ *
+ * The first version built this element by element. Measured over a hand-speed
+ * pan across a 300-note board of 170-character notes, against the same board
+ * with the jitter compiled out - DOM phase p99, median of three runs:
+ *
+ * | zoom | mounted | glyph boxes | plain | one string | element by element |
+ * |------|---------|-------------|-------|------------|--------------------|
+ * | 100% |      54 |       7,926 | 5.6ms |     10.0ms |             12.7ms |
+ * |  70% |      86 |      12,615 | 6.9ms |     11.8ms |             15.5ms |
+ * |  50% |     160 |      23,474 | 9.6ms |     15.8ms |             20.7ms |
+ *
+ * So the boxes cost something real on the frames that mount a batch - about
+ * two thirds again on top of a phase that is already the expensive one - and
+ * parsing one string is about 40% cheaper than building the same tree node by
+ * node. `cloneNode` plus `setAttribute` was measured too and lands between
+ * them. The steady state is free either way: p50 is zero in every column,
+ * because the guard above means panning past a note rebuilds nothing.
+ *
+ * What is *not* solved here is that all of this is spent on text that, below
+ * about half zoom, nobody can read. Not gating on drawn size is deliberate -
+ * `bind()` does not re-run on a zoom, so a gate would leave a note typeset
+ * until something else dirtied it - and that plumbing is T-90's LOD tiers.
+ *
+ * That makes the escape below load-bearing rather than hygiene. Note text comes
+ * from a peer's document and is the *only* untrusted thing in the string; every
+ * attribute value here is a number this file computed. Escaping `&` and `<`
+ * means no markup can be formed at all, which is the whole of what is required
+ * for element content - there is no attribute context for a quote to escape
+ * from. If a future field ever does go into an attribute, it does not go in
+ * through here.
  */
 
 import { charJitter } from "@/lib/seed";
@@ -117,11 +149,13 @@ export function writeHand(host: HTMLElement, text: string, seed: number): void {
   const key = `${seed}:${text}`;
   if (host.dataset["hand"] === key) return;
   host.dataset["hand"] = key;
-  host.textContent = "";
-  if (text.length === 0) return;
+  if (text.length === 0) {
+    host.textContent = "";
+    return;
+  }
 
-  const frag = document.createDocumentFragment();
-  // The index into the *string*, which is what the jitter is addressable by —
+  let html = "";
+  // The index into the *string*, which is what the jitter is addressable by -
   // so the third character of a note keeps its lean whether it arrived as the
   // third character or ended up there.
   let index = 0;
@@ -130,44 +164,44 @@ export function writeHand(host: HTMLElement, text: string, seed: number): void {
   // Alternating runs of whitespace and not. `\s` rather than a literal space:
   // a newline is what makes the second line of a note a second line, and a tab
   // is a tab, and both have to survive as text for `pre-wrap` to honour them.
-  const runs = text.split(/(\s+)/);
-  for (const run of runs) {
+  for (const run of text.split(/(\s+)/)) {
     if (run.length === 0) continue;
-    if (/^\s/.test(run)) {
-      frag.append(run);
-      index += run.length;
-      continue;
-    }
-    if (glyphs >= MAX_GLYPHS) {
-      frag.append(run);
+    if (/^\s/.test(run) || glyphs >= MAX_GLYPHS) {
+      html += escape(run);
       index += run.length;
       continue;
     }
 
-    const parts = graphemes(run);
-    let word = newWord();
+    html += OPEN_WORD;
     let inWord = 0;
-    for (const glyph of parts) {
+    for (const glyph of graphemes(run)) {
       if (inWord === MAX_WORD_GLYPHS) {
-        frag.append(word);
-        word = newWord();
+        html += CLOSE_WORD + OPEN_WORD;
         inWord = 0;
       }
-      word.append(glyphs < MAX_GLYPHS ? leaning(glyph, seed, index) : glyph);
+      html += glyphs < MAX_GLYPHS ? leaning(glyph, seed, index) : escape(glyph);
       index += glyph.length;
       inWord++;
       glyphs++;
     }
-    frag.append(word);
+    html += CLOSE_WORD;
   }
 
-  host.append(frag);
+  host.innerHTML = html;
 }
 
-function newWord(): HTMLSpanElement {
-  const el = document.createElement("span");
-  el.className = WORD_CLASS;
-  return el;
+const OPEN_WORD = `<span class="${WORD_CLASS}">`;
+const CLOSE_WORD = "</span>";
+
+/**
+ * The only untrusted thing in the string this file builds.
+ *
+ * `&` and `<` are the two characters that can begin markup, so escaping them is
+ * the whole of what element content needs; `>` goes with them so the output is
+ * well-formed for anyone who ever reads it.
+ */
+function escape(text: string): string {
+  return text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 }
 
 /**
@@ -178,13 +212,11 @@ function newWord(): HTMLSpanElement {
  * centre because a hand's letters lean from where they meet the line, not from
  * their middles.
  */
-function leaning(glyph: string, seed: number, index: number): HTMLSpanElement {
+function leaning(glyph: string, seed: number, index: number): string {
   const j = charJitter(seed, index);
-  const el = document.createElement("span");
-  el.style.transform =
-    `translate(${j.dx.toFixed(4)}em, ${j.dy.toFixed(4)}em)` +
+  const transform =
+    `translate(${j.dx.toFixed(4)}em,${j.dy.toFixed(4)}em)` +
     ` rotate(${j.rot.toFixed(5)}rad)` +
     ` scale(${j.scale.toFixed(4)})`;
-  el.textContent = glyph;
-  return el;
+  return `<span style="transform:${transform}">${escape(glyph)}</span>`;
 }

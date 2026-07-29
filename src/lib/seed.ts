@@ -103,6 +103,23 @@ export function grainOffset(seed: number): { x: number; y: number } {
 /**
  * Per-character handwriting jitter. "slight per-character baseline and
  * rotation jitter so it doesn't look typeset" (DESIGN section 3.6).
+ *
+ * ## Why this is not white noise
+ *
+ * Independent noise per character is the obvious reading of "per-character
+ * jitter" and it is wrong, measurably so. At an amplitude small enough to look
+ * natural it is invisible; at any amplitude you can actually see, it reads as a
+ * ransom note — because the eye is not looking for movement, it is looking for
+ * a letter that has moved away from *both* its neighbours, and independent
+ * noise produces one of those every third character.
+ *
+ * A hand wanders. Its baseline drifts over a few letters and comes back, and
+ * neighbouring letters therefore move *together*. So the bulk of the amplitude
+ * here is a drift — value noise with a control point every [`DRIFT_CHARS`]
+ * characters, cosine-interpolated — and only a little of it is independent.
+ * That is what buys an amount large enough to notice and still legible.
+ *
+ * The two were rendered side by side on the same note before this was written.
  */
 export interface CharJitter {
   /**
@@ -119,12 +136,43 @@ export interface CharJitter {
   scale: number;
 }
 
+/**
+ * How many characters one drift control point covers.
+ *
+ * Four: about a syllable, which is roughly the distance over which a real hand
+ * gets away from the line and back. Two is close enough to per-character to
+ * bring the ransom note back; eight and a whole word rides up together, which
+ * reads as a wonky line rather than as writing.
+ */
+const DRIFT_CHARS = 4;
+
+/**
+ * A smooth signed [-1, 1] wander along the string, stable per index.
+ *
+ * Cosine rather than linear interpolation, because a linear blend leaves a
+ * visible corner at every control point — a kink every fourth letter is its own
+ * kind of pattern, and patterns are what all of this exists to avoid.
+ */
+function drift(seed: number, salt: string, index: number): number {
+  const point = Math.floor(index / DRIFT_CHARS);
+  const t = (index % DRIFT_CHARS) / DRIFT_CHARS;
+  const ease = (1 - Math.cos(t * Math.PI)) / 2;
+  const from = signed(valueAt(seed, salt, point), 1);
+  const to = signed(valueAt(seed, salt, point + 1), 1);
+  return from * (1 - ease) + to * ease;
+}
+
 export function charJitter(seed: number, index: number): CharJitter {
+  // Rotation is the one that carries an independent term as well. A letter's
+  // slant is the part of a hand that really does vary letter to letter, and
+  // without it four characters share one angle and the drift starts to show as
+  // a wave.
+  const slant = drift(seed, "char-rot", index) * 1.25 + signed(valueAt(seed, "char-tilt", index), 0.95);
   return {
-    dx: signed(valueAt(seed, "char-dx", index), 0.02),
-    dy: signed(valueAt(seed, "char-dy", index), 0.04),
-    rot: (signed(valueAt(seed, "char-rot", index), 1.6) * Math.PI) / 180,
-    scale: 1 + signed(valueAt(seed, "char-scale", index), 0.035),
+    dx: drift(seed, "char-dx", index) * 0.012,
+    dy: drift(seed, "char-dy", index) * 0.055,
+    rot: (slant * Math.PI) / 180,
+    scale: 1 + drift(seed, "char-scale", index) * 0.03,
   };
 }
 

@@ -483,6 +483,29 @@
   transform-origin: 50% 100%;
 }
 
+/*
+ * Both surfaces that take a hand give up kerning and ligatures, and the reason
+ * is the caret rather than the look.
+ *
+ * A glyph in a box of its own cannot kern against its neighbour, so handwritten
+ * text is laid out slightly tighter than the same string as one text node —
+ * "explained" measured 88.69px boxed against 90.92px plain, and a sentence
+ * 404.08 against 409.14. The editor's field is a `<textarea>` and can only ever
+ * hold plain text, so those two disagreeing means the words *re-wrap* the
+ * moment you click into a note, and re-wrap back when you click away. That is
+ * far more visible than any kerning pair in a script face.
+ *
+ * Turned off here, on the class the field shares with the static text, the two
+ * agree to within a third of a pixel over a whole sentence: 92.41 against
+ * 92.36, and 415.75 against 415.42. Nothing is lost that the boxes had not
+ * already taken.
+ */
+.paper-text,
+.pol-caption {
+  font-kerning: none;
+  font-variant-ligatures: none;
+}
+
 /* --- paper: note, scrap, card. DESIGN 4.4 --------------------------------- */
 
 .paper-surface {
