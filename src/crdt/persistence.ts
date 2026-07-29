@@ -183,6 +183,38 @@ export class Persistence {
     return this.enqueue(() => this.compactNow());
   }
 
+  /**
+   * Put somebody else's document on disk in place of this one, and stop
+   * following the board that is still on screen (T-84, Q-111).
+   *
+   * The one destructive thing in this class, and the order is the whole of it:
+   * **unsubscribe first, write second.** Persistence batches roughly 200 ms of
+   * updates before they cross, so a replace that compacted while still
+   * following the live document would truncate the log to the new snapshot and
+   * then, a fifth of a second later, append a frame of the *old* board on top
+   * of it — a document that is two boards at once, and no error anywhere to say
+   * so. `close()` is what makes that impossible, and it flushes on the way out
+   * so nothing pending is silently dropped either.
+   *
+   * Deliberately **not** applied to the live `Y.Doc`. Applying another board's
+   * snapshot to this one is a merge, and merging is exactly what Q-111 did not
+   * choose: the answer was replace, and the only honest way to replace a
+   * document that half the application holds references to is to write it down
+   * and start again. The caller reloads the window, which is the same thing
+   * Q-77 settled for the invite rewire.
+   *
+   * Refuses on a broken store rather than reporting, because there is a window
+   * about to be reloaded: a replace that quietly failed would come back as the
+   * board the user was told had gone.
+   */
+  async replaceWith(snapshot: Uint8Array): Promise<void> {
+    if (this.broken) throw new Error("the board is read-only; nothing was replaced");
+    await this.close();
+    await this.native.docCompact(snapshot);
+    this.stored = 0;
+    this.compactAt = this.compactBytes;
+  }
+
   /** Stop following the document and send whatever is left. */
   async close(): Promise<void> {
     if (this.subscribed) {

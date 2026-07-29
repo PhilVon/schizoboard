@@ -370,6 +370,67 @@ fn temp_beside(dest: &Path) -> PathBuf {
 
 // --- reading ----------------------------------------------------------------
 
+/// Read just the manifest, touching nothing else.
+///
+/// Exists because Q-112 put a confirmation in front of the replace, and the
+/// order that implies is: pick the file, find out what it is, *then* ask. Asking
+/// first would be asking about a file that might turn out not to be a bundle at
+/// all, and reading the whole thing first would mean a stranger's photographs
+/// entering this machine's store before anyone agreed to open their board.
+pub fn peek(src: &Path) -> Result<Manifest> {
+    let mut zip = ZipArchive::new(BufReader::new(File::open(src)?))?;
+    let raw = entry(&mut zip, MANIFEST, MAX_MANIFEST_BYTES)?
+        .ok_or_else(|| Error::NotABundle(format!("no {MANIFEST}")))?;
+    let manifest: Manifest =
+        serde_json::from_slice(&raw).map_err(|e| Error::Json(e.to_string()))?;
+    if manifest.format != FORMAT {
+        return Err(Error::NotABundle(format!(
+            "its format is {:?}, not {FORMAT:?}",
+            manifest.format
+        )));
+    }
+    Ok(manifest)
+}
+
+/// How much of a bundle's title may appear in a dialog.
+///
+/// Long enough to recognise a board by, short enough not to push the buttons
+/// off a message box.
+const MAX_TITLE_CHARS: usize = 60;
+
+/// The title of a board somebody else made, reduced to something that can only
+/// be a line of text in a dialog.
+///
+/// A `safe_stem` for prose, and it is guarding the same kind of door. The string
+/// came out of a file this machine did not write, and it is about to be shown in
+/// a *native* dialog — so a newline in it is not a formatting problem, it is a
+/// second sentence appearing above the buttons in the operating system's own
+/// voice. Control characters go, runs of whitespace collapse, and the whole
+/// thing is truncated.
+pub fn display_title(title: &str) -> String {
+    let cleaned: String = title
+        .chars()
+        .map(|c| if c.is_control() { ' ' } else { c })
+        .collect();
+    let mut out = String::new();
+    for word in cleaned.split_whitespace() {
+        if !out.is_empty() {
+            out.push(' ');
+        }
+        if out.chars().count() + word.chars().count() > MAX_TITLE_CHARS {
+            out.extend(word.chars().take(MAX_TITLE_CHARS - out.chars().count()));
+            out.push('…');
+            return out;
+        }
+        out.push_str(word);
+    }
+    if out.is_empty() {
+        "an untitled board".to_string()
+    } else {
+        out
+    }
+}
+
 /// Open a bundle and put its photographs in this machine's store.
 ///
 /// Returns the snapshot rather than applying it, because applying it is a
@@ -906,6 +967,65 @@ mod tests {
         assert!(bytes.is_empty());
         assert!(split_payload(b"").is_err());
         assert!(split_payload(b"\xff\xff\xff\xff").is_err());
+    }
+
+    #[test]
+    fn peeking_reads_the_manifest_and_nothing_else() {
+        let dir = tempfile::tempdir().unwrap();
+        let here = store(&dir, "here");
+        let photo = here.ingest_bytes(PIXEL, None).unwrap();
+        let dest = dir.path().join("board.schizo");
+        write(&here, &spec(vec![photo.sha256.clone()]), b"doc", &dest).unwrap();
+
+        let there = store(&dir, "there");
+        let manifest = peek(&dest).unwrap();
+        assert_eq!(manifest.title, "A board");
+        assert_eq!(manifest.assets, vec![photo.sha256.clone()]);
+        // The point of it: nobody's photographs arrive before anybody agrees.
+        assert!(!there.has(&photo.sha256));
+    }
+
+    #[test]
+    fn peeking_refuses_what_read_would_refuse() {
+        let dir = tempfile::tempdir().unwrap();
+        let dest = dir.path().join("webapp.zip");
+        {
+            let mut zip = ZipWriter::new(File::create(&dest).unwrap());
+            zip.start_file(MANIFEST, SimpleFileOptions::default()).unwrap();
+            zip.write_all(br#"{"format":"web-extension","schemaVersion":3,"title":"x","assets":[]}"#)
+                .unwrap();
+            zip.finish().unwrap();
+        }
+        assert!(matches!(peek(&dest).unwrap_err(), Error::NotABundle(_)));
+
+        let plain = dir.path().join("photo.schizo");
+        fs::write(&plain, PIXEL).unwrap();
+        assert!(matches!(peek(&plain).unwrap_err(), Error::Zip(_)));
+    }
+
+    /// A title out of somebody else's file is about to be read out in the
+    /// operating system's own voice, so it is reduced first.
+    #[test]
+    fn a_title_from_a_stranger_cannot_write_its_own_dialog() {
+        assert_eq!(display_title("Murder wall"), "Murder wall");
+        // A newline here is not a formatting problem — it is a second sentence
+        // appearing above the buttons.
+        assert_eq!(
+            display_title("Holiday\n\nYour password has expired. Enter it below:"),
+            "Holiday Your password has expired. Enter it below:"
+        );
+        assert_eq!(display_title("a\r\nb\tc\u{0}d"), "a b c d");
+        assert_eq!(display_title("   "), "an untitled board");
+        assert_eq!(display_title(""), "an untitled board");
+
+        let long = display_title(&"wall ".repeat(200));
+        assert!(long.chars().count() <= MAX_TITLE_CHARS + 1, "{long:?}");
+        assert!(long.ends_with('…'), "{long:?}");
+
+        // One unbroken word is truncated too, rather than surviving whole
+        // because it never hit a space.
+        let solid = display_title(&"x".repeat(400));
+        assert!(solid.chars().count() <= MAX_TITLE_CHARS + 1, "{solid:?}");
     }
 
     /// An empty board is a board.

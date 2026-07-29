@@ -347,7 +347,7 @@ export function boardMenuRows(
   strings: readonly string[],
   invite: { link: string | null; copy(link: string): void },
   ageing: { on: boolean; set(on: boolean): void },
-  board: { export(): void } | null,
+  board: { export(): void; open(): void } | null,
 ): MenuEntry[] {
   const rows = stringMenuRows(scene, write, strings);
   const below: MenuEntry[] = [
@@ -416,6 +416,20 @@ export function boardMenuRows(
       // Under the invite: both hand the board to somebody, and this is the
       // heavier of the two.
       run: () => board.export(),
+    });
+    below.push({
+      /**
+       * Last, and last on purpose. Q-111 made this the one row on the board
+       * that destroys a board — it replaces the one in this window — so it sits
+       * below *Export board…*, which is both the row somebody reading down
+       * wants far more often and, if they take it first, the thing that makes
+       * this one survivable.
+       *
+       * The confirmation is native and lives in `bundle_open`, because nothing
+       * in `capabilities/` lets this side open a dialog at all.
+       */
+      label: "Open a board…",
+      run: () => board.open(),
     });
   }
   return [...rows, ...below];

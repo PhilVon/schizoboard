@@ -893,12 +893,35 @@ async fn bundle_save_as(
 ///
 /// Returns the manifest and the document snapshot; what happens to the snapshot
 /// is a question about boards rather than about bytes, and it is answered on
-/// the other side of the boundary.
+/// the other side of the boundary. Q-111 answered it *replace*, which is why
+/// there is a confirmation in the middle of this.
+///
+/// ## Three dialogs, in this order, and the order is the design
+///
+/// Pick, then peek, then ask. Asking first would be asking about a file that
+/// might not be a bundle; reading the whole thing first would put a stranger's
+/// photographs in this machine's store before anybody agreed to open their
+/// board. [`bundle::peek`] is the step that makes the middle possible — it
+/// costs one small entry and tells the confirmation which board it is about.
+///
+/// ## The confirmation's words are this side's, and that is not fussiness
+///
+/// Nothing in `capabilities/` grants the webview a dialog, so a native
+/// confirmation *has* to be opened from here. It must also be *worded* here.
+/// If the message crossed the boundary as an argument, then anything that can
+/// reach `invoke` — and paste ingests HTML from other people's pages — could
+/// put a sentence of its choosing in a box wearing the operating system's
+/// chrome, which is a far better phishing surface than anything the renderer
+/// can draw. So the frame is fixed and the only variable in it is the bundle's
+/// own title, reduced by [`bundle::display_title`] first.
 ///
 /// An empty response body is a cancelled dialog — the raw equivalent of
-/// `Ok(None)` above, because a `Response` has no room for one.
+/// `Ok(None)` above, because a `Response` has no room for one. Saying no to the
+/// confirmation is the same outcome as closing the picker: no board arrived.
 #[tauri::command]
 async fn bundle_open(app: AppHandle) -> Result<tauri::ipc::Response, String> {
+    let nothing = || Ok(tauri::ipc::Response::new(Vec::new()));
+
     let handle = app.clone();
     let picked = tauri::async_runtime::spawn_blocking(move || {
         handle
@@ -912,9 +935,35 @@ async fn bundle_open(app: AppHandle) -> Result<tauri::ipc::Response, String> {
     .map_err(|e| e.to_string())?;
 
     let Some(src) = picked else {
-        return Ok(tauri::ipc::Response::new(Vec::new()));
+        return nothing();
     };
     let src = src.into_path().map_err(|e| e.to_string())?;
+
+    let peeked = src.clone();
+    let manifest = blocking(move || bundle::peek(&peeked)).await?;
+    let name = bundle::display_title(&manifest.title);
+
+    let handle = app.clone();
+    let agreed = tauri::async_runtime::spawn_blocking(move || {
+        handle
+            .dialog()
+            .message(format!(
+                "Opening “{name}” will replace the board in this window.\n\n\
+                 The board you have open now will be gone."
+            ))
+            .title("Replace this board?")
+            .buttons(tauri_plugin_dialog::MessageDialogButtons::OkCancelCustom(
+                "Replace".into(),
+                "Keep this board".into(),
+            ))
+            .blocking_show()
+    })
+    .await
+    .map_err(|e| e.to_string())?;
+
+    if !agreed {
+        return nothing();
+    }
 
     let handle = app.clone();
     let opened = blocking(move || -> bundle::Result<bundle::Opened> {

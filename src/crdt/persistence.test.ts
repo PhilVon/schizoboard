@@ -273,4 +273,94 @@ describe("Persistence", () => {
       await persistence.close();
     });
   });
+
+  /**
+   * T-84's replace (Q-111): somebody else's document goes on the disk, and the
+   * board still on screen must not get a word in edgeways on the way out.
+   */
+  describe("replacing the board with a bundle's document", () => {
+    /** A document that is plainly not this session's. */
+    async function elsewhere(): Promise<Uint8Array> {
+      const other = openBoardDoc();
+      initialiseBoard(other, "Somebody else's board");
+      createItems(other, [{ type: "note", x: 900, y: 900, w: 100, h: 100 }]);
+      return snapshot(other);
+    }
+
+    it("puts the bundle's document on the disk in place of this one", async () => {
+      const store = new Store();
+      const { board, persistence } = await session(store);
+      polaroid(board, 10, 20);
+      await persistence.flush();
+
+      await persistence.replaceWith(await elsewhere());
+
+      // What the next boot would load.
+      const state: DocState = await store.docLoad();
+      expect(state.updates).toEqual([]);
+      const next = openBoardDoc();
+      Y.applyUpdate(next.doc, state.snapshot!);
+      expect(next.meta.get("title")).toBe("Somebody else's board");
+      expect(next.items.size).toBe(1);
+      expect(readItem([...next.items.keys()][0]!, [...next.items.values()][0]!)?.type).toBe("note");
+    });
+
+    /**
+     * The failure this exists to make impossible, and it is a silent one.
+     *
+     * Persistence batches ~200 ms of updates. A replace that compacted while
+     * still following the live document would truncate the log to the new
+     * snapshot and then append a frame of the *old* board on top of it — a file
+     * that is two boards at once, with nothing anywhere reporting a problem.
+     */
+    it("stops following the old board before it writes, not after", async () => {
+      const store = new Store();
+      const { board, persistence } = await session(store);
+      polaroid(board, 10, 20);
+
+      await persistence.replaceWith(await elsewhere());
+
+      // The board is still on screen and still being edited — a stray pointer,
+      // a peer's update arriving, an animation settling.
+      polaroid(board, 999, 999);
+      polaroid(board, 998, 998);
+      await persistence.flush();
+
+      const state: DocState = await store.docLoad();
+      expect(state.updates).toEqual([]);
+      const next = openBoardDoc();
+      Y.applyUpdate(next.doc, state.snapshot!);
+      expect(next.items.size).toBe(1);
+      expect(next.meta.get("title")).toBe("Somebody else's board");
+    });
+
+    it("sends what was pending rather than dropping it on the floor", async () => {
+      const store = new Store();
+      const { board, persistence } = await session(store);
+      polaroid(board, 10, 20);
+      // Un-flushed: the batch is still open when the replace arrives.
+      expect(store.appends).toBe(0);
+
+      await persistence.replaceWith(await elsewhere());
+      expect(store.appends).toBe(1);
+    });
+
+    /**
+     * Loud, because there is a window about to be reloaded. A replace that
+     * quietly failed would come back as the board the user was just told had
+     * gone.
+     */
+    it("refuses rather than reporting when the store is read-only", async () => {
+      const store = new Store();
+      const board = openBoardDoc();
+      const persistence = new Persistence(board, store, { onError: () => {} });
+      store.failing = true;
+      vi.spyOn(store, "docLoad").mockRejectedValueOnce(new Error("the disk said no"));
+      await persistence.open();
+      expect(persistence.readOnly).toBe(true);
+
+      await expect(persistence.replaceWith(await elsewhere())).rejects.toThrow(/read-only/);
+      expect(store.compactions).toBe(0);
+    });
+  });
 });

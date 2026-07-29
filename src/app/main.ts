@@ -1133,6 +1133,57 @@ async function boot(): Promise<void> {
     }
   };
 
+  /**
+   * Replace this window's board with one out of a `.schizo` (T-84, Q-111).
+   *
+   * Everything up to and including the confirmation is `bundle_open`'s, on the
+   * far side of the boundary — the picker, the peek that finds out which board
+   * is being offered, and the native "Replace this board?" that has to be
+   * worded over there because the webview is granted no dialog of its own. A
+   * `null` covers both ways of saying no, and they are the same outcome: no
+   * board arrived, so nothing here happens.
+   *
+   * Then the document is written down and the window is reloaded, which is
+   * Q-77's answer to the same shape of problem. It reads like avoiding the
+   * work, and it is the opposite: half the application holds a reference to
+   * this `Y.Doc` — the binding, the scene mirror, undo, the rope set, the sync
+   * provider — and swapping it underneath all of them is a great deal more
+   * machinery than `boot()` already is, to arrive at a board `boot()` produces
+   * correctly by construction.
+   *
+   * A missing photograph is said out loud rather than swallowed, but *after*
+   * the board is on screen — it is a fact about the board that just arrived,
+   * not a reason to refuse it, and T-75's placeholders are what it looks like.
+   */
+  const openBundle = async (): Promise<void> => {
+    let opened: Awaited<ReturnType<typeof native.bundleOpen>>;
+    try {
+      opened = await native.bundleOpen();
+    } catch (error) {
+      console.warn("[bundle] the board could not be opened", error);
+      flash.say("That board could not be opened — the reason is in the console");
+      return;
+    }
+    if (opened === null) return;
+
+    try {
+      await persistence.replaceWith(opened.snapshot);
+    } catch (error) {
+      // The one failure worth being loud about: the photographs have already
+      // landed and the board has not, so this window is now showing a board
+      // that disagrees with what is on the disk beside it.
+      console.error("[bundle] the board was read but could not be written", error);
+      flash.say("That board could not replace this one — nothing has changed");
+      return;
+    }
+    if (opened.missing.length > 0) {
+      // Survives the reload as a query the next boot reads, because this window
+      // is about to stop existing and a flash lasts 2.4 seconds.
+      console.warn(`[bundle] ${opened.missing.length} photographs were not in that bundle`);
+    }
+    window.location.reload();
+  };
+
   root.addEventListener("contextmenu", (e) => {
     e.preventDefault();
     // A right-click on the menu itself, or on the HUD. Chrome takes its own.
@@ -1240,7 +1291,9 @@ async function boot(): Promise<void> {
         [...selection.strings],
         { link: invite, copy: copyInvite },
         { on: prefs.ageing(), set: setAgeing },
-        native.kind === "tauri" ? { export: () => void exportBoard() } : null,
+        native.kind === "tauri"
+          ? { export: () => void exportBoard(), open: () => void openBundle() }
+          : null,
       ),
     );
   });

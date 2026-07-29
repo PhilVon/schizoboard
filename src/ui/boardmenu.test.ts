@@ -679,14 +679,18 @@ describe("the board menu on bare cork", () => {
     const set: boolean[] = [];
     return { ageing: { on, set: (next: boolean) => set.push(next) }, set };
   };
-  /** A shell that can write a file, recording whether it was asked to. */
+  /** A shell that can read and write a file, recording what it was asked for. */
   const exporting = () => {
-    const asked: number[] = [];
-    return { board: { export: () => asked.push(1) }, asked };
+    const asked: string[] = [];
+    return {
+      board: { export: () => void asked.push("export"), open: () => void asked.push("open") },
+      asked,
+    };
   };
   const AGE_ON = "Stop the board ageing";
   const AGE_OFF = "Let the board age";
   const EXPORT = "Export board…";
+  const OPEN = "Open a board…";
 
   it("offers the invite on empty cork, which used to open nothing at all", () => {
     // The whole of Q-76: a right-click here reached for something and found
@@ -751,7 +755,7 @@ describe("the board menu on bare cork", () => {
       switching(true).ageing,
       exporting().board,
     ) as MenuRow[];
-    expect(rows.map((r) => r.label)).toEqual([AGE_ON, "Copy invite link", EXPORT]);
+    expect(rows.map((r) => r.label)).toEqual([AGE_ON, "Copy invite link", EXPORT, OPEN]);
   });
 
   it("asks the shell to export, and does not write to the document", () => {
@@ -766,8 +770,9 @@ describe("the board menu on bare cork", () => {
       shell.board,
     ) as MenuRow[];
     rows.find((r) => r.label === EXPORT)!.run();
-    expect(shell.asked).toEqual([1]);
-    // Handing a board to somebody is not an edit to it.
+    rows.find((r) => r.label === OPEN)!.run();
+    expect(shell.asked).toEqual(["export", "open"]);
+    // Handing a board over, or taking one, is not an edit to this one.
     expect(writes).toEqual([]);
   });
 
@@ -777,6 +782,7 @@ describe("the board menu on bare cork", () => {
     const { invite } = sharing(LINK);
     const rows = boardMenuRows(scene, write, [], invite, switching(true).ageing, null) as MenuRow[];
     expect(rows.map((r) => r.label)).not.toContain(EXPORT);
+    expect(rows.map((r) => r.label)).not.toContain(OPEN);
   });
 
   it("keeps the export when there is no invite to give away", () => {
@@ -791,7 +797,27 @@ describe("the board menu on bare cork", () => {
       switching(true).ageing,
       exporting().board,
     ) as MenuRow[];
-    expect(rows.map((r) => r.label)).toEqual([AGE_ON, EXPORT]);
+    expect(rows.map((r) => r.label)).toEqual([AGE_ON, EXPORT, OPEN]);
+  });
+
+  /**
+   * Q-111 made *Open a board…* the one row here that destroys a board, so it
+   * goes last — below the row somebody reading down wants far more often, and
+   * below the one that makes it survivable if they take it first.
+   */
+  it("puts opening a board last, under the export that would have saved it", () => {
+    const { invite } = sharing(LINK);
+    const rows = boardMenuRows(
+      scene,
+      write,
+      [],
+      invite,
+      switching(true).ageing,
+      exporting().board,
+    ) as MenuRow[];
+    const labels = rows.map((r) => r.label);
+    expect(labels.at(-1)).toBe(OPEN);
+    expect(labels.indexOf(EXPORT)).toBeLessThan(labels.indexOf(OPEN));
   });
 
   /**
