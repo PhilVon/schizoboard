@@ -110,6 +110,25 @@ export interface AssetView {
   readonly fraction: number;
 }
 
+/**
+ * An item drawn as a card because it has only just arrived (T-202).
+ *
+ * The per-item twin of the layer host's `data-lod`, and it exists because a
+ * mount storm is expensive for a reason that is nothing to do with zoom: what
+ * costs is *having* the nodes. D-33 section 10 measured five hundred items
+ * mounted as flat cards at 7,101 nodes and 6.9 ms a frame, against the same five
+ * hundred mounted at full detail at 73,071 nodes and 632 ms — and separately
+ * measured that a board which never unmounts costs 104 ms a frame to pan, with
+ * nothing mounting at all.
+ *
+ * So an item that enters the tree during a camera move enters cheaply, at any
+ * zoom, and is given its grain and its torn edge on the frame the camera stops.
+ * The gesture pays for a tenth of the nodes it used to, and the upgrade lands on
+ * a settled camera, which is the one moment there is budget for it.
+ */
+const COARSE = "is-coarse";
+
+
 /** An item that names no asset at all. Blank film, and nothing is coming. */
 const NO_ASSET: AssetView = { url: "", phase: "unknown", fraction: 0 };
 
@@ -1185,6 +1204,19 @@ export class DomItemLayer implements ItemLayer {
   private tier: Tier = "full";
 
   /**
+   * Items mounted coarsely and owed their detail (T-202).
+   *
+   * An item that arrives *because the camera moved* is drawn as a card whatever
+   * the zoom, and upgraded when the camera stops. See [`COARSE`] for why, and
+   * [`settled`] for when the debt is paid.
+   */
+  private readonly coarse = new Set<string>();
+
+  /** Whether a settle has happened and the debt above is due. */
+  private upgradeWanted = false;
+
+
+  /**
    * How old the board says each item is (`wear.ts`).
    *
    * [`NO_AGEING`] until told otherwise, which is the right default twice over: a
@@ -1396,7 +1428,35 @@ export class DomItemLayer implements ItemLayer {
   }
 
   sync(scene: Scene, dirty: DirtySets, visible: ReadonlySet<string> | null): void {
+    // Ahead of the clean-frame guard, and that is not an oversight. A camera that
+    // has come to rest produces clean frames — that is what resting is — so an
+    // upgrade that waited for a dirty one would wait for somebody to touch the
+    // board, and the items that mounted during the gesture would sit there as
+    // cards until they did.
+    if (this.upgradeWanted) this.payTheDetailDebt(scene);
     if (dirty.isClean) return;
+    /**
+     * Is this frame's mounting a storm?
+     *
+     * `dirty.zoomed`, and specifically **not** `dirty.camera`. A zoom changes how
+     * many items are on screen by orders of magnitude — the flight from 100% to
+     * 5% mounts five hundred in about seventy frames — while a hand-speed pan
+     * mounts well under one a frame however far it goes, and `pan at 100%` was
+     * already inside budget with nothing done to it at all.
+     *
+     * So a pan's handful arrive in full, and nothing about a note changes because
+     * somebody moved sideways. A count was tried instead and cannot separate the
+     * two: three a frame over seventy frames is two hundred and fifty full
+     * mounts, which put the worst frame back from 41.7 ms to 125.
+     *
+     * It is also the line DESIGN 6.6 is already drawn on. How much of an item is
+     * drawn is a question about zoom; a pan has never been allowed to change it.
+     *
+     * A mount on a still camera — a paste, a peer's create, an undo — is one item
+     * and arrives in full, which is what stops a pasted note sitting there
+     * without its grain until somebody happens to zoom.
+     */
+    const storm = dirty.zoomed;
 
     const wanted = visible ?? new Set(scene.itemIds());
     /**
@@ -1416,6 +1476,10 @@ export class DomItemLayer implements ItemLayer {
       view.el.remove();
       this.pool[view.archetype].push(view);
       this.views.delete(id);
+      // An item culled before its upgrade arrived owes nothing: it will mount
+      // coarsely again next time, and a stale id here would upgrade whoever
+      // inherits the name.
+      this.coarse.delete(id);
     }
 
     /**
@@ -1454,9 +1518,11 @@ export class DomItemLayer implements ItemLayer {
      */
     const recurl = dirty.all || dirty.items.size > 0 || dirty.pins.size > 0;
 
-    for (const id of wanted) this.place(scene, dirty, id, recurl);
-    // And the note being written on, if the culler had left it out.
-    if (writing !== null && !wanted.has(writing)) this.place(scene, dirty, writing, recurl);
+    for (const id of wanted) this.place(scene, dirty, id, recurl, storm);
+    // And the note being written on, if the culler had left it out. Never
+    // coarsely: it has a caret in it, so somebody is looking at it closely.
+    if (writing !== null && !wanted.has(writing)) this.place(scene, dirty, writing, recurl, false);
+
 
     // Last, so it sees this frame's mounts: a note that has just come back into
     // the viewport has a different view from the one it left with.
@@ -1469,7 +1535,13 @@ export class DomItemLayer implements ItemLayer {
   }
 
   /** Mount `id` if it is not mounted, and write its transform if it moved. */
-  private place(scene: Scene, dirty: DirtySets, id: string, recurl: boolean): void {
+  private place(
+    scene: Scene,
+    dirty: DirtySets,
+    id: string,
+    recurl: boolean,
+    storm: boolean,
+  ): void {
     // One map lookup per item per frame, and then the typed arrays directly.
     // This walk used to go through `poseOf`, which mints an object per item —
     // affordable when a clean frame skipped the whole loop, and hundreds of
@@ -1507,10 +1579,33 @@ export class DomItemLayer implements ItemLayer {
     }
 
     if (isNew || dirty.all || dirty.items.has(id)) {
+      /**
+       * A mount during a camera move is drawn as a card whatever the zoom, and
+       * owes its detail to the next settle (T-202, [`COARSE`]).
+       *
+       * `isNew && storm` and not `storm` alone: an item already on screen that
+       * merely moved must not lose its grain because the camera happened to move
+       * on the same frame — a drag does that on every frame of itself.
+       */
+      const coarsely = isNew && storm && this.tier === "full";
+      if (coarsely) {
+        this.coarse.add(id);
+        view.el.classList.add(COARSE);
+      } else if (this.coarse.delete(id)) {
+        // Rebound at full detail by something else — a `dirty.all` from a tier
+        // change, most often — so the debt is settled and the marker goes.
+        view.el.classList.remove(COARSE);
+      }
       // The longest edge this item is about to occupy, in device pixels. What
       // the resolver does with it is the resolver's business.
       const screenPx = Math.max(scene.w[slot]!, scene.h[slot]!) * this.rasterScale;
-      view.bind(cold, this.assetUrl, screenPx, wearOf(cold.seed, this.ageDays(cold)), this.tier !== "full");
+      view.bind(
+        cold,
+        this.assetUrl,
+        screenPx,
+        wearOf(cold.seed, this.ageDays(cold)),
+        coarsely || this.tier !== "full",
+      );
       // The same text the static node just took, offered to the caret as well
       // — this is how a peer's typing reaches an open field (T-180). It is a
       // string comparison for the local echo, which is every other case.
@@ -1679,6 +1774,65 @@ export class DomItemLayer implements ItemLayer {
     this.ageDays = clock;
   }
 
+  /**
+   * The camera has stopped, so the items that mounted cheaply during the move
+   * can have their detail (T-202).
+   *
+   * Called on **every** settle and not only on a tier change, because most mount
+   * storms cross no boundary at all: a pan at 100% mounts thirty items and stays
+   * in the same tier throughout.
+   *
+   * Records only. The drain happens in the DOM phase, where writing is allowed.
+   */
+  settled(): void {
+    if (this.coarse.size > 0) this.upgradeWanted = true;
+  }
+
+  /** How many items are drawn as cards while they wait for their detail. */
+  get coarseCount(): number {
+    return this.coarse.size;
+  }
+
+  /**
+   * DOM phase (5), after the walk. Give the coarse items their detail.
+   *
+   * Deliberately **not** budgeted across frames, unlike `paintInk`. This runs on
+   * a settled camera, on the frame the world subtree is repainting anyway — the
+   * demote is queued for the end of this very phase (`World.flushDemote`) — so
+   * the whole point is that everything upgrades *before* the one paint, rather
+   * than dribbling in over the next six and repainting each time.
+   *
+   * If that turns out to be too much on one frame, the answer is a budget here
+   * and it is a small change. It is not one to make before measuring, and D-33
+   * has the numbers that would say.
+   */
+  private payTheDetailDebt(scene: Scene): void {
+    this.upgradeWanted = false;
+    if (this.coarse.size === 0) return;
+    for (const id of this.coarse) {
+      const view = this.views.get(id);
+      // Culled between the settle and this frame. `sync`'s unmount walk already
+      // dropped it from the set, so this is belt and braces.
+      if (view === undefined) continue;
+      const slot = scene.slotOf(id);
+      const cold = slot === undefined ? null : scene.coldAt(slot);
+      if (slot === undefined || !cold) continue;
+      view.el.classList.remove(COARSE);
+      const screenPx = Math.max(scene.w[slot]!, scene.h[slot]!) * this.rasterScale;
+      // `plain` from the tier alone now, which is the whole of the upgrade: at
+      // `card` or `flat` the item was already right and `bind` returns early on
+      // its own guard, so a board zoomed out pays nothing here.
+      view.bind(
+        cold,
+        this.assetUrl,
+        screenPx,
+        wearOf(cold.seed, this.ageDays(cold)),
+        this.tier !== "full",
+      );
+    }
+    this.coarse.clear();
+  }
+
   private create(archetype: Archetype): View {
     return archetype === "polaroid" ? new PolaroidView(this.firstSight) : new PaperView();
   }
@@ -1698,6 +1852,8 @@ export class DomItemLayer implements ItemLayer {
     for (const pooled of [...this.pool.polaroid, ...this.pool.paper]) pooled.release();
     this.views.clear();
     this.inkPending.clear();
+    this.coarse.clear();
+    this.upgradeWanted = false;
     this.developed.clear();
     this.pool.polaroid.length = 0;
     this.pool.paper.length = 0;
