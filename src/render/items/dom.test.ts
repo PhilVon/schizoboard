@@ -719,6 +719,45 @@ describe("ink", () => {
     expect(canvases()[0]!.width).toBe(before);
   });
 
+  /**
+   * DESIGN 6.6's last clause for the card tier: "ink renders at quarter
+   * resolution". A quarter of the linear scale, so a sixteenth of the pixels —
+   * and because the backing store rounds up to a power of two, the tier is often
+   * the difference between a 2048-square bitmap and a 128-square one.
+   */
+  it("rasters ink at a quarter of the scale below the boundary", () => {
+    add("a");
+    drawOn("a");
+    layer.setRasterScale(4);
+    layer.sync(scene, dirty, null);
+    layer.paintInk(scene, dirty);
+    const canvas = canvases()[0]!;
+    const full = canvas.width;
+    const box = canvas.style.width;
+
+    layer.setTier("card");
+    dirty.everything();
+    layer.paintInk(scene, dirty);
+    expect(canvas.width).toBeLessThan(full);
+    // The CSS box does not move: this is a resolution, not a size. A stretched
+    // bitmap is the whole point — it is what makes the tier free.
+    expect(canvas.style.width).toBe(box);
+
+    const quartered = canvas.width;
+    // The bottom tier is not a quarter again: at 15% a quarter-scale canvas for
+    // a 300-unit photograph is already eleven pixels across, and DESIGN gives
+    // the flat tier board-ink thumbnails rather than a smaller item canvas.
+    layer.setTier("flat");
+    dirty.everything();
+    layer.paintInk(scene, dirty);
+    expect(canvas.width).toBe(quartered);
+
+    layer.setTier("full");
+    dirty.everything();
+    layer.paintInk(scene, dirty);
+    expect(canvas.width).toBe(full);
+  });
+
   it("spends more device pixels on the same ink when the board zooms in", () => {
     add("a");
     drawOn("a");
@@ -1404,5 +1443,179 @@ describe("ageing", () => {
     layer.sync(scene, dirty, null);
     expect(sheet().classList.contains("is-aged")).toBe(false);
     expect(sheet().style.getPropertyValue("--stain")).toBe("");
+  });
+});
+
+/**
+ * T-198 / AC-122. The card tier.
+ *
+ * Almost all of it is one attribute and a stylesheet, which is what the
+ * measurement said it should be (D-33): removing the decorative *paint* took
+ * `hold 35%` from a 222 ms worst frame to 7.1 ms with 500 items on screen, and
+ * it needed no change to the tree, the pooling, the binding or the hit test.
+ * These tests are therefore about the attribute and about the one thing that is
+ * not CSS — the writing.
+ */
+describe("LOD tiers", () => {
+  const writing = (): HTMLElement =>
+    host.querySelector<HTMLElement>(".paper-text")!;
+  const boxes = (): number => host.querySelectorAll(".hand-word > span").length;
+
+  it("says nothing at all at the top tier", () => {
+    add("a", { type: "note" });
+    layer.sync(scene, dirty, null);
+    // Absent rather than "full", so every selector written before LOD existed
+    // goes on meaning what it meant.
+    expect(host.dataset["lod"]).toBeUndefined();
+  });
+
+  it("names the tier once, on the host, however many items are mounted", () => {
+    for (const id of ["a", "b", "c"]) add(id, { type: "note", text: "words" });
+    layer.sync(scene, dirty, null);
+
+    layer.setTier("card");
+    expect(host.dataset["lod"]).toBe("card");
+    // Not on the items. Five hundred attribute writes is the cost this avoids.
+    for (const child of host.children) {
+      expect((child as HTMLElement).dataset["lod"]).toBeUndefined();
+    }
+
+    layer.setTier("flat");
+    expect(host.dataset["lod"]).toBe("flat");
+    layer.setTier("full");
+    expect(host.dataset["lod"]).toBeUndefined();
+  });
+
+  it("lays the writing down plainly below the boundary, and leans it again above", () => {
+    add("a", { type: "note", text: "two words here" });
+    layer.sync(scene, dirty, null);
+    expect(boxes()).toBeGreaterThan(0);
+
+    // The caller raises the dirty pass — `setTier` only records, exactly as
+    // `setRasterScale` only records.
+    layer.setTier("card");
+    dirty.clear();
+    dirty.all = true;
+    layer.sync(scene, dirty, null);
+    expect(boxes()).toBe(0);
+    expect(writing().textContent).toBe("two words here");
+
+    layer.setTier("full");
+    dirty.clear();
+    dirty.all = true;
+    layer.sync(scene, dirty, null);
+    expect(boxes()).toBeGreaterThan(0);
+    expect(writing().textContent).toBe("two words here");
+  });
+
+  /**
+   * The bug the `plain` field in both `bind` guards exists for. Nothing about
+   * the document changes when the zoom crosses 35%, so the guard that makes a
+   * drag cheap is exactly the guard that would leave the writing leaning.
+   */
+  it("rewrites a note whose document record has not changed", () => {
+    add("a", { type: "note", text: "unchanged" });
+    layer.sync(scene, dirty, null);
+    const before = boxes();
+    expect(before).toBeGreaterThan(0);
+
+    layer.setTier("card");
+    dirty.clear();
+    dirty.all = true;
+    layer.sync(scene, dirty, null);
+    expect(boxes()).toBe(0);
+  });
+
+  it("does the same for a polaroid's caption", () => {
+    add("p", { type: "polaroid", text: "the pier, 1974" });
+    layer.sync(scene, dirty, null);
+    expect(host.querySelectorAll(".pol-caption .hand-word > span").length).toBeGreaterThan(0);
+
+    layer.setTier("card");
+    dirty.clear();
+    dirty.all = true;
+    layer.sync(scene, dirty, null);
+    expect(host.querySelectorAll(".pol-caption .hand-word > span").length).toBe(0);
+    expect(host.querySelector(".pol-caption")!.textContent).toBe("the pier, 1974");
+  });
+
+  /**
+   * The half of AC-122 that a stylesheet cannot do, and the half that shipped
+   * broken until a screenshot at 30% still had torn edges and ruled lines in it.
+   *
+   * `PaperView.bind` writes these three as *inline* styles, from the stock and
+   * the seed, and an inline style beats a stylesheet rule — so the `clip-path:
+   * none` that was in `items.css` was dead the moment it was written, and every
+   * test in this file passed anyway.
+   */
+  describe("the flat card's inline paint", () => {
+    const surface = (): HTMLElement => host.querySelector<HTMLElement>(".paper-surface")!;
+
+    const flatten = (): void => {
+      dirty.clear();
+      dirty.all = true;
+      layer.sync(scene, dirty, null);
+    };
+
+    it("drops the silhouette, the ruling and the tint below the boundary", () => {
+      // `legal` so there is a ruling to lose; a seed with a tint and an edge.
+      add("a", { type: "note", seed: 7, text: "words" });
+      layer.sync(scene, dirty, null);
+      expect(surface().style.clipPath).not.toBe("");
+      expect(surface().style.backgroundImage).not.toBe("");
+      expect(surface().style.filter).not.toBe("");
+      // The stock's own colour is the flat paper and must survive. Read off
+      // `backgroundColor` rather than the `background` shorthand, which the
+      // ruling writes into and which therefore changes here by construction.
+      const stock = surface().style.backgroundColor;
+      expect(stock).not.toBe("");
+
+      layer.setTier("card");
+      flatten();
+      expect(surface().style.clipPath).toBe("");
+      expect(surface().style.backgroundImage).toBe("none");
+      expect(surface().style.filter).toBe("none");
+      expect(surface().style.backgroundColor).toBe(stock);
+    });
+
+    it("puts all three back on the way up", () => {
+      add("a", { type: "note", seed: 7, text: "words" });
+      layer.sync(scene, dirty, null);
+      const was = {
+        clip: surface().style.clipPath,
+        ruling: surface().style.backgroundImage,
+        tint: surface().style.filter,
+      };
+
+      layer.setTier("card");
+      flatten();
+      layer.setTier("full");
+      flatten();
+
+      expect(surface().style.clipPath).toBe(was.clip);
+      expect(surface().style.backgroundImage).toBe(was.ruling);
+      expect(surface().style.filter).toBe(was.tint);
+    });
+
+    it("drops a polaroid's tint too", () => {
+      add("p", { type: "polaroid", seed: 11, text: "the pier" });
+      layer.sync(scene, dirty, null);
+      const print = (): HTMLElement => host.querySelector<HTMLElement>(".item-polaroid")!;
+      expect(print().style.filter).not.toBe("");
+
+      layer.setTier("card");
+      flatten();
+      expect(print().style.filter).toBe("none");
+    });
+  });
+
+  it("writes an item mounted while already below the boundary plainly, first time", () => {
+    // The board that opens zoomed out. `Lod` announces at boot for this reason,
+    // and a view built after the announcement must not need a second pass.
+    layer.setTier("card");
+    add("a", { type: "note", text: "words" });
+    layer.sync(scene, dirty, null);
+    expect(boxes()).toBe(0);
+    expect(writing().textContent).toBe("words");
   });
 });

@@ -75,6 +75,7 @@ import {
   tapedCorners,
   tapeFlip,
 } from "@/render/items/tape";
+import type { Tier } from "@/render/lod";
 import type { ItemLayer } from "@/render/items/view";
 import {
   creaseFace,
@@ -161,7 +162,17 @@ interface View {
   readonly el: HTMLDivElement;
   readonly archetype: Archetype;
   /** `wear` is [0, 1] from `wear.ts` — how worn this item is right now. */
-  bind(cold: ItemCold, assetUrl: AssetResolver, screenPx: number, wear: number): void;
+  /**
+   * `plain` is the LOD tier, reduced to the one thing a view can act on: below
+   * 35% the writing goes down as a text node rather than a box per character
+   * (`hand.ts`). Everything else the tier changes is paint, and paint is
+   * `items.css` reading `[data-lod]` off the layer's host — one attribute write
+   * for the whole board rather than a flag threaded through 500 views.
+   *
+   * A boolean rather than the `Tier` itself because both views would otherwise
+   * write the same `tier !== "full"` and there would be two places to be wrong.
+   */
+  bind(cold: ItemCold, assetUrl: AssetResolver, screenPx: number, wear: number, plain: boolean): void;
   /** `lift` is the scene's carry transient, 0 at rest and 1 while carried. */
   transform(x: number, y: number, rot: number, w: number, h: number, lift: number): void;
   /**
@@ -405,6 +416,8 @@ class PolaroidView implements View {
   private framedFor = -1;
   /** The film state last painted. Null so the first bind always paints one. */
   private boundPhase: AssetPhase | null = null;
+  /** Whether the caption was last written plainly — see `bind`. */
+  private boundPlain = false;
   /**
    * The longest edge this item is being drawn at, in device pixels — the last
    * thing `bind` was told. Held because the decision it feeds ([`arrive`]) is
@@ -505,7 +518,7 @@ class PolaroidView implements View {
     this.el.append(this.shadow.el, this.frame, ...this.tape.nodes);
   }
 
-  bind(cold: ItemCold, assetUrl: AssetResolver, screenPx: number, wear: number): void {
+  bind(cold: ItemCold, assetUrl: AssetResolver, screenPx: number, wear: number, plain: boolean): void {
     // Two inputs, so two guards. The binding mints a fresh cold record every
     // time the *document* changes and `setPose` leaves it alone, so identity
     // covers everything the document can say — that is what lets a drag skip
@@ -530,9 +543,15 @@ class PolaroidView implements View {
     // would leave every mounted item at the age it was mounted at.
     const worn = Math.round(wear * 100);
     const sameWear = worn === this.boundWear;
-    if (this.boundCold === cold && asset.url === this.boundAsset && sameFilm && sameWear) {
+    // The fifth input (T-198). Like the asset it changes with no document write
+    // at all — a zoom crossing 35% — so it has to be *in* the guard: `writeHand`
+    // guards internally on what it wrote, but a bind that returns here never
+    // reaches it, and the caption would keep its lean below the boundary.
+    const samePlain = plain === this.boundPlain;
+    if (this.boundCold === cold && asset.url === this.boundAsset && sameFilm && sameWear && samePlain) {
       return;
     }
+    this.boundPlain = plain;
     if (!sameWear) {
       this.boundWear = worn;
       this.paintAge(worn / 100);
@@ -557,9 +576,11 @@ class PolaroidView implements View {
     // Guarded inside, which matters more here than anywhere: the two lines
     // above are why this bind runs on every frame of a develop, and the caption
     // has not changed on any of them.
-    writeHand(this.caption, cold.text, cold.seed);
+    writeHand(this.caption, cold.text, cold.seed, plain);
     this.caption.classList.toggle("is-empty", cold.text.length === 0);
-    this.el.style.filter = sheetTint(cold.seed);
+    // Inline, so `items.css` cannot reach it — see the same four lines in
+    // `PaperView.bind`.
+    this.el.style.filter = plain ? "none" : sheetTint(cold.seed);
   }
 
   /**
@@ -833,6 +854,8 @@ class PaperView implements View {
   private boundCold: ItemCold | null = null;
   /** The wear last written, in hundredths. Negative so the first bind writes. */
   private boundWear = -1;
+  /** Whether the writing was last laid down plainly — see `bind`. */
+  private boundPlain = false;
   /**
    * The angle of this sheet's crease, in degrees and in its own frame, or NaN
    * when it has none.
@@ -907,7 +930,7 @@ class PaperView implements View {
     this.el.append(this.shadow.el, this.surface, ...this.tape.nodes);
   }
 
-  bind(cold: ItemCold, _assetUrl: AssetResolver, _screenPx: number, wear: number): void {
+  bind(cold: ItemCold, _assetUrl: AssetResolver, _screenPx: number, wear: number, plain: boolean): void {
     // Quantised to hundredths, so the clock ticking is a rewrite of six custom
     // properties on the sheets whose wear actually moved rather than on every
     // sheet on the board.
@@ -916,8 +939,12 @@ class PaperView implements View {
       this.boundWear = worn;
       this.paintAge(cold.seed, worn / 100);
     }
-    if (this.boundCold === cold) return;
+    // `plain` is in the guard for the reason it is in the polaroid's: a zoom
+    // across 35% changes it without changing anything the document says, and a
+    // bind that returns here never reaches `writeHand`.
+    if (this.boundCold === cold && plain === this.boundPlain) return;
     this.boundCold = cold;
+    this.boundPlain = plain;
     const stock = defaultStock(cold.type, cold.seed);
     this.el.dataset["stock"] = stock;
     // The silhouette, where its corners are, and where the pulp shows. All of
@@ -930,19 +957,38 @@ class PaperView implements View {
     // (`edge.ts`). A fold anchored on the box has its highlight clipped away by
     // the very silhouette it is meant to belong to.
     const edge = sheetEdge(stock, cold.seed);
-    this.surface.style.clipPath = edge.path;
+    // Written here rather than left to `items.css` because these four are
+    // *inline* styles, and an inline style beats a stylesheet rule (T-198). The
+    // LOD block in `items.css` can hide a node it does not otherwise touch, and
+    // it cannot un-write a property this line wrote — which is why the flat card
+    // is half a stylesheet and half four conditionals, rather than all one or
+    // the other. The alternative was `!important` against our own code, which
+    // wins the argument by making every future override lose it.
+    //
+    // The silhouette is the expensive one: a twenty-point polygon per sheet,
+    // clipping a subtree, describing a deviation that is under a pixel at 35%.
+    this.surface.style.clipPath = plain ? "" : edge.path;
     for (let i = 0; i < EDGE_PROPS.length; i++) {
       this.el.style.setProperty(EDGE_PROPS[i]!, `${(edge.corners[i] ?? 0).toFixed(2)}px`);
     }
     const tear = tearEdge(stock);
     if (tear) this.el.dataset["tear"] = tear;
     else delete this.el.dataset["tear"];
+    // The stock's own colour stays at every tier: it is the flat paper, and it
+    // is what still tells a legal pad from an index card when nothing else can.
     this.surface.style.background = stockBase(stock);
-    this.surface.style.backgroundImage = stockRuling(stock);
-    this.grain.style.backgroundImage = `url(${paperGrainUrl(cold.seed)})`;
+    // The ruling does not. Its lines are a third of a device pixel apart at 35%,
+    // which is a flat grey wash drawn the most expensive way available.
+    this.surface.style.backgroundImage = plain ? "none" : stockRuling(stock);
+    // `.paper-grain` is `display: none` at these tiers, so this is only saving
+    // the write — but a tile URL on a hidden node is still a property the
+    // browser parses on every one of five hundred sheets.
+    if (!plain) this.grain.style.backgroundImage = `url(${paperGrainUrl(cold.seed)})`;
     this.grain.style.backgroundPosition = grainPosition(cold.seed);
-    this.surface.style.filter = sheetTint(cold.seed);
-    writeHand(this.body, cold.text, cold.seed);
+    // A per-sheet hue-rotate is its own compositing pass, for a tint that is not
+    // distinguishable from the cork at this size.
+    this.surface.style.filter = plain ? "none" : sheetTint(cold.seed);
+    writeHand(this.body, cold.text, cold.seed, plain);
   }
 
   transform(x: number, y: number, rot: number, w: number, h: number, lift: number): void {
@@ -1130,6 +1176,15 @@ export class DomItemLayer implements ItemLayer {
   private rasterScale = 1;
 
   /**
+   * How much of an item to draw (`render/lod.ts`, DESIGN section 6.6).
+   *
+   * `full` until told otherwise, which is wrong in the cheap direction for the
+   * reason `rasterScale` is: a layer nobody wires up draws everything, and a
+   * headless test gets the whole item without having to ask.
+   */
+  private tier: Tier = "full";
+
+  /**
    * How old the board says each item is (`wear.ts`).
    *
    * [`NO_AGEING`] until told otherwise, which is the right default twice over: a
@@ -1137,6 +1192,27 @@ export class DomItemLayer implements ItemLayer {
    * without having to say so.
    */
   private ageDays: AgeClock = NO_AGEING;
+
+  /**
+   * The scale ink rasters at — DESIGN section 6.6's "ink renders at quarter
+   * resolution" below 35%.
+   *
+   * A quarter of the *linear* scale, so a sixteenth of the pixels, which is what
+   * makes it worth saying: an annotated photograph's canvas is sized from this
+   * and the backing store rounds up to a power of two, so the tier is the
+   * difference between a 2048-square bitmap and a 128-square one. Ink is a
+   * bitmap and not a layout, so unlike everything else the tier changes this one
+   * really is about device pixels — hence a factor on `rasterScale` rather than
+   * a second rule of its own.
+   *
+   * `flat` is not a quarter again. DESIGN gives the bottom tier "board ink from
+   * tile thumbnails" and says nothing about an item's, and there is nothing left
+   * to win: at 15% a quarter-scale canvas for a 300-unit photograph is already
+   * eleven pixels across.
+   */
+  private get inkScale(): number {
+    return this.tier === "full" ? this.rasterScale : this.rasterScale / 4;
+  }
 
   /** Reused by `hitTest`, which walks the paint order on every pointer move. */
   private readonly probe: Point = { x: 0, y: 0 };
@@ -1266,7 +1342,7 @@ export class DomItemLayer implements ItemLayer {
       const view = this.views.get(id);
       const slot = scene.slotOf(id);
       if (!view || slot === undefined) continue;
-      view.ink.update(scene.strokesOf(id), this.rasterScale, scene.w[slot]!, scene.h[slot]!);
+      view.ink.update(scene.strokesOf(id), this.inkScale, scene.w[slot]!, scene.h[slot]!);
       budget--;
     }
   }
@@ -1434,7 +1510,7 @@ export class DomItemLayer implements ItemLayer {
       // The longest edge this item is about to occupy, in device pixels. What
       // the resolver does with it is the resolver's business.
       const screenPx = Math.max(scene.w[slot]!, scene.h[slot]!) * this.rasterScale;
-      view.bind(cold, this.assetUrl, screenPx, wearOf(cold.seed, this.ageDays(cold)));
+      view.bind(cold, this.assetUrl, screenPx, wearOf(cold.seed, this.ageDays(cold)), this.tier !== "full");
       // The same text the static node just took, offered to the caret as well
       // — this is how a peer's typing reaches an open field (T-180). It is a
       // string comparison for the local echo, which is every other case.
@@ -1567,6 +1643,36 @@ export class DomItemLayer implements ItemLayer {
    */
   setRasterScale(scale: number): void {
     if (Number.isFinite(scale) && scale > 0) this.rasterScale = scale;
+  }
+
+  /**
+   * DESIGN section 6.6's tiers, and almost all of it is this one attribute.
+   *
+   * Written on the layer's **host** rather than on each item, so crossing a
+   * boundary with five hundred items mounted is one attribute write and not five
+   * hundred. `items.css` reads it — `[data-lod="card"] .paper-grain` and its
+   * neighbours — which is what makes the flat card a stylesheet rather than a
+   * second rendering path through this file.
+   *
+   * That the paper half needs no code here at all is a measurement rather than a
+   * preference (D-33). Removing the decorative layers takes `hold 35%` from a
+   * 222.2 ms worst frame to 7.1 ms with 500 items on screen, and it does so
+   * without changing the tree: `display: none` leaves the node where it is, so
+   * the pooling, the binding, the hit test and the ink canvas are all untouched.
+   * What was costing was painting grain, tear, ageing, bend, wear, tape, the
+   * silhouette `clip-path` and the sheet `filter` — five hundred times.
+   *
+   * Records the tier and writes the attribute; the caller raises the dirty pass,
+   * exactly as it does for `setRasterScale`.
+   */
+  setTier(tier: Tier): void {
+    if (tier === this.tier) return;
+    this.tier = tier;
+    // Absent rather than `"full"` at the top tier, so a stylesheet that has
+    // never heard of LOD — and every selector written before this existed —
+    // goes on meaning what it meant.
+    if (tier === "full") delete this.host.dataset["lod"];
+    else this.host.dataset["lod"] = tier;
   }
 
   setAgeClock(clock: AgeClock): void {

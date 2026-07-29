@@ -14,6 +14,7 @@
  * If it ever leaks an `HTMLElement`, the escalation stops being one directory.
  */
 
+import type { Tier } from "@/render/lod";
 import type { AgeClock } from "@/render/items/wear";
 import type { DirtySets } from "@/state/dirty";
 import type { Scene } from "@/state/scene";
@@ -67,6 +68,25 @@ export interface ItemLayer {
    * makes it the same width at 5% zoom as at 400% (T-91).
    */
   setRasterScale(scale: number): void;
+
+  /**
+   * How much of an item to draw (`render/lod.ts`, DESIGN section 6.6, T-90).
+   *
+   * The third value that cannot come through the scene, and the *second* one
+   * that is a fact about the camera — but unlike [`setRasterScale`] it is not a
+   * resolution. A tier is chosen from the zoom alone, because the cost it
+   * removes is layout and paint, and both of those happen in CSS pixels however
+   * many device pixels a display puts behind them.
+   *
+   * Measured before it was built (D-33): at 5% zoom with 500 notes on screen,
+   * the full item costs a median frame of 194.5 ms — seven frames in a second
+   * and a half. Flat paper and writing that is not one box per character take
+   * the same stage to 6.9 ms.
+   *
+   * Changing it does not repaint by itself, exactly as `setRasterScale` does
+   * not: the caller raises the full dirty pass.
+   */
+  setTier(tier: Tier): void;
 
   /**
    * How old the board considers each item to be, in board days (`wear.ts`).

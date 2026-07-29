@@ -212,6 +212,85 @@ describe("handwriting", () => {
   });
 });
 
+/**
+ * T-198. The card tier's writing: the same words in the same face, laid down as
+ * one text node instead of one box per character.
+ *
+ * DESIGN 6.6 asked for a pre-rasterised snapshot and Q-115 amended it to this,
+ * because the reason it gave — live text layout — measured as free and the boxes
+ * measured as the whole of the cost (D-33).
+ */
+describe("plain", () => {
+  it("writes the words with no boxes at all", () => {
+    const el = host();
+    writeHand(el, "two words", SEED, true);
+    expect(glyphs(el)).toEqual([]);
+    expect(words(el)).toEqual([]);
+    expect(el.childNodes.length).toBe(1);
+    expect(el.textContent).toBe("two words");
+  });
+
+  it("keeps every character, whitespace and newlines included", () => {
+    const el = host();
+    const text = "a line\n\nand   another";
+    writeHand(el, text, SEED, true);
+    // `pre-wrap` on the container is what makes these mean anything, and it went
+    // on meaning it when the jitter arrived — so it has to here too.
+    expect(el.textContent).toBe(text);
+  });
+
+  it("does not need escaping, because it never builds markup", () => {
+    const el = host();
+    writeHand(el, "<b>not bold</b> & co", SEED, true);
+    expect(el.textContent).toBe("<b>not bold</b> & co");
+    expect(el.querySelector("b")).toBeNull();
+  });
+
+  /**
+   * The bug this guards is the whole reason `plain` is in the cache key and in
+   * both `bind` guards: `writeHand` returns early for text it has already
+   * written, so without the key a note that crossed 35% would keep its lean.
+   */
+  it("rewrites when the tier changes under the same text", () => {
+    const el = host();
+    writeHand(el, "same words", SEED);
+    expect(glyphs(el).length).toBeGreaterThan(0);
+
+    writeHand(el, "same words", SEED, true);
+    expect(glyphs(el)).toEqual([]);
+
+    writeHand(el, "same words", SEED);
+    expect(glyphs(el).length).toBeGreaterThan(0);
+  });
+
+  it("still does nothing when asked for the same thing twice", () => {
+    const el = host();
+    writeHand(el, "same words", SEED, true);
+    const node = el.firstChild;
+    writeHand(el, "same words", SEED, true);
+    // The same text node, not a replacement — `bind` runs on every frame of a
+    // develop and this guard is what stops it rebuilding the caption sixty times
+    // a second.
+    expect(el.firstChild).toBe(node);
+  });
+
+  it("empties a node whose item has no text, at either tier", () => {
+    const el = host();
+    writeHand(el, "words", SEED, true);
+    writeHand(el, "", SEED, true);
+    expect(el.textContent).toBe("");
+  });
+
+  it("is forgotten by clearHand, so a recycled node writes again", () => {
+    const el = host();
+    writeHand(el, "words", SEED, true);
+    clearHand(el);
+    expect(el.textContent).toBe("");
+    writeHand(el, "words", SEED, true);
+    expect(el.textContent).toBe("words");
+  });
+});
+
 function withHand(text: string, seed: number): HTMLDivElement {
   const el = host();
   writeHand(el, text, seed);

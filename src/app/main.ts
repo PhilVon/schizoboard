@@ -1409,6 +1409,7 @@ async function boot(): Promise<void> {
    * settles somewhere between the boundaries costs one comparison.
    */
   const lod = new Lod();
+  lod.on((tier) => items.setTier(tier));
   world.onSettle((zoom) => {
     if (lod.settle(zoom)) dirty.everything();
   });
