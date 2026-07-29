@@ -69,6 +69,22 @@ image = { version = "0.25", default-features = false, features = [
 # explicitly: a portrait photograph stored landscape-plus-EXIF has to report
 # portrait dimensions, or every item made from one is created the wrong shape.
 kamadak-exif = "0.6"
+
+# --- bundles (T-84) ---------------------------------------------------------
+# `.schizo` is a zip (DATA-MODEL section 12). Writing one by hand is tempting
+# and reading one by hand is not: the central directory, data descriptors and
+# zip64's two ways of saying the same offset are exactly the sort of format
+# corner where a hand-rolled parser is wrong on somebody else's file rather
+# than on ours.
+#
+# `default-features = false` matters more here than anywhere else in this file.
+# The default set is every compression method the format has ever had — bzip2,
+# lzma, ppmd, xz, zstd, deflate64 — plus AES. A bundle we wrote is deflate and
+# stored, so all of that is build time and attack surface for formats this
+# application will never emit. `deflate-flate2` is the one method kept, and
+# `flate2` and `crc32fast` are already in the tree, so this adds one crate
+# rather than a compression zoo.
+zip = { version = "8", default-features = false, features = ["deflate-flate2"] }
 # URL ingestion, which exists because the webview has a CORS wall and the shell
 # does not (ARCHITECTURE section 4.1). Blocking, and called from a blocking
 # thread — the alternative is a second async HTTP stack in the binary.

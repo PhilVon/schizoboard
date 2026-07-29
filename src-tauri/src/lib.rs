@@ -19,6 +19,7 @@
 //! nobody can attribute to anything.
 
 mod assets;
+mod bundle;
 mod clipboard;
 mod docstore;
 mod protocol;
@@ -826,6 +827,118 @@ async fn doc_compact(app: AppHandle, request: tauri::ipc::Request<'_>) -> Result
     blocking(move || docstore_of(&app)?.compact(&bytes)).await
 }
 
+// --- bundles (T-84) ---------------------------------------------------------
+
+/// Zip this board up somewhere the user picked.
+///
+/// The destination comes from a native save dialog and never from the webview,
+/// which is the rule `asset_export` above sets out at length and the reason
+/// `dialog` appears in no capability. ARCHITECTURE section 4.4 writes this
+/// command as `bundle_save_as(path)`; taking a `path` is the shape that
+/// argument rejects, so this takes the *intent* — a title to suggest a name
+/// from — and obtains the location on this side. The doc's signature predates
+/// its own conclusion, the same way `asset_export(sha256, dest)` did.
+///
+/// `Ok(None)` is a cancelled dialog: an ordinary outcome, not a failure.
+///
+/// The payload is framed rather than JSON — see [`bundle::split_payload`].
+#[tauri::command]
+async fn bundle_save_as(
+    app: AppHandle,
+    request: tauri::ipc::Request<'_>,
+) -> Result<Option<bundle::Written>, String> {
+    let InvokeBody::Raw(body) = request.body() else {
+        return Err("bundle_save_as expects a raw body".into());
+    };
+    let (json, snapshot) = bundle::split_payload(body).map_err(|e| e.to_string())?;
+    let spec: bundle::Spec = serde_json::from_slice(json).map_err(|e| e.to_string())?;
+    let snapshot = snapshot.to_vec();
+
+    // The board's title is a caller-supplied string on exactly the standing
+    // `origName` has: it comes from the document, so it came from whoever typed
+    // it — or from a peer over sync. It crosses as a *name* and is reduced to
+    // one before a dialog ever shows it.
+    let stem = assets::safe_stem(&spec.title).unwrap_or_else(|| "board".to_string());
+
+    // Off the main thread, or the dialog asks the main thread to open it and
+    // then waits for it. See `asset_export`.
+    let handle = app.clone();
+    let picked = tauri::async_runtime::spawn_blocking(move || {
+        handle
+            .dialog()
+            .file()
+            .set_title("Export board")
+            .set_file_name(format!("{stem}.{}", bundle::EXTENSION))
+            .add_filter("Schizoboard bundle", &[bundle::EXTENSION])
+            .blocking_save_file()
+    })
+    .await
+    .map_err(|e| e.to_string())?;
+
+    let Some(dest) = picked else {
+        return Ok(None);
+    };
+    let dest = dest.into_path().map_err(|e| e.to_string())?;
+
+    blocking(move || -> bundle::Result<bundle::Written> {
+        let store = store_of(&app).map_err(assets::Error::Unavailable)?;
+        bundle::write(&store, &spec, &snapshot, &dest)
+    })
+    .await
+    .map(Some)
+}
+
+/// Read a bundle the user picked, and put its photographs in this machine's
+/// store.
+///
+/// Returns the manifest and the document snapshot; what happens to the snapshot
+/// is a question about boards rather than about bytes, and it is answered on
+/// the other side of the boundary.
+///
+/// An empty response body is a cancelled dialog — the raw equivalent of
+/// `Ok(None)` above, because a `Response` has no room for one.
+#[tauri::command]
+async fn bundle_open(app: AppHandle) -> Result<tauri::ipc::Response, String> {
+    let handle = app.clone();
+    let picked = tauri::async_runtime::spawn_blocking(move || {
+        handle
+            .dialog()
+            .file()
+            .set_title("Open board")
+            .add_filter("Schizoboard bundle", &[bundle::EXTENSION])
+            .blocking_pick_file()
+    })
+    .await
+    .map_err(|e| e.to_string())?;
+
+    let Some(src) = picked else {
+        return Ok(tauri::ipc::Response::new(Vec::new()));
+    };
+    let src = src.into_path().map_err(|e| e.to_string())?;
+
+    let handle = app.clone();
+    let opened = blocking(move || -> bundle::Result<bundle::Opened> {
+        let store = store_of(&handle).map_err(assets::Error::Unavailable)?;
+        bundle::read(&store, &src)
+    })
+    .await?;
+
+    // Thumbnails and display variants are a local derivative, never carried in
+    // the file — the bundle holds originals, named by the only hash that can
+    // name them. Rebuilt here on the same background path a paste uses, so the
+    // board can start drawing placeholders immediately rather than waiting on a
+    // few hundred decodes.
+    for sha256 in &opened.ingested {
+        schedule_variants(&app, sha256.clone());
+    }
+
+    let json = serde_json::to_vec(&opened).map_err(|e| e.to_string())?;
+    Ok(tauri::ipc::Response::new(bundle::join_payload(
+        &json,
+        &opened.snapshot,
+    )))
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let mut builder = tauri::Builder::default();
@@ -995,6 +1108,8 @@ pub fn run() {
             doc_append_update,
             doc_load,
             doc_compact,
+            bundle_save_as,
+            bundle_open,
             clipboard::clipboard_read_manifest,
             clipboard::clipboard_read_item,
             clipboard::clipboard_source_url,

@@ -88,7 +88,11 @@ const TEMP_TTL: Duration = Duration::from_secs(60 * 60);
 
 /// Read in one go rather than streamed, above which the caller is doing
 /// something other than putting a photograph on a corkboard.
-const MAX_ASSET_BYTES: u64 = 512 * 1024 * 1024;
+///
+/// `pub(crate)` for `bundle`, which has to bound a zip entry before it
+/// decompresses it and must bound it at the same number — an asset this store
+/// would refuse to ingest is not one a bundle should be allowed to expand.
+pub(crate) const MAX_ASSET_BYTES: u64 = 512 * 1024 * 1024;
 
 /// How much of an original one chunk of a peer transfer is — ARCHITECTURE
 /// section 5.2, and the same number as `CHUNK_BYTES` in `platform/types.ts`.
@@ -201,7 +205,11 @@ impl From<io::Error> for Error {
 
 /// A hash is about to become a path, so it is checked as if it came from a
 /// hostile peer — because over sync, one day, it will have.
-fn valid_hash(sha256: &str) -> bool {
+///
+/// `pub(crate)` for `bundle`, and deliberately not re-implemented there: a
+/// second definition of "is this a hash" is a second thing to keep in step, and
+/// the one that drifts is always the one guarding the newer door.
+pub(crate) fn valid_hash(sha256: &str) -> bool {
     sha256.len() == 64
         && sha256
             .bytes()
@@ -436,7 +444,7 @@ const MAX_STEM_CHARS: usize = 64;
 /// is actually in the file, and lands in whichever directory the user was
 /// already looking at. `None` means nothing survived and the caller should fall
 /// back to a name of its own.
-fn safe_stem(hint: &str) -> Option<String> {
+pub(crate) fn safe_stem(hint: &str) -> Option<String> {
     // A separator is never part of a name, so only the last component could be
     // one. Both spellings, because a name can arrive from either platform.
     let last = hint.rsplit(['/', '\\']).next().unwrap_or_default();
@@ -523,6 +531,17 @@ fn hex(digest: &[u8]) -> String {
         out.push_str(&format!("{byte:02x}"));
     }
     out
+}
+
+/// What these bytes are called, in the only naming scheme this store has.
+///
+/// `pub(crate)` for `bundle`, which needs to know a zip entry's true name
+/// *before* handing it to [`AssetStore::ingest_bytes`] — an entry called
+/// `assets/<x>` holding bytes that hash to `<y>` is a bundle lying about its
+/// own contents, and ingesting first would mean writing `<y>` into the store on
+/// the way to finding out.
+pub(crate) fn sha256_hex(bytes: &[u8]) -> String {
+    hex(&Sha256::digest(bytes))
 }
 
 /// Does the alpha channel actually do anything? A screenshot is RGBA and
