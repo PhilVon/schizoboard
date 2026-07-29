@@ -322,6 +322,8 @@ Click into a note or a polaroid's caption area to edit. Type. Click away.
 
 Text renders in a handwritten face by default, with slight per-character baseline and rotation jitter so it doesn't look typeset. Jitter is seeded per character index so it's stable across re-renders — text that shimmers when you scroll past is worse than no jitter at all. A clean typeface is available per item for anyone pasting something they actually need to read.
 
+**The jitter is a drift, not noise.** Building it as an independent value per character is the obvious reading of the paragraph above and it does not work: at an amplitude small enough to look natural it is invisible, and at any amplitude you can see it reads as a ransom note, because the eye is not looking for movement but for a letter that has moved away from *both* its neighbours. So most of the amplitude is a slow wander — letters move together over about four characters — and only a letter's slant varies on its own, that being the part of a real hand which genuinely does. The two were rendered side by side on the same note before this was written (T-81).
+
 Undo: text edits are character-level and merge into sensible entries by typing pause.
 
 ### 3.7 Navigation
@@ -431,7 +433,9 @@ Ageing can be turned off entirely for anyone who finds it precious.
 
 ### 4.8 Typography
 
-Handwriting for note text, captions and annotations — a decent connected hand for body text, plus a rougher marker-style face for annotations. Per-character jitter in baseline, rotation and size, seeded by character index so it's stable.
+Handwriting for note text, captions and annotations — a decent hand for body text, plus a rougher marker-style face for annotations. Per-character jitter in baseline, rotation and size, seeded by character index so it's stable (§3.6).
+
+**Whatever face is chosen is set glyph by glyph.** A transform does not apply to an inline box, so a letter that leans has to be one — which means no kerning between letters and no joins across them. A *connected* hand therefore comes apart, and this asked for one until T-81 measured what that costs. Kerning is turned off on the whole surface rather than only where the boxes are, because the editor's caret lives in a plain `<textarea>` that can never have them, and two different sets of advances mean the words re-wrap the moment you click into a note.
 
 UI chrome is the opposite: a clean, quiet, neutral sans, low contrast, staying out of the way. The board is the loud part. Toolbars are dark, translucent, and float over the cork without pretending to be physical objects — a fake wooden toolbar would be skeuomorphism, which §1.3 rules out.
 
@@ -837,7 +841,7 @@ Phase 3 is the first phase where the app is recognisably the product. Phase 4 is
 - **Does the string pulling back on items (§5.7) survive contact with reality?** It's the highest-value fidelity detail and the one most likely to oscillate. Prototype it in phase 3 even though it ships later.
 - **How much ageing is too much?** Needs a real board and a week of living with it.
 - **Is `under` string discoverable?** Tucking a string behind a photo is a lovely detail nobody may ever find. Possibly it should happen automatically when a photo is dropped on top of a string.
-- **What's the right handwriting face,** and does per-character jitter hold up at small sizes or turn to mush?
+- **What's the right handwriting face?** The jitter half of this is answered (§3.6, T-81): it is expressed in `em`, so it holds up at every size by construction, and below about half zoom the text is illegible with or without it — which is the LOD tiers' problem, not the jitter's. The face is still open.
 - **Should search do anything beyond flying the camera?** Highlighting matches without hiding non-matches might be within the pillar. Filtering is not.
 - **Do we need an explicit "board time" for ageing,** or is wall-clock adequate?
 
