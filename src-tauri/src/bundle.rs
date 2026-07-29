@@ -698,6 +698,52 @@ mod tests {
         assert!(matches!(error, Error::Corrupt(_)), "{error}");
     }
 
+    /// The format tag earns its place on a zip that *does* have a
+    /// `manifest.json` — which is most of them. Web bundles, browser
+    /// extensions and half of npm ship a file by that name, so "it has a
+    /// manifest" is not evidence of anything and the tag is what the refusal
+    /// actually rests on.
+    ///
+    /// Written after a mutation check: removing the `format` comparison
+    /// altogether left every test green, because the only zip being refused
+    /// had no manifest and was failing one step earlier.
+    #[test]
+    fn somebody_elses_manifest_is_not_a_bundle() {
+        let dir = tempfile::tempdir().unwrap();
+        let dest = dir.path().join("webapp.zip");
+        {
+            let mut zip = ZipWriter::new(File::create(&dest).unwrap());
+            let plain = SimpleFileOptions::default();
+            zip.start_file(MANIFEST, plain).unwrap();
+            zip.write_all(
+                br#"{"format":"web-extension","schemaVersion":3,"title":"Toolbar","assets":[]}"#,
+            )
+            .unwrap();
+            zip.start_file(SNAPSHOT, plain).unwrap();
+            zip.write_all(b"not ours").unwrap();
+            zip.finish().unwrap();
+        }
+        let error = read(&store(&dir, "there"), &dest).unwrap_err();
+        assert!(matches!(error, Error::NotABundle(_)), "{error}");
+    }
+
+    /// And a `manifest.json` that is not even manifest-shaped is a parse
+    /// failure rather than a panic.
+    #[test]
+    fn a_manifest_that_is_not_one_is_refused() {
+        let dir = tempfile::tempdir().unwrap();
+        let dest = dir.path().join("odd.schizo");
+        {
+            let mut zip = ZipWriter::new(File::create(&dest).unwrap());
+            zip.start_file(MANIFEST, SimpleFileOptions::default())
+                .unwrap();
+            zip.write_all(b"[1, 2, 3]").unwrap();
+            zip.finish().unwrap();
+        }
+        let error = read(&store(&dir, "there"), &dest).unwrap_err();
+        assert!(matches!(error, Error::Json(_)), "{error}");
+    }
+
     /// Somebody else's zip is refused as a file format, before any name in it
     /// has been believed.
     #[test]
