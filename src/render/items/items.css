@@ -946,3 +946,145 @@ textarea.item-field::-webkit-scrollbar {
 .item.is-editing > .pol-frame > div.pol-caption {
   visibility: hidden;
 }
+
+/* --- ageing and wear. DESIGN 4.7 ----------------------------------------- */
+
+/*
+ * > Boards accumulate. Items gain, slowly and subtly, over board time [...]
+ * > paper yellowing at the edges, occasional coffee rings, dog-eared corners,
+ * > small creases, faint fading on photographs. [...] always subtle enough that
+ * > nobody consciously notices it — they just find that an old board feels older.
+ *
+ * All of it hangs off `--age`, `--crease*` and `--stain*`, which `wear.ts`
+ * derives and `dom.ts` writes once per bind. Nothing here paints on a board that
+ * is new: the layers are `display: none` until the item is `is-aged`, so the
+ * cost of this section on a board made this morning is one class check.
+ *
+ * Lengths are board units, like everything else in this file. A coffee ring is
+ * mug-sized on a scrap and mug-sized on a poster, which is the same argument the
+ * curl's radii and the ragged edge's offsets are written down for.
+ */
+
+.paper-age,
+.paper-worn,
+.pol-age {
+  position: absolute;
+  inset: 0;
+  display: none;
+  pointer-events: none;
+}
+
+.item.is-aged .paper-age,
+.item.is-aged .paper-worn,
+.item.is-aged .pol-age {
+  display: block;
+}
+
+/*
+ * The sheet going brown.
+ *
+ * An ellipse whose edge lands on the sides of the sheet, so the perimeter is at
+ * full strength and the corners - which are outside it and take the last stop -
+ * are the darkest thing on the paper. That is the right way round and it is not
+ * a stylistic choice: paper yellows where light and air reach it, which is the
+ * edges, and a corner is two of them at once. A wash of even strength across the
+ * whole sheet is a tea stain, and it reads as one.
+ *
+ * There is a little of it in the middle as well, because a sheet that browned
+ * only at its border would read as a sheet with a frame drawn on it.
+ *
+ * Not `multiply`: a blend mode costs a stacking context per item, and the one
+ * thing under this that would benefit — the ruling — is a line already the right
+ * side of the paper's colour.
+ */
+.paper-age {
+  background: radial-gradient(
+    ellipse 52% 52% at 50% 50%,
+    rgba(178, 138, 74, calc(0.05 * var(--age, 0))) 0%,
+    rgba(178, 138, 74, calc(0.11 * var(--age, 0))) 58%,
+    rgba(156, 110, 50, calc(0.34 * var(--age, 0))) 100%
+  );
+}
+
+/*
+ * The marks: a crease, and an occasional coffee ring.
+ *
+ * ## The crease is drawn twice
+ *
+ * A fold is a shallow V, so one flank turns into the light and the other away
+ * from it - highlight, ridge, shadow, in that order across the line. Which order
+ * depends on how the sheet is turned, and `--crease-face` carries the sign
+ * (`wear.ts`). A single gradient cannot swap two *colours* on the sign of a
+ * number, only their alphas, so the pair is written out both ways round and the
+ * one facing the wrong way computes to nothing: every alpha in it is a product
+ * with `--crease-face`, and an alpha that comes out negative clamps to zero
+ * rather than dropping the layer. That is the same trick, and the same measured
+ * behaviour, the curl's `--face-*` relies on.
+ *
+ * The ridge is a board unit across. A crease is sharp — it is the one thing on
+ * an old sheet that is not soft - and at that width it simply fades out as the
+ * board is zoomed away from, which is the correct thing for it to do.
+ */
+.paper-worn {
+  background:
+    /*
+     * The fold with its far flank into the light: shadow on the near side of
+     * the ridge, highlight on the far one. "Far" is the direction the gradient
+     * runs, which is the direction `creaseFace` measures - see its header, and
+     * do not read `--crease-rot` as a maths angle.
+     */
+    linear-gradient(
+      var(--crease-rot, 0deg),
+      rgba(110, 86, 54, 0) calc(var(--crease-at, 50%) - 3px),
+      rgba(110, 86, 54, calc(0.15 * var(--crease, 0) * var(--crease-face, 0)))
+        calc(var(--crease-at, 50%) - 0.5px),
+      rgba(255, 253, 246, calc(0.2 * var(--crease, 0) * var(--crease-face, 0)))
+        calc(var(--crease-at, 50%) + 0.5px),
+      rgba(255, 253, 246, 0) calc(var(--crease-at, 50%) + 3px)
+    ),
+    /* and the same fold with the light on the other side of it */
+    linear-gradient(
+      var(--crease-rot, 0deg),
+      rgba(255, 253, 246, 0) calc(var(--crease-at, 50%) - 3px),
+      rgba(255, 253, 246, calc(-0.2 * var(--crease, 0) * var(--crease-face, 0)))
+        calc(var(--crease-at, 50%) - 0.5px),
+      rgba(110, 86, 54, calc(-0.15 * var(--crease, 0) * var(--crease-face, 0)))
+        calc(var(--crease-at, 50%) + 0.5px),
+      rgba(110, 86, 54, 0) calc(var(--crease-at, 50%) + 3px)
+    ),
+    /*
+     * The ring. A faint disc where the liquid wicked in and a dark rim where it
+     * dried, which is the whole of what a coffee ring is — the rim is darker
+     * than the middle because that is where the solids ended up.
+     */
+      radial-gradient(
+      circle var(--stain-r, 0px) at var(--stain-x, 50%) var(--stain-y, 50%),
+      rgba(122, 84, 42, calc(0.05 * var(--stain, 0))) 0%,
+      rgba(122, 84, 42, calc(0.06 * var(--stain, 0))) 80%,
+      rgba(112, 72, 32, calc(0.2 * var(--stain, 0))) 92%,
+      rgba(104, 64, 26, calc(0.26 * var(--stain, 0))) 98%,
+      rgba(104, 64, 26, 0) 100%
+    );
+}
+
+/*
+ * What the light took out of a print.
+ *
+ * The *global* half of a photograph's ageing is a filter on `.pol-frame`
+ * (`wearFilter`), because dye loss is subtractive and a wash painted over a
+ * picture lifts its blacks to brown. This is the other half, which genuinely is
+ * an overlay: a print fades fastest where the light reached it, and what reaches
+ * a print in a frame is its middle, not its edge. So the wash is strongest in
+ * the centre and clears toward the border the frame lip shaded.
+ *
+ * Warm white rather than grey, since it is emulsion going rather than a veil
+ * going on.
+ */
+.pol-age {
+  background: radial-gradient(
+    ellipse 68% 68% at 50% 46%,
+    rgba(255, 246, 226, calc(0.22 * var(--age, 0))) 0%,
+    rgba(255, 246, 226, calc(0.1 * var(--age, 0))) 62%,
+    rgba(255, 246, 226, 0) 100%
+  );
+}

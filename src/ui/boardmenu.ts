@@ -320,30 +320,56 @@ export function pinMenuRows(
  * under the cursor*; on bare cork there is no thing, and the honest answer to
  * "what is here" is the board.
  *
- * ## The invite row and the string rows share this menu
+ * ## The board rows and the string rows share this menu
  *
  * Because a right-click on cork a few pixels from a string is a right-click
  * that missed, and the string rows have always been kept for exactly that. The
- * invite goes *below* them behind a rule: a selection of four strings is a much
- * more likely thing to have meant, and burying the restyle pickers under a row
- * about networking would be answering the wrong question first.
+ * board's own rows go *below* them behind a rule: a selection of four strings is
+ * a much more likely thing to have meant, and burying the restyle pickers under
+ * a row about networking would be answering the wrong question first.
  *
  * `link` is the invite as it stands, or null when there is nothing to give away
  * — a plain browser, or a board whose shell never started a relay. Null removes
  * the row rather than disabling it: a menu entry you cannot use is a question
  * ("why not?") that nothing on screen can answer.
+ *
+ * `ageing` is never absent, which is the difference between the two: every board
+ * on every machine can be told to stop ageing, so this menu is now the one
+ * gesture that always opens something. Before it, a right-click on the cork of a
+ * board with no relay and no string selected still found nothing.
  */
 export function boardMenuRows(
   scene: Scene,
   write: BoardWriter,
   strings: readonly string[],
   invite: { link: string | null; copy(link: string): void },
+  ageing: { on: boolean; set(on: boolean): void },
 ): MenuEntry[] {
   const rows = stringMenuRows(scene, write, strings);
-  if (invite.link === null) return rows;
-  return [
-    ...rows,
+  const below: MenuEntry[] = [
+    /**
+     * DESIGN section 4.7's "ageing can be turned off entirely for anyone who
+     * finds it precious", and a right-click on bare cork is the only gesture on
+     * this board that is about the board rather than about a thing on it.
+     *
+     * A verb rather than a picker, and the label says what will happen rather
+     * than what is currently true. Two chips reading *On* and *Off* would be the
+     * other way to draw it and it is the worse one here: a picker's marked chip
+     * is a report on state, and this is one switch with two positions and
+     * nothing to compare them against.
+     *
+     * A preference and not an edit (`app/prefs.ts`), so it writes nothing to the
+     * document and has no undo entry — the same standing `penMenuRows` has, and
+     * for the same reason.
+     */
     {
+      label: ageing.on ? "Stop the board ageing" : "Let the board age",
+      divided: rows.length > 0,
+      run: () => ageing.set(!ageing.on),
+    },
+  ];
+  if (invite.link !== null) {
+    below.push({
       /**
        * Named for what it does rather than for what it is. *Invite someone* is
        * the friendlier label and it is a promise this row cannot keep — nothing
@@ -353,7 +379,6 @@ export function boardMenuRows(
        * confirm.
        */
       label: "Copy invite link",
-      divided: rows.length > 0,
       // The link is fixed when the menu opens, not when the row is picked,
       // because the rows are a snapshot and every other menu here works the same
       // way. There is one moment where that matters: an invite arriving while
@@ -363,8 +388,9 @@ export function boardMenuRows(
       // re-resolved on activation would hand out a link to a board the user is
       // no longer looking at, which is the worse of the two.
       run: () => invite.copy(invite.link!),
-    },
-  ];
+    });
+  }
+  return [...rows, ...below];
 }
 
 /**

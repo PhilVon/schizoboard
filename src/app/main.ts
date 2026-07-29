@@ -44,6 +44,7 @@ import { noteSizeFor } from "@/app/ingest";
 import { Paste } from "@/app/paste";
 import { Mesh } from "@/app/mesh";
 import { formatInvite, inviteSearch, openingPlan, parseInvite } from "@/app/invite";
+import * as prefs from "@/app/prefs";
 import { dialAddress, identityFor } from "@/app/sync";
 import { DEFAULT_ERASER_SIZE, type InkSurface, type WetStroke } from "@/lib/ink";
 import { initPlatform } from "@/platform";
@@ -52,6 +53,7 @@ import { Cork } from "@/render/cork";
 import { Culler } from "@/render/cull";
 import { BoardInkLayer } from "@/render/ink/board";
 import { DomItemLayer, type AssetView } from "@/render/items/dom";
+import { NO_AGEING, WALL_CLOCK } from "@/render/items/wear";
 import { FrameLoop } from "@/render/loop";
 import { Overlay, type PendingRun } from "@/render/overlay";
 import { Janitor } from "@/crdt/janitor";
@@ -270,6 +272,26 @@ async function boot(): Promise<void> {
       if (flatten.itemId === id) flatten.close();
     },
   });
+
+  /**
+   * How old the board thinks its items are — DESIGN section 4.7, and Q-105,
+   * which settled the clock as wall-clock since each item was made.
+   *
+   * Local, because whether paper should visibly age is a taste rather than a
+   * fact about the board (`app/prefs.ts`), so the two people looking at one
+   * board may legitimately disagree and neither is out of date. Turning it off
+   * hands the layer [`NO_AGEING`], which is the same picture as a board where
+   * nothing is older than this morning — the renderer has no way to tell them
+   * apart and no reason to want one.
+   */
+  const setAgeing = (on: boolean): void => {
+    prefs.setAgeing(on);
+    items.setAgeClock(on ? WALL_CLOCK : NO_AGEING);
+    // Every sheet at once, which is the one thing this switch is: nothing about
+    // any item has changed, so nothing narrower would repaint any of them.
+    dirty.everything();
+  };
+  setAgeing(prefs.ageing());
 
   /**
    * Put the caret in an item — the whole of "start writing on this", in one
@@ -1086,7 +1108,13 @@ async function boot(): Promise<void> {
      * here" on bare cork is the board.
      */
     open(
-      boardMenuRows(scene, writer, [...selection.strings], { link: invite, copy: copyInvite }),
+      boardMenuRows(
+        scene,
+        writer,
+        [...selection.strings],
+        { link: invite, copy: copyInvite },
+        { on: prefs.ageing(), set: setAgeing },
+      ),
     );
   });
 

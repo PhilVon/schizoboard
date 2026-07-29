@@ -14,6 +14,7 @@
  * If it ever leaks an `HTMLElement`, the escalation stops being one directory.
  */
 
+import type { AgeClock } from "@/render/items/wear";
 import type { DirtySets } from "@/state/dirty";
 import type { Scene } from "@/state/scene";
 
@@ -66,6 +67,21 @@ export interface ItemLayer {
    * makes it the same width at 5% zoom as at 400% (T-91).
    */
   setRasterScale(scale: number): void;
+
+  /**
+   * How old the board considers each item to be, in board days (`wear.ts`).
+   *
+   * The second value the scene cannot supply, and for a reason of the same kind:
+   * the scene knows when an item was written and has never heard of a *clock*.
+   * Which one ageing runs on — wall-clock, days the board was opened, open time
+   * accumulated — is a decision that belongs above the renderer, and so is DESIGN
+   * 4.7's switch for turning ageing off, which is this seam being handed
+   * `NO_AGEING`.
+   *
+   * Changing it does not repaint by itself. The caller raises a full dirty pass,
+   * exactly as it would for any other change to everything at once.
+   */
+  setAgeClock(clock: AgeClock): void;
 
   /**
    * INK phase (6). Re-raster the committed ink of the items that need it.

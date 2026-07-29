@@ -674,49 +674,95 @@ describe("the board menu on bare cork", () => {
     const copied: string[] = [];
     return { invite: { link, copy: (l: string) => copied.push(l) }, copied };
   };
+  /** The ageing switch, recording which way it was thrown. */
+  const switching = (on: boolean) => {
+    const set: boolean[] = [];
+    return { ageing: { on, set: (next: boolean) => set.push(next) }, set };
+  };
+  const AGE_ON = "Stop the board ageing";
+  const AGE_OFF = "Let the board age";
 
   it("offers the invite on empty cork, which used to open nothing at all", () => {
     // The whole of Q-76: a right-click here reached for something and found
     // nothing, which made it the one free surface on the board.
     const { invite } = sharing(LINK);
-    const rows = boardMenuRows(scene, write, [], invite) as MenuRow[];
-    expect(rows.map((r) => r.label)).toEqual(["Copy invite link"]);
+    const rows = boardMenuRows(scene, write, [], invite, switching(true).ageing) as MenuRow[];
+    expect(rows.map((r) => r.label)).toEqual([AGE_ON, "Copy invite link"]);
   });
 
   it("hands over the link the board was opened with", () => {
     const { invite, copied } = sharing(LINK);
-    (boardMenuRows(scene, write, [], invite)[0] as MenuRow).run();
+    const rows = boardMenuRows(scene, write, [], invite, switching(true).ageing) as MenuRow[];
+    rows.find((r) => r.label === "Copy invite link")!.run();
     expect(copied).toEqual([LINK]);
     // Sharing a board is not an edit to it.
     expect(writes).toEqual([]);
   });
 
-  it("drops the row entirely when there is nothing to give away", () => {
+  it("drops the invite entirely when there is nothing to give away", () => {
     // A plain browser, or a shell that never started a relay. Removed rather
     // than disabled: a row you cannot use is a question nothing on screen can
     // answer.
     const { invite } = sharing(null);
-    expect(boardMenuRows(scene, write, [], invite)).toEqual([]);
+    const rows = boardMenuRows(scene, write, [], invite, switching(true).ageing) as MenuRow[];
+    expect(rows.map((r) => r.label)).toEqual([AGE_ON]);
   });
 
-  it("keeps the string rows, and puts the invite below them behind a rule", () => {
+  it("keeps the string rows, and puts the board's own below them behind a rule", () => {
     // A right-click on cork near a string is a right-click that missed, and a
     // selection of strings is the much likelier thing to have meant.
     span("s", 0);
     const { invite } = sharing(LINK);
-    const rows = boardMenuRows(scene, write, ["s"], invite);
+    const rows = boardMenuRows(scene, write, ["s"], invite, switching(true).ageing);
     const labels = rows.map((r) => r.label);
-    expect(labels).toEqual([...stringMenuRows(scene, write, ["s"]).map((r) => r.label), "Copy invite link"]);
-    expect((rows.at(-1) as MenuRow).divided).toBe(true);
+    expect(labels).toEqual([
+      ...stringMenuRows(scene, write, ["s"]).map((r) => r.label),
+      AGE_ON,
+      "Copy invite link",
+    ]);
+    // One rule, under the strings, rather than one above every board row.
+    expect((rows.find((r) => r.label === AGE_ON) as MenuRow).divided).toBe(true);
+    expect((rows.at(-1) as MenuRow).divided).toBeUndefined();
   });
 
-  it("still offers the invite when the selected strings are gone", () => {
+  it("still offers the board rows when the selected strings are gone", () => {
     // The rows are a snapshot and a peer may have deleted the selection since.
     // That empties the string half and must not take the board half with it.
     const { invite } = sharing(LINK);
-    const rows = boardMenuRows(scene, write, ["ghost"], invite) as MenuRow[];
-    expect(rows.map((r) => r.label)).toEqual(["Copy invite link"]);
+    const rows = boardMenuRows(scene, write, ["ghost"], invite, switching(true).ageing) as MenuRow[];
+    expect(rows.map((r) => r.label)).toEqual([AGE_ON, "Copy invite link"]);
     // Nothing to divide it from, so no rule.
     expect(rows[0]!.divided).toBe(false);
+  });
+
+  /**
+   * DESIGN section 4.7's "ageing can be turned off entirely for anyone who finds
+   * it precious", which is the one row this menu always has — a board with no
+   * relay and no string selected used to open nothing at all.
+   */
+  it("always offers the ageing switch, and names what will happen rather than what is", () => {
+    const { invite } = sharing(null);
+    const running = switching(true);
+    const stopped = switching(false);
+    expect((boardMenuRows(scene, write, [], invite, running.ageing)[0] as MenuRow).label).toBe(
+      AGE_ON,
+    );
+    expect((boardMenuRows(scene, write, [], invite, stopped.ageing)[0] as MenuRow).label).toBe(
+      AGE_OFF,
+    );
+  });
+
+  it("throws the switch the other way, and does not write to the document", () => {
+    const { invite } = sharing(null);
+    const running = switching(true);
+    (boardMenuRows(scene, write, [], invite, running.ageing)[0] as MenuRow).run();
+    expect(running.set).toEqual([false]);
+
+    const stopped = switching(false);
+    (boardMenuRows(scene, write, [], invite, stopped.ageing)[0] as MenuRow).run();
+    expect(stopped.set).toEqual([true]);
+
+    // A preference is not an edit. Nothing here has an undo entry.
+    expect(writes).toEqual([]);
   });
 });

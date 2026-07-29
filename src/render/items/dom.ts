@@ -82,6 +82,17 @@ import {
   tapeFlip,
 } from "@/render/items/tape";
 import type { ItemLayer } from "@/render/items/view";
+import {
+  creaseFace,
+  creaseOf,
+  IS_AGED,
+  NO_AGEING,
+  stainOf,
+  wearFilter,
+  wearOf,
+  WEAR_PROPS,
+  type AgeClock,
+} from "@/render/items/wear";
 import type { AssetPhase } from "@/state/assets";
 import type { DirtySets } from "@/state/dirty";
 import type { ItemCold, Scene } from "@/state/scene";
@@ -155,7 +166,8 @@ function archetypeOf(type: string): Archetype {
 interface View {
   readonly el: HTMLDivElement;
   readonly archetype: Archetype;
-  bind(cold: ItemCold, assetUrl: AssetResolver, screenPx: number): void;
+  /** `wear` is [0, 1] from `wear.ts` — how worn this item is right now. */
+  bind(cold: ItemCold, assetUrl: AssetResolver, screenPx: number, wear: number): void;
   /** `lift` is the scene's carry transient, 0 at rest and 1 while carried. */
   transform(x: number, y: number, rot: number, w: number, h: number, lift: number): void;
   /**
@@ -415,10 +427,18 @@ class PolaroidView implements View {
    */
   private boundDevelop = -1;
 
+  /**
+   * The wear last written, in hundredths. Negative so the first bind always
+   * writes one — and quantised for the same reason `--develop` is, since this
+   * feeds a filter on a node with a photograph in it.
+   */
+  private boundWear = -1;
+
   private readonly shadow = new ShadowNode();
   private readonly tape = new TapeSet();
   private readonly frame: HTMLDivElement;
   private readonly film: HTMLDivElement;
+  private readonly age: HTMLDivElement;
   readonly ink: ItemInk;
 
   constructor(firstSight: FirstSight) {
@@ -475,16 +495,23 @@ class PolaroidView implements View {
     const gloss = document.createElement("div");
     gloss.className = "pol-gloss";
 
+    // What the light has taken out of the print, over the gloss because it is
+    // in the emulsion rather than on the surface above it (`wear.ts`). The
+    // *global* half of a photograph's ageing is the frame's filter and not this
+    // — a fade painted on would lift the blacks to brown.
+    this.age = document.createElement("div");
+    this.age.className = "pol-age";
+
     this.caption = document.createElement("div");
     this.caption.className = "pol-caption";
 
-    window_.append(this.photo, this.film, gloss);
+    window_.append(this.photo, this.film, gloss, this.age);
     this.frame.append(window_, this.caption);
     // Tape last, because it is stuck over the front of the print.
     this.el.append(this.shadow.el, this.frame, ...this.tape.nodes);
   }
 
-  bind(cold: ItemCold, assetUrl: AssetResolver, screenPx: number): void {
+  bind(cold: ItemCold, assetUrl: AssetResolver, screenPx: number, wear: number): void {
     // Two inputs, so two guards. The binding mints a fresh cold record every
     // time the *document* changes and `setPose` leaves it alone, so identity
     // covers everything the document can say — that is what lets a drag skip
@@ -503,7 +530,19 @@ class PolaroidView implements View {
     const asset = cold.assetId ? assetUrl(cold.assetId, screenPx) : NO_ASSET;
     const develop = Math.round(asset.fraction * 100);
     const sameFilm = asset.phase === this.boundPhase && develop === this.boundDevelop;
-    if (this.boundCold === cold && asset.url === this.boundAsset && sameFilm) return;
+    // The fourth input, and the slowest by a wide margin: a photograph fades
+    // over months. It is in the guard anyway because it is not *constant* — the
+    // board clock ticks over while a window is open, and a bind that ignored it
+    // would leave every mounted item at the age it was mounted at.
+    const worn = Math.round(wear * 100);
+    const sameWear = worn === this.boundWear;
+    if (this.boundCold === cold && asset.url === this.boundAsset && sameFilm && sameWear) {
+      return;
+    }
+    if (!sameWear) {
+      this.boundWear = worn;
+      this.paintAge(worn / 100);
+    }
     this.boundCold = cold;
     if (!sameFilm) {
       this.boundPhase = asset.phase;
@@ -593,6 +632,24 @@ class PolaroidView implements View {
     // keep a stale wash height for the next item this node is recycled onto.
     if (phase === "transferring") this.el.style.setProperty("--develop", `${develop}%`);
     else this.el.style.removeProperty("--develop");
+  }
+
+  /**
+   * What the years have taken off this print — DESIGN section 4.7's "faint
+   * fading on photographs".
+   *
+   * The filter goes on the **frame** and not on the item root, so that the one
+   * declaration covers the picture, the white card around it and the caption
+   * written on that card — which is the whole object that fades — and reaches
+   * neither the item's cast shadow nor its tape. Fading a shadow would be ageing
+   * the light rather than the photograph, and the tape has a look of its own that
+   * this task did not measure.
+   */
+  private paintAge(wear: number): void {
+    this.el.classList.toggle(IS_AGED, wear > 0);
+    if (wear > 0) this.el.style.setProperty("--age", wear.toFixed(2));
+    else this.el.style.removeProperty("--age");
+    this.frame.style.filter = wearFilter(wear);
   }
 
   /**
@@ -735,6 +792,13 @@ class PolaroidView implements View {
     // nothing downstream has to reason about what it was.
     this.el.style.removeProperty("--develop");
     this.el.style.removeProperty("--emerge-delay");
+    // Ageing, on the same argument: `paintAge` only runs when the wear differs
+    // from the one last painted, and a node recycled onto a *new* item on an old
+    // board would keep the previous item's fade.
+    this.boundWear = -1;
+    this.el.classList.remove(IS_AGED);
+    this.el.style.removeProperty("--age");
+    this.frame.style.removeProperty("filter");
     this.tape.release();
     this.boundPhase = null;
     this.boundDevelop = -1;
@@ -771,7 +835,22 @@ class PaperView implements View {
   private readonly bend: HTMLDivElement;
   private readonly lift: HTMLDivElement;
   private readonly body: HTMLDivElement;
+  private readonly age: HTMLDivElement;
+  private readonly worn: HTMLDivElement;
   private boundCold: ItemCold | null = null;
+  /** The wear last written, in hundredths. Negative so the first bind writes. */
+  private boundWear = -1;
+  /**
+   * The angle of this sheet's crease, in degrees and in its own frame, or NaN
+   * when it has none.
+   *
+   * Held because the *lighting* of a crease is a question about the board and
+   * the answer changes when the sheet turns, which is a `transform` and not a
+   * bind — the same shape as `liftRot` below, and for the same reason.
+   */
+  private creaseRot = Number.NaN;
+  /** The rotation `--crease-face` was last written for. */
+  private facedRot = Number.NaN;
   /** The editor's field while this item is the one being written on (T-179). */
   private field: HTMLTextAreaElement | null = null;
   /**
@@ -817,15 +896,39 @@ class PaperView implements View {
     this.lift = document.createElement("div");
     this.lift.className = "paper-lift";
 
+    // The sheet going brown, and the marks on it. Both always in the tree and
+    // both painting nothing until `is-aged` — the same bargain `.paper-tear` and
+    // `.pol-film` take, because a node created on demand is a `createElement` on
+    // a mount and the pool exists so that a mount is a few attribute writes.
+    this.age = document.createElement("div");
+    this.age.className = "paper-age";
+    this.worn = document.createElement("div");
+    this.worn.className = "paper-worn";
+
     // Above the ruling, which a tear destroys, and below the writing, which sits
     // on the paper whatever the paper has been through.
-    this.surface.append(this.grain, this.tear, this.body, this.bend);
+    //
+    // The two wear layers straddle the writing, and which side each is on is the
+    // physics (`wear.ts`). Yellowing is the sheet going brown, so it is under the
+    // ink and over the torn lip — fresh pulp is the most exposed thing on an old
+    // sheet, not the least. A crease and a coffee ring are things that happened
+    // *to* the sheet after somebody wrote on it, so they go over the top, beside
+    // the bend, which is over the writing for the same reason.
+    this.surface.append(this.grain, this.tear, this.age, this.body, this.bend, this.worn);
     // Tape last, because it is stuck over the front of the sheet — and over the
     // curl, since a taped corner is a corner that is not lifting.
     this.el.append(this.shadow.el, this.surface, this.lift, ...this.tape.nodes);
   }
 
-  bind(cold: ItemCold, _assetUrl: AssetResolver, _screenPx: number): void {
+  bind(cold: ItemCold, _assetUrl: AssetResolver, _screenPx: number, wear: number): void {
+    // Quantised to hundredths, so the clock ticking is a rewrite of six custom
+    // properties on the sheets whose wear actually moved rather than on every
+    // sheet on the board.
+    const worn = Math.round(wear * 100);
+    if (worn !== this.boundWear) {
+      this.boundWear = worn;
+      this.paintAge(cold.seed, worn / 100);
+    }
     if (this.boundCold === cold) return;
     this.boundCold = cold;
     const stock = defaultStock(cold.type, cold.seed);
@@ -868,6 +971,15 @@ class PaperView implements View {
       const throw_ = counterRotate(LIGHT_DX * CURL_THROW, LIGHT_DY * CURL_THROW, rot);
       this.lift.style.transform = `translate(${throw_.x.toFixed(2)}px, ${throw_.y.toFixed(2)}px)`;
     }
+    // Which flank of the fold catches the light. Guarded on the rotation on its
+    // own — the crease itself is the seed's and never moves in the sheet — and
+    // skipped entirely on the sheets that have no crease, which on a young board
+    // is all of them.
+    if (rot !== this.facedRot && !Number.isNaN(this.creaseRot)) {
+      this.facedRot = rot;
+      const face = creaseFace(rot, this.creaseRot);
+      this.el.style.setProperty("--crease-face", face.toFixed(3));
+    }
   }
 
   /**
@@ -891,6 +1003,49 @@ class PaperView implements View {
       if (face === this.written[n + c]) continue;
       this.written[n + c] = face;
       this.el.style.setProperty(FACE_PROPS[c]!, face.toFixed(2));
+    }
+  }
+
+  /**
+   * How old this sheet looks — DESIGN section 4.7's yellowing, creases and
+   * occasional coffee rings, all of them `wear.ts`'s numbers.
+   *
+   * Everything here is written at bind and left alone, because wear moves on the
+   * scale of days: a board can be dragged around for an hour without any of
+   * these changing at all. The one exception is `--crease-face`, which is a fact
+   * about where the light is and therefore belongs to `transform`.
+   */
+  private paintAge(seed: number, wear: number): void {
+    this.el.classList.toggle(IS_AGED, wear > 0);
+    if (wear <= 0) {
+      for (const prop of WEAR_PROPS) this.el.style.removeProperty(prop);
+      this.creaseRot = Number.NaN;
+      this.facedRot = Number.NaN;
+      return;
+    }
+    this.el.style.setProperty("--age", wear.toFixed(2));
+
+    const crease = creaseOf(seed, wear);
+    this.el.style.setProperty("--crease", crease.amount.toFixed(2));
+    if (crease.amount > 0) {
+      this.el.style.setProperty("--crease-rot", `${crease.rot.toFixed(1)}deg`);
+      this.el.style.setProperty("--crease-at", `${crease.at.toFixed(1)}%`);
+      this.creaseRot = crease.rot;
+    } else {
+      this.creaseRot = Number.NaN;
+    }
+    // Whatever the light was last computed for, it was computed for a sheet with
+    // a different crease in it. Cleared rather than recomputed here, because the
+    // rotation this sheet is drawn at is `transform`'s to know, and it runs on
+    // the same pass a moment later.
+    this.facedRot = Number.NaN;
+
+    const stain = stainOf(seed, wear);
+    this.el.style.setProperty("--stain", stain.amount.toFixed(2));
+    if (stain.amount > 0) {
+      this.el.style.setProperty("--stain-x", `${stain.x.toFixed(1)}%`);
+      this.el.style.setProperty("--stain-y", `${stain.y.toFixed(1)}%`);
+      this.el.style.setProperty("--stain-r", `${stain.r.toFixed(1)}px`);
     }
   }
 
@@ -933,10 +1088,14 @@ class PaperView implements View {
     // exactly the class of bug the polaroid's release is a paragraph long about.
     delete this.el.dataset["tear"];
     this.surface.style.removeProperty("clip-path");
-    for (const prop of [...EDGE_PROPS, ...CURL_PROPS, ...FACE_PROPS]) {
+    for (const prop of [...EDGE_PROPS, ...CURL_PROPS, ...FACE_PROPS, ...WEAR_PROPS]) {
       this.el.style.removeProperty(prop);
     }
+    this.el.classList.remove(IS_AGED);
     this.written.fill(-9);
+    this.boundWear = -1;
+    this.creaseRot = Number.NaN;
+    this.facedRot = Number.NaN;
     this.liftRot = Number.NaN;
     this.tape.release();
     this.adopt(null);
@@ -988,6 +1147,15 @@ export class DomItemLayer implements ItemLayer {
    * rather than thumbnails: wrong in the cheap direction.
    */
   private rasterScale = 1;
+
+  /**
+   * How old the board says each item is (`wear.ts`).
+   *
+   * [`NO_AGEING`] until told otherwise, which is the right default twice over: a
+   * layer nobody wires up draws a new board, and a headless test gets no ageing
+   * without having to say so.
+   */
+  private ageDays: AgeClock = NO_AGEING;
 
   /** Reused by `hitTest`, which walks the paint order on every pointer move. */
   private readonly probe: Point = { x: 0, y: 0 };
@@ -1285,7 +1453,7 @@ export class DomItemLayer implements ItemLayer {
       // The longest edge this item is about to occupy, in device pixels. What
       // the resolver does with it is the resolver's business.
       const screenPx = Math.max(scene.w[slot]!, scene.h[slot]!) * this.rasterScale;
-      view.bind(cold, this.assetUrl, screenPx);
+      view.bind(cold, this.assetUrl, screenPx, wearOf(cold.seed, this.ageDays(cold)));
       // The same text the static node just took, offered to the caret as well
       // — this is how a peer's typing reaches an open field (T-180). It is a
       // string comparison for the local echo, which is every other case.
@@ -1418,6 +1586,10 @@ export class DomItemLayer implements ItemLayer {
    */
   setRasterScale(scale: number): void {
     if (Number.isFinite(scale) && scale > 0) this.rasterScale = scale;
+  }
+
+  setAgeClock(clock: AgeClock): void {
+    this.ageDays = clock;
   }
 
   private create(archetype: Archetype): View {
