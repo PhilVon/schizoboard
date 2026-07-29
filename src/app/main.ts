@@ -1978,6 +1978,11 @@ async function boot(): Promise<void> {
     items.sync(scene, dirty, culler.visible);
     pins.sync(scene, camera, dirty, hoveredPin);
     applyCursor();
+    // Last in the phase, and that position is the whole of T-201: dropping
+    // `will-change` repaints the world subtree, so it has to happen *after* the
+    // writes that change what the subtree contains — otherwise the browser
+    // repaints five hundred items as they were and then again as they are.
+    world.flushDemote();
   });
 
   /**
