@@ -7,7 +7,7 @@
  * recycled, culled item node can go wrong.
  */
 
-import { beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import { DomItemLayer, type AssetView } from "@/render/items/dom";
 import { DirtySets } from "@/state/dirty";
@@ -34,6 +34,15 @@ beforeEach(() => {
     onInput: (id, text) => inputs.push({ id, text }),
     onClosed: (id) => closed.push(id),
   });
+});
+
+/**
+ * Not tidiness: the "click away" listener is on the *window*, so a layer
+ * dropped without this outlives its own test and closes the next one's editor.
+ * The app calls `destroy` for the same reason.
+ */
+afterEach(() => {
+  layer.destroy();
 });
 
 function add(id: string, cold: Partial<ItemCold> = {}, pose: Partial<ItemPose> = {}): void {
@@ -122,6 +131,37 @@ describe("putting a caret in a note", () => {
     f.dispatchEvent(new Event("blur"));
     expect(closed).toEqual(["a"]);
     expect(layer.editing).toBeNull();
+  });
+
+  /**
+   * DESIGN 3.6's third sentence — "click away" — and the one that does not come
+   * free. `machine.ts` calls `preventDefault` on every board `pointerdown` to
+   * keep the webview's text selection out of a drag, and the implicit blur is
+   * one of the defaults that suppresses. Without this, clicking onto the cork
+   * left the caret in the paper and the note lying flat.
+   */
+  it("closes on a press anywhere else, which no blur would deliver", () => {
+    add("a");
+    layer.sync(scene, dirty, null);
+    layer.edit("a", "");
+
+    const elsewhere = document.createElement("div");
+    document.body.append(elsewhere);
+    const press = new Event("pointerdown", { bubbles: true, cancelable: true });
+    press.preventDefault();
+    elsewhere.dispatchEvent(press);
+
+    expect(closed).toEqual(["a"]);
+    expect(layer.editing).toBeNull();
+  });
+
+  it("but not on a press inside the field, which is the caret being moved", () => {
+    add("a");
+    layer.sync(scene, dirty, null);
+    layer.edit("a", "some words");
+    field()!.dispatchEvent(new Event("pointerdown", { bubbles: true }));
+    expect(closed).toEqual([]);
+    expect(layer.editing).toBe("a");
   });
 
   it("closes on Escape, because the text is already written down", () => {

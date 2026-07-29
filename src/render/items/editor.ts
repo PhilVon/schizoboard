@@ -57,6 +57,7 @@ export class TextEditor {
   /** Set on open, spent in the DOM phase once the field is in the document. */
   private pendingFocus = false;
   private readonly hooks: ItemEditorHooks;
+  private readonly onPointerDown: (e: Event) => void;
 
   constructor(hooks: ItemEditorHooks) {
     this.hooks = hooks;
@@ -74,6 +75,29 @@ export class TextEditor {
     field.rows = 1;
 
     field.addEventListener("blur", () => this.close());
+
+    /**
+     * "Click away" — DESIGN section 3.6's third sentence, and the one that does
+     * not come free.
+     *
+     * A press somewhere else would ordinarily blur the field, and on this board
+     * it does not: `state/tools/machine.ts` calls `preventDefault` on every
+     * board `pointerdown`, deliberately, to keep the webview's own text
+     * selection out of a drag — and the implicit focus change is one of the
+     * defaults that suppresses. So clicking onto the cork left the caret in the
+     * paper and the note lying flat, with nothing on screen to say why.
+     *
+     * Capture, on the window, so it is decided before the machine sees the
+     * press and whatever the press turns out to mean. Anything inside the field
+     * is the caret being moved and is not a click away.
+     */
+    this.onPointerDown = (e: Event) => {
+      if (this.editing === null) return;
+      const target = e.target as Node | null;
+      if (target && this.field.contains(target)) return;
+      this.close();
+    };
+    window.addEventListener("pointerdown", this.onPointerDown, true);
     field.addEventListener("input", () => {
       if (this.editing !== null) this.hooks.onInput(this.editing, field.value);
     });
@@ -147,5 +171,12 @@ export class TextEditor {
     this.field.focus({ preventScroll: true });
     const end = this.field.value.length;
     this.field.setSelectionRange(end, end);
+  }
+
+  /** The window listener is the only thing here that outlives the field. */
+  destroy(): void {
+    this.close();
+    window.removeEventListener("pointerdown", this.onPointerDown, true);
+    this.field.remove();
   }
 }

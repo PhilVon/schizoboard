@@ -409,10 +409,19 @@ textarea.item-field {
   outline: none;
   resize: none;
   background: transparent;
-  /* A textarea does not inherit its font, but it does not need to: the class it
-   * shares with the static text sets one, and a UA rule loses to a class. What
-   * it will not inherit is the colour, which is set per element. */
-  color: inherit;
+  /*
+   * Neither the font nor the colour is set here, deliberately.
+   *
+   * A textarea inherits neither, but it does not have to: the class this shares
+   * with the static text — `paper-text` or `pol-caption` — sets both, and a
+   * class rule beats the UA's element rule. Writing `color: inherit` here was
+   * worse than writing nothing, because it has the same specificity as
+   * `.paper-text` and comes later in the file, so it *won* — and then inherited
+   * the app's own light foreground from `.paper-surface`. The words went from
+   * brown to near-white the moment the caret arrived.
+   *
+   * The caret follows `currentColor`, so it is brown for free.
+   */
   /* Q-93: the paper is the size it is, and the words scroll inside it while
    * they are being written. `overlay` rather than `auto` so a scrollbar never
    * reflows the line the caret is on. */

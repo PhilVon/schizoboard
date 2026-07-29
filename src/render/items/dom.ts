@@ -983,6 +983,9 @@ export class DomItemLayer implements ItemLayer {
   }
 
   destroy(): void {
+    // Before the views, since it takes the field out of one of them.
+    this.editor?.destroy();
+    this.editorView = null;
     // `release()` and not just `remove()`, because a released node frees its ink
     // canvas's backing store — dropping the element alone leaves the bitmap
     // alive until the collector gets to it, and a torn-down layer still holding
