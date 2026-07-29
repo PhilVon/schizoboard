@@ -138,3 +138,88 @@ describe("Lod", () => {
     expect(listener).toHaveBeenCalledTimes(1);
   });
 });
+
+/**
+ * T-203. Detail arrives while the camera is moving; it only leaves when the
+ * camera stops.
+ *
+ * Not symmetry, and the asymmetry is the point. A zoom in used to hold flat
+ * cards through the whole motion and then pop about a hundred and forty sheets
+ * into full detail on the first still frame — the one moment nothing else on
+ * screen was moving. Rising is also the cheap direction, because it happens at a
+ * zoom where fewer items are mounted.
+ */
+describe("Lod.rise", () => {
+  it("takes detail that has become due while the camera is still moving", () => {
+    const lod = new Lod();
+    const seen: Tier[] = [];
+    lod.settle(0.05);
+    lod.on((tier) => seen.push(tier));
+
+    // A zoom in, frame by frame. 16.5% and 38.5% are the hysteresis edges.
+    expect(lod.rise(0.1)).toBe(false);
+    expect(lod.rise(0.2)).toBe(true);
+    expect(lod.rise(0.3)).toBe(false);
+    expect(lod.rise(0.4)).toBe(true);
+    expect(seen).toEqual(["card", "full"]);
+    expect(lod.tier).toBe("full");
+  });
+
+  it("never gives detail up, however far out the gesture goes", () => {
+    const lod = new Lod();
+    lod.settle(1);
+    const listener = vi.fn();
+    lod.on(listener);
+
+    // A zoom out, frame by frame, all the way to the floor.
+    for (const zoom of [0.8, 0.5, 0.34, 0.2, 0.1, MIN_ZOOM]) {
+      expect(lod.rise(zoom)).toBe(false);
+    }
+    expect(lod.tier).toBe("full");
+    expect(listener).not.toHaveBeenCalled();
+
+    // And the settle is what finally lets it go — where the frame is already
+    // repainting the world for the demote.
+    expect(lod.settle(MIN_ZOOM)).toBe(true);
+    expect(lod.tier).toBe("flat");
+  });
+
+  it("respects the band on the way up, exactly as settle does", () => {
+    const lod = new Lod();
+    lod.settle(0.3);
+    expect(lod.tier).toBe("card");
+    // Below the band's far edge the cheaper tier still holds: a camera creeping
+    // across 35% must not rebuild the board on alternate frames of one gesture.
+    expect(lod.rise(0.36)).toBe(false);
+    expect(lod.rise(0.384)).toBe(false);
+    expect(lod.rise(0.386)).toBe(true);
+    expect(lod.tier).toBe("full");
+  });
+
+  it("rises one tier at a time, so a zoom in from the floor passes through card", () => {
+    const lod = new Lod();
+    lod.settle(MIN_ZOOM);
+    // 36% is above both thresholds, but `card` is what the band allows from
+    // `flat` — and `card` is the right answer, because it is genuinely a step up.
+    expect(lod.rise(0.36)).toBe(true);
+    expect(lod.tier).toBe("card");
+    expect(lod.rise(0.5)).toBe(true);
+    expect(lod.tier).toBe("full");
+  });
+
+  it("says nothing on a gesture that stays inside one tier", () => {
+    const lod = new Lod();
+    lod.settle(1);
+    const listener = vi.fn();
+    lod.on(listener);
+    for (const zoom of [1.2, 2, 3, MAX_ZOOM]) expect(lod.rise(zoom)).toBe(false);
+    expect(listener).not.toHaveBeenCalled();
+  });
+
+  it("does not stand in for the boot announcement", () => {
+    const lod = new Lod();
+    // `full` is where it starts, so a rise to `full` is not a change — and the
+    // one guaranteed pass every layer needs is the settle's, not this.
+    expect(lod.rise(1)).toBe(false);
+  });
+});

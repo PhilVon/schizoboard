@@ -1675,10 +1675,14 @@ describe("coarse mounts", () => {
     expect(owed).toBeGreaterThan(0);
 
     layer.settled();
-    // A clean frame, which is what a resting camera produces — and the upgrade
-    // must not wait for somebody to touch the board.
-    dirty.clear();
-    layer.sync(scene, dirty, null);
+    // Clean frames, which is what a resting camera produces — the upgrade must
+    // not wait for somebody to touch the board. Several of them, because the
+    // drain is budgeted: a hundred and forty items rebound on one frame measured
+    // at 493 ms (T-203).
+    for (let f = 0; f < 10; f += 1) {
+      dirty.clear();
+      layer.sync(scene, dirty, null);
+    }
 
     expect(coarse()).toHaveLength(0);
     expect(layer.coarseCount).toBe(0);
@@ -1767,7 +1771,14 @@ describe("coarse mounts", () => {
     expect(() => layer.sync(scene, dirty, new Set())).not.toThrow();
   });
 
-  it("upgrades a whole storm on one frame, not one item per frame", () => {
+  /**
+   * Budgeted, and the second reason is the better one: an item culled before its
+   * turn is never upgraded at all. A zoom in to 400% catches ~140 items mounted
+   * at the boundary and ends with six, so 134 of those rebinds would be work
+   * thrown away a moment later — which is why waiting for the settle used to look
+   * so good at 400% and so bad at 35%.
+   */
+  it("sweeps the detail in a few items a frame rather than all at once", () => {
     zoomed(40);
     layer.sync(scene, dirty, null);
     expect(layer.coarseCount).toBe(40);
@@ -1775,8 +1786,60 @@ describe("coarse mounts", () => {
     layer.settled();
     dirty.clear();
     layer.sync(scene, dirty, null);
-    // Not budgeted across frames on purpose: this lands on the frame the world
-    // subtree is repainting anyway, and dribbling would repaint on each one.
+    const afterOne = layer.coarseCount;
+    expect(afterOne).toBeGreaterThan(0);
+    expect(afterOne).toBeLessThan(40);
+
+    // And it keeps going on its own, without being asked again.
+    let frames = 1;
+    while (layer.coarseCount > 0 && frames < 60) {
+      dirty.clear();
+      layer.sync(scene, dirty, null);
+      frames += 1;
+    }
+    expect(layer.coarseCount).toBe(0);
+    expect(coarse()).toHaveLength(0);
+    // A sweep measured in frames, not one item per frame and not all in one.
+    expect(frames).toBeGreaterThan(1);
+    expect(frames).toBeLessThan(40);
+  });
+
+  /**
+   * A tier rise owes every mounted item its detail, and none of them may change
+   * appearance before its turn. Taking `data-lod` off the host is enough on its
+   * own to give every sheet its grain back — CSS needs no rebind — so the per-item
+   * marker is what holds them as cards until the sweep reaches them.
+   */
+  it("holds every mounted item as a card when the tier rises", () => {
+    layer.setTier("card");
+    for (let i = 0; i < 20; i += 1) add(`r${i}`, { type: "note", text: "some words" });
+    layer.sync(scene, dirty, null);
+    expect(coarse()).toHaveLength(0);
+    expect(host.dataset["lod"]).toBe("card");
+
+    layer.setTier("full");
+    expect(host.dataset["lod"]).toBeUndefined();
+    // Every one of them, still a card, on the frame the tier changed.
+    expect(layer.coarseCount).toBe(20);
+    expect(coarse()).toHaveLength(20);
+
+    let frames = 0;
+    while (layer.coarseCount > 0 && frames < 60) {
+      dirty.clear();
+      layer.sync(scene, dirty, null);
+      frames += 1;
+    }
+    expect(coarse()).toHaveLength(0);
+    expect(boxes()).toBeGreaterThan(0);
+  });
+
+  it("owes nothing when the tier falls", () => {
+    for (let i = 0; i < 20; i += 1) add(`f${i}`, { type: "note", text: "some words" });
+    layer.sync(scene, dirty, null);
+
+    layer.setTier("card");
+    // Everything is a card by the tier alone. A per-item marker would be a second
+    // thing saying the same thing, and a second thing to take off again.
     expect(layer.coarseCount).toBe(0);
     expect(coarse()).toHaveLength(0);
   });

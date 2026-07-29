@@ -1722,6 +1722,16 @@ async function boot(): Promise<void> {
       if (camera.zoom !== lastZoom) {
         if (Number.isFinite(lastZoom)) dirty.zoomed = true;
         lastZoom = camera.zoom;
+        // Detail may arrive mid-gesture; it may not leave (T-203). Zooming in
+        // used to hold flat cards through the whole motion and then pop a
+        // hundred and forty sheets into detail on the first still frame — a
+        // change of appearance timed for the one moment nothing was moving.
+        // `Lod.rise` says why the two directions are not symmetrical.
+        // No dirty pass: the layer owes every mounted item its detail and pays
+        // that off at a budget over the following frames (`UPGRADE_BUDGET`).
+        // `dirty.everything()` here would rebind all hundred and forty on this
+        // one frame, which measured at 493 ms.
+        lod.rise(camera.zoom);
       }
       // Every camera change ends in a re-raster, not only a pointer gesture.
       // `Ctrl+0`, `F`, a resize and an undo restoring a stashed view all change
