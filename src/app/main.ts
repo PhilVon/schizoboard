@@ -64,6 +64,7 @@ import { MissingAssets } from "@/state/missing";
 import { Camera, type Bounds } from "@/state/camera";
 import { DirtySets } from "@/state/dirty";
 import { Flashes } from "@/state/flash";
+import { Flatten } from "@/state/flatten";
 import { chromeFrame, emptyFrame, handleAt, handleCursor } from "@/state/handles";
 import { isChromeTarget, isTextTarget } from "@/state/input";
 import { Navigation } from "@/state/navigation";
@@ -294,6 +295,8 @@ async function boot(): Promise<void> {
   /** Phase 3, the other half. Empty until something makes a string (T-41), and
    *  free while it is — a rope set with no ropes steps nothing. */
   const ropes = new RopeSet();
+  /** Phase 3, after the torsion: the note being written on, laid flat (T-178). */
+  const flatten = new Flatten();
   /**
    * Phase 2: every other peer's in-flight drag, rendered 100 ms in the past.
    *
@@ -1462,6 +1465,10 @@ async function boot(): Promise<void> {
    */
   loop.on("sim", (frame) => {
     torsion.step(scene, dirty, frame.dt, select.heldItems, select.carryLag, select.heldPivots);
+    // After the torsion, never before it: the translation that holds a pin
+    // still while its note is laid flat is computed from the settled angle,
+    // and the torsion is what settles it.
+    flatten.step(scene, dirty, frame.dt);
     ropes.step(scene, dirty, frame.dt);
   });
 

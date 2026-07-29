@@ -53,15 +53,23 @@ export function itemLocal(
  * the stored pose becomes the drawn one, which is how a gesture leaves paper
  * exactly where it looks at the moment those transients stop applying.
  *
+ * The **settled** pose, deliberately, and not `renderRot` — the one transient
+ * this must not see is the editor's lay-flat (T-178). The swing is a real
+ * settling that stays where it lands, so baking it is the point; the lay-flat
+ * is a lie held for as long as someone is typing and taken back on blur, so
+ * baking it would leave a note that was pinned mid-sentence permanently square
+ * to the screen. What this writes is where the paper will be once the editor
+ * closes, which is the same thing it means for the swing.
+ *
  * Null when the item is not on the board.
  */
 export function drawnPose(scene: Scene, itemId: string): WritePose | null {
   const slot = scene.slotOf(itemId);
   if (slot === undefined) return null;
   return {
-    x: scene.renderX(slot),
-    y: scene.renderY(slot),
-    rot: scene.renderRot(slot),
+    x: scene.settledX(slot),
+    y: scene.settledY(slot),
+    rot: scene.settledRot(slot),
   };
 }
 
@@ -99,7 +107,8 @@ export function repivotedPose(
   const slot = scene.slotOf(itemId);
   if (slot === undefined) return null;
   const rot = scene.rot[slot]!;
-  const swung = scene.renderRot(slot);
+  // Settled, not rendered, for the reason `drawnPose` gives: this is a write.
+  const swung = scene.settledRot(slot);
   const c0 = Math.cos(rot);
   const s0 = Math.sin(rot);
   const c1 = Math.cos(swung);
@@ -107,8 +116,8 @@ export function repivotedPose(
   // The drift the new pivot will produce, by the same arithmetic that produces
   // it over in `sim/torsion.ts` — subtracted from where the item is drawn now.
   return {
-    x: scene.renderX(slot) - (lx * (c0 - c1) - ly * (s0 - s1)),
-    y: scene.renderY(slot) - (lx * (s0 - s1) + ly * (c0 - c1)),
+    x: scene.settledX(slot) - (lx * (c0 - c1) - ly * (s0 - s1)),
+    y: scene.settledY(slot) - (lx * (s0 - s1) + ly * (c0 - c1)),
   };
 }
 

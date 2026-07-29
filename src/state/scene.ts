@@ -30,6 +30,7 @@
  * hand. If that ever stops being true the change is this file and nothing else.
  */
 
+import { shortest } from "@/lib/angle";
 import type { InkSample, InkSurface } from "@/lib/ink";
 import { rotateOut, type Point } from "@/lib/rotate";
 
@@ -276,6 +277,19 @@ export class Scene {
    */
   lift: Float32Array;
 
+  /**
+   * The lay-flat, for `setFlatten`: which slot is being written on (-1 for
+   * none), how far it has gone, and the translation holding its pin still.
+   *
+   * The one piece of per-item scene state that is not an array, because it is
+   * the one that is true of at most a single item — and the one that holds a
+   * slot across frames, which is why `removeItem` has to clear it.
+   */
+  private flatSlot = -1;
+  private flatT = 0;
+  private flatDX = 0;
+  private flatDY = 0;
+
   private capacity = INITIAL_CAPACITY;
   private readonly slots = new Map<string, number>();
   private readonly ids: (string | null)[] = new Array<string | null>(INITIAL_CAPACITY).fill(null);
@@ -425,15 +439,16 @@ export class Scene {
    * write down does not.
    */
   renderX(slot: number): number {
-    return this.x[slot]! + this.driftX[slot]!;
+    return this.x[slot]! + this.driftX[slot]! + (slot === this.flatSlot ? this.flatDX : 0);
   }
 
   renderY(slot: number): number {
-    return this.y[slot]! + this.driftY[slot]!;
+    return this.y[slot]! + this.driftY[slot]! + (slot === this.flatSlot ? this.flatDY : 0);
   }
 
   /**
-   * The angle an item is drawn at: its authored rotation plus the swing.
+   * The angle an item is drawn at: its authored rotation plus the swing, laid
+   * flat if it is the one being written on.
    *
    * The companion to `renderX`/`renderY`, and it exists for the same reason —
    * this sum had been written out by hand in a dozen places, and T-107 was
@@ -442,11 +457,113 @@ export class Scene {
    * `rot` alone, and the geometry then disagreed with the paint: chrome drawn
    * off the paper, a marquee that missed an item it enclosed.
    *
-   * So there is one reader, and things that bend the drawn angle bend it here
-   * rather than at twelve call sites.
+   * So there is one reader, and the flatten bends it here rather than at
+   * twelve call sites.
    */
   renderRot(slot: number): number {
+    const angle = this.rot[slot]! + this.swing[slot]!;
+    // Bit-identical to `settledRot` when nothing is being written on, which is
+    // every frame on a board nobody is typing into.
+    if (slot !== this.flatSlot) return angle;
+    return shortest(angle) * (1 - this.flatT);
+  }
+
+  /**
+   * The angle the item goes back to when the paper is put down — the drawn
+   * angle with the flatten taken out of it.
+   *
+   * This is the one thing that must **not** see the flatten, and the reason is
+   * that it is what gets written into the document. `drawnPose` flattens the
+   * transients into stored fields so a pin change leaves paper exactly where
+   * it looks (`state/tools/frame.ts`), and the swing is a real settling that
+   * stays where it lands. The editor's lay-flat is the opposite: a lie told
+   * for as long as someone is typing and taken back on blur. Bake it and a
+   * note that happened to be pinned mid-sentence loses its tilt permanently.
+   */
+  settledRot(slot: number): number {
     return this.rot[slot]! + this.swing[slot]!;
+  }
+
+  /** The centre it goes back to, for the same reason. */
+  settledX(slot: number): number {
+    return this.x[slot]! + this.driftX[slot]!;
+  }
+
+  settledY(slot: number): number {
+    return this.y[slot]! + this.driftY[slot]!;
+  }
+
+  /**
+   * Lay an item flat to be written on, or let it back down.
+   *
+   * > **The note un-rotates to 0° while you edit** — animated over about
+   * > 120 ms — and rotates back on blur. This is not a stylistic choice: caret
+   * > placement, text selection and IME composition all misbehave inside a CSS
+   * > rotated element, across every engine. — DESIGN section 3.6
+   *
+   * A scalar and a slot rather than a `Float32Array` per field like `swing`
+   * and `lift`, because unlike those this is true of **at most one item at a
+   * time** — there is one caret. Saying so in the shape of the state means
+   * there is no second editor to leave behind, and costs one integer compare
+   * in `renderX`, which pin layout calls for every pin on the board.
+   *
+   * `t` runs 0 (as it hangs) to 1 (square to the screen). Continuous rather
+   * than a flag because the frame loop owns all motion (ARCHITECTURE section
+   * 3) — there is no CSS transition available to soften it.
+   *
+   * The translation is the same "put the pivot back where it was" as the
+   * swing's `drift`, and for the same reason: a pin is stuck in the cork and
+   * does not move, so a note hanging on one turns about the pin rather than
+   * about its own centre. Without it, entering an edit slides the pin out of
+   * the paper and tugs every string through it.
+   */
+  setFlatten(itemId: string | null, t: number): boolean {
+    const slot = itemId === null ? -1 : (this.slots.get(itemId) ?? -1);
+    if (slot === -1 || t === 0) {
+      if (this.flatSlot === -1) return false;
+      this.flatSlot = -1;
+      this.flatT = 0;
+      this.flatDX = 0;
+      this.flatDY = 0;
+      return true;
+    }
+
+    // The translation depends on the *settled* angle, and a note being written
+    // on may still be swinging into place under it. So this is recomputed on
+    // every frame the paper is up, and the answer is compared rather than
+    // assumed changed — a note nobody is typing into, hanging still, must not
+    // dirty itself sixty times a second.
+    let dx = 0;
+    let dy = 0;
+    // Two pins hold the paper rigid and none leaves it lying on the cork; in
+    // neither case is there a point it obviously turns about, so it turns
+    // about its centre and there is nothing to translate. The same rule the
+    // rotation gesture uses, from the same place (T-105).
+    const pin = this.solePin(itemId!);
+    if (pin) {
+      const settled = this.settledRot(slot);
+      const drawn = shortest(settled) * (1 - t);
+      const c0 = Math.cos(settled);
+      const s0 = Math.sin(settled);
+      const c1 = Math.cos(drawn);
+      const s1 = Math.sin(drawn);
+      dx = pin.lx * (c0 - c1) - pin.ly * (s0 - s1);
+      dy = pin.lx * (s0 - s1) + pin.ly * (c0 - c1);
+    }
+
+    if (this.flatSlot === slot && this.flatT === t && this.flatDX === dx && this.flatDY === dy) {
+      return false;
+    }
+    this.flatSlot = slot;
+    this.flatT = t;
+    this.flatDX = dx;
+    this.flatDY = dy;
+    return true;
+  }
+
+  /** How far the item in `slot` has been laid flat: 0 unless it is the one. */
+  flattenOf(slot: number): number {
+    return slot === this.flatSlot ? this.flatT : 0;
   }
 
   get size(): number {
@@ -558,6 +675,10 @@ export class Scene {
     this.driftX[slot] = 0;
     this.driftY[slot] = 0;
     this.lift[slot] = 0;
+    // Slots are reused, and `flatSlot` is the one piece of scene state that
+    // holds one across frames. Left behind, the next item into this slot would
+    // be born laid flat by an editor that closed on a note a peer deleted.
+    if (slot === this.flatSlot) this.setFlatten(null, 0);
     this.freeSlots.push(slot);
     return true;
   }
@@ -785,8 +906,8 @@ export class Scene {
     rotateOut(
       pin.lx,
       pin.ly,
-      this.x[slot]! + this.driftX[slot]!,
-      this.y[slot]! + this.driftY[slot]!,
+      this.renderX(slot),
+      this.renderY(slot),
       Math.cos(angle),
       Math.sin(angle),
       scratch,
@@ -909,8 +1030,8 @@ export class Scene {
     // T-133 and T-136, and this is the code that carried the difference.
     const hw = (this.w[slot]! * cos + this.h[slot]! * sin) / 2 + pad;
     const hh = (this.w[slot]! * sin + this.h[slot]! * cos) / 2 + pad;
-    const cx = this.x[slot]! + this.driftX[slot]!;
-    const cy = this.y[slot]! + this.driftY[slot]!;
+    const cx = this.renderX(slot);
+    const cy = this.renderY(slot);
     out.minX = cx - hw;
     out.minY = cy - hh;
     out.maxX = cx + hw;
@@ -950,8 +1071,8 @@ export class Scene {
     const rhw = Math.abs(rect.maxX - rect.minX) / 2;
     const rhh = Math.abs(rect.maxY - rect.minY) / 2;
 
-    const dx = this.x[slot]! + this.driftX[slot]! - rcx;
-    const dy = this.y[slot]! + this.driftY[slot]! - rcy;
+    const dx = this.renderX(slot) - rcx;
+    const dy = this.renderY(slot) - rcy;
 
     // Axes 1 and 2: the rectangle's. The item's radius along each is its
     // rotation-expanded half-extent, which is what boundsOf computes.
@@ -1062,6 +1183,7 @@ export class Scene {
     this.driftX.fill(0);
     this.driftY.fill(0);
     this.lift.fill(0);
+    this.setFlatten(null, 0);
     this.freeSlots.length = 0;
     this.highWater = 0;
   }

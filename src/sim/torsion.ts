@@ -63,6 +63,7 @@
  * of equilibrium. A board of five hundred hanging photographs steps nothing.
  */
 
+import { shortest } from "@/lib/angle";
 import type { DirtySets } from "@/state/dirty";
 import type { Scene } from "@/state/scene";
 import {
@@ -75,14 +76,6 @@ import {
   SWING_SLEEP_RATE,
   SWING_SLEEP_STEPS,
 } from "@/sim/tuning";
-
-const TWO_PI = Math.PI * 2;
-
-/** Into (-pi, pi], so an item always turns the short way to plumb. */
-function shortest(angle: number): number {
-  const wrapped = ((angle + Math.PI) % TWO_PI + TWO_PI) % TWO_PI - Math.PI;
-  return wrapped;
-}
 
 /**
  * The swing offset at which the item hangs plumb, given where its pin is in
