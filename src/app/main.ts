@@ -268,6 +268,24 @@ async function boot(): Promise<void> {
       if (flatten.itemId === id) flatten.close();
     },
   });
+
+  /**
+   * Put the caret in an item — the whole of "start writing on this", in one
+   * place, because two things ask for it (DESIGN section 3.6).
+   *
+   * The double-click gets here through `ToolContext.edit`, and the context
+   * menu's *Edit text* row calls it directly. One function rather than two
+   * closures, so the two routes cannot drift into laying the paper flat by
+   * different amounts or seeding the field from different text.
+   *
+   * The flatten first: it steps in phase 3 and the field is parked in phase 5,
+   * so the paper has already begun to turn by the time the caret lands.
+   */
+  const startEditing = (itemId: string): void => {
+    flatten.open(itemId);
+    items.edit(itemId, scene.cold(itemId)?.text ?? "");
+  };
+
   /** Ink on the bare cork — its own layer, under the string and under the paper
    *  (T-61). Nothing else on this board draws below the items. */
   const boardInk = new BoardInkLayer(world.layers.boardInk);
@@ -810,17 +828,8 @@ async function boot(): Promise<void> {
     hitTest: hitItem,
     hitPin,
     hitString,
-    /**
-     * A double-click on paper puts a caret in it (Q-92).
-     *
-     * The flatten first, so the lay-flat and the caret start on the same frame
-     * — `state/flatten.ts` steps in phase 3 and this is phase 1, so the paper
-     * has already begun to turn by the time the field is parked in phase 5.
-     */
-    edit: (itemId) => {
-      flatten.open(itemId);
-      items.edit(itemId, scene.cold(itemId)?.text ?? "");
-    },
+    /** A double-click on paper puts a caret in it (Q-92). */
+    edit: startEditing,
     // Space+drag and middle-drag belong to the camera, not to the board.
     suppressed: () => navigation.panReady,
   });
@@ -1039,6 +1048,7 @@ async function boot(): Promise<void> {
           held ? selection.toArray() : [itemId],
           board.x,
           board.y,
+          startEditing,
         ),
         held ? undefined : () => selection.replace([itemId]),
       );

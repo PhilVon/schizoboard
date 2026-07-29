@@ -159,10 +159,29 @@ export function itemMenuRows(
   targets: readonly string[],
   boardX: number,
   boardY: number,
+  edit?: (itemId: string) => void,
 ): MenuEntry[] {
   const live = targets.filter((id) => scene.slotOf(id) !== undefined);
   if (live.length === 0) return [];
   const rows: MenuEntry[] = [];
+
+  /**
+   * > Click into a note or a polaroid's caption area to edit.
+   * > — DESIGN section 3.6
+   *
+   * Q-92 made that a double-click, which is the fastest way in and the least
+   * discoverable — nothing on the board says the gesture exists. This row is
+   * what says it, and it is the reason a menu row was worth adding for a verb
+   * the pointer already has.
+   *
+   * `clicked` alone, like *Add pin* above and for the same reason: there is one
+   * caret, and a menu opened over four selected notes cannot put it in all of
+   * them. Absent when no editor is wired up, which is every headless caller.
+   */
+  if (edit) {
+    const target = clicked;
+    rows.push({ label: "Edit text", run: () => edit(target) });
+  }
 
   /**
    * > | Add without switching tools | Item context menu → *Add pin* | Pin at

@@ -331,6 +331,47 @@ describe("the item context menu", () => {
     expect(itemMenuRows(scene, write, "gone", ["gone"], 0, 0)).toEqual([]);
   });
 
+  /**
+   * T-181. Q-92 made writing on a note a double-click, which is the fastest way
+   * in and the least discoverable - nothing on the board says the gesture is
+   * there. This row is what says it.
+   */
+  describe("edit text", () => {
+    it("puts the caret in the item that was right-clicked", () => {
+      put("i", { x: 0, y: 0 });
+      const edits: string[] = [];
+      pick(itemMenuRows(scene, write, "i", ["i"], 0, 0, (id) => edits.push(id)), "Edit text");
+      expect(edits).toEqual(["i"]);
+      // And it is not a document write, so nothing went to the board.
+      expect(writes).toEqual([]);
+    });
+
+    /**
+     * The clicked one alone, like *Add pin* and for the same reason: there is
+     * one caret, and a menu opened over four selected notes cannot put it in
+     * all of them.
+     */
+    it("names the clicked item even when several are selected", () => {
+      put("i0", { x: 0, y: 0 });
+      put("i1", { x: 400, y: 0 });
+      const edits: string[] = [];
+      pick(
+        itemMenuRows(scene, write, "i1", ["i0", "i1"], 400, 0, (id) => edits.push(id)),
+        "Edit text",
+      );
+      expect(edits).toEqual(["i1"]);
+    });
+
+    it("is absent when nothing can take a caret", () => {
+      put("i", { x: 0, y: 0 });
+      const labels = itemMenuRows(scene, write, "i", ["i"], 0, 0).map((r) => r.label);
+      expect(labels).not.toContain("Edit text");
+      // The rest of the menu is unaffected by its absence.
+      expect(labels).toContain("Add pin");
+      expect(labels).toContain("Delete");
+    });
+  });
+
   describe("add pin", () => {
     /** > | Add without switching tools | Item context menu -> *Add pin* | Pin at
      *  > the click point - DESIGN section 3.2 */
