@@ -744,7 +744,7 @@ export class Overlay {
     if (itemId === null) return null;
     const slot = scene.slotOf(itemId);
     if (slot === undefined) return null;
-    const angle = scene.rot[slot]! + scene.swing[slot]!;
+    const angle = scene.renderRot(slot);
     this.ink.cx = scene.renderX(slot);
     this.ink.cy = scene.renderY(slot);
     this.ink.cos = Math.cos(angle);
@@ -1051,9 +1051,9 @@ export class Overlay {
       ctx.save();
       ctx.globalAlpha = alphaOf(life);
       ctx.translate(centre.x, centre.y);
-      // `rot + swing`, like the selection outline: a photograph knocked back
+      // The drawn angle, like the selection outline: a photograph knocked back
       // into place by an undo is still settling on its pin while it flashes.
-      ctx.rotate(scene.rot[slot]! + scene.swing[slot]!);
+      ctx.rotate(scene.renderRot(slot));
       ctx.strokeStyle = FLASH_UNDER;
       ctx.lineWidth = FLASH_WIDTH + 2;
       ctx.strokeRect(-hw, -hh, hw * 2, hh * 2);
@@ -1181,7 +1181,7 @@ export class Overlay {
       }
       ctx.save();
       ctx.translate(cx, cy);
-      ctx.rotate(scene.rot[slot]! + scene.swing[slot]!);
+      ctx.rotate(scene.renderRot(slot));
       ctx.strokeRect(-hw, -hh, hw * 2, hh * 2);
       ctx.restore();
     }
@@ -1264,7 +1264,7 @@ export class Overlay {
     this.clear(ctx);
     ctx.save();
     ctx.translate(centre.x, centre.y);
-    ctx.rotate(scene.rot[slot]! + scene.swing[slot]!);
+    ctx.rotate(scene.renderRot(slot));
     ctx.lineWidth = CANDIDATE_WIDTH + 2;
     ctx.strokeStyle = CANDIDATE_UNDER;
     ctx.strokeRect(-hw, -hh, hw * 2, hh * 2);

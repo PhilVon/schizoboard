@@ -7,6 +7,7 @@ import { describe, expect, it } from "vitest";
 
 import { Torsion } from "@/sim/torsion";
 import { DirtySets } from "@/state/dirty";
+import { drawnPose } from "@/state/tools/frame";
 import {
   Scene,
   type ItemCold,
@@ -469,6 +470,72 @@ describe("Scene.intersectsRect", () => {
     expect(
       new Scene().intersectsRect("ghost", { minX: -1e6, minY: -1e6, maxX: 1e6, maxY: 1e6 }),
     ).toBe(false);
+  });
+});
+
+/**
+ * T-177. The angle an item is drawn at had been spelled out as `rot + swing` at
+ * a dozen call sites, and T-107 is what came of one of them being missed — the
+ * chrome, the marquee and the rotate pivot each re-derived it and then
+ * disagreed with the paint.
+ *
+ * These tests do not check the arithmetic; they check that every geometry
+ * answer is derived *from `renderRot`* rather than re-derived beside it. That
+ * matters for what comes next: T-178 bends this angle to lay a note flat while
+ * it is being written on, and anything still doing its own sum would be left
+ * pointing at the tilted paper.
+ */
+describe("Scene.renderRot", () => {
+  it("is the angle the bounds, the marquee and the pin layout all use", () => {
+    const scene = new Scene();
+    const slot = scene.putItem(cold("a"), pose({ x: 0, y: 0, w: 400, h: 20, rot: 0.3 }));
+    scene.putPin({
+      id: "p",
+      parent: "a",
+      lx: 100,
+      ly: 0,
+      kind: "pushpin",
+      color: "#f00",
+      wx: 0,
+      wy: 0,
+    });
+    scene.swing[slot] = -0.7;
+
+    // One angle, asked for once, and then every answer checked against it.
+    const angle = scene.renderRot(slot);
+    expect(angle).toBeCloseTo(-0.4, 6);
+    const cos = Math.cos(angle);
+    const sin = Math.sin(angle);
+
+    const b = scene.boundsOf("a")!;
+    expect(b.maxX).toBeCloseTo((400 * Math.abs(cos) + 20 * Math.abs(sin)) / 2, 4);
+    expect(b.maxY).toBeCloseTo((400 * Math.abs(sin) + 20 * Math.abs(cos)) / 2, 4);
+
+    const pin = scene.pins.get("p")!;
+    scene.layoutPin(pin);
+    expect(pin.wx).toBeCloseTo(100 * cos, 4);
+    expect(pin.wy).toBeCloseTo(100 * sin, 4);
+
+    // A thin rectangle laid on the bar's far end, positioned from the same
+    // angle: the marquee has to find it there and nowhere else.
+    const ex = 190 * cos;
+    const ey = 190 * sin;
+    expect(
+      scene.intersectsRect("a", { minX: ex - 4, minY: ey - 4, maxX: ex + 4, maxY: ey + 4 }),
+    ).toBe(true);
+    // And not at the end the item would have had without the swing.
+    const wx = 190 * Math.cos(0.3);
+    const wy = 190 * Math.sin(0.3);
+    expect(
+      scene.intersectsRect("a", { minX: wx - 4, minY: wy - 4, maxX: wx + 4, maxY: wy + 4 }),
+    ).toBe(false);
+  });
+
+  it("is what drawnPose flattens, so a gesture leaves paper where it looks", () => {
+    const scene = new Scene();
+    const slot = scene.putItem(cold("a"), pose({ x: 0, y: 0, rot: 0.3 }));
+    scene.swing[slot] = -0.7;
+    expect(drawnPose(scene, "a")!.rot).toBeCloseTo(scene.renderRot(slot), 6);
   });
 });
 

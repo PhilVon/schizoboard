@@ -738,7 +738,7 @@ export class DomItemLayer implements ItemLayer {
           // (`state/scene.ts`).
           scene.renderX(slot),
           scene.renderY(slot),
-          scene.rot[slot]! + scene.swing[slot]!,
+          scene.renderRot(slot),
           scene.w[slot]!,
           scene.h[slot]!,
           scene.lift[slot]!,
@@ -815,7 +815,7 @@ export class DomItemLayer implements ItemLayer {
       const id = this.order[i]!;
       const slot = scene.slotOf(id);
       if (slot === undefined) continue;
-      const angle = scene.rot[slot]! + scene.swing[slot]!;
+      const angle = scene.renderRot(slot);
       const local = rotateIn(
         boardX,
         boardY,

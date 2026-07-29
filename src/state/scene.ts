@@ -432,6 +432,23 @@ export class Scene {
     return this.y[slot]! + this.driftY[slot]!;
   }
 
+  /**
+   * The angle an item is drawn at: its authored rotation plus the swing.
+   *
+   * The companion to `renderX`/`renderY`, and it exists for the same reason —
+   * this sum had been written out by hand in a dozen places, and T-107 was
+   * what happens when one of them is missed. The selection chrome, the
+   * marquee and the rotate pivot each re-derived the angle, one of them from
+   * `rot` alone, and the geometry then disagreed with the paint: chrome drawn
+   * off the paper, a marquee that missed an item it enclosed.
+   *
+   * So there is one reader, and things that bend the drawn angle bend it here
+   * rather than at twelve call sites.
+   */
+  renderRot(slot: number): number {
+    return this.rot[slot]! + this.swing[slot]!;
+  }
+
   get size(): number {
     return this.slots.size;
   }
@@ -761,7 +778,7 @@ export class Scene {
     // pin's world position comes back unchanged by the swing entirely, which
     // is what makes it look pushed into the cork rather than sliding across
     // it.
-    const angle = this.rot[slot]! + this.swing[slot]!;
+    const angle = this.renderRot(slot);
     // Into the shared scratch and straight back out again — this runs over
     // every pin on the board on every frame anything moved, so it must not
     // mint an object per pin.
@@ -884,7 +901,7 @@ export class Scene {
    * arrays.
    */
   boundsAt(slot: number, pad: number, out: Bounds): Bounds {
-    const angle = this.rot[slot]! + this.swing[slot]!;
+    const angle = this.renderRot(slot);
     const cos = Math.abs(Math.cos(angle));
     const sin = Math.abs(Math.sin(angle));
     // Ink adds nothing here: it is clipped to the paper (T-136), so an item is
@@ -919,7 +936,7 @@ export class Scene {
     const slot = this.slots.get(id);
     if (slot === undefined) return false;
 
-    const angle = this.rot[slot]! + this.swing[slot]!;
+    const angle = this.renderRot(slot);
     const cos = Math.cos(angle);
     const sin = Math.sin(angle);
     const hw = this.w[slot]! / 2;

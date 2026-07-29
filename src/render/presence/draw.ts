@@ -329,7 +329,7 @@ export class PeerPainter {
       }
       ctx.save();
       ctx.translate(cx, cy);
-      ctx.rotate(scene.rot[slot]! + scene.swing[slot]!);
+      ctx.rotate(scene.renderRot(slot));
       ctx.strokeRect(-hw, -hh, hw * 2, hh * 2);
       ctx.restore();
     }

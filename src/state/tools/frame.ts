@@ -33,7 +33,7 @@ export function itemLocal(
 ): Point | null {
   const slot = scene.slotOf(itemId);
   if (slot === undefined) return null;
-  const angle = scene.rot[slot]! + scene.swing[slot]!;
+  const angle = scene.renderRot(slot);
   return rotateIn(
     boardX,
     boardY,
@@ -61,7 +61,7 @@ export function drawnPose(scene: Scene, itemId: string): WritePose | null {
   return {
     x: scene.renderX(slot),
     y: scene.renderY(slot),
-    rot: scene.rot[slot]! + scene.swing[slot]!,
+    rot: scene.renderRot(slot),
   };
 }
 
@@ -99,7 +99,7 @@ export function repivotedPose(
   const slot = scene.slotOf(itemId);
   if (slot === undefined) return null;
   const rot = scene.rot[slot]!;
-  const swung = rot + scene.swing[slot]!;
+  const swung = scene.renderRot(slot);
   const c0 = Math.cos(rot);
   const s0 = Math.sin(rot);
   const c1 = Math.cos(swung);

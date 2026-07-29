@@ -133,7 +133,7 @@ export function chromeFrame(
   out.cy = centre.y;
   out.hw = (scene.w[slot]! * camera.zoom * scale) / 2 + SELECT_PAD;
   out.hh = (scene.h[slot]! * camera.zoom * scale) / 2 + SELECT_PAD;
-  out.angle = scene.rot[slot]! + scene.swing[slot]!;
+  out.angle = scene.renderRot(slot);
   out.resizable = scene.coldAt(slot)?.type !== "polaroid";
   return out;
 }
