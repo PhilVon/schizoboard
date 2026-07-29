@@ -172,19 +172,28 @@ export class World {
     this.endGesture(zoom);
   }
 
+  /**
+   * The debounce has expired, so the layer should come down — but not yet.
+   *
+   * Set here and cleared by [`flushDemote`] in the DOM phase (T-201). See there
+   * for why one frame of extra promotion is worth a great deal.
+   */
+  private demotePending = false;
+
+
   private endGesture(scale: number): void {
     this.gestureTimer = 0;
     this.gesturing = false;
-    // Dropping will-change discards the cached layer, so the browser repaints
-    // the world subtree at the scale it is actually being displayed at.
-    this.layers.world.style.willChange = "";
-    this.layers.boardInk.style.willChange = "";
+
 
     // Before the raster gate below, and outside it. This is the frame the whole
     // world subtree repaints on regardless, which is exactly when changing how
     // much of an item is drawn is free — and the gate would swallow the small
     // swings that cross a tier boundary.
     for (const fn of this.settleListeners) fn(scale);
+
+    // Queued rather than written. `flushDemote` says why.
+    this.demotePending = true;
 
     const target = scale * devicePixelRatio;
     // Re-rastering for a hair of scale change is pure waste; a 1.25x swing is
@@ -193,6 +202,48 @@ export class World {
       this.rasterScale = target;
       for (const fn of this.rasterizeListeners) fn(target);
     }
+  }
+
+
+  /**
+   * DOM phase (5), **last**. Drop `will-change` if the debounce has expired.
+   *
+   * ## Why the demote is not written where it is decided
+   *
+   * Dropping `will-change` throws away the cached layer, so the browser repaints
+   * the whole world subtree. Everything a gesture end triggers — the LOD tier,
+   * the re-raster, `dirty.everything()` — changes what that subtree *contains*.
+   * Written in the order they used to be, the two collided and cost **two** full
+   * repaints of five hundred items rather than one (D-33 section 8):
+   *
+   *     562-625 ms   will-change comes off; the browser repaints 500 FULL items
+   *     694-743 ms   next frame writes the flat cards; it repaints all 500 AGAIN
+   *
+   * The first of those is unavoidable and predates LOD. The second is entirely
+   * waste: it repaints the same five hundred items, and the content the first one
+   * so expensively rasterised was already on its way to being thrown out.
+   *
+   * So the demote is *queued* at the debounce and written here, at the end of the
+   * write phase, after `items.sync` has put the new content in. The layer stays
+   * promoted for one extra frame, the browser paints once, and what it paints is
+   * the cheap version.
+   *
+   * This also puts the write where the architecture already says it belongs.
+   * `will-change` is a DOM write, and it was being made from a `setTimeout` —
+   * outside the one phase that is allowed to write (ARCHITECTURE section 3).
+   *
+   * Idempotent, and free on every frame that has nothing to do: a board at rest
+   * costs one boolean test per frame.
+   */
+  flushDemote(): void {
+    if (!this.demotePending) return;
+    this.demotePending = false;
+    // A gesture that started again while this was queued keeps its promotion:
+    // demoting mid-gesture is the blur trap DESIGN section 6.6 is about, and the
+    // new gesture has its own debounce which will queue its own demote.
+    if (this.gesturing) return;
+    this.layers.world.style.willChange = "";
+    this.layers.boardInk.style.willChange = "";
   }
 
   /** Notified with dpr * zoom whenever bitmaps should be regenerated. */
@@ -227,6 +278,9 @@ export class World {
 
   destroy(): void {
     if (this.gestureTimer !== 0) clearTimeout(this.gestureTimer);
+    // A queued demote that never flushed would otherwise be a promoted layer
+    // left behind, which is the one state DESIGN section 6.6 calls a hard rule.
+    this.demotePending = false;
     this.host.replaceChildren();
     this.rasterizeListeners.length = 0;
     this.settleListeners.length = 0;

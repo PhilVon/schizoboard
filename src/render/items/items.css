@@ -1242,16 +1242,22 @@ textarea.item-field::-webkit-scrollbar {
  */
 
 /*
- * Below 15%, the writing goes.
+ * Not here either: hiding the writing below 15%.
  *
- * DESIGN 6.6 says "flat coloured rectangles", and D-33 measured that a rectangle
- * is worth no frame time at all over a flat card once the glyph boxes are gone —
- * so this is here because the *section* says it and because a line of writing at
- * 15% is under two device pixels tall, not because it buys anything. The rest of
- * the bottom tier — one-pixel chords, hidden pins, board-ink thumbnails — is
- * T-199 and is where its value actually is.
+ * DESIGN 6.6 gives the bottom tier "flat coloured rectangles", and this rule was
+ * that clause. It has been taken out, for two reasons that agree.
+ *
+ * It buys nothing: D-33 measured a flat rectangle against a flat card and they
+ * are the same to within run-to-run noise, everywhere. Once the glyph boxes are
+ * gone, whether a text node has characters in it does not register.
+ *
+ * And it costs something visible. Text that is *removed* has to come back, and it
+ * comes back a frame after the board it belongs to, which reads as writing
+ * popping onto notes that are already there. Straightening the letters at 35% is
+ * a change of appearance; making the words vanish and return is a glitch, and it
+ * was paying for itself with a measurement of zero.
+ *
+ * The bottom tier keeps its other three clauses, which is where its value is:
+ * straight one-pixel chords with no sag, pins hidden, board ink from tile
+ * thumbnails. Those are T-199.
  */
-.layer-world[data-lod="flat"] .paper-text,
-.layer-world[data-lod="flat"] .pol-caption {
-  display: none;
-}

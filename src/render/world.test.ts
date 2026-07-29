@@ -128,16 +128,58 @@ describe("the settle notification", () => {
 });
 
 describe("a gesture", () => {
-  it("promotes the world layer while it runs and drops it when it stops", () => {
+  it("promotes the world layer while it runs and drops it in the write phase", () => {
+    const promoted = (): string =>
+      host.querySelector<HTMLElement>(".layer-world")!.style.willChange;
+
     world.gestureTick(2);
     // Never left on at steady state — a layer pinned at a stale scale is the
     // zoom-blur trap DESIGN section 6.6 spends a paragraph on.
-    expect(host.querySelector<HTMLElement>(".layer-world")!.style.willChange).toBe("transform");
+    expect(promoted()).toBe("transform");
     expect(scales).toEqual([]);
 
     vi.runAllTimers();
-    expect(host.querySelector<HTMLElement>(".layer-world")!.style.willChange).toBe("");
+    // Still promoted, deliberately (T-201). The re-raster and the LOD tier have
+    // just been announced and nothing has written their consequences yet;
+    // demoting now would repaint five hundred items as they were, and the next
+    // frame would repaint them all again as they are. Measured at 562 ms then
+    // 743 ms, of which the second was pure waste.
+    expect(promoted()).toBe("transform");
     expect(scales).toEqual([2 * DPR()]);
+
+    // The end of the DOM phase, after `items.sync`.
+    world.flushDemote();
+    expect(promoted()).toBe("");
+  });
+
+  it("keeps the promotion if a new gesture started before the demote flushed", () => {
+    const promoted = (): string =>
+      host.querySelector<HTMLElement>(".layer-world")!.style.willChange;
+
+    world.gestureTick(2);
+    vi.runAllTimers();
+    // A hand that came back to the wheel in the one frame the demote was queued
+    // for. Demoting into a live gesture is the blur trap, and this gesture has
+    // its own debounce to queue its own demote.
+    world.gestureTick(2.4);
+    world.flushDemote();
+    expect(promoted()).toBe("transform");
+
+    vi.runAllTimers();
+    world.flushDemote();
+    expect(promoted()).toBe("");
+  });
+
+  it("costs nothing on a frame with no demote queued", () => {
+    const promoted = (): string =>
+      host.querySelector<HTMLElement>(".layer-world")!.style.willChange;
+
+    world.gestureTick(2);
+    // A board at rest calls this sixty times a second and it must not undo a
+    // promotion nobody asked it to undo.
+    world.flushDemote();
+    world.flushDemote();
+    expect(promoted()).toBe("transform");
   });
 
   it("re-rasters once for a roll of the wheel, not once per notch", () => {
