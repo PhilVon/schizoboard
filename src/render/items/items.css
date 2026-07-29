@@ -462,6 +462,27 @@
   display: none;
 }
 
+/* --- handwriting. DESIGN 3.6, and render/items/hand.ts -------------------- */
+
+/*
+ * A word, made atomic again.
+ *
+ * Every glyph inside is `inline-block` because a transform does not apply to an
+ * inline box — and adjacent `inline-block`s are a line-break opportunity, so
+ * without `pre` here a note of ordinary prose would break mid-word wherever the
+ * right edge of the paper happened to fall.
+ */
+.hand-word {
+  display: inline-block;
+  white-space: pre;
+}
+
+.hand-word > span {
+  display: inline-block;
+  /* Letters lean from where they meet the line, not from their middles. */
+  transform-origin: 50% 100%;
+}
+
 /* --- paper: note, scrap, card. DESIGN 4.4 --------------------------------- */
 
 .paper-surface {

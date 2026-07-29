@@ -105,7 +105,12 @@ export function grainOffset(seed: number): { x: number; y: number } {
  * rotation jitter so it doesn't look typeset" (DESIGN section 3.6).
  */
 export interface CharJitter {
-  /** Board units. */
+  /**
+   * Displacement in `em`, so one set of amounts serves every size text is set
+   * at. A note's body is 17px in board units and a polaroid caption is a
+   * fraction of its frame; the same absolute nudge is a whisper on one and a
+   * stagger on the other, and only the relative one is "slight" on both.
+   */
   dx: number;
   dy: number;
   /** Radians. */
@@ -116,8 +121,8 @@ export interface CharJitter {
 
 export function charJitter(seed: number, index: number): CharJitter {
   return {
-    dx: signed(valueAt(seed, "char-dx", index), 0.35),
-    dy: signed(valueAt(seed, "char-dy", index), 0.7),
+    dx: signed(valueAt(seed, "char-dx", index), 0.02),
+    dy: signed(valueAt(seed, "char-dy", index), 0.04),
     rot: (signed(valueAt(seed, "char-rot", index), 1.6) * Math.PI) / 180,
     scale: 1 + signed(valueAt(seed, "char-scale", index), 0.035),
   };

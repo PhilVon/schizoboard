@@ -48,6 +48,7 @@ import {
 } from "@/render/items/paper";
 import { ItemInk } from "@/render/ink/canvas";
 import { TextEditor, type ItemEditorHooks } from "@/render/items/editor";
+import { clearHand, writeHand } from "@/render/items/hand";
 import {
   emergeDelay,
   EMERGE_MIN_PX,
@@ -367,7 +368,10 @@ class PolaroidView implements View {
     // twenty separate pieces of film. Same trick, and the same function, as the
     // fibres in a sheet of paper.
     this.film.style.backgroundPosition = grainPosition(cold.seed);
-    this.caption.textContent = cold.text;
+    // Guarded inside, which matters more here than anywhere: the two lines
+    // above are why this bind runs on every frame of a develop, and the caption
+    // has not changed on any of them.
+    writeHand(this.caption, cold.text, cold.seed);
     this.caption.classList.toggle("is-empty", cold.text.length === 0);
     this.el.style.filter = sheetTint(cold.seed);
   }
@@ -532,7 +536,7 @@ class PolaroidView implements View {
   }
 
   release(): void {
-    this.caption.textContent = "";
+    clearHand(this.caption);
     this.boundCold = null;
     this.adopt(null);
     // The photograph goes too. A pooled node keeps its subtree, so a view
@@ -628,7 +632,7 @@ class PaperView implements View {
     this.grain.style.backgroundImage = `url(${paperGrainUrl(cold.seed)})`;
     this.grain.style.backgroundPosition = grainPosition(cold.seed);
     this.surface.style.filter = sheetTint(cold.seed);
-    this.body.textContent = cold.text;
+    writeHand(this.body, cold.text, cold.seed);
   }
 
   transform(x: number, y: number, rot: number, w: number, h: number, lift: number): void {
@@ -662,7 +666,7 @@ class PaperView implements View {
   }
 
   release(): void {
-    this.body.textContent = "";
+    clearHand(this.body);
     this.boundCold = null;
     this.el.classList.remove("is-lifted");
     this.adopt(null);
