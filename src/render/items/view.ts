@@ -89,6 +89,18 @@ export interface ItemLayer {
   setTier(tier: Tier): void;
 
   /**
+   * The camera has come to rest (T-202).
+   *
+   * Separate from [`setTier`] because most gestures cross no boundary at all: a
+   * pan at 100% mounts thirty items and stays in one tier throughout, and those
+   * thirty are exactly the ones with detail owing.
+   *
+   * What a layer does with it is its own business, and a layer that draws
+   * everything at full detail always may do nothing.
+   */
+  settled(): void;
+
+  /**
    * How old the board considers each item to be, in board days (`wear.ts`).
    *
    * The second value the scene cannot supply, and for a reason of the same kind:

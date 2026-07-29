@@ -1210,14 +1210,31 @@ textarea.item-field::-webkit-scrollbar {
  * flat paper, and the stock's own colour is what tells a legal pad from an index
  * card once nothing else can.
  */
-.layer-world[data-lod] .paper-grain,
-.layer-world[data-lod] .paper-tear,
-.layer-world[data-lod] .paper-age,
-.layer-world[data-lod] .paper-bend,
-.layer-world[data-lod] .paper-worn,
-.layer-world[data-lod] .pol-gloss,
-.layer-world[data-lod] .pol-age,
-.layer-world[data-lod] .item-tape {
+/*
+ * Two ways to be a card, and they mean different things.
+ *
+ * `[data-lod]` on the layer host is the **zoom**: the whole board is below 35%,
+ * written once however many items are mounted.
+ *
+ * `.is-coarse` on one item is its **age**: it arrived a moment ago, during a
+ * camera move, and has not been given its detail yet (T-202, `COARSE` in
+ * `dom.ts`). That has nothing to do with zoom — an item mounting at 100% takes
+ * this too — because what a mount storm costs is *having* the nodes, and a card
+ * is a tenth of the nodes a sheet of paper is.
+ *
+ * One selector list rather than two, via `:is()`, so the two can never drift.
+ */
+:is(.layer-world[data-lod], .item.is-coarse)
+  :is(
+    .paper-grain,
+    .paper-tear,
+    .paper-age,
+    .paper-bend,
+    .paper-worn,
+    .pol-gloss,
+    .pol-age,
+    .item-tape
+  ) {
   display: none;
 }
 

@@ -1412,6 +1412,11 @@ async function boot(): Promise<void> {
   lod.on((tier) => items.setTier(tier));
   world.onSettle((zoom) => {
     if (lod.settle(zoom)) dirty.everything();
+    // Every settle, not only the ones that changed tier (T-202): a pan at 100%
+    // mounts thirty items in one tier and those thirty are the ones owed their
+    // detail. No dirty pass — the layer drains ahead of its own clean-frame
+    // guard, precisely because a resting camera produces clean frames.
+    items.settled();
   });
 
   // --- sync ----------------------------------------------------------------
@@ -1694,6 +1699,12 @@ async function boot(): Promise<void> {
    * the culler and the screen-space layers all get one guaranteed pass.
    */
   let cameraVersion = -1;
+  /**
+   * The zoom the camera was last seen at, so a *zoom* can be told from a *pan*
+   * (T-202). NaN so the first comparison is false and the opening fit does not
+   * read as a zoom gesture.
+   */
+  let lastZoom = Number.NaN;
   loop.on("input", (frame) => {
     navigation.flush();
     if (navigation.gestured) world.gestureTick(camera.zoom);
@@ -1705,6 +1716,13 @@ async function boot(): Promise<void> {
     if (camera.version !== cameraVersion) {
       cameraVersion = camera.version;
       dirty.camera = true;
+      // Which of the two kinds of camera move this was. See `DirtySets.zoomed`:
+      // the item layer mounts coarsely during a zoom and in full during a pan,
+      // because a zoom is the one that brings items in by the hundred.
+      if (camera.zoom !== lastZoom) {
+        if (Number.isFinite(lastZoom)) dirty.zoomed = true;
+        lastZoom = camera.zoom;
+      }
       // Every camera change ends in a re-raster, not only a pointer gesture.
       // `Ctrl+0`, `F`, a resize and an undo restoring a stashed view all change
       // the zoom without `navigation.gestured` ever being true, and a bitmap

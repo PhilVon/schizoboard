@@ -57,6 +57,25 @@ export class DirtySets {
   /** The camera moved, so every screen-space layer must redraw. */
   camera = false;
   /**
+   * The camera moved and its **zoom** changed, not only where it is pointing.
+   *
+   * Beside `camera` rather than derived from it, because one thing genuinely
+   * cares about the difference and cares about it a lot (T-202): a zoom changes
+   * how many items are on screen by orders of magnitude, and a pan does not. So a
+   * zoom is the gesture that produces a mount *storm* — five hundred arrivals in
+   * seventy frames — while a hand-speed pan produces well under one arrival a
+   * frame however far it goes.
+   *
+   * `render/items/dom.ts` mounts coarsely during a zoom and in full during a pan
+   * for that reason, and it is the same line DESIGN 6.6's tiers are already drawn
+   * on: how much of an item is drawn is a question about zoom. Nobody expects
+   * moving sideways to change what a note looks like.
+   *
+   * Never on its own a reason for a frame to be dirty — `camera` is set whenever
+   * this is.
+   */
+  zoomed = false;
+  /**
    * Re-run culling even though neither the camera nor any item moved.
    *
    * A force flag, not a report: `render/cull.ts` re-culls on its own whenever
@@ -123,6 +142,7 @@ export class DirtySets {
     this.strings.clear();
     this.ropes.clear();
     this.camera = false;
+    this.zoomed = false;
     this.culling = false;
     this.all = false;
   }

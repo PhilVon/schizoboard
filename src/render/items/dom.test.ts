@@ -1550,7 +1550,7 @@ describe("LOD tiers", () => {
    */
   describe("the flat card's inline paint", () => {
     const surface = (): HTMLElement => host.querySelector<HTMLElement>(".paper-surface")!;
-
+  
     const flatten = (): void => {
       dirty.clear();
       dirty.all = true;
@@ -1617,5 +1617,176 @@ describe("LOD tiers", () => {
     layer.sync(scene, dirty, null);
     expect(boxes()).toBe(0);
     expect(writing().textContent).toBe("words");
+  });
+});
+
+/**
+ * T-202. An item that arrives while the camera is moving arrives as a card, at
+ * any zoom, and is given its detail when the camera stops.
+ *
+ * The measurement behind it (D-33 section 10): what a mount storm costs is
+ * *having* the nodes, not the act of mounting. Five hundred items mounted as
+ * cards is 7,101 nodes and 6.9 ms a frame; the same five hundred at full detail
+ * is 73,071 nodes and 632 ms. And a board that never unmounts costs 104 ms a
+ * frame to pan with nothing mounting at all — so the cost cannot be prepaid at
+ * load either, which is what pointed here.
+ */
+describe("coarse mounts", () => {
+  const coarse = (): HTMLElement[] =>
+    Array.from(host.querySelectorAll<HTMLElement>(".item.is-coarse"));
+  const boxes = (): number => host.querySelectorAll(".hand-word > span").length;
+
+  /** A frame in which the camera moved — which is what makes a mount a storm. */
+  const panned = (): void => {
+    dirty.clear();
+    dirty.camera = true;
+  };
+
+  /** A frame of a zoom gesture, which is the one that brings items in by the
+   *  hundred and the only one that mounts coarsely. */
+  const zoomed = (n = 20): string[] => {
+    const ids: string[] = [];
+    for (let i = 0; i < n; i += 1) {
+      const id = `s${i}`;
+      add(id, { type: "note", text: "some words" });
+      ids.push(id);
+    }
+    dirty.camera = true;
+    dirty.zoomed = true;
+    return ids;
+  };
+
+  it("mounts as a card while a zoom is running, even at full zoom", () => {
+    zoomed();
+    layer.sync(scene, dirty, null);
+
+    expect(coarse()).toHaveLength(20);
+    // The whole point: at a zoom whose tier is `full`, a card. This is about the
+    // item's age, not the camera's scale.
+    const card = coarse()[0]!;
+    expect(card.querySelectorAll(".hand-word > span")).toHaveLength(0);
+    expect(card.querySelector<HTMLElement>(".paper-surface")!.style.clipPath).toBe("");
+  });
+
+  it("gives it everything back when the camera stops", () => {
+    zoomed();
+    layer.sync(scene, dirty, null);
+    const owed = layer.coarseCount;
+    expect(owed).toBeGreaterThan(0);
+
+    layer.settled();
+    // A clean frame, which is what a resting camera produces — and the upgrade
+    // must not wait for somebody to touch the board.
+    dirty.clear();
+    layer.sync(scene, dirty, null);
+
+    expect(coarse()).toHaveLength(0);
+    expect(layer.coarseCount).toBe(0);
+    // Every sheet on the board has its writing and its ragged edge back.
+    for (const el of host.querySelectorAll<HTMLElement>(".item-paper")) {
+      expect(el.querySelectorAll(".hand-word > span").length).toBeGreaterThan(0);
+      expect(el.querySelector<HTMLElement>(".paper-surface")!.style.clipPath).not.toBe("");
+    }
+  });
+
+  it("does not make a paste wait for a gesture that may never come", () => {
+    // A still camera: a paste, a peer's create, an undo. One item, affordable at
+    // full detail — and one that would otherwise sit there without its grain
+    // until somebody happened to pan.
+    add("a", { type: "note", text: "some words" });
+    layer.sync(scene, dirty, null);
+
+    expect(coarse()).toHaveLength(0);
+    expect(boxes()).toBeGreaterThan(0);
+  });
+
+  /**
+   * The `isNew` half of the guard. A drag marks the camera dirty on every frame
+   * of itself, and an item already on screen must not lose its grain because of
+   * what some other item is doing.
+   */
+  it("does not strip an item that was already mounted", () => {
+    add("a", { type: "note", text: "some words" });
+    layer.sync(scene, dirty, null);
+    const before = boxes();
+
+    panned();
+    dirty.item("a");
+    scene.setPose("a", { x: 40 });
+    layer.sync(scene, dirty, null);
+
+    expect(coarse()).toHaveLength(0);
+    expect(boxes()).toBe(before);
+  });
+
+  /**
+   * The distinction the whole thing turns on. A pan mounts a handful at the
+   * viewport edge, `pan at 100%` was already inside budget with nothing done to
+   * it, and making those few arrive plainly would cost a visible straightening of
+   * their handwriting when the pan stopped, for no measured gain at all.
+   *
+   * A count was tried instead of this and cannot separate them: three a frame
+   * over a seventy-frame zoom is two hundred and fifty full mounts, which put the
+   * worst frame back from 41.7 ms to 125.
+   */
+  it("mounts in full during a pan, however many arrive", () => {
+    for (let i = 0; i < 40; i += 1) add(`p${i}`, { type: "note", text: "some words" });
+    // A pan: the camera moved and the zoom did not.
+    dirty.camera = true;
+    layer.sync(scene, dirty, null);
+
+    expect(coarse()).toHaveLength(0);
+    expect(layer.coarseCount).toBe(0);
+    expect(boxes()).toBeGreaterThan(0);
+  });
+
+  it("does not bother marking a mount that is a card anyway", () => {
+    layer.setTier("card");
+    zoomed();
+    layer.sync(scene, dirty, null);
+
+    // Already plain, from the tier. A per-item marker on top would be a second
+    // thing saying the same thing, and a second thing to take off again.
+    expect(coarse()).toHaveLength(0);
+    expect(boxes()).toBe(0);
+  });
+
+  it("forgets an item culled before its upgrade arrived", () => {
+    zoomed();
+    layer.sync(scene, dirty, null);
+    expect(layer.coarseCount).toBeGreaterThan(0);
+
+    // Panned back out again before the camera stopped.
+    panned();
+    layer.sync(scene, dirty, new Set());
+    expect(layer.coarseCount).toBe(0);
+
+    layer.settled();
+    dirty.clear();
+    // Must not throw, and must not upgrade whoever inherits the pooled node.
+    expect(() => layer.sync(scene, dirty, new Set())).not.toThrow();
+  });
+
+  it("upgrades a whole storm on one frame, not one item per frame", () => {
+    zoomed(40);
+    layer.sync(scene, dirty, null);
+    expect(layer.coarseCount).toBe(40);
+
+    layer.settled();
+    dirty.clear();
+    layer.sync(scene, dirty, null);
+    // Not budgeted across frames on purpose: this lands on the frame the world
+    // subtree is repainting anyway, and dribbling would repaint on each one.
+    expect(layer.coarseCount).toBe(0);
+    expect(coarse()).toHaveLength(0);
+  });
+
+  it("says nothing is owed when nothing mounted coarsely", () => {
+    add("a", { type: "note", text: "words" });
+    layer.sync(scene, dirty, null);
+    layer.settled();
+    dirty.clear();
+    layer.sync(scene, dirty, null);
+    expect(layer.coarseCount).toBe(0);
   });
 });
