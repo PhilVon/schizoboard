@@ -11,7 +11,7 @@ import * as Y from "yjs";
 
 import { newId } from "@/lib/ids";
 import { Origin, type OriginTag } from "@/crdt/origins";
-import { SCHEMA_VERSION, type YMap } from "@/crdt/schema";
+import { SCHEMA_VERSION, readItem, type YMap } from "@/crdt/schema";
 
 export interface BoardDoc {
   readonly doc: Y.Doc;
@@ -114,6 +114,47 @@ export function encodedSize(board: BoardDoc): number {
  */
 export function snapshot(board: BoardDoc): Uint8Array {
   return Y.encodeStateAsUpdate(board.doc);
+}
+
+/**
+ * What the board is called, for anything outside the document that has to name
+ * it — a bundle's manifest and the filename it suggests (T-84).
+ *
+ * Falls back rather than returning null. Every caller so far wants a string to
+ * put somewhere, and `meta.title` is a last-write-wins field that a peer on an
+ * older schema could leave as anything.
+ */
+export function boardTitle(board: BoardDoc): string {
+  const title = board.meta.get("title");
+  return typeof title === "string" && title.trim().length > 0 ? title : "Untitled board";
+}
+
+export function boardSchemaVersion(board: BoardDoc): number {
+  const version = board.meta.get("schemaVersion");
+  return typeof version === "number" && Number.isFinite(version) ? version : SCHEMA_VERSION;
+}
+
+/**
+ * Every asset hash an item on this board is currently using.
+ *
+ * The same set the janitor keeps and `asset_gc` is told to spare — what the
+ * board *references*, not everything `assets` still holds metadata for. A
+ * bundle carrying the photograph of an item that was deleted an hour ago would
+ * be handing over something that is not on the board, and the two questions
+ * having one answer is the point: what survives collection is what a bundle
+ * embeds.
+ *
+ * Read off `items` rather than off the scene mirror, because a bundle is
+ * written from the document and the scene is a projection of it that a
+ * mid-frame caller could catch between updates.
+ */
+export function referencedAssets(board: BoardDoc): string[] {
+  const referenced = new Set<string>();
+  for (const [id, map] of board.items) {
+    const asset = readItem(id, map)?.assetId;
+    if (asset) referenced.add(asset);
+  }
+  return [...referenced];
 }
 
 /**

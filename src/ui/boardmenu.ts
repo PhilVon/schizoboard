@@ -337,6 +337,9 @@ export function pinMenuRows(
  * on every machine can be told to stop ageing, so this menu is now the one
  * gesture that always opens something. Before it, a right-click on the cork of a
  * board with no relay and no string selected still found nothing.
+ *
+ * `board` is null in a plain browser, where there is no shell to write a file
+ * with — absent on the same terms as the invite, and for the same reason.
  */
 export function boardMenuRows(
   scene: Scene,
@@ -344,6 +347,7 @@ export function boardMenuRows(
   strings: readonly string[],
   invite: { link: string | null; copy(link: string): void },
   ageing: { on: boolean; set(on: boolean): void },
+  board: { export(): void; open(): void } | null,
 ): MenuEntry[] {
   const rows = stringMenuRows(scene, write, strings);
   const below: MenuEntry[] = [
@@ -388,6 +392,44 @@ export function boardMenuRows(
       // re-resolved on activation would hand out a link to a board the user is
       // no longer looking at, which is the worse of the two.
       run: () => invite.copy(invite.link!),
+    });
+  }
+  if (board !== null) {
+    below.push({
+      /**
+       * The ellipsis is doing real work: this row opens a save dialog and
+       * nothing has happened yet when it is picked. *Copy invite link* above it
+       * has no ellipsis for the same reason — that one is finished the moment
+       * you let go.
+       *
+       * "Export" rather than "Save", because a board is already saved; it has
+       * been saving itself since the first thing landed on it (DESIGN 7.8).
+       * A *Save* row invites the reading that everything before it was
+       * provisional, which is the one thing this application never asks anyone
+       * to worry about.
+       *
+       * Null removes the row rather than disabling it, the way the invite above
+       * does — a plain browser cannot write a bundle at all, and a menu entry
+       * you cannot use is a question nothing on screen can answer.
+       */
+      label: "Export board…",
+      // Under the invite: both hand the board to somebody, and this is the
+      // heavier of the two.
+      run: () => board.export(),
+    });
+    below.push({
+      /**
+       * Last, and last on purpose. Q-111 made this the one row on the board
+       * that destroys a board — it replaces the one in this window — so it sits
+       * below *Export board…*, which is both the row somebody reading down
+       * wants far more often and, if they take it first, the thing that makes
+       * this one survivable.
+       *
+       * The confirmation is native and lives in `bundle_open`, because nothing
+       * in `capabilities/` lets this side open a dialog at all.
+       */
+      label: "Open a board…",
+      run: () => board.open(),
     });
   }
   return [...rows, ...below];

@@ -10,7 +10,16 @@
  */
 
 import { Binding } from "@/crdt/binding";
-import { boardSeed, encodedSize, initialiseBoard, openBoardDoc, snapshot } from "@/crdt/doc";
+import {
+  boardSchemaVersion,
+  boardSeed,
+  boardTitle,
+  encodedSize,
+  initialiseBoard,
+  openBoardDoc,
+  referencedAssets,
+  snapshot,
+} from "@/crdt/doc";
 import * as ops from "@/crdt/ops";
 import {
   bringToFront,
@@ -1066,6 +1075,115 @@ async function boot(): Promise<void> {
     }
   };
 
+  /**
+   * Zip the whole board up somewhere the user picks (T-84).
+   *
+   * The three things Rust is told are all reads of the document, taken here
+   * rather than in the shell because only this side can read a document at all
+   * — `referencedAssets` is the same set the janitor spares, so what survives
+   * collection is what a bundle embeds.
+   *
+   * Reads them at pick time, not at menu-open time. The rows are a snapshot and
+   * every other one here is too, but a board can perfectly well have a
+   * photograph arrive from a peer between the right-click and the dialog
+   * closing, and the version that goes in the file should be the later one.
+   *
+   * ## The three things that can come back
+   *
+   * A cancelled dialog is `null` and says nothing — the user changed their
+   * mind, and a line telling them so would be the application narrating its own
+   * inaction.
+   *
+   * A complete export says how much went in it, because "it saved" and "it
+   * saved and it is 40 MB of photographs" are different pieces of news to
+   * somebody about to attach it to something.
+   *
+   * An export missing a photograph says *which count*, out loud. DESIGN section
+   * 11.1's fourth risk is a board state a user can genuinely be in and the file
+   * is still worth having, so this is not an error — but "export always embeds
+   * assets" is a promise the file is quietly not keeping, and the person
+   * handing it over is the one who needs to know that.
+   */
+  const exportBoard = async (): Promise<void> => {
+    try {
+      const written = await native.bundleSaveAs(
+        {
+          schemaVersion: boardSchemaVersion(board),
+          title: boardTitle(board),
+          assets: referencedAssets(board),
+        },
+        snapshot(board),
+      );
+      if (written === null) return;
+      const size = `${Math.max(1, Math.round(written.bytes / 1024 / 1024))} MB`;
+      if (written.missing.length > 0) {
+        flash.say(
+          `Board exported (${size}) — without ${written.missing.length} ` +
+            `photograph${written.missing.length === 1 ? "" : "s"} this machine does not have`,
+        );
+        return;
+      }
+      flash.say(`Board exported (${size}) — ${written.embedded} photographs are inside it`);
+    } catch (error) {
+      // Names the console for the same reason `copyInvite` does: there is
+      // genuinely somewhere to go, and a line that only apologises leaves
+      // somebody with no next move.
+      console.warn("[bundle] the board could not be exported", error);
+      flash.say("The board could not be exported — the reason is in the console");
+    }
+  };
+
+  /**
+   * Replace this window's board with one out of a `.schizo` (T-84, Q-111).
+   *
+   * Everything up to and including the confirmation is `bundle_open`'s, on the
+   * far side of the boundary — the picker, the peek that finds out which board
+   * is being offered, and the native "Replace this board?" that has to be
+   * worded over there because the webview is granted no dialog of its own. A
+   * `null` covers both ways of saying no, and they are the same outcome: no
+   * board arrived, so nothing here happens.
+   *
+   * Then the document is written down and the window is reloaded, which is
+   * Q-77's answer to the same shape of problem. It reads like avoiding the
+   * work, and it is the opposite: half the application holds a reference to
+   * this `Y.Doc` — the binding, the scene mirror, undo, the rope set, the sync
+   * provider — and swapping it underneath all of them is a great deal more
+   * machinery than `boot()` already is, to arrive at a board `boot()` produces
+   * correctly by construction.
+   *
+   * A missing photograph is said out loud rather than swallowed, but *after*
+   * the board is on screen — it is a fact about the board that just arrived,
+   * not a reason to refuse it, and T-75's placeholders are what it looks like.
+   */
+  const openBundle = async (): Promise<void> => {
+    let opened: Awaited<ReturnType<typeof native.bundleOpen>>;
+    try {
+      opened = await native.bundleOpen();
+    } catch (error) {
+      console.warn("[bundle] the board could not be opened", error);
+      flash.say("That board could not be opened — the reason is in the console");
+      return;
+    }
+    if (opened === null) return;
+
+    try {
+      await persistence.replaceWith(opened.snapshot);
+    } catch (error) {
+      // The one failure worth being loud about: the photographs have already
+      // landed and the board has not, so this window is now showing a board
+      // that disagrees with what is on the disk beside it.
+      console.error("[bundle] the board was read but could not be written", error);
+      flash.say("That board could not replace this one — nothing has changed");
+      return;
+    }
+    if (opened.missing.length > 0) {
+      // Survives the reload as a query the next boot reads, because this window
+      // is about to stop existing and a flash lasts 2.4 seconds.
+      console.warn(`[bundle] ${opened.missing.length} photographs were not in that bundle`);
+    }
+    window.location.reload();
+  };
+
   root.addEventListener("contextmenu", (e) => {
     e.preventDefault();
     // A right-click on the menu itself, or on the HUD. Chrome takes its own.
@@ -1173,6 +1291,9 @@ async function boot(): Promise<void> {
         [...selection.strings],
         { link: invite, copy: copyInvite },
         { on: prefs.ageing(), set: setAgeing },
+        native.kind === "tauri"
+          ? { export: () => void exportBoard(), open: () => void openBundle() }
+          : null,
       ),
     );
   });

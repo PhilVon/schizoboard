@@ -28,6 +28,8 @@ import {
   CHUNK_BYTES,
   type AssetMeta,
   type AssetVariant,
+  type BundleOpened,
+  type BundleWritten,
   type ClipboardKind,
   type ClipboardManifest,
   type ClipboardPayload,
@@ -187,6 +189,22 @@ export class MockPlatform implements Platform {
   async docCompact(snapshot: Uint8Array): Promise<void> {
     this.snapshot = snapshot;
     this.updates.length = 0;
+  }
+
+  /**
+   * Missing for the same reason `assetExport` is, and rather more so. A browser
+   * could be talked into producing the zip — the document and the photographs
+   * are both reachable from here — and it still could not report whether the
+   * user kept the file, which is the difference between `null` and a written
+   * bundle. And on the way back in there is no picker to read a `.schizo` with
+   * at all.
+   */
+  bundleSaveAs(): Promise<BundleWritten | null> {
+    return unavailable("Exporting a board");
+  }
+
+  bundleOpen(): Promise<BundleOpened | null> {
+    return unavailable("Opening a bundle");
   }
 
   async clipboardReadManifest(): Promise<ClipboardManifest> {

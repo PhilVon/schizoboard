@@ -83,6 +83,44 @@ export interface DocState {
   updates: Uint8Array[];
 }
 
+// --- bundles (T-84) ---------------------------------------------------------
+
+/** What the shell has to be told to write a `.schizo`. Four things, none of
+ *  them a document — Rust owns bytes and no schema. */
+export interface BundleSpec {
+  schemaVersion: number;
+  /** Also the suggested filename, after Rust has reduced it to one. */
+  title: string;
+  /** Every hash the board references. Order and duplicates do not matter. */
+  assets: string[];
+}
+
+/** `manifest.json`, as it was actually written. */
+export interface BundleManifest {
+  format: string;
+  schemaVersion: number;
+  title: string;
+  /** What is *in the archive* — never what the board wished were in it. */
+  assets: string[];
+}
+
+export interface BundleWritten {
+  embedded: number;
+  /** Referenced by the board and not on this disk, so not in the file. */
+  missing: string[];
+  bytes: number;
+}
+
+export interface BundleOpened {
+  manifest: BundleManifest;
+  /** The document the bundle holds, opaque — applying it is the caller's. */
+  snapshot: Uint8Array;
+  /** Hashes now in this machine's store. */
+  ingested: string[];
+  /** Listed by the manifest and not actually in the archive. */
+  missing: string[];
+}
+
 export type ClipboardKind = "image" | "text" | "html" | "files";
 
 export interface ClipboardManifest {
@@ -243,6 +281,42 @@ export interface Platform {
   docAppendUpdate(bytes: Uint8Array): Promise<void>;
   docLoad(): Promise<DocState>;
   docCompact(snapshot: Uint8Array): Promise<void>;
+
+  // --- bundles: the whole board as one file -------------------------------
+  /**
+   * Write a `.schizo` — a zip holding the manifest, the document snapshot and
+   * every photograph the board references (DATA-MODEL section 12).
+   *
+   * Takes no destination, on exactly the standing `assetExport` above sets out:
+   * Rust opens a native save dialog and the renderer never names a path. What
+   * crosses instead is `spec.title`, a *suggestion* that Rust reduces to a
+   * filename before the dialog shows it.
+   *
+   * `spec.assets` is what the board references — `referencedAssets(board)`, the
+   * same set the janitor spares — and the snapshot is `snapshot(board)`. Rust
+   * never opens either: it is handed a list of hashes and a block of opaque
+   * bytes, which is the whole of what a bundle is from that side.
+   *
+   * Resolves `null` when the user closed the dialog, like `assetExport`'s
+   * `false`. Otherwise it resolves with what actually went in the file —
+   * including `missing`, the hashes the board references that this disk does
+   * not hold. That list is normally empty; it is not an error when it is not,
+   * because a photograph that only ever lived on a peer who has left (DESIGN
+   * section 11.1, risk 4) must not make a board un-handable.
+   */
+  bundleSaveAs(spec: BundleSpec, snapshot: Uint8Array): Promise<BundleWritten | null>;
+
+  /**
+   * Read a `.schizo` the user picks, putting its photographs in this machine's
+   * store and handing back the document it holds.
+   *
+   * Hands back rather than applies, because what to *do* with another board is
+   * a question about boards and this boundary owns bytes. Q-111 answered it:
+   * the bundle replaces the board in this window.
+   *
+   * Resolves `null` for a cancelled dialog.
+   */
+  bundleOpen(): Promise<BundleOpened | null>;
 
   // --- clipboard ---------------------------------------------------------
   clipboardReadManifest(): Promise<ClipboardManifest>;
