@@ -819,7 +819,9 @@ describe("undeveloped film", () => {
   function film(): { set: (view: AssetView) => void; layer: DomItemLayer; item: HTMLElement } {
     let view: AssetView = { url: "", phase: "unknown", fraction: 0 };
     const layer = new DomItemLayer(host, () => view);
-    add("a", { assetId: "abc" });
+    // Comfortably over EMERGE_MIN_PX, so the develop tests below are testing
+    // what they say they are and not the size floor.
+    add("a", { assetId: "abc" }, { w: 300, h: 300 });
     layer.sync(scene, dirty, null);
     return {
       layer,
@@ -1026,7 +1028,7 @@ describe("undeveloped film", () => {
     // "was it waiting a moment ago" would fade every photograph up afresh every
     // time the board was panned.
     const layer = new DomItemLayer(host, (sha) => ready(`asset://sha256/${sha}`));
-    add("a", { assetId: "abc" });
+    add("a", { assetId: "abc" }, { w: 300, h: 300 });
     layer.sync(scene, dirty, null);
     landed().img.dispatchEvent(new Event("load"));
     expect(landed().item.classList.contains("is-emerging")).toBe(true);
@@ -1092,7 +1094,7 @@ describe("undeveloped film", () => {
     // up from nothing, having already spent that item's first sight on it.
     let view: AssetView = ready("asset://sha256/abc");
     const layer = new DomItemLayer(host, () => view);
-    add("a", { assetId: "abc" });
+    add("a", { assetId: "abc" }, { w: 300, h: 300 });
     layer.sync(scene, dirty, null);
     const first = landed();
     first.img.dispatchEvent(new Event("load"));
@@ -1105,7 +1107,7 @@ describe("undeveloped film", () => {
 
     dirty.clear();
     view = ready("asset://sha256/def");
-    add("b", { assetId: "def" });
+    add("b", { assetId: "def" }, { w: 300, h: 300 });
     layer.sync(scene, dirty, null);
     const item = host.querySelector(".item-polaroid") as HTMLElement;
     expect(item).toBe(first.item);
@@ -1114,12 +1116,37 @@ describe("undeveloped film", () => {
     layer.destroy();
   });
 
+  it("does not develop a photograph too small to watch, and does not save it up", () => {
+    // The bound that bites: a board zoomed out to a wall of stamps has every
+    // photograph on it landing at once, and at that size there is no picture to
+    // come up. Driven on 300 fitted polaroids, developing them cost p99 frame
+    // time 28 ms -> 83 ms and a third of the frames in the four seconds after
+    // boot; below the floor it costs nothing, because nothing runs.
+    const layer = new DomItemLayer(host, (sha) => ready(`asset://sha256/${sha}`));
+    add("a", { assetId: "abc" }, { w: 60, h: 60 });
+    layer.sync(scene, dirty, null);
+    landed().img.dispatchEvent(new Event("load"));
+    expect(landed().item.classList.contains("is-emerging")).toBe(false);
+    expect(landed().item.classList.contains("is-waiting")).toBe(false);
+
+    // And the first sight was spent on it. Zooming in on a photograph that has
+    // been on the board for an hour must not develop it — that would be a board
+    // that brings things up at random, long after they arrived.
+    dirty.clear();
+    dirty.item("a");
+    layer.setRasterScale(8);
+    layer.sync(scene, dirty, null);
+    landed().img.dispatchEvent(new Event("load"));
+    expect(landed().item.classList.contains("is-emerging")).toBe(false);
+    layer.destroy();
+  });
+
   it("develops both prints of one photograph, and staggers them apart", () => {
     // Keyed by item and not by hash. Pasting a picture twice makes two items and
     // one asset, and watching one of them come up is not having seen the other.
     const layer = new DomItemLayer(host, (sha) => ready(`asset://sha256/${sha}`));
-    add("a", { assetId: "abc", seed: 11 }, { x: -200 });
-    add("b", { assetId: "abc", seed: 12 }, { x: 200 });
+    add("a", { assetId: "abc", seed: 11 }, { x: -400, w: 300, h: 300 });
+    add("b", { assetId: "abc", seed: 12 }, { x: 400, w: 300, h: 300 });
     layer.sync(scene, dirty, null);
     const items = [...host.querySelectorAll<HTMLElement>(".item-polaroid")];
     for (const img of host.querySelectorAll(".pol-photo")) img.dispatchEvent(new Event("load"));

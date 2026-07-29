@@ -284,21 +284,42 @@
    * that never arrives can leave the emulsion on top of nothing at all — never a
    * picture nobody can see.
    */
-  animation: film-emerge 1150ms cubic-bezier(0.22, 0.61, 0.3, 1) var(--emerge-delay, 0ms) backwards;
+  animation: film-emerge 1150ms linear var(--emerge-delay, 0ms) backwards;
 }
 
+/*
+ * `linear`, and every bit of the shape below is in the values instead. A timing
+ * function is applied to each keyframe *interval* rather than to the animation,
+ * so an eased curve over four keyframes is four eased curves end to end — and
+ * measured off the running window that is a surge, a plateau, another surge:
+ * the first version of this sat at 0.39 opacity from 400 ms to 580 ms and then
+ * jumped. Density is what should be curved here, not time, so time is left
+ * straight and the numbers do the work.
+ *
+ * Which they do in an S: slow to appear, quick through the middle, settling at
+ * the end. That is what a print does, and the reason is the same one — an
+ * emulsion has a toe and a shoulder, and the straight-line part is in between.
+ */
 @keyframes film-emerge {
   0% {
     opacity: 0;
-    filter: sepia(0.7) saturate(0.2) contrast(0.55) brightness(1.14);
+    filter: sepia(0.72) saturate(0.15) contrast(0.5) brightness(1.16);
   }
-  38% {
-    opacity: 0.42;
-    filter: sepia(0.62) saturate(0.32) contrast(0.6) brightness(1.1);
+  25% {
+    opacity: 0.16;
+    filter: sepia(0.68) saturate(0.22) contrast(0.55) brightness(1.13);
   }
-  72% {
-    opacity: 0.88;
-    filter: sepia(0.3) saturate(0.72) contrast(0.84) brightness(1.03);
+  50% {
+    opacity: 0.44;
+    filter: sepia(0.55) saturate(0.4) contrast(0.68) brightness(1.09);
+  }
+  75% {
+    opacity: 0.76;
+    filter: sepia(0.32) saturate(0.68) contrast(0.84) brightness(1.04);
+  }
+  90% {
+    opacity: 0.93;
+    filter: sepia(0.14) saturate(0.86) contrast(0.93) brightness(1.02);
   }
   100% {
     opacity: 1;
@@ -315,15 +336,19 @@
  * Later than the picture, on purpose. The emulsion is the last thing to go, so
  * the grain is still faintly over the photograph when the photograph is already
  * sharp — which is the half-second that reads as film rather than as a fade.
+ * `linear` for the reason `film-emerge` is: the shape is in the numbers.
  */
 .item-polaroid.is-emerging .pol-film {
-  animation: film-clear 1150ms ease-in var(--emerge-delay, 0ms) both;
+  animation: film-clear 1150ms linear var(--emerge-delay, 0ms) both;
 }
 
 @keyframes film-clear {
   0%,
-  30% {
+  25% {
     opacity: 1;
+  }
+  70% {
+    opacity: 0.45;
   }
   100% {
     opacity: 0;

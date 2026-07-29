@@ -48,7 +48,14 @@ import {
 } from "@/render/items/paper";
 import { ItemInk } from "@/render/ink/canvas";
 import { TextEditor, type ItemEditorHooks } from "@/render/items/editor";
-import { emergeDelay, FILM_CLASSES, filmClass, filmGrainUrl, IS_EMERGING } from "@/render/items/film";
+import {
+  emergeDelay,
+  EMERGE_MIN_PX,
+  FILM_CLASSES,
+  filmClass,
+  filmGrainUrl,
+  IS_EMERGING,
+} from "@/render/items/film";
 import { counterRotate, shadowSprite, type Elevation } from "@/render/items/shadow";
 import type { ItemLayer } from "@/render/items/view";
 import type { AssetPhase } from "@/state/assets";
@@ -241,6 +248,12 @@ class PolaroidView implements View {
   /** The film state last painted. Null so the first bind always paints one. */
   private boundPhase: AssetPhase | null = null;
   /**
+   * The longest edge this item is being drawn at, in device pixels — the last
+   * thing `bind` was told. Held because the decision it feeds ([`arrive`]) is
+   * taken in a `load` handler, some way after the bind that knew the number.
+   */
+  private screenPx = 0;
+  /**
    * How far the wash has been raised, in whole percent.
    *
    * Whole percent because that is the resolution the eye gets out of a wash
@@ -329,6 +342,10 @@ class PolaroidView implements View {
     // photograph undeveloped for good; guarding on the URL alone would leave it
     // blank while it developed, because every state short of `ready` resolves to
     // the same empty string.
+    // Ahead of the guard below, not after it. A zoom changes this without
+    // changing anything the guard compares, so a bind that correctly decides it
+    // has no work to do is exactly the bind that leaves this stale.
+    this.screenPx = screenPx;
     const asset = cold.assetId ? assetUrl(cold.assetId, screenPx) : NO_ASSET;
     const develop = Math.round(asset.fraction * 100);
     const sameFilm = asset.phase === this.boundPhase && develop === this.boundDevelop;
@@ -391,11 +408,19 @@ class PolaroidView implements View {
    * swap keeps the old picture up and never sets the class at all. What actually
    * distinguishes a develop is whether there has ever been a photograph here,
    * and that is a question only [`FirstSight`] can answer.
+   *
+   * The size floor is [`EMERGE_MIN_PX`], and the first sight is spent whether or
+   * not it is cleared. Spending it is the point: a photograph that arrived while
+   * the board was zoomed out to a wall of stamps has been seen, and having it
+   * come up later — on the pan that brings it back at a readable size — would be
+   * a board that develops things at random long after they got there.
    */
   private arrive(): void {
     this.el.classList.remove("is-waiting");
     const cold = this.boundCold;
-    if (cold === null || !this.firstSight(cold.id)) return;
+    if (cold === null) return;
+    const first = this.firstSight(cold.id);
+    if (!first || this.screenPx < EMERGE_MIN_PX) return;
     // Written here rather than in `bind`, so a photograph being dragged around
     // does not rewrite a property that matters for one second of its life.
     this.el.style.setProperty("--emerge-delay", `${emergeDelay(cold.seed)}ms`);
