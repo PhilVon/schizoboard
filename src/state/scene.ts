@@ -1108,6 +1108,42 @@ export class Scene {
   }
 
   /**
+   * Where a pin sits in an item's own un-rotated frame, into `out`.
+   *
+   * The companion to [`pinsOf`], and the two are almost always asked together:
+   * that one says which pins are pushed through a sheet, and this says whereabouts
+   * — which is the question anything about the *shape* of the sheet has to ask.
+   * `render/items/curl.ts` is the caller, because a corner with a pin near it is
+   * held flat and a corner without one is not (DESIGN section 4.4).
+   *
+   * Computed rather than read off `pin.wx`/`wy`, for [`pinWorld`]'s reason: those
+   * are only refreshed for pins whose item moved, so a pin belonging to a still
+   * item that another item has been dragged *over* has a world position from
+   * whenever it last moved, which may be never.
+   *
+   * By slot, like `boundsAt`, because every caller already has one — it took a
+   * `pinsOf` to get here — and a lookup per pin per frame to turn it back into an
+   * id would be paid on the DOM phase's walk of the whole viewport.
+   */
+  pinInItem(pinId: string, slot: number, out: Point): Point | null {
+    const pin = this.pins.get(pinId);
+    if (pin === undefined) return null;
+    this.pinWorld(pin, out);
+    const angle = this.renderRot(slot);
+    // Safe to read `out` back: `rotateIn` takes its inputs as scalars, so the
+    // source and the destination being the same object costs nothing.
+    return rotateIn(
+      out.x,
+      out.y,
+      this.renderX(slot),
+      this.renderY(slot),
+      Math.cos(angle),
+      Math.sin(angle),
+      out,
+    );
+  }
+
+  /**
    * Which pins store their coordinates in this item's frame — the *parent*
    * relationship, which is no longer the same set as the one above.
    *

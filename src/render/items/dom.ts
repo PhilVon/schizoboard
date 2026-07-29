@@ -46,7 +46,14 @@ import {
   stockBase,
   stockRuling,
 } from "@/render/items/paper";
-import { edgeClipPath, tearEdge } from "@/render/items/edge";
+import {
+  cornerCurl,
+  cornerFace,
+  CURL_PROPS,
+  CURL_THROW,
+  FACE_PROPS,
+} from "@/render/items/curl";
+import { EDGE_PROPS, sheetEdge, tearEdge } from "@/render/items/edge";
 import { ItemInk } from "@/render/ink/canvas";
 import { TextEditor, type ItemEditorHooks } from "@/render/items/editor";
 import { clearHand, writeHand } from "@/render/items/hand";
@@ -58,7 +65,13 @@ import {
   filmGrainUrl,
   IS_EMERGING,
 } from "@/render/items/film";
-import { counterRotate, shadowSprite, type Elevation } from "@/render/items/shadow";
+import {
+  counterRotate,
+  LIGHT_DX,
+  LIGHT_DY,
+  shadowSprite,
+  type Elevation,
+} from "@/render/items/shadow";
 import type { ItemLayer } from "@/render/items/view";
 import type { AssetPhase } from "@/state/assets";
 import type { DirtySets } from "@/state/dirty";
@@ -146,6 +159,12 @@ interface View {
    * forgotten would be inherited by whichever note got this node next.
    */
   adopt(field: HTMLTextAreaElement | null): void;
+  /**
+   * How curled each of the four corners is, clockwise from the top left
+   * (`curl.ts`). Offered rather than computed here, because the answer is a
+   * question about pins and the view has never heard of one.
+   */
+  setCurl(corners: Float32Array, faces: Float32Array): void;
   /**
    * The item's committed ink. Identical on both archetypes, which is right —
    * every kind of paper on this board can be drawn on (DESIGN section 2.1).
@@ -517,6 +536,16 @@ class PolaroidView implements View {
     this.shadow.update(rot);
   }
 
+  /**
+   * A polaroid does not curl.
+   *
+   * DESIGN 4.4 puts the curl under notes, cards and scraps, and that is a fact
+   * about the object rather than an omission: a print is card stock inside a
+   * frame, and the reason a photograph on a real board bends at the corner is
+   * that somebody bent it. The pins hold this one exactly as much either way.
+   */
+  setCurl(): void {}
+
   adopt(field: HTMLTextAreaElement | null): void {
     if (field === null) {
       this.el.classList.remove("is-editing");
@@ -599,10 +628,19 @@ class PaperView implements View {
   private readonly surface: HTMLDivElement;
   private readonly grain: HTMLDivElement;
   private readonly tear: HTMLDivElement;
+  private readonly bend: HTMLDivElement;
+  private readonly lift: HTMLDivElement;
   private readonly body: HTMLDivElement;
   private boundCold: ItemCold | null = null;
   /** The editor's field while this item is the one being written on (T-179). */
   private field: HTMLTextAreaElement | null = null;
+  /**
+   * The curl last written, per corner, quantised — see [`setCurl`]. Negative so
+   * the first offer always writes, whatever it is.
+   */
+  private readonly written = new Float32Array(CURL_PROPS.length + FACE_PROPS.length).fill(-9);
+  /** The rotation the lift shadow's displacement was counter-rotated for. */
+  private liftRot = Number.NaN;
   readonly ink: ItemInk;
 
   constructor() {
@@ -627,10 +665,22 @@ class PaperView implements View {
     this.body = document.createElement("div");
     this.body.className = "paper-text";
 
+    // The bend in a curling corner: on the sheet, so the ragged silhouette
+    // clips it, and over the writing, because a sheet that bends bends what is
+    // written on it too.
+    this.bend = document.createElement("div");
+    this.bend.className = "paper-bend";
+
+    // And what the corner throws. Outside the surface and *over* it, because a
+    // lifted corner on the light side of the sheet casts onto the sheet and one
+    // on the far side casts onto the cork — see `curl.ts`.
+    this.lift = document.createElement("div");
+    this.lift.className = "paper-lift";
+
     // Above the ruling, which a tear destroys, and below the writing, which sits
     // on the paper whatever the paper has been through.
-    this.surface.append(this.grain, this.tear, this.body);
-    this.el.append(this.shadow.el, this.surface);
+    this.surface.append(this.grain, this.tear, this.body, this.bend);
+    this.el.append(this.shadow.el, this.surface, this.lift);
   }
 
   bind(cold: ItemCold, _assetUrl: AssetResolver, _screenPx: number): void {
@@ -638,10 +688,20 @@ class PaperView implements View {
     this.boundCold = cold;
     const stock = defaultStock(cold.type, cold.seed);
     this.el.dataset["stock"] = stock;
-    // The silhouette, and where the pulp shows. Both are the stock's and the
-    // seed's, so both are written here rather than in `transform` — the
-    // percentages in the path carry a resize on their own.
-    this.surface.style.clipPath = edgeClipPath(stock, cold.seed);
+    // The silhouette, where its corners are, and where the pulp shows. All of
+    // them are the stock's and the seed's, so all of them are written here
+    // rather than in `transform` — the percentages in the path carry a resize on
+    // its own, and an offset in board units does not change with the sheet.
+    //
+    // The corners go out as well as the path because the curl is drawn *at* a
+    // corner, and the corner of the item's rectangle is not where the paper ends
+    // (`edge.ts`). A fold anchored on the box has its highlight clipped away by
+    // the very silhouette it is meant to belong to.
+    const edge = sheetEdge(stock, cold.seed);
+    this.surface.style.clipPath = edge.path;
+    for (let i = 0; i < EDGE_PROPS.length; i++) {
+      this.el.style.setProperty(EDGE_PROPS[i]!, `${(edge.corners[i] ?? 0).toFixed(2)}px`);
+    }
     const tear = tearEdge(stock);
     if (tear) this.el.dataset["tear"] = tear;
     else delete this.el.dataset["tear"];
@@ -660,6 +720,35 @@ class PaperView implements View {
     // the old sprite's offset for a frame and the shadow jumps sideways.
     setCarried(this.el, this.shadow, lift);
     this.shadow.update(rot);
+    if (rot !== this.liftRot) {
+      this.liftRot = rot;
+      const throw_ = counterRotate(LIGHT_DX * CURL_THROW, LIGHT_DY * CURL_THROW, rot);
+      this.lift.style.transform = `translate(${throw_.x.toFixed(2)}px, ${throw_.y.toFixed(2)}px)`;
+    }
+  }
+
+  /**
+   * Take this frame's curl.
+   *
+   * Quantised to twentieths, and that is the same decision `--develop` took for
+   * the same reason: this is offered on every frame anything on the board moves,
+   * and a raw float would rewrite four custom properties per sheet per frame of
+   * every drag and every swing. A twentieth of the way through a shading this
+   * subtle is well under what the eye resolves.
+   */
+  setCurl(corners: Float32Array, faces: Float32Array): void {
+    const n = CURL_PROPS.length;
+    for (let c = 0; c < n; c++) {
+      const curl = Math.round((corners[c] ?? 0) * 20) / 20;
+      if (curl !== this.written[c]) {
+        this.written[c] = curl;
+        this.el.style.setProperty(CURL_PROPS[c]!, curl.toFixed(2));
+      }
+      const face = Math.round((faces[c] ?? 0) * 20) / 20;
+      if (face === this.written[n + c]) continue;
+      this.written[n + c] = face;
+      this.el.style.setProperty(FACE_PROPS[c]!, face.toFixed(2));
+    }
   }
 
   adopt(field: HTMLTextAreaElement | null): void {
@@ -680,7 +769,10 @@ class PaperView implements View {
     // Beside rather than inside, because `bind` writes `textContent` on the
     // static node and that would take the field with it.
     field.className = "item-field paper-text";
-    this.surface.append(field);
+    // Before the bend, which is where the static text is too: a sheet that is
+    // curling at a corner curls what is written there, and appending would have
+    // put the caret's own text on top of the shading instead of under it.
+    this.surface.insertBefore(field, this.bend);
   }
 
   release(): void {
@@ -694,6 +786,11 @@ class PaperView implements View {
     // exactly the class of bug the polaroid's release is a paragraph long about.
     delete this.el.dataset["tear"];
     this.surface.style.removeProperty("clip-path");
+    for (const prop of [...EDGE_PROPS, ...CURL_PROPS, ...FACE_PROPS]) {
+      this.el.style.removeProperty(prop);
+    }
+    this.written.fill(-9);
+    this.liftRot = Number.NaN;
     this.adopt(null);
     this.shadow.reset();
     this.ink.release();
@@ -746,6 +843,11 @@ export class DomItemLayer implements ItemLayer {
 
   /** Reused by `hitTest`, which walks the paint order on every pointer move. */
   private readonly probe: Point = { x: 0, y: 0 };
+
+  /** Reused by the curl pass, for the same reason: one per frame, not one per
+   *  sheet in the viewport. */
+  private readonly corners = new Float32Array(CURL_PROPS.length);
+  private readonly faces = new Float32Array(FACE_PROPS.length);
 
   /**
    * Items whose ink canvas is out of date, waiting for the INK phase.
@@ -964,9 +1066,24 @@ export class DomItemLayer implements ItemLayer {
       }
     }
 
-    for (const id of wanted) this.place(scene, dirty, id);
+    /**
+     * Does anything's curl need re-asking?
+     *
+     * Not on a pure camera move, which is the frame this skips: panning changes
+     * nothing about which pins hold which sheets. Everything else does, and it
+     * cannot be narrowed to the dirty items themselves. A pin dragged onto a
+     * still note touches only `dirty.pins`; a *parented* pin carried over a
+     * second note by the item it belongs to touches neither that note nor any
+     * pin, because nothing about either of them was written. The only honest
+     * answer is that a board where an item or a pin moved has to re-ask for
+     * everything on the screen — which is a set lookup and, for the sheets that
+     * have a pin at all, a handful of arithmetic (`curl.ts`).
+     */
+    const recurl = dirty.all || dirty.items.size > 0 || dirty.pins.size > 0;
+
+    for (const id of wanted) this.place(scene, dirty, id, recurl);
     // And the note being written on, if the culler had left it out.
-    if (writing !== null && !wanted.has(writing)) this.place(scene, dirty, writing);
+    if (writing !== null && !wanted.has(writing)) this.place(scene, dirty, writing, recurl);
 
     // Last, so it sees this frame's mounts: a note that has just come back into
     // the viewport has a different view from the one it left with.
@@ -979,7 +1096,7 @@ export class DomItemLayer implements ItemLayer {
   }
 
   /** Mount `id` if it is not mounted, and write its transform if it moved. */
-  private place(scene: Scene, dirty: DirtySets, id: string): void {
+  private place(scene: Scene, dirty: DirtySets, id: string, recurl: boolean): void {
     // One map lookup per item per frame, and then the typed arrays directly.
     // This walk used to go through `poseOf`, which mints an object per item —
     // affordable when a clean frame skipped the whole loop, and hundreds of
@@ -1036,6 +1153,16 @@ export class DomItemLayer implements ItemLayer {
         scene.h[slot]!,
         scene.lift[slot]!,
       );
+    }
+
+    // After the transform, not before: `cornerCurl` reads the pose the sheet is
+    // drawn at, and a mount that has not been positioned yet is at the origin.
+    // `isNew` is in here because a sheet that has just come back into the
+    // viewport has never been told, whatever the dirty sets say.
+    if (recurl || isNew) {
+      cornerCurl(scene, id, slot, this.corners);
+      cornerFace(scene.renderRot(slot), this.corners, this.faces);
+      view.setCurl(this.corners, this.faces);
     }
   }
 

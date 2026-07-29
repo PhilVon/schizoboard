@@ -131,15 +131,31 @@ export function tearEdge(stock: PaperStock): TornEdge | null {
   return treatmentOf(stock).tear;
 }
 
+export interface SheetEdge {
+  /** The silhouette, as a `clip-path` value. */
+  path: string;
+  /**
+   * How far each corner of the paper sits inside the corner of the item's own
+   * rectangle, in board units: `[x, y]` per corner, clockwise from the top left.
+   *
+   * Handed out because a rectangle's corner is not where the paper ends, and
+   * anything drawn *at* a corner has to know the difference. The curl is the
+   * caller: a fold anchored on the box puts its highlight where the sheet has
+   * already been clipped away, so on a torn head it lands several units out into
+   * nothing and the fold and the edge visibly disagree.
+   */
+  corners: Float32Array;
+}
+
 /**
- * The sheet's silhouette, as a `clip-path` value.
+ * The sheet's silhouette, and where its corners actually are.
  *
  * Clockwise from the top-left corner. Each corner is emitted once and takes one
  * offset from each of the two edges that meet there, so a corner is displaced on
  * both axes — a corner that receded on one axis only is a bevel, and a bevel is
  * a thing a machine does.
  */
-export function edgeClipPath(stock: PaperStock, seed: number): string {
+export function sheetEdge(stock: PaperStock, seed: number): SheetEdge {
   const treatment = treatmentOf(stock);
   const amplitude = (edge: TornEdge): number =>
     edge === treatment.tear ? TEAR_AMPLITUDE : treatment.ragged;
@@ -201,5 +217,37 @@ export function edgeClipPath(stock: PaperStock, seed: number): string {
   points.push(`${near("left", left - 1)} ${far("bottom", 0)}`);
   for (let i = left - 2; i > 0; i--) points.push(`${near("left", i)} ${along("left", i)}`);
 
-  return `polygon(${points.join(", ")})`;
+  // The same four corners the walk above emitted, as numbers rather than as
+  // CSS. Read off `depth` again rather than parsed back out of the string.
+  const corners = new Float32Array([
+    depth("left", 0),
+    depth("top", 0),
+    depth("right", 0),
+    depth("top", top - 1),
+    depth("right", right - 1),
+    depth("bottom", bottom - 1),
+    depth("left", left - 1),
+    depth("bottom", 0),
+  ]);
+
+  return { path: `polygon(${points.join(", ")})`, corners };
 }
+
+/**
+ * The custom properties the corner offsets are written to, in the order
+ * [`SheetEdge.corners`] holds them.
+ *
+ * Named for the corner rather than for the axis pair, so a stylesheet rule reads
+ * as the corner it is drawing: `--edge-tl-x` is how far in from the left the top
+ * left corner of the paper is.
+ */
+export const EDGE_PROPS = [
+  "--edge-tl-x",
+  "--edge-tl-y",
+  "--edge-tr-x",
+  "--edge-tr-y",
+  "--edge-br-x",
+  "--edge-br-y",
+  "--edge-bl-x",
+  "--edge-bl-y",
+] as const;

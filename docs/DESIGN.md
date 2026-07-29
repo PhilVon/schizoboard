@@ -405,6 +405,14 @@ Two things separate a tear from a cut, and both are in the geometry rather than 
 
 Paper curls very slightly at unpinned corners — implemented as a gradient and a shadow, not geometry — which is why a one-pin note looks like it's hanging and a four-pin note looks flat.
 
+"Unpinned" is not a property a corner has; it's a distance, so the curl is a falloff on how far the nearest pin *through the sheet* is, in board units rather than as a fraction of it — paper stiffness is physical, and a pin flattens about so much paper around it whether the sheet is a scrap or a poster. That is also what makes the four-pin case fall out rather than be arranged.
+
+The gradient is on the paper and the shadow is over everything. A corner that lifts on the light side of a sheet casts **onto the sheet**, and one on the far side casts onto the cork, so a shadow layer tucked behind the paper would draw two of the four corners and silently swallow the other two.
+
+All four corners are lit *differently*, and this is where §4.1 bites hardest. A flap at the top left tips into the light and its face brightens; the one at the bottom right tips away and darkens; the crease at the fold is there either way. A first version gave every corner the same bright tip and the same symmetric blob of shadow — including one sitting up-light of the corner, which is a shadow on the wrong side — and it read as four smudges rather than as four folds. A radial gradient is symmetric, so the throw has to clear its own radius or it spills back the way the light came from.
+
+Both are anchored on the corner of the *paper*, not of the item's box. Those differ by a couple of units on an ordinary sheet and by most of a centimetre on a torn head, and a fold centred on the box has its highlight clipped away by the very silhouette it belongs to — the fold and the edge visibly disagree, which is what a first version of this looked like and what Phil named on sight.
+
 ### 4.5 Pins
 
 Pushpins are the default: a coloured spherical head with a specular highlight positioned per the global light, a visible metal shaft where it meets the surface, and its own small hard shadow. Thumbtacks and nails are alternatives.

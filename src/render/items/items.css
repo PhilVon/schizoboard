@@ -643,6 +643,178 @@
   word-break: break-word;
 }
 
+/*
+ * Curl at unpinned corners — DESIGN 4.4, and `render/items/curl.ts`.
+ *
+ * > Paper curls very slightly at unpinned corners — implemented as a gradient
+ * > and a shadow, not geometry — which is why a one-pin note looks like it's
+ * > hanging and a four-pin note looks flat.
+ *
+ * Four custom properties in [0, 1], written on the item root by the view. They
+ * are read here as an **alpha multiplier**, which is what keeps this static: a
+ * board of five hundred sheets, each curling differently, is four number writes
+ * per sheet and no string building at all. `calc()` inside an `rgba()` alpha is
+ * the whole trick.
+ *
+ * `0` is the default in every `var()` below rather than a value written on
+ * mount, so a sheet whose view has not been told yet — and a polaroid, and any
+ * caller with no pins wired up — is flat instead of maximally curled.
+ *
+ * Gradient radii are in board units, so a curl is the same physical size on a
+ * scrap and on a poster. The same reasoning as the ragged edge's offsets, and
+ * the same reason percentages would have been wrong: a corner does not lift
+ * proportionally more because the sheet is bigger.
+ */
+
+.paper-bend,
+.paper-lift {
+  position: absolute;
+  pointer-events: none;
+}
+
+/*
+ * The bend, on the paper: two layers per corner.
+ *
+ * **The lit one** shows only where a flap has tipped *toward* the light —
+ * `--face-*` is signed, and an alpha that comes out negative clamps to zero
+ * rather than dropping the layer, so one number drives both this and its
+ * opposite below. Which corner that is depends on the light and on how the sheet
+ * is turned, and both are in the number: a note rotated far enough swaps which
+ * of its corners catches the light, exactly as a real one would.
+ *
+ * **The dark one** carries two separate things in the same warm brown, which is
+ * why they can share a layer. Its centre is the far-side flap — the mirror of
+ * the highlight, off the same signed number — and its outer ring is the crease,
+ * which is where the sheet bends and is there whichever way the corner points.
+ * The crease is `--curl-*` and the tip is `--face-*`, summed in one `calc()`.
+ *
+ * Warm brown rather than grey, under the rule the item shadow is written to
+ * (DESIGN 4.1: shadow colour is never black), because this is the same light
+ * falling on the same paper.
+ */
+/*
+ * Each gradient is anchored on the corner of the **paper**, not on the corner of
+ * the item's box — `--edge-*` is how far in the silhouette put it (`edge.ts`).
+ * The two differ by a couple of board units on an ordinary sheet and by most of
+ * a centimetre on a torn head, and a fold centred on the box is a fold whose
+ * highlight the silhouette has already clipped away: the bend and the edge it
+ * belongs to visibly disagree, which is what gave the first version of this its
+ * halo. The `0px` fallbacks are the untorn rectangle, so a polaroid or a caller
+ * that never wrote them is simply square.
+ */
+.paper-bend {
+  inset: 0;
+  background:
+    /* the lit flaps */
+    radial-gradient(
+      38px 38px at var(--edge-tl-x, 0px) var(--edge-tl-y, 0px),
+      rgba(255, 253, 246, calc(0.4 * var(--face-tl, 0))) 0%,
+      rgba(255, 253, 246, calc(0.15 * var(--face-tl, 0))) 30%,
+      rgba(255, 253, 246, 0) 78%
+    ),
+    radial-gradient(
+      38px 38px at calc(100% - var(--edge-tr-x, 0px)) var(--edge-tr-y, 0px),
+      rgba(255, 253, 246, calc(0.4 * var(--face-tr, 0))) 0%,
+      rgba(255, 253, 246, calc(0.15 * var(--face-tr, 0))) 30%,
+      rgba(255, 253, 246, 0) 78%
+    ),
+    radial-gradient(
+      38px 38px at calc(100% - var(--edge-br-x, 0px)) calc(100% - var(--edge-br-y, 0px)),
+      rgba(255, 253, 246, calc(0.4 * var(--face-br, 0))) 0%,
+      rgba(255, 253, 246, calc(0.15 * var(--face-br, 0))) 30%,
+      rgba(255, 253, 246, 0) 78%
+    ),
+    radial-gradient(
+      38px 38px at var(--edge-bl-x, 0px) calc(100% - var(--edge-bl-y, 0px)),
+      rgba(255, 253, 246, calc(0.4 * var(--face-bl, 0))) 0%,
+      rgba(255, 253, 246, calc(0.15 * var(--face-bl, 0))) 30%,
+      rgba(255, 253, 246, 0) 78%
+    ),
+    /* the shaded flaps, and the crease every corner has */
+    radial-gradient(
+      44px 44px at var(--edge-tl-x, 0px) var(--edge-tl-y, 0px),
+      rgba(88, 66, 40, calc(-0.3 * var(--face-tl, 0))) 0%,
+      rgba(96, 73, 44, calc(0.05 * var(--curl-tl, 0) - 0.1 * var(--face-tl, 0))) 32%,
+      rgba(104, 80, 48, calc(0.13 * var(--curl-tl, 0))) 60%,
+      rgba(104, 80, 48, 0) 100%
+    ),
+    radial-gradient(
+      44px 44px at calc(100% - var(--edge-tr-x, 0px)) var(--edge-tr-y, 0px),
+      rgba(88, 66, 40, calc(-0.3 * var(--face-tr, 0))) 0%,
+      rgba(96, 73, 44, calc(0.05 * var(--curl-tr, 0) - 0.1 * var(--face-tr, 0))) 32%,
+      rgba(104, 80, 48, calc(0.13 * var(--curl-tr, 0))) 60%,
+      rgba(104, 80, 48, 0) 100%
+    ),
+    radial-gradient(
+      44px 44px at calc(100% - var(--edge-br-x, 0px)) calc(100% - var(--edge-br-y, 0px)),
+      rgba(88, 66, 40, calc(-0.3 * var(--face-br, 0))) 0%,
+      rgba(96, 73, 44, calc(0.05 * var(--curl-br, 0) - 0.1 * var(--face-br, 0))) 32%,
+      rgba(104, 80, 48, calc(0.13 * var(--curl-br, 0))) 60%,
+      rgba(104, 80, 48, 0) 100%
+    ),
+    radial-gradient(
+      44px 44px at var(--edge-bl-x, 0px) calc(100% - var(--edge-bl-y, 0px)),
+      rgba(88, 66, 40, calc(-0.3 * var(--face-bl, 0))) 0%,
+      rgba(96, 73, 44, calc(0.05 * var(--curl-bl, 0) - 0.1 * var(--face-bl, 0))) 32%,
+      rgba(104, 80, 48, calc(0.13 * var(--curl-bl, 0))) 60%,
+      rgba(104, 80, 48, 0) 100%
+    );
+}
+
+/*
+ * And what the corner throws.
+ *
+ * Outside the sheet's box by `CURL_PAD` on every side and *over* the sheet
+ * rather than behind it, because half the corners cast onto the cork and half
+ * cast onto the paper — `curl.ts` says why at length. The corners of the paper
+ * are therefore at `CURL_PAD` in from this node's own edges.
+ *
+ * The whole node is displaced along the board's one light by the view, which
+ * counter-rotates it out of the item's frame so that a note turned on its side
+ * is not lit from its own private direction (`shadow.ts`).
+ */
+/*
+ * `--lift-pad` is how far outside the sheet this node reaches, and it has to
+ * clear `CURL_THROW` plus the blob's own radius or the far corner's shadow is
+ * cut off square — which is a rectangle, on the one layer whose whole job is to
+ * not look like one. `SHADOW_PAD` in `shadow.ts` is the budget it spends: the
+ * culler pads item bounds by that, and anything reaching past it would pop in
+ * and out at the edge of the screen.
+ */
+.paper-lift {
+  --lift-pad: 44px;
+  inset: calc(-1 * var(--lift-pad));
+  background:
+    radial-gradient(
+      24px 24px at calc(var(--lift-pad) + var(--edge-tl-x, 0px))
+        calc(var(--lift-pad) + var(--edge-tl-y, 0px)),
+      rgba(38, 24, 12, calc(0.26 * var(--curl-tl, 0))) 0%,
+      rgba(38, 24, 12, calc(0.13 * var(--curl-tl, 0))) 42%,
+      rgba(38, 24, 12, 0) 100%
+    ),
+    radial-gradient(
+      24px 24px at calc(100% - var(--lift-pad) - var(--edge-tr-x, 0px))
+        calc(var(--lift-pad) + var(--edge-tr-y, 0px)),
+      rgba(38, 24, 12, calc(0.26 * var(--curl-tr, 0))) 0%,
+      rgba(38, 24, 12, calc(0.13 * var(--curl-tr, 0))) 42%,
+      rgba(38, 24, 12, 0) 100%
+    ),
+    radial-gradient(
+      24px 24px at calc(100% - var(--lift-pad) - var(--edge-br-x, 0px))
+        calc(100% - var(--lift-pad) - var(--edge-br-y, 0px)),
+      rgba(38, 24, 12, calc(0.26 * var(--curl-br, 0))) 0%,
+      rgba(38, 24, 12, calc(0.13 * var(--curl-br, 0))) 42%,
+      rgba(38, 24, 12, 0) 100%
+    ),
+    radial-gradient(
+      24px 24px at calc(var(--lift-pad) + var(--edge-bl-x, 0px))
+        calc(100% - var(--lift-pad) - var(--edge-bl-y, 0px)),
+      rgba(38, 24, 12, calc(0.26 * var(--curl-bl, 0))) 0%,
+      rgba(38, 24, 12, calc(0.13 * var(--curl-bl, 0))) 42%,
+      rgba(38, 24, 12, 0) 100%
+    );
+}
+
 /* Index cards are ruled from the top, so the text has to start on a line. */
 .item-paper[data-stock="index"] .paper-text {
   padding-left: 40px;

@@ -1,9 +1,14 @@
 import { describe, expect, it } from "vitest";
 
-import { edgeClipPath, tearEdge } from "@/render/items/edge";
+import { sheetEdge, tearEdge } from "@/render/items/edge";
 import type { PaperStock } from "@/render/items/paper";
 
 const SEED = 0x51ac7e;
+
+/** The silhouette alone, which is most of what this file is about. */
+function edgeClipPath(stock: PaperStock, seed: number): string {
+  return sheetEdge(stock, seed).path;
+}
 
 interface Point {
   /** The coordinate as written, so a test can tell `4px` from `40%`. */
@@ -107,6 +112,23 @@ describe("edgeClipPath", () => {
       if (x !== null) rest.push(x);
     }
     expect(Math.max(...head)).toBeGreaterThan(2 * Math.max(...rest));
+  });
+
+  it("hands out the corners it drew, so a fold can be put on one", () => {
+    // Anything drawn *at* a corner needs the corner of the paper rather than the
+    // corner of the box, and the two differ by most of a centimetre on a torn
+    // head. The pairs must therefore be the same numbers the path was built
+    // from — read off the four points where neither coordinate is a percentage.
+    const { path, corners } = sheetEdge("legal", SEED);
+    const found = parse(path)
+      .filter((point) => inset(point.x) !== null && inset(point.y) !== null)
+      .map((point) => [inset(point.x)!, inset(point.y)!]);
+    expect(found).toHaveLength(4);
+    expect(corners).toHaveLength(8);
+    for (const [i, pair] of found.entries()) {
+      expect(corners[i * 2]).toBeCloseTo(pair[0]!, 2);
+      expect(corners[i * 2 + 1]).toBeCloseTo(pair[1]!, 2);
+    }
   });
 
   it("displaces every corner on both axes", () => {
