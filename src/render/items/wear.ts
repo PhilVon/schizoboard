@@ -130,20 +130,36 @@ const FADE_IN = 0.2;
 export interface Crease {
   /** How developed, in [0, 1]. Zero means this sheet has no crease. */
   amount: number;
-  /** Degrees, in the sheet's frame. */
+  /** Degrees, in the sheet's frame, as a CSS gradient angle — see [`creaseFace`]. */
   rot: number;
   /** Percent along the fold's normal. */
   at: number;
 }
+
+/**
+ * How far off the sheet's own axis a fold may lie, in degrees.
+ *
+ * Small, because **paper folds along an axis**. A sheet doubled over leaves a
+ * line parallel to one of its own edges; nobody folds a note corner to corner.
+ * A uniform angle over the half circle is the obvious reading of "a crease" and
+ * it was visibly wrong on the first board that had one — a long straight line
+ * crossing a note at 37 degrees does not read as a fold at all, it reads as a
+ * scratch on the lens.
+ *
+ * Not zero either. A fold made by hand is a few degrees out, and a run of sheets
+ * creased at exactly 0 and exactly 90 is a set of rules printed on them.
+ */
+const CREASE_WANDER = 7;
 
 export function creaseOf(seed: number, wear: number): Crease {
   // A minority start early and everything creases eventually — paper that has
   // been handled for a year has been folded back at least once, which is not
   // true of coffee.
   const threshold = 0.16 + valueAt(seed, "crease-when") * 0.5;
+  const axis = valueAt(seed, "crease-axis") < 0.5 ? 0 : 90;
   return {
     amount: clamp01((wear - threshold) / FADE_IN),
-    rot: valueAt(seed, "crease-rot") * 180,
+    rot: axis + (valueAt(seed, "crease-rot") * 2 - 1) * CREASE_WANDER,
     // Kept off the edges. A fold within a few percent of the side of the sheet
     // is a line along the edge, which reads as a border rather than as a crease.
     at: 28 + valueAt(seed, "crease-at") * 44,

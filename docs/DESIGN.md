@@ -447,9 +447,23 @@ Default red is not a pure red — it's a slightly desaturated, slightly dark cot
 
 ### 4.7 Ageing and wear
 
-Boards accumulate. Items gain, slowly and subtly, over board time rather than wall-clock time: paper yellowing at the edges, occasional coffee rings, dog-eared corners, small creases, faint fading on photographs. Ageing is deterministic from the item's seed and its age, never random per render, and it is always subtle enough that nobody consciously notices it — they just find that an old board feels older.
+Boards accumulate. Items gain, slowly and subtly: paper yellowing at the edges, occasional coffee rings, dog-eared corners, small creases, faint fading on photographs. Ageing is deterministic from the item's seed and its age, never random per render, and it is always subtle enough that nobody consciously notices it — they just find that an old board feels older.
 
-Ageing can be turned off entirely for anyone who finds it precious.
+**Wall-clock, and per item.** This section said board time for a long while and §11.2 asked whether board time was needed; Q-105 settled that it is not. What an explicit board clock buys is that a board left in a drawer for a year does not lurch when it is opened. What it costs is a clock *in the document*: a periodic write forever, ticking at double speed with two windows open, on a field every peer has to agree about. That is a great deal of machinery standing between a sheet of paper and the fact that it is old, in aid of a jump that happens once, to a board nobody was looking at, over a change nobody is meant to notice anyway.
+
+Per item is the half that matters more. An old board is not uniformly old — it has a note pinned up two years ago and one added this morning, and the second one being crisp is what makes the first one read as old rather than making the whole board read as sepia.
+
+**Two mechanisms, because there are two kinds of ageing here.** Paper ages by having things *added* to it: light and air darken the fibres from the edges in, a hand puts a fold in it, a mug leaves a ring. Those are overlays on the sheet. A photograph ages by *losing* something — the dyes go, cyan first, so a print warms and its blacks lift, and the white card around it goes cream. That one is a filter, and painting it as an overlay instead is how a photograph ends up with a beige rectangle over it: a warm wash lands on the shadows as well as the highlights and turns black to brown.
+
+**Yellowing accrues; a coffee ring happens.** Both come off the same monotone number, so the discrete marks are per-sheet thresholds, seeded, spread past the top of the range — which is how "occasional" is spelled. Wear is asymptotic and a board lived with for a year sits around 0.6, so a threshold band running past 1 leaves about a quarter of a well-used board ringed and no two sheets acquiring one on the same day.
+
+**A crease lies along an axis of the sheet.** Nobody folds a note corner to corner, and a uniform angle over the half circle — which is the obvious reading of "small creases" — puts a long straight line across a note at thirty-odd degrees, which reads as a scratch on the lens rather than as a fold. A few degrees off the axis, because a hand made it.
+
+It is also drawn three times, and the third one is the interesting one. A fold is a shallow V, so one flank turns into the light and the other away from it, and which is which changes when the sheet is turned — §4.1 again, and the same trap the curl fell into. But the lit pair goes to *nothing* when the fold runs square across the light, and the crease is still there: the fibres along a fold are broken, and broken fibres are darker than the sized face of the sheet whichever way they point. So under the signed pair there is an unsigned line. The same split §4.4's curl already makes, where the flap's tip is signed and the crease at its base is not.
+
+Ageing can be turned off entirely for anyone who finds it precious — from a right-click on the cork. A *local* preference and not a document field: two people on one board may legitimately disagree about wanting to watch their paper go brown, and a `meta` flag would let one of them decide for the other. Turned off, the renderer is handed a clock on which nothing is older than this morning, which is a picture it has no way to tell from a board that is new, and no reason to want one.
+
+It costs nothing measurable. Two extra gradient layers per sheet and one per print, and on a board of 300 sheets all old enough to carry every mark above, neither the raster nor the DOM phase moved: 34.9 ms against 34.6 for a viewport capture, 1.1 ms against 1.0 for a full re-bind of everything mounted, both inside their own run-to-run spread. A board with nothing old on it pays less than that — the layers are `display: none` until an item has any wear at all.
 
 ### 4.8 Typography
 
@@ -859,11 +873,11 @@ Phase 3 is the first phase where the app is recognisably the product. Phase 4 is
 ### 11.2 Open questions
 
 - **Does the string pulling back on items (§5.7) survive contact with reality?** It's the highest-value fidelity detail and the one most likely to oscillate. Prototype it in phase 3 even though it ships later.
-- **How much ageing is too much?** Needs a real board and a week of living with it.
+- **How much ageing is too much?** Still needs a real board and a week of living with it — but no longer needs a week to be *looked* at. T-79 built the ladder: one seed at five ages, five seeds at one age, and a sheet turned four ways to check the fold against the light. A single value is unjudgeable and the ladder is what showed the first crease was drawn as a scratch.
 - **Is `under` string discoverable?** Tucking a string behind a photo is a lovely detail nobody may ever find. Possibly it should happen automatically when a photo is dropped on top of a string.
 - **What's the right handwriting face?** The jitter half of this is answered (§3.6, T-81): it is expressed in `em`, so it holds up at every size by construction, and below about half zoom the text is illegible with or without it — which is the LOD tiers' problem, not the jitter's. The face is still open.
 - **Should search do anything beyond flying the camera?** Highlighting matches without hiding non-matches might be within the pillar. Filtering is not.
-- **Do we need an explicit "board time" for ageing,** or is wall-clock adequate?
+- ~~**Do we need an explicit "board time" for ageing,** or is wall-clock adequate?~~ **Answered (Q-105): wall-clock is adequate**, and per item rather than per board. §4.7 has the reasoning and what it costs.
 
 ---
 

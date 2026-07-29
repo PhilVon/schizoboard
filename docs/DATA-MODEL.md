@@ -37,7 +37,7 @@ doc.getMap('boardInk')  // tileKey  → Y.Map<strokeId, Y.Map>
 | `title` | string | |
 | `corkSeed` | number | Deterministic cork texture variation |
 | `createdAt` | number | Epoch ms |
-| `boardEpoch` | number | Reference point for ageing (§4.7 of DESIGN) |
+| `boardEpoch` | number | Reserved for ageing, and **not read**. §4.7 of DESIGN ages each item from its own `createdAt` against the wall clock (Q-105), so there is no board-wide reference point to keep. Written on `initialiseBoard` and left alone: removing it would be a schema change to delete a field that costs one number. |
 
 ---
 

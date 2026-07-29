@@ -963,6 +963,14 @@ textarea.item-field::-webkit-scrollbar {
  * Lengths are board units, like everything else in this file. A coffee ring is
  * mug-sized on a scrap and mug-sized on a poster, which is the same argument the
  * curl's radii and the ragged edge's offsets are written down for.
+ *
+ * Measured before it landed, on 300 sheets all old enough to carry every mark
+ * here, aged and new on the same nodes in the same session: viewport capture
+ * 34.9 ms median against 34.6, and a full re-bind of the 108 mounted at a
+ * readable zoom 1.1 ms against 1.0. Both differences are inside their own
+ * run-to-run spread and both went the other way on a repeat. Two extra gradient
+ * layers per sheet cost nothing, which is the answer `.paper-bend` and
+ * `.paper-tear` already gave for the same shape of layer.
  */
 
 .paper-age,
@@ -1024,6 +1032,19 @@ textarea.item-field::-webkit-scrollbar {
  * The ridge is a board unit across. A crease is sharp — it is the one thing on
  * an old sheet that is not soft - and at that width it simply fades out as the
  * board is zoomed away from, which is the correct thing for it to do.
+ *
+ * ## And a third time, with no direction at all
+ *
+ * Because the lit pair goes to nothing when the fold runs square across the
+ * light: both flanks are then equally lit, `--crease-face` is near zero, and the
+ * crease disappears. That is right about the *shading* and wrong about the
+ * crease, which is still there — the fibres along a fold are broken, and broken
+ * fibres are darker than the sized face of the sheet whichever way they point.
+ *
+ * So the bottom layer is the fold itself, off `--crease` alone. It is the same
+ * split `.paper-bend` makes, where the flap's tip is signed and the crease at
+ * its base is not, and it was found the same way: a ladder of five ages on one
+ * seed, whose crease happened to run side on and was invisible at every one.
  */
 .paper-worn {
   background:
@@ -1036,9 +1057,9 @@ textarea.item-field::-webkit-scrollbar {
     linear-gradient(
       var(--crease-rot, 0deg),
       rgba(110, 86, 54, 0) calc(var(--crease-at, 50%) - 3px),
-      rgba(110, 86, 54, calc(0.15 * var(--crease, 0) * var(--crease-face, 0)))
+      rgba(110, 86, 54, calc(0.13 * var(--crease, 0) * var(--crease-face, 0)))
         calc(var(--crease-at, 50%) - 0.5px),
-      rgba(255, 253, 246, calc(0.2 * var(--crease, 0) * var(--crease-face, 0)))
+      rgba(255, 253, 246, calc(0.17 * var(--crease, 0) * var(--crease-face, 0)))
         calc(var(--crease-at, 50%) + 0.5px),
       rgba(255, 253, 246, 0) calc(var(--crease-at, 50%) + 3px)
     ),
@@ -1046,11 +1067,18 @@ textarea.item-field::-webkit-scrollbar {
     linear-gradient(
       var(--crease-rot, 0deg),
       rgba(255, 253, 246, 0) calc(var(--crease-at, 50%) - 3px),
-      rgba(255, 253, 246, calc(-0.2 * var(--crease, 0) * var(--crease-face, 0)))
+      rgba(255, 253, 246, calc(-0.17 * var(--crease, 0) * var(--crease-face, 0)))
         calc(var(--crease-at, 50%) - 0.5px),
-      rgba(110, 86, 54, calc(-0.15 * var(--crease, 0) * var(--crease-face, 0)))
+      rgba(110, 86, 54, calc(-0.13 * var(--crease, 0) * var(--crease-face, 0)))
         calc(var(--crease-at, 50%) + 0.5px),
       rgba(110, 86, 54, 0) calc(var(--crease-at, 50%) + 3px)
+    ),
+    /* the broken fibre along the fold, which has no side to be lit from */
+    linear-gradient(
+      var(--crease-rot, 0deg),
+      rgba(128, 106, 74, 0) calc(var(--crease-at, 50%) - 1.6px),
+      rgba(128, 106, 74, calc(0.1 * var(--crease, 0))) calc(var(--crease-at, 50%)),
+      rgba(128, 106, 74, 0) calc(var(--crease-at, 50%) + 1.6px)
     ),
     /*
      * The ring. A faint disc where the liquid wicked in and a dark rim where it

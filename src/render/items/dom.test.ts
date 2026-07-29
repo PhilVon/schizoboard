@@ -1320,3 +1320,89 @@ describe("tape", () => {
     expect(showing()).toBe(0);
   });
 });
+describe("ageing", () => {
+  const DAY = 86400000;
+  /** The real clock (Q-105): how long ago, in days, the item was made. */
+  const wallClock = (cold: ItemCold): number => (Date.now() - cold.createdAt) / DAY;
+
+  function sheet(): HTMLElement {
+    return host.querySelector<HTMLElement>(".item-paper")!;
+  }
+
+  it("leaves a board with nothing old on it entirely alone", () => {
+    // The default clock, and the whole cost of this feature on a new board: one
+    // class that is not added. Every wear layer is `display: none` behind it.
+    add("a", { type: "note", createdAt: Date.now() }, { w: 240, h: 190 });
+    layer.sync(scene, dirty, null);
+    expect(sheet().classList.contains("is-aged")).toBe(false);
+    expect(sheet().style.getPropertyValue("--age")).toBe("");
+  });
+
+  it("wears a sheet that has been up for years", () => {
+    layer.setAgeClock(wallClock);
+    add("a", { type: "note", seed: 49, createdAt: Date.now() - 1500 * DAY }, { w: 240, h: 190 });
+    layer.sync(scene, dirty, null);
+    const el = sheet();
+    expect(el.classList.contains("is-aged")).toBe(true);
+    expect(Number(el.style.getPropertyValue("--age"))).toBeGreaterThan(0.9);
+    // Seed 49 is folded and its fold is very nearly horizontal, so it also
+    // exercises the property `transform` writes rather than `bind`.
+    expect(Number(el.style.getPropertyValue("--crease"))).toBeGreaterThan(0);
+    expect(el.style.getPropertyValue("--crease-rot")).toMatch(/deg$/);
+    expect(el.style.getPropertyValue("--crease-face")).not.toBe("");
+  });
+
+  /**
+   * The switch, from the renderer's side (DESIGN section 4.7). Turning ageing
+   * off is a clock on which nothing is older than this morning, and it has to
+   * take the marks back off sheets that are already wearing them — a board that
+   * only stopped ageing *newly mounted* items would be worse than one that never
+   * stopped at all.
+   */
+  it("takes it all back off when the clock is turned off", () => {
+    layer.setAgeClock(wallClock);
+    add("a", { type: "note", seed: 49, createdAt: Date.now() - 1500 * DAY }, { w: 240, h: 190 });
+    layer.sync(scene, dirty, null);
+    expect(sheet().classList.contains("is-aged")).toBe(true);
+
+    layer.setAgeClock(() => 0);
+    dirty.clear();
+    dirty.everything();
+    layer.sync(scene, dirty, null);
+    expect(sheet().classList.contains("is-aged")).toBe(false);
+    for (const prop of ["--age", "--crease", "--stain", "--crease-rot"]) {
+      expect(sheet().style.getPropertyValue(prop)).toBe("");
+    }
+  });
+
+  it("fades the print's frame and not the shadow it casts", () => {
+    layer.setAgeClock(wallClock);
+    add("a", { createdAt: Date.now() - 1500 * DAY });
+    layer.sync(scene, dirty, null);
+    const item = host.querySelector<HTMLElement>(".item-polaroid")!;
+    expect(item.classList.contains("is-aged")).toBe(true);
+    expect(item.querySelector<HTMLElement>(".pol-frame")!.style.filter).toMatch(/saturate\(0\./);
+    // The item's own filter is the per-sheet tint and has nothing to do with age.
+    expect(item.style.filter).not.toMatch(/sepia/);
+    expect(item.querySelector<HTMLElement>(".item-shadow")!.style.filter).toBe("");
+  });
+
+  it("gives a recycled node no memory of the last item's years", () => {
+    // The bug this whole class of test exists for: a pooled node keeps its
+    // subtree and its inline style, so a fresh note landing on the node an
+    // ancient one left would arrive already yellowed.
+    layer.setAgeClock(wallClock);
+    add("a", { type: "note", seed: 49, createdAt: Date.now() - 1500 * DAY }, { w: 240, h: 190 });
+    layer.sync(scene, dirty, null);
+    expect(sheet().classList.contains("is-aged")).toBe(true);
+
+    dirty.clear();
+    dirty.item("a");
+    layer.sync(scene, dirty, new Set());
+    scene.removeItem("a");
+    add("b", { type: "note", seed: 49, createdAt: Date.now() }, { w: 240, h: 190 });
+    layer.sync(scene, dirty, null);
+    expect(sheet().classList.contains("is-aged")).toBe(false);
+    expect(sheet().style.getPropertyValue("--stain")).toBe("");
+  });
+});

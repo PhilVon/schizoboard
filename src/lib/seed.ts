@@ -192,12 +192,21 @@ export function edgeProfile(seed: number, edge: string, samples: number): Float3
  * How worn this item looks, in [0, 1].
  *
  * "deterministic from the item's seed and its age, never random per render"
- * (DESIGN section 4.7). Board time, not wall-clock: an item is as old as the
- * board says it is, so a board opened after a year does not visibly lurch.
+ * (DESIGN section 4.7). Days since the item was made, on the wall clock, which
+ * is what Q-105 settled — the file that turns this number into a look, and that
+ * carries the argument, is `render/items/wear.ts`.
+ *
+ * Asymptotic, so nothing on this board is ever *finished* ageing. That is not
+ * only a nicety: it is what makes the per-sheet thresholds over in `wear.ts`
+ * mean "occasional" rather than "eventually everything", because a realistic old
+ * board sits around 0.6 and a threshold above that is one the sheet never meets.
+ *
+ * The rate varies per item so that no two sheets on a board yellow in step. All
+ * of them slowly: at the middle rate a month is under a tenth of the way in, and
+ * a year is about three quarters.
  */
-export function wear(seed: number, ageInBoardDays: number): number {
-  if (ageInBoardDays <= 0) return 0;
-  // Different items age at different rates, but all of them slowly.
+export function wear(seed: number, ageInDays: number): number {
+  if (ageInDays <= 0) return 0;
   const rate = 0.6 + valueAt(seed, "wear") * 0.8;
-  return 1 - Math.exp((-ageInBoardDays * rate) / 240);
+  return 1 - Math.exp((-ageInDays * rate) / 240);
 }

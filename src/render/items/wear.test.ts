@@ -37,9 +37,29 @@ describe("creaseOf", () => {
       const crease = creaseOf(seed, 1);
       expect(crease.at).toBeGreaterThanOrEqual(28);
       expect(crease.at).toBeLessThanOrEqual(72);
-      expect(crease.rot).toBeGreaterThanOrEqual(0);
-      expect(crease.rot).toBeLessThan(180);
     }
+  });
+
+  /**
+   * Nobody folds a note corner to corner. A uniform angle over the half circle
+   * is the obvious reading of "a crease" and it read as a scratch on the lens on
+   * the first board that had one — so a fold lies along an axis of the sheet,
+   * and is a few degrees out because a hand made it.
+   */
+  it("folds along an axis of the sheet, and never exactly along one", () => {
+    let horizontal = 0;
+    let exact = 0;
+    for (let seed = 1; seed <= SEEDS; seed++) {
+      const { rot } = creaseOf(seed, 1);
+      const off = Math.min(Math.abs(rot), Math.abs(rot - 90));
+      expect(off).toBeLessThanOrEqual(7);
+      if (Math.abs(rot) <= 7) horizontal++;
+      if (off < 0.05) exact++;
+    }
+    // Both ways up, in roughly equal measure.
+    expect(horizontal / SEEDS).toBeGreaterThan(0.4);
+    expect(horizontal / SEEDS).toBeLessThan(0.6);
+    expect(exact).toBeLessThan(SEEDS / 100);
   });
 
   /**
