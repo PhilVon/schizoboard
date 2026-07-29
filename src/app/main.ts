@@ -26,6 +26,7 @@ import {
   insertPinIntoString,
   movePins,
   placePin,
+  rehomePins,
   resizeItems,
   scaleNodeSlack,
   scaleStringSlack,
@@ -75,7 +76,7 @@ import { Navigation } from "@/state/navigation";
 import { Presence } from "@/state/presence";
 import { RemoteMotion } from "@/state/remote";
 import { reveal, widen } from "@/state/reveal";
-import { Scene } from "@/state/scene";
+import { Scene, type PinHome } from "@/state/scene";
 import { Selection } from "@/state/selection";
 import { ToolMachine } from "@/state/tools/machine";
 import { EraserTool } from "@/state/tools/eraser";
@@ -424,6 +425,36 @@ async function boot(): Promise<void> {
     settle?: ReadonlyMap<string, WritePose>,
   ): Map<string, WritePose> | undefined =>
     settle && settle.size > 0 ? new Map(settle) : undefined;
+  /**
+   * Queue the re-home that this edit may have caused — D-31, and the second
+   * clause of the pin request T-176 built the first half of.
+   *
+   * **Pushed immediately behind its cause, and that placement is the design.**
+   * The queue drains in order at the end of phase 9, and phase 1 queues
+   * `undo.boundary()` rather than calling it, so a re-home pushed here lands
+   * inside the same undo entry as the write above it. Undo then restores a pin's
+   * frame along with the geometry that changed it, instead of towing the pin
+   * back with an item it had not been stuck through yet.
+   *
+   * **Off local edits only, never off an observed one.** Two peers can differ on
+   * a drawn pose, so "whoever notices a mismatch fixes it" is two clients
+   * rewriting the same field at each other forever. The one who moved something
+   * decides, and everybody else takes the answer off the wire.
+   *
+   * **Not during a live drag.** A throttled pose is a crash-safety write in the
+   * middle of a gesture, and a re-parent per frame would be a write storm for an
+   * answer that is about to change again. The pin is not moving in the meantime —
+   * the item is sliding onto it — so waiting for the release costs nothing
+   * visible and the picture at rest is always right.
+   *
+   * The scan itself is over pins whose index the LAYOUT phase has already
+   * rebuilt this frame, and returns nothing at all on a board that is already
+   * correct — which is every frame except the handful this exists for.
+   */
+  const rehomed: PinHome[] = [];
+  const rehome = (): void => {
+    queued.push(() => rehomePins(board, scene.rehomes(rehomed)));
+  };
   const writer: BoardWriter = {
     setPoses: (poses, phase) => {
       const snapshot = new Map(poses);
@@ -437,6 +468,7 @@ async function boot(): Promise<void> {
           phase === "live" ? Origin.DRAG_THROTTLE : Origin.LOCAL_USER,
         ),
       );
+      if (phase !== "live") rehome();
     },
     setSizes: (sizes, phase) => {
       const snapshot = new Map(sizes);
@@ -447,10 +479,16 @@ async function boot(): Promise<void> {
           phase === "live" ? Origin.DRAG_THROTTLE : Origin.LOCAL_USER,
         ),
       );
+      if (phase !== "live") rehome();
     },
     deleteItems: (ids, keepPins) => {
       const snapshot = [...ids];
       queued.push(() => deleteItems(board, snapshot, { keepPins }));
+      // `keepPins` is Shift+Delete, which re-parents the survivors to null in
+      // its own cascade — and to null is not where they belong if there is other
+      // paper under them. The plain delete needs this too: taking the top
+      // photograph away leaves its pins to whatever was beneath.
+      rehome();
     },
     /**
      * The two ends of the stack. Copied and queued like every other write here,
@@ -462,10 +500,15 @@ async function boot(): Promise<void> {
     bringToFront: (ids) => {
       const snapshot = [...ids];
       queued.push(() => bringToFront(board, snapshot));
+      // Nothing moved, and every pin in the overlaps has a new answer anyway:
+      // topmost is a question about order, and this is the only pair of writes
+      // on the board that changes order without changing a coordinate.
+      rehome();
     },
     sendToBack: (ids) => {
       const snapshot = [...ids];
       queued.push(() => sendToBack(board, snapshot));
+      rehome();
     },
     /**
      * A blank sheet — what DESIGN section 2.1 calls a scrap, which is "a note
@@ -483,11 +526,22 @@ async function boot(): Promise<void> {
         const made = createItems(board, [{ type: "note", x, y, w: size.w, h: size.h }]);
         if (made.length > 0) selection.replace(made.map((item) => item.itemId));
       });
+      // A new sheet is minted above everything, so any pin it lands on is now
+      // pushed through it.
+      rehome();
     },
     /**
      * The three pin writes. The coordinates arrive already in the frame the
      * parent implies — the tool converts, because only the tool knows the pose
      * a hanging item is actually drawn at (`state/tools/frame.ts`).
+     *
+     * **No `rehome` behind any of them**, alone among the writes that put a pin
+     * somewhere new. These three already resolve the parent through
+     * `ctx.hitTest`, which walks paint order downwards, so they arrive at the
+     * topmost item by a shorter road — and one of them arrives somewhere else on
+     * purpose. `Ctrl` during a pin drag means "stay in the parent you have"
+     * (`state/tools/pindrag.ts`), and a re-home queued behind the drop would
+     * overrule the modifier in the same frame the user held it.
      */
     createPin: (parent, lx, ly, settle) => {
       const poses = settled(settle);
@@ -594,6 +648,10 @@ async function boot(): Promise<void> {
       const snapshot = new Map<string, { lx: number; ly: number }>();
       for (const [id, at] of positions) snapshot.set(id, { lx: at.x, ly: at.y });
       queued.push(() => movePins(board, snapshot));
+      // Free pins carried along by a thread drag, which is the one way a pin
+      // travels without anybody choosing a parent for it — so it is also the one
+      // way a pin can be set down on paper that nothing has told it about.
+      rehome();
     },
     /**
      * One finished stroke, and the near end of the wet/dry handoff.
@@ -1125,7 +1183,14 @@ async function boot(): Promise<void> {
     cursor: () => tools.cursor,
     // Putting something down and then wanting to move it is one gesture in two
     // halves, so the second half starts with it already held.
-    onCreated: (ids) => selection.replace(ids),
+    onCreated: (ids) => {
+      selection.replace(ids);
+      // Paste writes straight through rather than queueing, so this is already
+      // downstream of the create — but the pins it may have landed on are not
+      // re-indexed until the next LAYOUT phase, which is why the re-home is
+      // queued like the rest and not called here.
+      rehome();
+    },
   });
   await paste.attach();
 

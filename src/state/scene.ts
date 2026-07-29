@@ -92,6 +92,22 @@ export interface ItemCold {
   text: string;
 }
 
+/**
+ * Where a pin should be parented and what its coordinates become there — the
+ * two-field write of DESIGN section 2.2, as an answer rather than as a gesture.
+ *
+ * Restated in `crdt/ops/pins.ts` rather than shared, like the comparators are:
+ * the scene imports nothing from `crdt/` and `crdt/` may not read the mirror, so
+ * a type that crossed would be a dependency that crossed. Four fields, and
+ * structural typing means the two are the same type to every caller.
+ */
+export interface PinHome {
+  id: string;
+  parent: string | null;
+  lx: number;
+  ly: number;
+}
+
 export interface ItemPose {
   x: number;
   y: number;
@@ -431,6 +447,24 @@ export class Scene {
    * and refilled rather than replaced, so a still board allocates nothing.
    */
   private readonly byOver = new Map<string, Set<string>>();
+
+  /**
+   * The topmost item each pin is pushed through — [`byOver`] read the other way
+   * round, and reduced to one answer instead of a set.
+   *
+   * > my thinking is a pin should effect any item under it **and move with the
+   * > top most item**.
+   *
+   * `byOver` answers the first clause. This answers the second, and the two are
+   * different questions about the same query, which is why it is filled by the
+   * same pass rather than derived from it afterwards: turning `byOver` inside
+   * out costs a walk of every item's set, and picking a maximum out of that
+   * costs a slot lookup per candidate. Both are already in hand while filing.
+   *
+   * Empty for a pin over nothing, which is the common case and means free in the
+   * cork. Filled in [`fileOver`], consumed by [`rehomes`].
+   */
+  private readonly overTop = new Map<string, string>();
 
   /**
    * Items indexed by the box they cover, so [`layoutOver`] can ask what a pin
@@ -928,6 +962,7 @@ export class Scene {
     if (!pin) return false;
     this.overStale = true;
     this.pins.delete(id);
+    this.overTop.delete(id);
     this.unindex(pin.parent, id);
     return true;
   }
@@ -994,6 +1029,10 @@ export class Scene {
     }
 
     for (const pin of this.pins.values()) {
+      // Dropped before filing rather than cleared in a sweep of its own: a pin
+      // that has come off everything must not keep last frame's answer, and
+      // this loop is the only place that knows it has.
+      this.overTop.delete(pin.id);
       // Computed, not read off the pin: see [`pinWorld`].
       this.pinWorld(pin, overPoint);
       const cx = Math.floor(overPoint.x / this.overGrid.cell);
@@ -1045,6 +1084,32 @@ export class Scene {
     let over = this.byOver.get(id);
     if (!over) this.byOver.set(id, (over = new Set()));
     over.add(pin.id);
+    const top = this.overTop.get(pin.id);
+    if (top === undefined || this.outranks(slot, top)) this.overTop.set(pin.id, id);
+  }
+
+  /**
+   * Does the item in `slot` paint over the item called `incumbent`?
+   *
+   * `crdt/zindex.ts`'s `compareOrder`, descending, and re-stated here for the
+   * reason the file header gives and `compareStrokes` above gives again: the
+   * scene imports nothing from `crdt/`. `render/items/dom.ts` holds the third
+   * copy, and all three have to agree — a topmost that disagreed with the one
+   * that draws would re-home a pin onto the item the user can see it is *not*
+   * on top of.
+   *
+   * An incumbent that has left the board loses, so a stale answer is never
+   * preferred to a live one.
+   */
+  private outranks(slot: number, incumbent: string): boolean {
+    const challenger = this.coldBySlot[slot];
+    if (!challenger) return false;
+    const held = this.slots.get(incumbent);
+    const holder = held === undefined ? null : this.coldBySlot[held];
+    if (!holder) return true;
+    if (challenger.z !== holder.z) return challenger.z > holder.z;
+    if (challenger.createdBy !== holder.createdBy) return challenger.createdBy > holder.createdBy;
+    return challenger.id > holder.id;
   }
 
   /**
@@ -1196,6 +1261,77 @@ export class Scene {
    */
   pinsParentedTo(itemId: string): ReadonlySet<string> {
     return this.byParent.get(itemId) ?? EMPTY_IDS;
+  }
+
+  /**
+   * The topmost item this pin is pushed through, or null when it is over none —
+   * which is to say, the item it ought to be parented to (D-31).
+   */
+  topOver(pinId: string): string | null {
+    if (this.overStale) this.layoutOver();
+    return this.overTop.get(pinId) ?? null;
+  }
+
+  /**
+   * Every pin whose frame disagrees with the paper it is stuck through, and the
+   * two-field write that would fix it. Empty on a board that is already right,
+   * which is almost every frame.
+   *
+   * ## Why the drawn pose, when `pinPivot` two methods up insists on the settled one
+   *
+   * Because this is the one conversion where drawn and settled cannot disagree,
+   * and using the drawn pose is what makes the re-home *invisible*: the world
+   * position out of [`pinWorld`] and the frame it goes back into are then the
+   * same two poses `pinWorld` will use to read it back, so the pin does not
+   * move by a pixel on the frame its parent changes.
+   *
+   * That would normally bake this window's swing into the document, and swing is
+   * local state that two peers legitimately differ on. It does not here, and the
+   * reason is in what the new parent is. It is an item the pin is over, so the
+   * pin is in its `pinsOf`, so it holds either exactly this pin or two or more.
+   * Two or more is rigid and has no swing at all. Exactly one makes this the
+   * sole pin, and `drift` is *defined* as the translation that holds the sole
+   * pin still — so the frame turns about this very point, and a point's own
+   * coordinates in a frame rotating about it do not change. Both cases give
+   * every peer the same numbers.
+   *
+   * It is better than neutral, in fact. A pin parented to an item it is *not*
+   * over currently rides that item's drawn pose, and that genuinely is
+   * swing-dependent; re-homing it onto the paper it is actually in ends that.
+   *
+   * Into the caller's array, which it owns and this empties — the answer is
+   * almost always nothing, and a fresh array per frame to say so is a fresh
+   * array per frame.
+   */
+  rehomes(out: PinHome[]): PinHome[] {
+    if (this.overStale) this.layoutOver();
+    out.length = 0;
+    for (const pin of this.pins.values()) {
+      const top = this.overTop.get(pin.id) ?? null;
+      if (top === pin.parent) continue;
+      this.pinWorld(pin, scratch);
+      if (top === null) {
+        out.push({ id: pin.id, parent: null, lx: scratch.x, ly: scratch.y });
+        continue;
+      }
+      const slot = this.slots.get(top);
+      // Unreachable — `top` came out of a slot a moment ago — but the index is
+      // rebuilt lazily and a caller between the two would rather have a short
+      // answer than a wrong one.
+      if (slot === undefined) continue;
+      const angle = this.renderRot(slot);
+      rotateIn(
+        scratch.x,
+        scratch.y,
+        this.renderX(slot),
+        this.renderY(slot),
+        Math.cos(angle),
+        Math.sin(angle),
+        scratch,
+      );
+      out.push({ id: pin.id, parent: top, lx: scratch.x, ly: scratch.y });
+    }
+    return out;
   }
 
   /**

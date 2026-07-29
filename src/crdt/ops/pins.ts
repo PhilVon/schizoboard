@@ -185,6 +185,61 @@ export function movePin(board: BoardDoc, pinId: string, lx: number, ly: number):
 }
 
 /**
+ * Where a pin should be parented and what its coordinates become there.
+ * `state/scene.ts` declares the same four fields for the reason stated on its
+ * copy — the two are one type to every caller, and neither module imports the
+ * other.
+ */
+export interface PinHome {
+  id: string;
+  parent: string | null;
+  lx: number;
+  ly: number;
+}
+
+/**
+ * Re-home pins onto the paper they are actually stuck through — D-31.
+ *
+ * `parent` is not what the person who placed the pin chose; it is the topmost
+ * item the pin is currently pushed through, which changes when a *different*
+ * object moves. So this fires off the back of somebody's drag rather than off an
+ * action of its own, and three things about it follow from that.
+ *
+ * **One transaction, and it must be the caller's next queued write.** It rides
+ * the undo entry of the edit that caused it, so undoing that edit restores the
+ * frame along with the geometry. Split them and undo tows the pin back with an
+ * item it had not been stuck through yet — the hazard T-176 named when it
+ * declined to build this.
+ *
+ * **Coordinates the caller computed from the mirror**, like every other pin
+ * write here: `crdt/` cannot see a drawn pose, and the drawn pose is the whole
+ * of why the conversion is invisible. `Scene.rehomes` carries that argument.
+ *
+ * **A named parent that is not on the board is dropped, not written as null.**
+ * The pin is left exactly as it was for the janitor to reason about; inventing
+ * a free pin out of a race would move it, and moving a pin is the one thing
+ * this operation must never do.
+ */
+export function rehomePins(board: BoardDoc, homes: readonly PinHome[]): void {
+  if (homes.length === 0) return;
+  mutate(board, Origin.LOCAL_USER, () => {
+    for (const home of homes) {
+      if (!Number.isFinite(home.lx) || !Number.isFinite(home.ly)) continue;
+      if (home.parent !== null && !board.items.has(home.parent)) continue;
+      const pin = board.pins.get(home.id);
+      if (!pin) continue;
+      // The frame is the point of the write; the coordinates come along because
+      // they mean something different in it. Nothing to do when it already
+      // agrees — and it will, on every pin the caller asked about twice.
+      if (pin.get("parent") === home.parent) continue;
+      pin.set("parent", home.parent);
+      pin.set("lx", home.lx);
+      pin.set("ly", home.ly);
+    }
+  });
+}
+
+/**
  * Re-parent a pin, given where it should end up in **board** coordinates.
  *
  * The caller works in board space because that is where the cursor is; this
