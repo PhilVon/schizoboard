@@ -4,6 +4,17 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Schizoboard</title>
+    <!--
+      The board's hand, fetched before anything asks for it (T-81).
+
+      A font is only requested when something is laid out in it, which on this
+      board is after the first item mounts — and `items.css` blocks that text
+      rather than let a fallback face paint, because a swap re-wraps every note.
+      Starting the fetch here means the block is over before there is a note to
+      block. `crossorigin` is not optional even same-origin: font requests are
+      made in CORS mode, and a preload without it is a second, separate fetch.
+    -->
+    <link rel="preload" href="/fonts/patrick-hand.woff2" as="font" type="font/woff2" crossorigin />
     <link rel="stylesheet" href="/src/styles/base.css" />
     <script type="module" src="/src/app/main.ts"></script>
   </head>

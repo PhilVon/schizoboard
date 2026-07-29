@@ -43,6 +43,18 @@ describe("handwriting", () => {
     expect(el.textContent).toBe("two words");
   });
 
+  it("puts everything under one element, because a flex host eats loose text", () => {
+    // A polaroid's caption strip is a flex container, and a flex container does
+    // not render an anonymous item that is only white space. Words as siblings
+    // therefore drew "the pier, 1974" as "thepier,1974" - with the spaces still
+    // in the DOM and `textContent` still correct, so this is the only assertion
+    // that can see it from here.
+    const el = host();
+    writeHand(el, "the pier, 1974", SEED);
+    expect(el.childNodes).toHaveLength(1);
+    expect((el.firstChild as HTMLElement).className).toBe("hand");
+  });
+
   it("keeps whitespace exactly, so a blank line stays a blank line", () => {
     const el = host();
     const text = "first\n\nthird  spaced\ttab";

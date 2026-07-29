@@ -31,6 +31,18 @@
  * `word-break: break-word` it replaces, and it differs only in *where* the
  * break falls.
  *
+ * ## One root, always
+ *
+ * All of that goes inside a single wrapper element, and that is not tidiness.
+ * A polaroid's caption strip is a flex container — it is how a one-line caption
+ * sits centred in the 11% of the frame it has — and a flex container turns each
+ * run of text between its children into an anonymous item, then **does not
+ * render the ones that are only white space**. Writing the words as siblings
+ * therefore deleted every space in the caption: "the pier, 1974" drew as
+ * "thepier,1974", with the space text nodes still in the DOM and `textContent`
+ * still reading correctly, so nothing but pixels could have caught it. One root
+ * means one flex item, and the words are laid out inside it as text.
+ *
  * ## Jitter in `em`
  *
  * `lib/seed.ts` hands back displacement in `em` rather than board units so that
@@ -87,6 +99,9 @@
  */
 
 import { charJitter } from "@/lib/seed";
+
+/** The single wrapper everything else goes inside. */
+const ROOT_CLASS = "hand";
 
 /** The word wrapper. Glyphs are its unclassed children — see `items.css`. */
 const WORD_CLASS = "hand-word";
@@ -154,7 +169,7 @@ export function writeHand(host: HTMLElement, text: string, seed: number): void {
     return;
   }
 
-  let html = "";
+  let html = ROOT_OPEN;
   // The index into the *string*, which is what the jitter is addressable by -
   // so the third character of a note keeps its lean whether it arrived as the
   // third character or ended up there.
@@ -176,7 +191,7 @@ export function writeHand(host: HTMLElement, text: string, seed: number): void {
     let inWord = 0;
     for (const glyph of graphemes(run)) {
       if (inWord === MAX_WORD_GLYPHS) {
-        html += CLOSE_WORD + OPEN_WORD;
+        html += CLOSE_SPAN + OPEN_WORD;
         inWord = 0;
       }
       html += glyphs < MAX_GLYPHS ? leaning(glyph, seed, index) : escape(glyph);
@@ -184,14 +199,16 @@ export function writeHand(host: HTMLElement, text: string, seed: number): void {
       inWord++;
       glyphs++;
     }
-    html += CLOSE_WORD;
+    html += CLOSE_SPAN;
   }
 
-  host.innerHTML = html;
+  host.innerHTML = html + CLOSE_SPAN;
 }
 
+/** See "One root, always" above: this is what keeps a flex host honest. */
+const ROOT_OPEN = `<span class="${ROOT_CLASS}">`;
 const OPEN_WORD = `<span class="${WORD_CLASS}">`;
-const CLOSE_WORD = "</span>";
+const CLOSE_SPAN = "</span>";
 
 /**
  * The only untrusted thing in the string this file builds.

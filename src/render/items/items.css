@@ -449,9 +449,7 @@
   display: flex;
   align-items: center;
   overflow: hidden;
-  /* Placeholder hand. The real handwriting faces, and the per-character
-   * jitter that keeps them from looking typeset, are T-81. */
-  font-family: "Segoe Script", "Bradley Hand", "Comic Sans MS", cursive;
+  font-family: "Patrick Hand", "Segoe Script", "Bradley Hand", cursive;
   line-height: 1.15;
   color: #3f3428;
   white-space: pre-wrap;
@@ -463,6 +461,26 @@
 }
 
 /* --- handwriting. DESIGN 3.6, and render/items/hand.ts -------------------- */
+
+/*
+ * The board's hand — Patrick Hand, chosen in T-81 out of four rendered on the
+ * same board (Q-101). `public/fonts/README.md` says where it came from and what
+ * has to be re-measured to replace it.
+ *
+ * `block` rather than `swap`, and that is the same problem as the kerning rule
+ * below. A fallback face has different advances, so swapping one in after first
+ * paint re-wraps every note on the board — and re-wraps it *again* if the caret
+ * is in one, because the field is a `<textarea>` laying out plain text. Blocking
+ * costs a few milliseconds of invisible text on a cold open, off a file that is
+ * beside the document; swapping costs a visible reflow of the whole board.
+ */
+@font-face {
+  font-family: "Patrick Hand";
+  src: url("/fonts/patrick-hand.woff2") format("woff2");
+  font-weight: 400;
+  font-style: normal;
+  font-display: block;
+}
 
 /*
  * A word, made atomic again.
@@ -499,6 +517,12 @@
  * agree to within a third of a pixel over a whole sentence: 92.41 against
  * 92.36, and 415.75 against 415.42. Nothing is lost that the boxes had not
  * already taken.
+ *
+ * Patrick Hand, as it turns out, carries no kerning pairs at all — boxed and
+ * plain measure 309.91 against 309.58 with this rule and without it. It stays
+ * because the guarantee is about the *next* face, not this one: a face that
+ * does kern would re-wrap every note on the board the moment a caret entered
+ * one, and nothing in the tests can see a line break move.
  */
 .paper-text,
 .pol-caption {
@@ -530,8 +554,20 @@
   inset: 0;
   padding: 14px 16px;
   overflow: hidden;
-  font-family: "Segoe Script", "Bradley Hand", "Comic Sans MS", cursive;
-  font-size: 17px;
+  font-family: "Patrick Hand", "Segoe Script", "Bradley Hand", cursive;
+  /*
+   * 19, not the 17 the placeholder stack was set at.
+   *
+   * A size is a property of the face, not of the paper. Patrick Hand carries a
+   * smaller x-height than Segoe Script at the same nominal size, and at 17 it
+   * left a note reading as small print on a half-empty sheet. Rendered at 17,
+   * 18, 19 and 20 on the same note: 19 is where the writing fills the paper,
+   * and 20 begins to crowd the right edge.
+   *
+   * `line-height` stays at 22 because it is not a typographic choice — it is
+   * the legal pad's rule spacing, and the two have to keep the same rhythm.
+   */
+  font-size: 19px;
   line-height: 22px;
   color: #38302a;
   white-space: pre-wrap;
