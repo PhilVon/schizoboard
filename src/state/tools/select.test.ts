@@ -1,4 +1,4 @@
-﻿/**
+/**
  * The select tool, with no document, no renderer and no browser.
  *
  * That is the point of the seam in `tool.ts`: everything below is the real
@@ -102,7 +102,7 @@ function putPin(id: string, parent: string | null, wx: number, wy: number): void
 /**
  * Screen space, like the real one in `render/pins/dom.ts`, and with a radius in
  * the same neighbourhood as its floor. The tool is handed this rather than
- * reaching for the renderer's â€” which is the whole point of the seam.
+ * reaching for the renderer's — which is the whole point of the seam.
  */
 const PIN_GRAB = 10;
 function hitPin(sx: number, sy: number): string | null {
@@ -581,7 +581,7 @@ describe("the carry", () => {
     move(210, 0);
     tick();
     // Carried to the right, an object held above its centre trails to the
-    // left â€” a clockwise turn in a y-down space, so a positive angle.
+    // left — a clockwise turn in a y-down space, so a positive angle.
     expect(scene.swing[slot]).toBeGreaterThan(0);
 
     move(10, 0);
@@ -741,7 +741,7 @@ describe("the rotation handle", () => {
   it("rides the item's own rotation, so it is always off the top of the paper", () => {
     put("a", 0, 0, 100, 100, Math.PI / 2);
     selectOnly("a", 0, 0);
-    // A quarter turn puts the paper's top edge â€” and its handle â€” due east.
+    // A quarter turn puts the paper's top edge — and its handle — due east.
     down(-KNOB_Y, 0);
     move(-KNOB_Y, 60);
     up(-KNOB_Y, 60);
@@ -837,7 +837,7 @@ describe("resizing paper from its edges", () => {
     expect(scene.poseOf("n")!.x - MIN_RESIZE / 2).toBeCloseTo(100, 6);
   });
 
-  it("leaves a photograph alone â€” its edge is somewhere to pick it up", () => {
+  it("leaves a photograph alone — its edge is somewhere to pick it up", () => {
     put("p", 200, 200, 200, 100);
     down(200, 200);
     up(200, 200);
@@ -880,7 +880,7 @@ describe("resizing paper from its edges", () => {
     expect(pose.w).toBeCloseTo(200, 6);
     expect(pose.x).toBeCloseTo(200, 6);
     // The document is holding the intermediate size, so putting the scene back
-    // is not enough â€” and the revert has to go back through the resize op, or
+    // is not enough — and the revert has to go back through the resize op, or
     // the pins it moved on the way out stay moved.
     expect(lastSizes().get("n")).toMatchObject({ x: 200, y: 200, w: 200, h: 100 });
   });
@@ -1166,8 +1166,8 @@ describe("deleting", () => {
 
 describe("the crash-safety write", () => {
   it("lands inside the undo manager's capture window", () => {
-    // The two halves of DESIGN section 7.3 â€” "a throttled write every half
-    // second", "merged into the same undo entry" â€” are in conflict, because
+    // The two halves of DESIGN section 7.3 — "a throttled write every half
+    // second", "merged into the same undo entry" — are in conflict, because
     // DATA-MODEL section 11 fixes the window at 400 ms and merging is purely a
     // matter of the gap between transactions. At 500 ms every live write lands
     // outside it and a three-second drag becomes seven undo entries.
@@ -1329,7 +1329,7 @@ describe("dragging a pin", () => {
 });
 
 /**
- * A pin is stuck in the cork, so an item hanging from one turns about it â€”
+ * A pin is stuck in the cork, so an item hanging from one turns about it —
  * `sim/torsion.ts` follows that rule for the swing and this is the one place
  * the gesture was not following it.
  */

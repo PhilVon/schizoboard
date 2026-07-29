@@ -1,4 +1,4 @@
-﻿/**
+/**
  * The select tool — `V`, and the one the board starts in.
  *
  * Click to select, `Shift`+click to add, drag on empty cork for a marquee,

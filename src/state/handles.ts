@@ -1,5 +1,5 @@
-﻿/**
- * The geometry of the selection chrome â€” where the handles are, and what is
+/**
+ * The geometry of the selection chrome — where the handles are, and what is
  * under the pointer.
  *
  * Two modules need the same answer and neither may own it. `render/overlay.ts`
@@ -18,19 +18,19 @@
  * ## One item, or none
  *
  * > Drag an item to move it. Drag **its** rotation handle, or hold `R` and drag,
- * > to rotate. There is no resize handle on a polaroid â€” a photograph is the size
- * > it is â€” but notes, cards and scraps resize from their edges.
- * > â€” DESIGN section 3.2
+ * > to rotate. There is no resize handle on a polaroid — a photograph is the size
+ * > it is — but notes, cards and scraps resize from their edges.
+ * > — DESIGN section 3.2
  *
  * Singular, both times. Handles belong to an item, so they appear when exactly
  * one thing is selected; rotating a group stays on `R`+drag, which DESIGN offers
  * in the same breath. The alternative is a group bounding box to hang a group
- * handle off, and DESIGN describes no such box â€” inventing one would be adding a
+ * handle off, and DESIGN describes no such box — inventing one would be adding a
  * piece of UI vocabulary to a board whose whole argument is that it has none.
  *
  * ## Nothing is drawn for a resize
  *
- * "Notes, cards and scraps resize from their edges" â€” the edge *is* the handle,
+ * "Notes, cards and scraps resize from their edges" — the edge *is* the handle,
  * and eight little squares round a note would read as a UI element on a surface
  * that is trying very hard not to be one. That makes the cursor the only
  * affordance, which is why [`handleCursor`] is part of this module's job rather
@@ -53,7 +53,7 @@ export type HandleId = "rotate" | "n" | "s" | "e" | "w" | "ne" | "nw" | "se" | "
 /** The selection outline's width, in CSS pixels at every zoom. */
 export const SELECT_WIDTH = 1.5;
 /**
- * Gap between the paper's edge and the inside of the line, then half the line â€”
+ * Gap between the paper's edge and the inside of the line, then half the line —
  * so this is the distance out to its centre, which is what a stroke is measured
  * from. Both halves are CSS pixels and stay CSS pixels at every zoom.
  */
@@ -64,14 +64,14 @@ export const HANDLE_STALK = 26;
 /** The knob as drawn. */
 export const HANDLE_RADIUS = 4.5;
 /**
- * The knob as grabbed â€” twice what it looks, because a 4.5 px target is a target
+ * The knob as grabbed — twice what it looks, because a 4.5 px target is a target
  * you miss. It is out in open cork with nothing to be confused with, so being
  * generous costs nothing.
  */
 export const HANDLE_GRAB = 9;
 
 /**
- * The resize band, measured from **the paper's own edge** â€” not from the outline
+ * The resize band, measured from **the paper's own edge** — not from the outline
  * drawn a couple of pixels outside it, which is chrome and moves if the chrome
  * changes. Forgiving outwards into the cork, mean inwards.
  *
@@ -90,7 +90,7 @@ export interface HandleFrame {
   /** Screen half-extents, already carrying the chrome padding and the carry scale. */
   hw: number;
   hh: number;
-  /** The item's rendered angle â€” authored rotation plus its swing transient. */
+  /** The item's rendered angle — authored rotation plus its swing transient. */
   angle: number;
   /** Paper resizes from its edges; a photograph is the size it is. */
   resizable: boolean;
@@ -240,11 +240,11 @@ const RESIZE_CURSORS = ["ew-resize", "nwse-resize", "ns-resize", "nesw-resize"] 
 /**
  * The CSS cursor for a handle on an item turned to `angle`.
  *
- * Rotated with the item, which is the point: the east edge of a note lying at 45Â°
+ * Rotated with the item, which is the point: the east edge of a note lying at 45°
  * points southeast, and a cursor claiming otherwise is worse than no cursor,
  * because it says the resize will go a way it will not.
  *
- * There is no rotate cursor in CSS. `grab` is the closest honest thing â€” it says
+ * There is no rotate cursor in CSS. `grab` is the closest honest thing — it says
  * "this is a thing you take hold of", and the knob's shape says the rest.
  */
 export function handleCursor(handle: HandleId, angle: number): string {

@@ -1,5 +1,5 @@
-﻿/**
- * The swing, with no document, no renderer and no browser â€” `sim/` reads the
+/**
+ * The swing, with no document, no renderer and no browser — `sim/` reads the
  * scene mirror and nothing else, and the lint rules say so.
  *
  * AC-60 is "swing angle is a local visual offset, never stored, never synced",
@@ -62,7 +62,7 @@ function arrive(id: string): void {
  * It doubles as `arrive` for an item the module has not met.
  *
  * `swing` is a `Float32Array`, so nothing read out of it is worth asserting
- * past about six decimal places â€” 0.35 comes back as 0.3499999940395355.
+ * past about six decimal places — 0.35 comes back as 0.3499999940395355.
  */
 function settle(id: string): void {
   frame([id]);
@@ -237,7 +237,7 @@ describe("swinging and settling", () => {
 
   /**
    * Nothing about an item's position changes where it hangs, so a collaborator
-   * dragging a photograph across the board â€” which dirties it on every frame â€”
+   * dragging a photograph across the board — which dirties it on every frame —
    * must not wake the simulation.
    */
   it("does not wake for an item that only moved", () => {
@@ -267,7 +267,7 @@ describe("swinging and settling", () => {
 
   /**
    * A load or an undo is a state restore, not an event. Simulating into place
-   * would whip every photograph on the board every time the file opens â€”
+   * would whip every photograph on the board every time the file opens —
    * DESIGN section 5.3's argument for seeding ropes analytically.
    */
   it("opens a board perfectly still", () => {
@@ -448,7 +448,7 @@ describe("handing over to and from a gesture", () => {
 
   /**
    * Turning a hanging photograph with the rotation handle: `rot` changes under
-   * a frozen swing, so it follows the cursor â€” and then swings back, because
+   * a frozen swing, so it follows the cursor — and then swings back, because
    * where it hangs was never a function of `rot` in the first place.
    */
   it("lets a held item be turned, and swings it back when it is let go", () => {

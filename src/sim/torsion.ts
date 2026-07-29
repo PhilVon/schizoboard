@@ -1,4 +1,4 @@
-﻿/**
+/**
  * The item swing — phase 3, and the thing that makes pin count feel like
  * something.
  *
