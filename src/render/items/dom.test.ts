@@ -4,6 +4,7 @@
 
 import { beforeEach, describe, expect, it } from "vitest";
 
+import { CAPTION_BOTTOM, CAPTION_HEIGHT, FRAME_BOTTOM } from "@/lib/polaroid";
 import { DomItemLayer, type AssetResolver, type AssetView } from "@/render/items/dom";
 import { tapedCorners } from "@/render/items/tape";
 import { DirtySets } from "@/state/dirty";
@@ -1840,5 +1841,73 @@ describe("coarse mounts", () => {
     dirty.clear();
     layer.sync(scene, dirty, null);
     expect(layer.coarseCount).toBe(0);
+  });
+});
+
+/**
+ * T-216, from the board: "on tall photos the caption shifts upwards".
+ *
+ * The white band below the picture is a fraction of the polaroid's *width* —
+ * that is what a polaroid is, and it is why the frame's padding is written from
+ * `w` alone. The caption used to be placed by the stylesheet with `bottom: 4%`
+ * and `height: 11%`, and a percentage on either resolves against the frame's
+ * **height**. So the two agreed at one aspect ratio and nowhere else.
+ */
+describe("where a polaroid's caption sits", () => {
+  const px = (value: string): number => Number.parseFloat(value);
+
+  it("is the same place on a wide print and a tall one", () => {
+    const shapes: { w: number; h: number }[] = [
+      { w: 340, h: 247 }, // 3:2 landscape
+      { w: 340, h: 305 }, // the classic, near square
+      { w: 226, h: 358 }, // 2:3 portrait — the one that was wrong
+    ];
+    const seen: { bottom: number; height: number }[] = [];
+    for (const [i, shape] of shapes.entries()) {
+      add(`p${i}`, { text: "a caption" }, shape);
+      layer.sync(scene, dirty, null);
+      const el = host.querySelectorAll(".pol-caption")[i] as HTMLElement;
+      seen.push({
+        bottom: px(el.style.bottom) / shape.w,
+        height: px(el.style.height) / shape.w,
+      });
+    }
+    // Every one of them, in fractions of its own width. Three decimal places
+    // because the view writes pixels to one — a tenth of a pixel on a 226-unit
+    // print is the whole of the difference here, and it is not one anybody can
+    // see.
+    for (const each of seen) {
+      expect(each.bottom).toBeCloseTo(CAPTION_BOTTOM, 3);
+      expect(each.height).toBeCloseTo(CAPTION_HEIGHT, 3);
+    }
+  });
+
+  /**
+   * The constraint the percentages were violating, stated as itself: the box
+   * has to be inside the band, or the caption is over the photograph.
+   */
+  it("fits inside the band, centred, whatever shape the print is", () => {
+    expect(CAPTION_BOTTOM + CAPTION_HEIGHT).toBeLessThanOrEqual(FRAME_BOTTOM);
+    // Equal margin above and below — the classic print's own look.
+    expect(FRAME_BOTTOM - CAPTION_HEIGHT - CAPTION_BOTTOM).toBeCloseTo(CAPTION_BOTTOM, 5);
+  });
+
+  /**
+   * The height is not a factor at all: two prints of one width and very
+   * different heights put their captions at exactly the same offset.
+   *
+   * Two *items* rather than one item resized, deliberately. The view only
+   * rewrites this box when the width changes, so resizing an item in place
+   * would leave the old numbers standing and the assertion would pass however
+   * the box is computed.
+   */
+  it("does not depend on the height", () => {
+    add("wide", { text: "x" }, { w: 300, h: 200 });
+    add("tall", { text: "x" }, { w: 300, h: 600 });
+    layer.sync(scene, dirty, null);
+
+    const [a, b] = [...host.querySelectorAll(".pol-caption")] as HTMLElement[];
+    expect(a!.style.bottom).toBe(b!.style.bottom);
+    expect(a!.style.height).toBe(b!.style.height);
   });
 });
