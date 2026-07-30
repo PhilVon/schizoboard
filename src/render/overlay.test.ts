@@ -11,7 +11,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { Overlay } from "@/render/overlay";
 import type { DrawnPeer } from "@/render/presence/peers";
 import { PeerInk, readWet } from "@/render/presence/wetpeer";
-import { Camera } from "@/state/camera";
+import { Camera, MIN_ZOOM } from "@/state/camera";
 import { DirtySets } from "@/state/dirty";
 import { Scene, type ItemCold, type ItemPose } from "@/state/scene";
 import { Selection } from "@/state/selection";
@@ -211,7 +211,10 @@ describe("Overlay", () => {
       return (w - 100 * zoom) / 2;
     };
 
-    expect(padAt(0.05)).toBeCloseTo(3.25, 6);
+    // `MIN_ZOOM` rather than a literal, because `zoomTo` clamps and this
+    // function divides by the zoom it asked for: a floor that moved would leave
+    // the arithmetic quietly comparing two different zooms (T-204).
+    expect(padAt(MIN_ZOOM)).toBeCloseTo(3.25, 6);
     expect(padAt(1)).toBeCloseTo(3.25, 6);
     expect(padAt(4)).toBeCloseTo(3.25, 6);
   });
