@@ -89,6 +89,7 @@ import { Camera, type Bounds } from "@/state/camera";
 import { DirtySets } from "@/state/dirty";
 import { Flashes } from "@/state/flash";
 import { Flatten } from "@/state/flatten";
+import { Flight } from "@/state/flight";
 import { chromeFrame, emptyFrame, handleAt, handleCursor } from "@/state/handles";
 import { isChromeTarget, isTextTarget } from "@/state/input";
 import { Navigation } from "@/state/navigation";
@@ -96,6 +97,7 @@ import { Presence } from "@/state/presence";
 import { RemoteMotion } from "@/state/remote";
 import { reveal, widen } from "@/state/reveal";
 import { Scene, type PinHome } from "@/state/scene";
+import { Search } from "@/state/search";
 import { Selection } from "@/state/selection";
 import { ToolMachine } from "@/state/tools/machine";
 import { EraserTool } from "@/state/tools/eraser";
@@ -110,6 +112,7 @@ import { boardMenuRows, itemMenuRows, penMenuRows, pinMenuRows, stringMenuRows }
 import { Hud, type HudStats } from "@/ui/hud";
 import { Flash } from "@/ui/flash";
 import { Notice } from "@/ui/notice";
+import { SearchField } from "@/ui/search";
 import { ContextMenu, type MenuEntry } from "@/ui/menu";
 
 /**
@@ -154,6 +157,24 @@ async function boot(): Promise<void> {
    * events into the ids of the things that moved.
    */
   const flashes = new Flashes();
+  /**
+   * The match a search has just taken you to, fading — T-85, Q-151.
+   *
+   * Its own instance rather than more ids in the one above, and `state/flash.ts`
+   * gives the reason: `changedBounds()` below reads that map back to work out
+   * where an undo should fly the camera, and a note you merely searched for is
+   * not something an undo changed.
+   */
+  const found = new Flashes();
+  /**
+   * Which item a search has chosen and not yet lit.
+   *
+   * The flash is raised when the *flight lands* rather than when the match is
+   * chosen, because a flash lasts 800ms and a flight takes 300 of them: raised
+   * at the start, more than a third of it is spent on the journey and what you
+   * see on arrival is already fading. Null on almost every frame.
+   */
+  let foundPending: string | null = null;
 
   // --- presentation --------------------------------------------------------
   const camera = new Camera();
@@ -795,6 +816,94 @@ async function boot(): Promise<void> {
         (id) => scene.pins.has(id),
       );
     },
+  });
+
+  /**
+   * Ctrl+F — the search, DESIGN section 3.7, T-85.
+   *
+   * Three pieces and each knows nothing of the other two: `Search` walks the
+   * scene's mirrored text and holds a cursor into the answer, `SearchField` is
+   * the box you type into, and `Flight` carries the camera. What is here is the
+   * wiring, and the whole of the policy is these thirty lines.
+   *
+   * **Nothing is filtered, hidden, dimmed or listed** (DESIGN section 2.5). The
+   * board you are looking at while you search is the same board, item for item;
+   * all that changes is where the camera is standing and which one thing is lit.
+   */
+  const search = new Search();
+  const flight = new Flight();
+  /** The board coordinates a match's box occupies; reused, like every other
+   *  bounds in this file. */
+  const foundBox: Bounds = { minX: 0, minY: 0, maxX: 0, maxY: 0 };
+  /**
+   * Take the camera to `id` and queue its flash, or do nothing for null.
+   *
+   * Null is the ordinary case rather than the failure: `Search.run` answers null
+   * when refining a query has left you on the match you were already reading,
+   * and moving then would be the bug.
+   */
+  const flyTo = (id: string | null): void => {
+    if (id === null) return;
+    const box = scene.boundsOf(id, 0, foundBox);
+    if (box === null) return;
+    flight.toBox(camera, box);
+    foundPending = id;
+  };
+  const searchField = new SearchField(world.layers.ui, {
+    typed: (query) => {
+      flyTo(search.run(scene, query));
+      searchField.report(search.ordinal, search.count);
+    },
+    stepped: (delta) => {
+      // Re-walked before stepping, and forced, because the board moves under a
+      // search: a collaborator can delete the note you were about to step onto,
+      // and you can leave the field open while you work. The alternative is a
+      // cursor into a list that was true when you stopped typing.
+      search.run(scene, searchField.value, true);
+      flyTo(search.step(delta));
+      searchField.report(search.ordinal, search.count);
+    },
+    closed: () => {
+      // The query is dropped with the field. A search you closed is over, and a
+      // held id would outlive the document if a bundle were opened next.
+      search.clear();
+      // The flight is not cancelled: you asked to be taken somewhere and then
+      // put the field away, and snapping back mid-journey would undo the one
+      // thing you did ask for.
+    },
+  });
+
+  /**
+   * The one keydown on this board that does **not** stand down for a text field.
+   *
+   * Every other listener here bails on `isTextTarget`, and rightly: `Delete`
+   * inside a note is a character, not the board's. This one cannot, for a
+   * circular reason — the thing it opens *is* a text field, so a Ctrl+F that
+   * respected the bail could be pressed exactly once and never again from
+   * inside its own box.
+   *
+   * Which also means it fires while a note is being edited, and that is the
+   * browser's behaviour with find-in-page and the right one here: the editor
+   * commits on blur (T-179), so the sentence is kept and the search opens.
+   *
+   * `preventDefault` unconditionally, because in a plain browser this is the
+   * webview's own find bar — which would search the *DOM*, and on a board at
+   * 30% zoom where two hundred items are not mounted at all, that is a search
+   * that quietly lies about what is on the board.
+   */
+  window.addEventListener("keydown", (e) => {
+    if (!(e.ctrlKey || e.metaKey) || e.altKey || e.shiftKey) return;
+    if (e.code !== "KeyF") return;
+    e.preventDefault();
+    const reopened = searchField.isOpen;
+    searchField.open();
+    // Pressed again on an open field with something in it: say "yes, that one"
+    // — re-walk, re-fly and re-flash the current match rather than doing
+    // nothing. `open()` has selected the text, so typing still replaces it.
+    if (reopened) {
+      flyTo(search.run(scene, searchField.value, true));
+      searchField.report(search.ordinal, search.count);
+    }
   });
 
   /**
@@ -2109,6 +2218,35 @@ async function boot(): Promise<void> {
   let lastZoom = Number.NaN;
   loop.on("input", (frame) => {
     navigation.flush();
+    /**
+     * One frame of a search's camera flight (T-85).
+     *
+     * **After `navigation.flush()`, and that ordering is the whole cancel.** A
+     * hand on the mouse this frame has just had its say and bumped
+     * `camera.version`; the flight compares that number against the one it left
+     * behind and stands down when they differ. Stepped first, the flight would
+     * write the camera, see its own value back, and fly on through a pan —
+     * which is the one failure mode this feature has that would make the board
+     * feel broken rather than merely wrong.
+     *
+     * Here in INPUT rather than anywhere later for `state/navigation.ts`'s
+     * reason: the camera is read by every phase after this one, and a write
+     * from outside the loop leaves the DOM phase's version check unable to
+     * trust itself.
+     */
+    flight.step(camera, frame.dt);
+    /**
+     * The match is lit when the flight lands, not when it is chosen.
+     *
+     * `!flight.active` covers all three endings without any of them reporting
+     * separately: it arrived, a hand took the camera off it, or it never took
+     * off because the match was already under your nose. In the last of those
+     * this is the same frame as the keystroke.
+     */
+    if (foundPending !== null && !flight.active) {
+      found.raise(foundPending, scene);
+      foundPending = null;
+    }
     if (navigation.gestured) world.gestureTick(camera.zoom);
     tools.flush(frame.dt);
     // The camera is moved by navigation, by a resize, and by undo restoring a
@@ -2551,6 +2689,7 @@ async function boot(): Promise<void> {
     // this frame is a different picture, and the frame it reaches zero on is the
     // frame the canvas has to clear it off.
     flashes.step(frame.dt);
+    found.step(frame.dt);
     // Selection chrome is drawn here, not on the item nodes, so its width is in
     // screen pixels at every zoom (T-91). `dirty` comes along only so it can tell
     // "a selected photograph is being dragged" from "nothing has changed".
@@ -2593,6 +2732,9 @@ async function boot(): Promise<void> {
       // What the last Ctrl+Z moved, so an undo that reached somewhere you were
       // not looking is never silent (DESIGN section 7.6).
       flashes,
+      // And the match a search flew you to (Q-151) — same painter, same amber,
+      // separate lifetime.
+      found,
     );
     hud.update(frame.now);
     if (missing.count > 0 && frame.now - noticeSweptAt > NOTICE_SWEEP_MS) {
@@ -2930,7 +3072,8 @@ async function boot(): Promise<void> {
     `[ and ] size the nib, Ctrl at pen-down means the cork · ` +
     `drag to move · drag the handle or R+drag to rotate · drag a note's edge to resize · ` +
     `drag the cork to marquee · Delete removes · ` +
-    `Ctrl+Z undoes · space+drag pans · Ctrl+0 fit · F frame · \` for the HUD`;
+    `Ctrl+Z undoes · space+drag pans · Ctrl+0 fit · F frame · ` +
+    `Ctrl+F finds and flies you there, Enter for the next · \` for the HUD`;
   world.layers.ui.append(hint);
   hud.toggle();
 }

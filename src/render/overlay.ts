@@ -415,6 +415,15 @@ export class Overlay {
      * it is an empty source that costs one boolean per frame.
      */
     flashes: FlashSource | null = null,
+    /**
+     * The match a search has just flown you to, fading — T-85, Q-151.
+     *
+     * A second source rather than more ids in the one above, because that one
+     * is read back to decide where an undo takes the camera and a note you
+     * merely looked for is not something an undo changed. Same painter, same
+     * amber, separate lifetimes — `state/flash.ts` has the argument.
+     */
+    found: FlashSource | null = null,
   ): void {
     const ctx = this.ctx;
     if (!ctx) return;
@@ -443,7 +452,12 @@ export class Overlay {
     // everything else here it is stale on frames where the board is otherwise
     // completely still, which is the usual case: you press Ctrl+Z and nothing
     // else on the board is moving at all.
-    const wantsFlash = flashes !== null && !flashes.isEmpty;
+    // Either source. The two are drawn separately but they are one thing to the
+    // staleness question: a canvas with an amber box on it from *whichever*
+    // reason has to be restroked while it fades, and cleared on the frame after
+    // the last of them expires.
+    const wantsFlash =
+      (flashes !== null && !flashes.isEmpty) || (found !== null && !found.isEmpty);
     const stale =
       wantsMarquee ||
       wantsFlash ||
@@ -551,7 +565,14 @@ export class Overlay {
     // Under the selection outline rather than over it: a flash is transient and
     // the selection is a fact, and an amber ring painted across the outline of
     // something you have hold of would make the two read as one confused mark.
-    if (wantsFlash && this.drawFlashes(ctx, camera, scene, flashes, ropes)) drew = true;
+    if (flashes !== null && !flashes.isEmpty && this.drawFlashes(ctx, camera, scene, flashes, ropes))
+      drew = true;
+    // After the undo's, so that on the one item both have lit — you undid
+    // something and then searched for it — the search's box is the one on top.
+    // They are the same colour, so this is invisible; it is here so that the
+    // order is a decision rather than an accident of which line came first.
+    if (found !== null && !found.isEmpty && this.drawFlashes(ctx, camera, scene, found, ropes))
+      drew = true;
     if (this.drawSelection(ctx, camera, scene, selection)) drew = true;
     if (this.drawPins(ctx, camera, scene, selection)) drew = true;
     // A peer's boxes and rings, after our own and outside them, so that on

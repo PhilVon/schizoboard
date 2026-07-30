@@ -505,6 +505,87 @@ body {
 }
 
 
+/* --- the search field, DESIGN 3.7 ----------------------------------------- */
+
+/*
+ * Top centre, the last free position: notice top left, HUD top right, hint line
+ * bottom left, confirmation bottom right. Centre rather than a fifth corner
+ * because this is the only one of the five you asked for and the only one
+ * looking back at you.
+ *
+ * The same slip of paper as the notice and the confirmation. It is deliberately
+ * NOT translucent over the board: you read a query letter by letter while
+ * checking it against notes underneath, and cork showing through a query is the
+ * one place on this board where legibility beats the material.
+ *
+ * `pointer-events` is left at the layer's `auto`, which makes it the only piece
+ * of chrome here that takes a click. That is safe for a reason the others do not
+ * have: it is `display: none` unless it is open, so on every frame nobody is
+ * searching there is no rectangle over the board at all.
+ */
+.search {
+  position: absolute;
+  top: 12px;
+  left: 50%;
+  transform: translateX(-50%);
+  display: none;
+  align-items: baseline;
+  gap: 8px;
+  padding: 5px 10px;
+  border-radius: 3px;
+  font-family: var(--ui-mono);
+  font-size: 12px;
+  color: rgba(58, 44, 30, 0.9);
+  background: linear-gradient(#f6f1e6 0%, #e8dfcd 100%);
+  box-shadow: 0 2px 6px rgba(var(--shadow-warm), 0.4);
+}
+
+.search.is-live {
+  display: flex;
+}
+
+/*
+ * Stripped back to a line on paper. A platform text input brings a white box, a
+ * border and a focus ring, none of which belong on a corkboard - and the field
+ * is the only thing in it, so there is nothing for a box to separate it from.
+ */
+.search-input {
+  width: 22ch;
+  padding: 0 0 1px 0;
+  border: 0;
+  border-bottom: 1px solid rgba(58, 44, 30, 0.28);
+  background: transparent;
+  font: inherit;
+  color: inherit;
+  outline: none;
+}
+
+.search-input::placeholder {
+  color: rgba(58, 44, 30, 0.38);
+}
+
+/* Focus is shown by the field being on the board at all - it opened because you
+ * asked for it, and it takes the keyboard the moment it does. */
+.search-input:focus {
+  border-bottom-color: rgba(58, 44, 30, 0.6);
+}
+
+.search-count {
+  min-width: 6ch;
+  font-size: 11px;
+  color: rgba(58, 44, 30, 0.55);
+  /* Fixed width per digit, so stepping 9 of 12 to 10 of 12 does not shuffle the
+   * field sideways under the cursor. */
+  font-variant-numeric: tabular-nums;
+}
+
+/* Nothing found is a statement, not an error: no red, just quieter. */
+.search-count.is-none {
+  color: rgba(58, 44, 30, 0.4);
+  font-style: italic;
+}
+
+
 /* --- what must not be in an export (T-208, D-36) -------------------------- */
 
 /*
@@ -529,6 +610,11 @@ body {
   .hint,
   .notice,
   .flash,
+  /* A search field open when you hit export prints the word you were looking
+   * for across the top of the board. The image route never sees this element -
+   * it composites the five painters and layer-ui is not one of them - so this
+   * line is the whole of what keeps it out of a file. */
+  .search,
   .menu {
     display: none !important;
   }
