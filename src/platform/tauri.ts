@@ -24,6 +24,7 @@ import type {
   ClipboardManifest,
   ClipboardPayload,
   DocState,
+  PdfPage,
   Platform,
   PlatformEvents,
   SyncConfig,
@@ -185,6 +186,19 @@ export class TauriPlatform implements Platform {
       new TextDecoder().decode(bytes.subarray(4, 4 + length)),
     ) as Omit<BundleOpened, "snapshot">;
     return { ...opened, snapshot: bytes.subarray(4 + length) };
+  }
+
+  // A name and then a page, and no destination in either direction — the third
+  // place on that standing (T-207). The path the user picks stays in the shell
+  // between the two calls. Nothing of the board itself crosses: it prints its
+  // own webview, so `app/exportPdf.ts` has already put the board where the page
+  // needs it by the time the write is called.
+  exportPdfChoose(title: string): Promise<boolean> {
+    return invoke<boolean>("export_pdf_choose", { title });
+  }
+
+  exportPdfWrite(page: PdfPage): Promise<string> {
+    return invoke<string>("export_pdf_write", { page });
   }
 
   clipboardReadManifest(): Promise<ClipboardManifest> {

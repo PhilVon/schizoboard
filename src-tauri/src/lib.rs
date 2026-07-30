@@ -6,7 +6,8 @@
 //! `docs/ARCHITECTURE.md` section 4.
 //!
 //! Modules land as their tasks do: `assets` (T-21), `protocol` (T-22),
-//! `docstore` (T-20), `clipboard` (T-23), `bundle` (T-84), `sync` (T-69).
+//! `docstore` (T-20), `clipboard` (T-23), `bundle` (T-84), `sync` (T-69),
+//! `print` (T-207).
 //!
 //! ## Nothing runs on the main thread
 //!
@@ -23,6 +24,7 @@ mod board;
 mod bundle;
 mod clipboard;
 mod docstore;
+mod print;
 mod protocol;
 pub mod sync;
 
@@ -1121,6 +1123,9 @@ pub fn run() {
             app.manage(board::BoardStore::new(data.join("board-id"))?);
             app.manage(Hosting::default());
             app.manage(PendingInvite::default());
+            // Where the next PDF is going, between the save dialog and the
+            // print (T-207). One slot; the path never crosses the boundary.
+            app.manage(print::PendingExport::default());
             if let Some(window) = app.get_webview_window("main") {
                 clipboard::forward_drops(&window, app.handle());
             }
@@ -1210,6 +1215,8 @@ pub fn run() {
             doc_compact,
             bundle_save_as,
             bundle_open,
+            print::export_pdf_choose,
+            print::export_pdf_write,
             clipboard::clipboard_read_manifest,
             clipboard::clipboard_read_item,
             clipboard::clipboard_source_url,

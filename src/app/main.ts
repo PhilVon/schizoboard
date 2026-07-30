@@ -50,6 +50,8 @@ import { Persistence } from "@/crdt/persistence";
 import { AssetExchange, Priority } from "@/crdt/sync/exchange";
 import { WireProvider } from "@/crdt/sync/provider";
 import { UndoHistory } from "@/crdt/undo";
+import { exportBounds } from "@/app/export";
+import { exportPdf, type Stage as PdfStage } from "@/app/exportPdf";
 import { noteSizeFor } from "@/app/ingest";
 import { Paste } from "@/app/paste";
 import { Mesh } from "@/app/mesh";
@@ -1131,6 +1133,74 @@ async function boot(): Promise<void> {
       // somebody with no next move.
       console.warn("[bundle] the board could not be exported", error);
       flash.say("The board could not be exported — the reason is in the console");
+    }
+  };
+
+  /**
+   * The board as a picture of itself, on one page (T-207).
+   *
+   * This assembles the [`Stage`] and nothing else: the ordering — pose, settle,
+   * three frames, print, and a restore in a `finally` — is `app/exportPdf.ts`,
+   * and the file is Chromium's. Every field below is something this function
+   * already had to hand, which is the point of the interface: there is no state
+   * an export owns, only a moment it arranges.
+   *
+   * `resizeCanvases` invalidates the two rope caches for the reason the window
+   * `resize` above does — a resized canvas has a blank backing store, so every
+   * cached screen-space path is a picture of a canvas that no longer exists.
+   */
+  const printBoard = async (): Promise<void> => {
+    const stage: PdfStage = {
+      camera,
+      resizeCanvases: (width, height) => {
+        world.resizeCanvases(width, height);
+        ropesUnder.invalidate();
+        ropesOver.invalidate();
+      },
+      hold: () => lod.hold("full"),
+      settle: (zoom) => world.settle(zoom),
+      redraw: () => dirty.everything(),
+      frames: (count) =>
+        new Promise<void>((resolve) => {
+          let left = count;
+          const tick = (): void => {
+            left -= 1;
+            if (left <= 0) resolve();
+            else requestAnimationFrame(tick);
+          };
+          requestAnimationFrame(tick);
+        }),
+    };
+
+    try {
+      const outcome = await exportPdf(
+        stage,
+        exportBounds(scene, selection.members),
+        boardTitle(board),
+        {
+          choose: (title) => native.exportPdfChoose(title),
+          write: (page) => native.exportPdfWrite(page),
+        },
+      );
+      if (outcome.done === "cancelled") return;
+      if (outcome.done === "empty") {
+        flash.say("There is nothing on this board to export yet");
+        return;
+      }
+      // What came out, and — when a ceiling brought the scale down — that it
+      // did. A softer file is not a failure and is not silence either: the
+      // person handing it over is the one who needs to know it is not 1:1.
+      const size = `${Math.round(outcome.view.inches.width)} × ${Math.round(
+        outcome.view.inches.height,
+      )} inches`;
+      flash.say(
+        outcome.view.reduced
+          ? `Board saved as a PDF (${size}, reduced to fit one page)`
+          : `Board saved as a PDF (${size})`,
+      );
+    } catch (error) {
+      console.warn("[export] the board could not be printed", error);
+      flash.say("The board could not be saved as a PDF — the reason is in the console");
     }
   };
 
@@ -2471,6 +2541,18 @@ async function boot(): Promise<void> {
       /** The document as persistence would write it — for reopening a board
        *  and checking it comes back still (Phase 3's AC-15). */
       snapshot: () => snapshot(board),
+      /**
+       * Export the board as a PDF (T-207) — the same call the menu row will
+       * make (T-209), and until that row exists the only way to reach it.
+       *
+       * Here for the reason the whole handle exists: whether the file has the
+       * handwriting in it as text is a question about the running application
+       * and about a file on a disk, and no test in this repository can open
+       * either. It is also the one place where a *native save dialog* is in the
+       * middle of the thing being driven, so a driver has to be able to start
+       * the export and then go and answer a window.
+       */
+      printBoard,
     };
   }
 

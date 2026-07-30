@@ -165,6 +165,10 @@ bundle_save_as(manifest, snapshot) → { embedded, missing[], bytes } | null
 bundle_open()              → { manifest, snapshot, ingested[], missing[] } | null
 bundle_recent()                              // not built — see T-84's note
 
+// export to PDF, in two halves — see the note under `asset_export` below
+export_pdf_choose(title)   → bool            // a save dialog; the path stays here
+export_pdf_write(page)     → path            // prints the webview into it
+
 clipboard_read_manifest()  → { kinds: [...] }
 clipboard_read_item(kind)  → { sha256 } | { text } | { html, srcUrl }
 
@@ -189,6 +193,10 @@ Binary payloads use raw request/response bodies, never JSON arrays. `doc_append_
 The frontend still has to pass the asset's `origName`, because the document holds it and Rust holds no schema to read it from — a dialog offering a hash is a dialog nobody recognises their own photograph in. That is the one caller-supplied string in this command, and it crosses as a *name*, which is the difference that makes it safe: a name has recognisably wrong answers where a path has none. Rust reduces it to a bare filename before the dialog sees it and takes the extension from the bytes rather than from the suggestion, so `..\..\Startup\holiday.exe` reaches the user as `holiday.jpg` in whichever directory they were already looking at.
 
 Prefer this shape wherever the boundary is asked for a location: take the *intent* from the webview and let the native side obtain the location.
+
+**The PDF export took it too, and had to be split in two to** (T-207). `export_pdf_choose` opens the save dialog and answers only *whether* the user picked somewhere; `export_pdf_write` prints into it. The path is held in shell state between the two calls and never crosses in either direction, so the pair is the same rule as above rather than an exception to it — what the webview can do with them is bounded and dull: a `write` with no `choose` finds an empty slot and fails, a second `write` finds the slot already taken and fails, and a second `choose` replaces a path nobody used with one the user has just agreed to.
+
+It is two commands rather than one because of *ordering*, not security. The board has to be posed for the page before the print — a print lays out at the paper width and fires no `resize` — and a single command would have printed the instant the dialog closed, so the window was already zoomed out to its own bounds while somebody was still typing a filename. Asking first also makes the common case the cheap one: cancelling now moves nothing at all.
 
 **Both bundle commands took the advice** (T-84). `bundle_save_as` was written above as `bundle_save_as(path)` and does not take one: it takes the board's title, on exactly the standing `origName` has — a suggestion `safe_stem` reduces before the dialog shows it — and the save dialog supplies the rest. `bundle_open` takes nothing at all and opens a picker. Between them and `asset_export` that is every place in the application where a file is chosen, and none of them lets the webview name one.
 

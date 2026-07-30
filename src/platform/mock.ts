@@ -209,6 +209,23 @@ export class MockPlatform implements Platform {
     return unavailable("Opening a bundle");
   }
 
+  /**
+   * A browser can print, and cannot do this.
+   *
+   * `window.print()` opens a dialog and never says what came of it, which loses
+   * the difference between a saved file and a cancelled one — and it hands the
+   * page size to whoever is standing at the printer chooser, where the whole
+   * point of T-205 is that the page is the shape of the board. That is the same
+   * reason Q-128 turned the print dialog down as the route.
+   */
+  exportPdfChoose(): Promise<boolean> {
+    return unavailable("Exporting a board as a PDF");
+  }
+
+  exportPdfWrite(): Promise<string> {
+    return unavailable("Exporting a board as a PDF");
+  }
+
   async clipboardReadManifest(): Promise<ClipboardManifest> {
     // The web `paste` event is the fast path and handles inline images and
     // text on its own (ARCHITECTURE section 4.5). The native fallback exists

@@ -121,6 +121,15 @@ export interface BundleOpened {
   missing: string[];
 }
 
+/** A page for the PDF export (T-207), in the units the print pipeline takes. */
+export interface PdfPage {
+  /** Inches, because `ICoreWebView2PrintSettings` and `ExportView.inches` both
+   *  speak them. Refused on the other side unless finite, positive and inside
+   *  the format's own 200-inch limit. */
+  width: number;
+  height: number;
+}
+
 export type ClipboardKind = "image" | "text" | "html" | "files";
 
 export interface ClipboardManifest {
@@ -317,6 +326,38 @@ export interface Platform {
    * Resolves `null` for a cancelled dialog.
    */
   bundleOpen(): Promise<BundleOpened | null>;
+
+  // --- export (T-207) -----------------------------------------------------
+  /**
+   * Ask the user where a PDF of the board should go. `false` is a cancelled
+   * dialog — an ordinary outcome, and nothing has moved.
+   *
+   * Takes no destination, on the standing `assetExport` and `bundleSaveAs` both
+   * set out, and does not hand one back either: the path stays in the shell
+   * between this and `exportPdfWrite`. `title` is a *suggestion* Rust reduces
+   * to a filename before the save dialog shows it.
+   *
+   * Separate from the write because the board has to be posed for the page
+   * before the print happens, and posing it while somebody is still typing a
+   * filename would mean the window zooms out to answer a question about a file.
+   */
+  exportPdfChoose(title: string): Promise<boolean>;
+
+  /**
+   * Print the board into the file already chosen, one page of the given size in
+   * inches, and resolve where it went.
+   *
+   * The *whole* of what crosses is a page, because the drawing is already done
+   * by the time this is called: the shell asks its own webview to print itself,
+   * so what lands in the file is whatever is on screen at that moment.
+   * `app/exportPdf.ts` is what makes that moment the right one — the camera,
+   * the canvases and the detail tier are put where the page needs them first,
+   * and put back after.
+   *
+   * The path comes back as a string to show a person ("saved to …") and not as
+   * a handle: no command on the other side takes one.
+   */
+  exportPdfWrite(page: PdfPage): Promise<string>;
 
   // --- clipboard ---------------------------------------------------------
   clipboardReadManifest(): Promise<ClipboardManifest>;
