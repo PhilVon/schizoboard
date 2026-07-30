@@ -340,14 +340,33 @@ export function pinMenuRows(
  *
  * `board` is null in a plain browser, where there is no shell to write a file
  * with — absent on the same terms as the invite, and for the same reason.
+ *
+ * ## Why every file verb is on this menu and none is on an item's
+ *
+ * `selected` is the item selection, and it is here only to *word* the PDF row
+ * (T-209) — the export itself reads the live selection when it runs.
+ *
+ * The obvious alternative was a row on the item menu, so that a right-click on
+ * something selected offers to export it. It is the wrong shape twice over.
+ * Every other row in `itemMenuRows` is a verb against the item — edit it, pin
+ * it, raise it, delete it — and an export is a verb about a *file*; and the
+ * board menu is already where the other two file rows live, so somebody looking
+ * for "make me something to send" has one place to look rather than two.
+ *
+ * What that costs is a trap this row has to word its way out of: a right-click
+ * on bare cork does not clear the item selection, so with three notes held the
+ * board menu is open *and* an export would cover those three (Q-127). A row
+ * that said "the board" while writing a file of three notes would be lying, so
+ * it says which it is. That is the whole of `selected`.
  */
 export function boardMenuRows(
   scene: Scene,
   write: BoardWriter,
   strings: readonly string[],
+  selected: readonly string[],
   invite: { link: string | null; copy(link: string): void },
   ageing: { on: boolean; set(on: boolean): void },
-  board: { export(): void; open(): void } | null,
+  board: { export(): void; open(): void; pdf(): void } | null,
 ): MenuEntry[] {
   const rows = stringMenuRows(scene, write, strings);
   const below: MenuEntry[] = [
@@ -416,6 +435,32 @@ export function boardMenuRows(
       // Under the invite: both hand the board to somebody, and this is the
       // heavier of the two.
       run: () => board.export(),
+    });
+    below.push({
+      /**
+       * The picture, where the row above it is the board itself (T-209).
+       *
+       * Under *Export board…* because a `.schizo` is the board — everything on
+       * it, reopenable, and the thing to send somebody who is going to work on
+       * it. A PDF is what it *looked* like: DESIGN section 1's "taking a picture
+       * of your thinking", for somebody who is only going to read it. The order
+       * is which of those two a person means more often when they are handing a
+       * board over, and it is the first.
+       *
+       * **The label says what the file will cover.** Not decoration: a
+       * right-click on bare cork leaves the item selection standing, so the
+       * menu can perfectly well be open over a board with three notes held —
+       * and the export would then be of those three and their neighbours
+       * (Q-127), not of the wall. "The board" would be a lie in exactly the
+       * case where nothing else on screen would correct it.
+       *
+       * *Selection* rather than a count, because a count would promise a cutout
+       * of that many things and Q-127 chose the *region*: the file has whatever
+       * else is inside those bounds, and "3 items" is the one wording that
+       * makes the neighbours look like a bug.
+       */
+      label: selected.length > 0 ? "Export the selection as PDF…" : "Export the board as PDF…",
+      run: () => board.pdf(),
     });
     below.push({
       /**
