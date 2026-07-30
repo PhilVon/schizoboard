@@ -11,6 +11,7 @@
 
 import { Binding } from "@/crdt/binding";
 import {
+  assetOrigName,
   boardSchemaVersion,
   boardSeed,
   boardTitle,
@@ -1143,6 +1144,53 @@ async function boot(): Promise<void> {
   };
 
   /**
+   * One photograph back out onto the disk, under the name it came in with
+   * (T-101).
+   *
+   * The last thing in the application to reach `asset_export`, which has been
+   * built and callable since T-94 and — until this row — had no caller at all,
+   * so the save dialog it opens had never opened. Everything interesting about
+   * it is on the far side: the path, the dialog, and the extension, which comes
+   * from the stored bytes rather than from the name suggested here.
+   *
+   * ## Read at pick time, and there is no other honest moment
+   *
+   * `assetOrigName` walks the document, which is exactly what `exportBoard`
+   * above does and for the same reason: the rows are a snapshot taken at the
+   * press, and a photograph's metadata can arrive from a peer between the
+   * right-click and the dialog opening. The later read is the better one.
+   *
+   * ## What each of the three outcomes says
+   *
+   * `false` is a cancelled dialog and says **nothing at all** — the contract in
+   * `platform/types.ts` calls it an ordinary outcome, not a failure, and a line
+   * announcing that nothing happened is the application narrating its own
+   * inaction. `copyInvite` and `exportBoard` both stay quiet on the same
+   * grounds.
+   *
+   * `true` says so, and says no more than that. It is tempting to name the file
+   * — every other confirmation on this board carries a detail — but the name in
+   * the sentence would be the one *suggested*, and the whole point of a save
+   * dialog is that the user may have typed a different one. A confirmation that
+   * quietly renamed their file back would be worse than a plain one.
+   *
+   * A rejection names the console, like the other two, because there is
+   * genuinely somewhere to go: Rust stringifies the real error — a disk that is
+   * full, a hash the store does not hold — and that sentence is worth more than
+   * anything this side could guess at.
+   */
+  const savePhoto = async (sha256: string): Promise<void> => {
+    try {
+      const saved = await native.assetExport(sha256, assetOrigName(board, sha256));
+      if (!saved) return;
+      flash.say("Photograph saved");
+    } catch (error) {
+      console.warn("[asset] the photograph could not be saved", error);
+      flash.say("The photograph could not be saved — the reason is in the console");
+    }
+  };
+
+  /**
    * The board as a picture of itself, on one page (T-207).
    *
    * This assembles the [`Stage`] and nothing else: the ordering — pose, settle,
@@ -1585,6 +1633,22 @@ async function boot(): Promise<void> {
           board.x,
           board.y,
           startEditing,
+          // Absent in a plain browser, where `mock.ts`'s `assetExport` rejects
+          // — the same standing the board's own file rows are on below.
+          //
+          // `gone` is the one state `AssetStates` is certain about: the exchange
+          // asked every peer that claimed the hash and ran out of people to ask
+          // (`state/assets.ts`), which is also what draws the item torn. Every
+          // other phase — including the `unknown` a photograph sits at until
+          // something asks for it — leaves the row up, because a save that is
+          // going to work must not be hidden by a state that only means "nobody
+          // has looked yet".
+          native.kind === "tauri"
+            ? {
+                gone: (sha256: string) => assets.phase(sha256) === "unavailable",
+                save: (sha256: string) => void savePhoto(sha256),
+              }
+            : undefined,
         ),
         held ? undefined : () => selection.replace([itemId]),
       );

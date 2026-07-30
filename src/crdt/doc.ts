@@ -11,7 +11,7 @@ import * as Y from "yjs";
 
 import { newId } from "@/lib/ids";
 import { Origin, type OriginTag } from "@/crdt/origins";
-import { SCHEMA_VERSION, readItem, type YMap } from "@/crdt/schema";
+import { SCHEMA_VERSION, readAsset, readItem, type YMap } from "@/crdt/schema";
 
 export interface BoardDoc {
   readonly doc: Y.Doc;
@@ -155,6 +155,30 @@ export function referencedAssets(board: BoardDoc): string[] {
     if (asset) referenced.add(asset);
   }
   return [...referenced];
+}
+
+/**
+ * The name a photograph arrived under, for a save dialog to offer back (T-101).
+ *
+ * `undefined` rather than `""` when there is nothing to offer, because that is
+ * what `assetExport(sha256, origName?)` reads as "no suggestion" — and the two
+ * ways of having none arrive differently. A board that never learned the name
+ * has no `origName` key at all; one written by `crdt/ops/items.ts` from a paste
+ * with no filename in it (a screenshot, a drag out of another window) stores an
+ * empty string, which `readAsset` hands back verbatim. Passing that `""` through
+ * would put a dialog on screen with an empty filename box, which is strictly
+ * worse than letting Rust name the file after the hash.
+ *
+ * Here rather than in `app/main.ts`, which is where the call is made, because
+ * that module is wiring and nothing tests it — and this is the whole of AC-189.
+ * It is also `readAsset`'s first caller: the reader has existed since the schema
+ * did and nothing had yet needed a field off an asset record.
+ */
+export function assetOrigName(board: BoardDoc, sha256: string): string | undefined {
+  const map = board.assets.get(sha256);
+  if (map === undefined) return undefined;
+  const name = readAsset(sha256, map)?.origName ?? "";
+  return name.length > 0 ? name : undefined;
 }
 
 /**

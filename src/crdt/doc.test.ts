@@ -10,6 +10,7 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  assetOrigName,
   boardSchemaVersion,
   boardTitle,
   initialiseBoard,
@@ -119,5 +120,47 @@ describe("which photographs a board references", () => {
 
   it("is empty on a board with nothing on it", () => {
     expect(referencedAssets(board())).toEqual([]);
+  });
+});
+
+/**
+ * T-101, and the whole of AC-189. The name is a *suggestion* the save dialog
+ * puts in its filename box, so the only thing that matters is that a user
+ * recognises it - and that nothing recognisable is handed over as an empty
+ * string, which would put an empty box on screen.
+ */
+describe("the name a photograph came in under", () => {
+  it("is the one the item was pasted with", () => {
+    const doc = board();
+    createItems(doc, [polaroid(PHOTO)]);
+    expect(assetOrigName(doc, PHOTO)).toBe("holiday.png");
+  });
+
+  /**
+   * A screenshot, or a drag out of another window - `app/paste.ts` has no
+   * filename to take, `crdt/ops/items.ts` writes it as null and `readAsset`
+   * hands it back as "". Passing that through would be a dialog with an empty
+   * filename box, which is worse than letting Rust name the file after the hash.
+   */
+  it("is undefined rather than empty when the photograph arrived without one", () => {
+    const doc = board();
+    createItems(doc, [polaroid(PHOTO)]);
+    doc.assets.get(PHOTO)!.set("origName", "");
+    expect(assetOrigName(doc, PHOTO)).toBeUndefined();
+    doc.assets.get(PHOTO)!.set("origName", 7);
+    expect(assetOrigName(doc, PHOTO)).toBeUndefined();
+  });
+
+  /**
+   * The record is unreadable, not merely nameless: `readAsset` answers null for
+   * an asset with no usable size, and a caller asking for a name gets the same
+   * nothing as one asking about a hash the board has never heard of.
+   */
+  it("is undefined for a hash with no record, and for one that will not read", () => {
+    const doc = board();
+    createItems(doc, [polaroid(PHOTO)]);
+    expect(assetOrigName(doc, OTHER)).toBeUndefined();
+    doc.assets.get(PHOTO)!.set("w", 0);
+    expect(assetOrigName(doc, PHOTO)).toBeUndefined();
   });
 });
