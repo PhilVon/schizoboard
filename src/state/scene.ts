@@ -441,10 +441,16 @@ export class Scene {
    * `pinsParentedTo` is the first; `pinsOf`, `pinCount` and `solePin` are the
    * second, because every one of their callers is asking about physics.
    *
-   * Rebuilt in the LAYOUT phase rather than maintained by `putPin`, because
-   * nothing about a pin has to change for the answer to: an item dragged over a
+   * Rebuilt from scratch rather than maintained by `putPin`, because nothing
+   * about a pin has to change for the answer to: an item dragged over a
    * stationary pin is now on it, and no pin was written to. Sets are cleared
    * and refilled rather than replaced, so a still board allocates nothing.
+   *
+   * *When* it is rebuilt is [`overStale`]'s, and it is not the LAYOUT phase —
+   * that phase **invalidates** this and rebuilds nothing. The first reader
+   * afterwards pays, which on a dirty frame is the DOM phase asking for the
+   * paper curl. Anything reasoning about ordering should start there and not
+   * here.
    */
   private readonly byOver = new Map<string, Set<string>>();
 
@@ -1192,8 +1198,10 @@ export class Scene {
    * Which pins hold this item. Empty for an unpinned one — never null, so a
    * caller can iterate without asking first.
    *
-   * Live rather than a copy: the set is the index's own, and the LAYOUT phase
-   * clears and refills it. Read it and let it go; do not keep it across a frame.
+   * Live rather than a copy: the set is the index's own, and a rebuild clears
+   * and refills it. Read it and let it go; do not keep it across a frame — and
+   * not across a *rebuild* either, which is the tighter rule, because one can
+   * happen at any read on a frame where anything moved (see [`overStale`]).
    */
   pinsOf(itemId: string): ReadonlySet<string> {
     if (this.overStale) this.layoutOver();
