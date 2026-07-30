@@ -115,6 +115,16 @@ export interface PinSprite {
   /** Empty when there is no 2D context — the caller draws nothing rather than
    *  pointing an element at a broken URL. */
   url: string;
+  /**
+   * The bake itself, for a caller that is drawing into a canvas rather than
+   * styling an element (T-214).
+   *
+   * The export needs the pixels and not a URL: `drawImage` of this canvas is
+   * free, where the data URI would have to be decoded again — per pin, on a
+   * board that can hold hundreds of them, for an image the export already
+   * has in memory. Null for the same reason `url` is empty.
+   */
+  canvas: HTMLCanvasElement | null;
 }
 
 const cache = new Map<string, PinSprite>();
@@ -142,7 +152,7 @@ function bake(kind: PinKind, color: string): PinSprite {
   canvas.width = BAKE;
   canvas.height = BAKE;
   const ctx = canvas.getContext("2d");
-  if (!ctx) return { url: "" };
+  if (!ctx) return { url: "", canvas: null };
 
   const c = BAKE / 2;
   const head = BAKE * HEAD_RADIUS[kind];
@@ -194,7 +204,7 @@ function bake(kind: PinKind, color: string): PinSprite {
   ctx.arc(sx, sy, head * 0.34, 0, Math.PI * 2);
   ctx.fill();
 
-  return { url: canvas.toDataURL("image/png") };
+  return { url: canvas.toDataURL("image/png"), canvas };
 }
 
 function drawShaft(
