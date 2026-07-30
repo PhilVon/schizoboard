@@ -39,12 +39,14 @@
  * realistic old board sits around 0.6, so a threshold band running to 1.55 is
  * how "occasional" is spelled.
  *
- * ## What is not here
+ * ## The one mark here that is not a gradient
  *
- * Dog-ears. DESIGN 4.7 lists them and they are the one item on that list that is
- * not a gradient: a folded corner cuts the silhouette (`edge.ts`) and draws the
- * back of the sheet over the cut, and it has to negotiate with the curl for the
- * same corner. That is its own task (T-190), not a paragraph in this one.
+ * Dog-ears (T-190). Everything else on DESIGN 4.7's list is a layer painted over
+ * a rectangle; a folded corner is a change to the *shape* of the sheet, so
+ * [`dogEarOf`] below decides when and where and `edge.ts` cuts the silhouette
+ * with it. It also has to negotiate with the curl for the same corner, which
+ * `curl.ts` does — a corner that has been folded flat is not a corner that is
+ * lifting.
  */
 
 import { valueAt } from "@/lib/seed";
@@ -236,6 +238,85 @@ export function stainOf(seed: number, wear: number): Stain {
 }
 
 /**
+ * A dog-eared corner: which one, and how far the fold reaches along each of the
+ * two edges that meet there.
+ *
+ * The only mark in this file that is not paint. `edge.ts` cuts the corner out of
+ * the silhouette along the line between the two points [`depth`] names, and
+ * `items.css` draws the flap — the back of the sheet — over the sheet on the
+ * inner side of that line.
+ */
+export interface DogEar {
+  /** How developed, in [0, 1]. Zero means this sheet has never been folded. */
+  amount: number;
+  /** Which corner, clockwise from the top left — `edge.ts` and `curl.ts`'s order. */
+  corner: number;
+  /**
+   * How far the fold reaches from the corner, as a **percentage of the sheet**
+   * along each edge, and zero when [`amount`] is.
+   *
+   * A percentage, where a coffee ring's radius is board units, and the two are
+   * not inconsistent. A mug is a mug: it leaves the same ring on a poster as on
+   * a Post-it, and a ring that scaled would be the detail that gives away a
+   * photographed Post-it. A fold is the other kind of thing — you take hold of a
+   * corner and turn it back toward the middle of the sheet, so the triangle you
+   * make is a fraction of what you are holding. `edge.ts` already draws the same
+   * distinction for the same reason: its wander is in board units and its
+   * *wavelength* scales, because a torn A4 has coarser features than a torn
+   * Post-it.
+   *
+   * It also has to be a percentage for the silhouette to stay a function of the
+   * seed alone. In board units the fold would have to be clamped against `w` and
+   * `h`, which are pose rather than cold, and the path would then be rewritten
+   * on every frame of a resize instead of once when the document changes.
+   */
+  depth: number;
+}
+
+/**
+ * The widest a fold reaches, as a percentage of the sheet.
+ *
+ * Bounded above by geometry rather than by taste: `edge.ts` drops the ragged
+ * samples the fold has eaten, and the tightest spacing on any edge is a torn one
+ * at seventeen samples, whose first sample can sit as close as 3.9% from the
+ * corner. Past about a tenth of the sheet the fold starts eating the second
+ * sample too and the edge either side of it loses its wander.
+ *
+ * The low end is where a fold stops reading as one and starts reading as a
+ * clipped corner, which is a thing a machine does — the same failure DESIGN 4.4
+ * warns about for a straight edge.
+ */
+const EAR_MIN = 5;
+const EAR_MAX = 9;
+
+/**
+ * A folded corner.
+ *
+ * Between a crease and a coffee ring in how often it happens, which is where a
+ * fold belongs: a sheet that has been handled for a year has been folded back
+ * somewhere, but a corner turned over is a specific accident in a way that a
+ * crease down the middle is not. At a realistic 0.6 this leaves about a third of
+ * a well-used board dog-eared, and none of it acquired on the same day.
+ *
+ * The corner is uniform over the four. A real pad is dog-eared where the thumb
+ * turns the page, which is the same corner every time — but nothing on a cork
+ * board is a pad, and four sheets folded at the identical corner reads as a
+ * template rather than as wear.
+ */
+export function dogEarOf(seed: number, wear: number): DogEar {
+  const threshold = 0.3 + valueAt(seed, "ear-when") * 0.85;
+  const amount = clamp01((wear - threshold) / FADE_IN);
+  return {
+    amount,
+    corner: Math.min(3, Math.floor(valueAt(seed, "ear-corner") * 4)),
+    // Grown in rather than switched on, like every other discrete mark here —
+    // and here it is the silhouette itself that grows, so a sheet crossing its
+    // own threshold turns its corner over across a fortnight of board time.
+    depth: amount * (EAR_MIN + valueAt(seed, "ear-depth") * (EAR_MAX - EAR_MIN)),
+  };
+}
+
+/**
  * The dye loss on a photograph and its frame, as a `filter`.
  *
  * Four terms, and each is one thing that happens to a colour print left in the
@@ -276,6 +357,7 @@ export const WEAR_PROPS = [
   "--stain-x",
   "--stain-y",
   "--stain-r",
+  "--ear",
 ] as const;
 
 /** The class an item wears while it has any wear at all — see `items.css`. */

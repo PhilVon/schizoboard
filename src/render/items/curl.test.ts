@@ -44,12 +44,13 @@ function curls(
   pins: readonly PinNode[],
   over: Partial<ItemPose> = {},
   taped = 0,
+  folded = -1,
 ): Float32Array {
   const scene = new Scene();
   const slot = scene.putItem(cold("sheet"), pose(over));
   for (const p of pins) scene.putPin(p);
   const out = new Float32Array(4);
-  cornerCurl(scene, "sheet", slot, taped, out);
+  cornerCurl(scene, "sheet", slot, taped, folded, out);
   return out;
 }
 
@@ -175,6 +176,25 @@ describe("cornerCurl", () => {
     for (let c = 0; c < 4; c++) {
       expect(out[c]).toBe(taped & (1 << c) ? 0 : 1);
     }
+  });
+
+  it("does not curl a corner that has been folded over — AC-463", () => {
+    // The two marks agree about the corner they share, and the fold is what
+    // wins. Not because anything is holding it down — nothing is, this sheet has
+    // no pin and no tape — but because `edge.ts` has cut that corner out of the
+    // silhouette, so a curl there would shade paper the sheet no longer has and
+    // run its highlight off into the cork past the fold line.
+    for (let folded = 0; folded < 4; folded++) {
+      const out = curls([], {}, 0, folded);
+      for (let c = 0; c < 4; c++) expect(out[c]).toBe(c === folded ? 0 : 1);
+    }
+  });
+
+  it("leaves every corner alone when nothing is folded", () => {
+    // -1 is three sheets in four and every photograph, so it has to be the case
+    // that costs nothing. An off-by-one that read it as corner 0 would flatten
+    // the top left of the whole board.
+    expect([...curls([], {}, 0, -1)]).toEqual([1, 1, 1, 1]);
   });
 
   it("holds the far corners of a small sheet with one pin in the middle", () => {

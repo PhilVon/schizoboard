@@ -7,6 +7,7 @@ import { beforeEach, describe, expect, it } from "vitest";
 import { CAPTION_BOTTOM, CAPTION_HEIGHT, FRAME_BOTTOM } from "@/lib/polaroid";
 import { DomItemLayer, type AssetResolver, type AssetView } from "@/render/items/dom";
 import { tapedCorners } from "@/render/items/tape";
+import { dogEarOf } from "@/render/items/wear";
 import { DirtySets } from "@/state/dirty";
 import { Scene, type ItemCold, type ItemPose } from "@/state/scene";
 
@@ -1435,6 +1436,161 @@ describe("ageing", () => {
     layer.sync(scene, dirty, null);
     expect(sheet().classList.contains("is-aged")).toBe(false);
     expect(sheet().style.getPropertyValue("--stain")).toBe("");
+  });
+
+  /**
+   * Dog-ears — T-190, and the one mark on DESIGN 4.7's list that is not paint.
+   *
+   * The others are a class and a custom property and everything else is
+   * `items.css`. This one changes the *shape* of the sheet, so there is a second
+   * thing to get wrong: the silhouette is no longer a function of the cold item
+   * alone, and `bind`'s guard has to know that.
+   */
+  describe("dog-ears", () => {
+    /** A seed whose corner is turned over on a board this old, and one whose is not. */
+    const FOLDED = (() => {
+      for (let seed = 1; seed < 500; seed++) if (dogEarOf(seed, 1).amount > 0) return seed;
+      throw new Error("no seed folds");
+    })();
+    const PLAIN = (() => {
+      for (let seed = 1; seed < 500; seed++) if (dogEarOf(seed, 1).amount === 0) return seed;
+      throw new Error("every seed folds");
+    })();
+
+    function note(seed: number, age = 1500 * DAY): void {
+      add("a", { type: "note", seed, createdAt: Date.now() - age }, { w: 240, h: 190 });
+    }
+
+    it("cuts the corner out of the silhouette and hangs the flap on it", () => {
+      layer.setAgeClock(wallClock);
+      note(FOLDED);
+      layer.sync(scene, dirty, null);
+      const el = sheet();
+      const corner = dogEarOf(FOLDED, 1).corner;
+      expect(el.dataset["ear"]).toBe(["tl", "tr", "br", "bl"][corner]);
+      expect(el.style.getPropertyValue("--ear")).toMatch(/^\d+\.\d%$/);
+      // The flap needs an opaque paper colour: it is the *back* of this sheet,
+      // and a translucent one would let the ruling through.
+      expect(el.style.getPropertyValue("--stock-base")).not.toBe("");
+      expect(el.querySelector(".paper-ear")).not.toBeNull();
+      // And the cut itself. A corner of the paper is the one kind of point whose
+      // coordinates are both lengths — every other vertex is a position *along*
+      // an edge — so a sheet with a corner cut off has three of them and not four.
+      const square = (item: HTMLElement): number =>
+        item
+          .querySelector<HTMLElement>(".paper-surface")!
+          .style.clipPath.slice(8, -1)
+          .split(/,\s*(?![^(]*\))/)
+          // `calc(100% - 3px)` is a length measured from the far side, not a
+          // position along an edge — collapsed first so its `100%` cannot be
+          // mistaken for one.
+          .filter(
+            (pair) =>
+              !pair
+                .replace(/calc\([^)]*\)/g, "L")
+                .trim()
+                .split(/\s+/)
+                .some((coord) => coord.endsWith("%")),
+          ).length;
+      expect(square(el)).toBe(3);
+
+      dirty.clear();
+      dirty.item("a");
+      layer.sync(scene, dirty, new Set());
+      scene.removeItem("a");
+      add("b", { type: "note", seed: PLAIN, createdAt: Date.now() - 1500 * DAY }, { w: 240, h: 190 });
+      layer.sync(scene, dirty, null);
+      expect(square(sheet())).toBe(4);
+    });
+
+    it("leaves a sheet nobody has folded square", () => {
+      layer.setAgeClock(wallClock);
+      note(PLAIN);
+      layer.sync(scene, dirty, null);
+      expect(sheet().dataset["ear"]).toBeUndefined();
+      expect(sheet().style.getPropertyValue("--ear")).toBe("");
+    });
+
+    it("never folds a photograph", () => {
+      // A print ages by losing its dyes, not by having its shape changed
+      // (DESIGN 4.7). It has no silhouette to cut and no back to show.
+      layer.setAgeClock(wallClock);
+      add("a", { seed: FOLDED, createdAt: Date.now() - 1500 * DAY });
+      layer.sync(scene, dirty, null);
+      const item = host.querySelector<HTMLElement>(".item-polaroid")!;
+      expect(item.dataset["ear"]).toBeUndefined();
+      expect(item.querySelector(".paper-ear")).toBeNull();
+    });
+
+    /**
+     * The guard, and the reason this is a test rather than an assertion inside
+     * another one.
+     *
+     * A fold deepens with wear while the item's cold record does not change at
+     * all — nobody edits a note to make it older. `bind` returns early on the
+     * cold identity, so without the fold in that guard the sheet would keep the
+     * silhouette it had the day it crossed its own threshold and the flap drawn
+     * off `--ear` would grow out past the cut it is meant to sit behind.
+     */
+    it("re-cuts the silhouette as the fold deepens, with no document change", () => {
+      let days = 0;
+      layer.setAgeClock(() => days);
+      note(FOLDED, 0);
+      layer.sync(scene, dirty, null);
+      const surface = (): HTMLElement => sheet().querySelector<HTMLElement>(".paper-surface")!;
+
+      const paths = new Set<string>();
+      const depths = new Set<string>();
+      for (days = 0; days <= 3000; days += 50) {
+        dirty.clear();
+        dirty.everything();
+        layer.sync(scene, dirty, null);
+        paths.add(surface().style.clipPath);
+        depths.add(sheet().style.getPropertyValue("--ear"));
+      }
+      // Not "it changed once": the fold grows in, so the silhouette has to keep
+      // up with it the whole way rather than snapping to its final shape.
+      expect(paths.size).toBeGreaterThan(2);
+      expect(depths.size).toBe(paths.size);
+    });
+
+    /**
+     * AC-463, through the real path rather than through `cornerCurl` directly.
+     *
+     * `curl.test.ts` proves the rule; this proves the wiring — that the answer
+     * `bind` arrived at is the one the curl is computed from, and not a second
+     * `dogEarOf` that could disagree with it. A `-1` passed here by mistake has
+     * no symptom in any unit test and shades a corner the sheet has not got.
+     */
+    it("does not curl the corner it has folded", () => {
+      layer.setAgeClock(wallClock);
+      note(FOLDED);
+      layer.sync(scene, dirty, null);
+      const el = sheet();
+      const corner = dogEarOf(FOLDED, 1).corner;
+      const props = ["--curl-tl", "--curl-tr", "--curl-br", "--curl-bl"];
+      // Nothing is holding this sheet — no pin, and a taped sheet would be one
+      // that is pinned — so every corner but the folded one is fully curled.
+      for (let c = 0; c < 4; c++) {
+        expect(el.style.getPropertyValue(props[c]!)).toBe(c === corner ? "0.00" : "1.00");
+      }
+    });
+
+    it("gives a recycled node no memory of the last sheet's fold", () => {
+      layer.setAgeClock(wallClock);
+      note(FOLDED);
+      layer.sync(scene, dirty, null);
+      expect(sheet().dataset["ear"]).toBeDefined();
+
+      dirty.clear();
+      dirty.item("a");
+      layer.sync(scene, dirty, new Set());
+      scene.removeItem("a");
+      add("b", { type: "note", seed: FOLDED, createdAt: Date.now() }, { w: 240, h: 190 });
+      layer.sync(scene, dirty, null);
+      expect(sheet().dataset["ear"]).toBeUndefined();
+      expect(sheet().style.getPropertyValue("--ear")).toBe("");
+    });
   });
 });
 

@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import { wear } from "@/lib/seed";
 import { LIGHT_DX, LIGHT_DY } from "@/render/items/shadow";
-import { creaseFace, creaseOf, stainOf, wearFilter } from "@/render/items/wear";
+import { creaseFace, creaseOf, dogEarOf, stainOf, wearFilter } from "@/render/items/wear";
 
 /** A wear a board that has been lived with for the best part of a year sits at. */
 const OLD = 0.6;
@@ -174,6 +174,120 @@ describe("stainOf", () => {
     const independent = (creased / SEEDS) * (ringed / SEEDS);
     expect(both / SEEDS).toBeGreaterThan(independent * 0.7);
     expect(both / SEEDS).toBeLessThan(independent * 1.4);
+  });
+});
+
+describe("dogEarOf", () => {
+  it("is the same fold every time it is asked", () => {
+    expect(dogEarOf(7, OLD)).toEqual(dogEarOf(7, OLD));
+  });
+
+  it("gives a new sheet no fold and no depth to draw one with", () => {
+    // Both halves matter and they are written separately: `edge.ts` cuts on the
+    // depth alone, so an amount of zero with a depth left standing would take a
+    // corner off every unfolded sheet on the board.
+    for (let seed = 1; seed < 500; seed++) {
+      expect(dogEarOf(seed, 0).amount).toBe(0);
+      expect(dogEarOf(seed, 0).depth).toBe(0);
+    }
+  });
+
+  it("folds a fraction of the sheet rather than a fixed length", () => {
+    // The opposite of the coffee ring directly above, which is a mug and is
+    // therefore board units. You take hold of a corner and turn it back toward
+    // the middle, so the triangle is a fraction of what you are holding — and a
+    // percentage is also the only thing that cannot overrun a small sheet, which
+    // is what keeps the silhouette a function of the seed rather than of `w`.
+    for (let seed = 1; seed < 500; seed++) {
+      const ear = dogEarOf(seed, 1);
+      // A fold still growing in is shallower than its own range by design — the
+      // range is what it reaches, not where it starts.
+      if (ear.amount < 1) continue;
+      expect(ear.depth).toBeGreaterThanOrEqual(5);
+      expect(ear.depth).toBeLessThanOrEqual(9);
+    }
+  });
+
+  it("names one of the four corners, and not the same one every time", () => {
+    const seen = new Set<number>();
+    for (let seed = 1; seed <= SEEDS; seed++) {
+      const corner = dogEarOf(seed, 1).corner;
+      expect(Number.isInteger(corner)).toBe(true);
+      expect(corner).toBeGreaterThanOrEqual(0);
+      expect(corner).toBeLessThanOrEqual(3);
+      seen.add(corner);
+    }
+    // A real pad is dog-eared where the thumb turns the page, which is the same
+    // corner every time. Nothing on a cork board is a pad, and four sheets folded
+    // at the identical corner reads as a template rather than as wear.
+    expect(seen.size).toBe(4);
+  });
+
+  it("turns a corner over on some of a well-used board and none of a young one", () => {
+    // Between the crease and the coffee ring, which is where a fold belongs: a
+    // sheet handled for a year has been folded back somewhere, but a corner
+    // turned over is a specific accident in a way that a crease is not.
+    let folded = 0;
+    for (let seed = 1; seed <= SEEDS; seed++) if (dogEarOf(seed, OLD).amount > 0) folded++;
+    const fraction = folded / SEEDS;
+    expect(fraction).toBeGreaterThan(0.2);
+    expect(fraction).toBeLessThan(0.5);
+
+    let creased = 0;
+    let ringed = 0;
+    for (let seed = 1; seed <= SEEDS; seed++) {
+      if (creaseOf(seed, OLD).amount > 0) creased++;
+      if (stainOf(seed, OLD).amount > 0) ringed++;
+    }
+    expect(folded).toBeLessThan(creased);
+    expect(folded).toBeGreaterThan(ringed);
+
+    for (let seed = 1; seed <= SEEDS; seed++) expect(dogEarOf(seed, 0.1).amount).toBe(0);
+  });
+
+  it("grows the fold in rather than switching it on", () => {
+    // The silhouette itself is what grows here, so a sheet crossing its own
+    // threshold turns its corner over across a fortnight of board time instead of
+    // between two frames. Every other mark in this file fades in; this one has to
+    // as well, or the shape of the paper pops.
+    const seed = (() => {
+      for (let s = 1; s < SEEDS; s++) if (dogEarOf(s, OLD).amount > 0) return s;
+      throw new Error("no seed folds");
+    })();
+    let last = -1;
+    const full = dogEarOf(seed, 1).depth;
+    // The *depth* part-grown, not the amount: `edge.ts` cuts on the depth alone,
+    // so an amount that eased while the depth snapped to its final value would
+    // still take the corner off between two frames.
+    const growing = new Set<number>();
+    for (let wear = 0; wear <= 1.001; wear += 0.01) {
+      const ear = dogEarOf(seed, wear);
+      expect(ear.depth).toBeGreaterThanOrEqual(last);
+      if (ear.depth > 0 && ear.depth < full) growing.add(Math.round(ear.depth * 10));
+      last = ear.depth;
+    }
+    expect(growing.size).toBeGreaterThan(4);
+  });
+
+  it("does not decide the fold off the same coin as the crease or the ring", () => {
+    // `seed.ts`'s rule for every stream on this board: how creased a sheet is
+    // must not predict whether its corner is turned over, or the board acquires
+    // a pattern nobody can name.
+    for (const other of [creaseOf, stainOf]) {
+      let both = 0;
+      let mine = 0;
+      let theirs = 0;
+      for (let seed = 1; seed <= SEEDS; seed++) {
+        const a = dogEarOf(seed, OLD).amount > 0;
+        const b = other(seed, OLD).amount > 0;
+        if (a) mine++;
+        if (b) theirs++;
+        if (a && b) both++;
+      }
+      const independent = (mine / SEEDS) * (theirs / SEEDS);
+      expect(both / SEEDS).toBeGreaterThan(independent * 0.7);
+      expect(both / SEEDS).toBeLessThan(independent * 1.4);
+    }
   });
 });
 

@@ -92,6 +92,7 @@ import type { ItemLayer } from "@/render/items/view";
 import {
   creaseFace,
   creaseOf,
+  dogEarOf,
   IS_AGED,
   NO_AGEING,
   stainOf,
@@ -254,6 +255,18 @@ interface View {
    * is pinned changes with no write to that item at all.
    */
   setTape(seed: number, corners: number): void;
+  /**
+   * Which corner this item is dog-eared at, or `-1` for the three sheets in four
+   * that are not (`wear.ts`) — and always `-1` for a photograph, which has no
+   * silhouette to fold.
+   *
+   * Read *back out* of the view rather than asked again beside `setCurl`, on the
+   * same argument the tape mask makes one line above about being asked once: a
+   * folded corner does not curl, so two answers to "is this corner folded" would
+   * be two chances to shade a corner the sheet no longer has. `bind` has already
+   * decided this when the curl is offered, and this is that decision.
+   */
+  readonly folded: number;
   /**
    * The item's committed ink. Identical on both archetypes, which is right —
    * every kind of paper on this board can be drawn on (DESIGN section 2.1).
@@ -501,6 +514,12 @@ class PolaroidView implements View {
   private readonly frame: HTMLDivElement;
   private readonly film: HTMLDivElement;
   private readonly age: HTMLDivElement;
+  /**
+   * Never. A print is card and emulsion and it creases rather than folds, and
+   * DESIGN 4.7 gives a photograph the other mechanism entirely — it ages by
+   * losing its dyes (`wearFilter`), not by having things done to its shape.
+   */
+  readonly folded = -1;
   readonly ink: ItemInk;
 
   constructor(firstSight: FirstSight) {
@@ -916,6 +935,14 @@ function setCarried(el: HTMLDivElement, shadow: ShadowNode, lift: number): void 
   el.classList.toggle("is-lifted", carried);
 }
 
+/**
+ * How `data-ear` spells each corner, in `edge.ts` and `curl.ts`'s clockwise
+ * order. An attribute rather than four more custom properties, because which
+ * corner is folded selects a whole block of `items.css` — where the flap sits and
+ * which way its triangle points — and none of that is arithmetic.
+ */
+const EAR_CORNERS = ["tl", "tr", "br", "bl"] as const;
+
 class PaperView implements View {
   readonly archetype = "paper" as const;
   readonly el: HTMLDivElement;
@@ -928,9 +955,24 @@ class PaperView implements View {
   private readonly body: HTMLDivElement;
   private readonly age: HTMLDivElement;
   private readonly worn: HTMLDivElement;
+  private readonly ear: HTMLDivElement;
   private boundCold: ItemCold | null = null;
   /** The wear last written, in hundredths. Negative so the first bind writes. */
   private boundWear = -1;
+  /** Which corner is folded, or -1 — the `View` contract, written by `paintAge`. */
+  folded = -1;
+  /**
+   * How far the fold reaches, as a percentage of the sheet, and how far it
+   * reached when the silhouette was last written.
+   *
+   * The fold is the one thing in the path that is **not** a function of the cold
+   * item, so the guard in `bind` cannot be the cold identity alone. Quantised to
+   * tenths, which is what the path is written to anyway — so a sheet turning its
+   * corner over rewrites the polygon a couple of dozen times across the fortnight
+   * of board time it takes, and not once more.
+   */
+  private earDepth = 0;
+  private boundEar = -1;
   /** Whether the writing was last laid down plainly — see `bind`. */
   private boundPlain = false;
   /**
@@ -992,6 +1034,13 @@ class PaperView implements View {
     this.worn = document.createElement("div");
     this.worn.className = "paper-worn";
 
+    // The flap of a dog-eared corner: the back of the sheet, lying on the front
+    // of it. Always in the tree and zero-sized until this sheet has a fold, which
+    // is the same bargain `.paper-tear` and the two wear layers take — a node
+    // created on demand is a `createElement` on a mount.
+    this.ear = document.createElement("div");
+    this.ear.className = "paper-ear";
+
     // Above the ruling, which a tear destroys, and below the writing, which sits
     // on the paper whatever the paper has been through.
     //
@@ -1001,7 +1050,20 @@ class PaperView implements View {
     // sheet, not the least. A crease and a coffee ring are things that happened
     // *to* the sheet after somebody wrote on it, so they go over the top, beside
     // the bend, which is over the writing for the same reason.
-    this.surface.append(this.grain, this.tear, this.age, this.body, this.bend, this.worn);
+    // The fold goes last of the surface's children, over the yellowing, the
+    // writing, the bend and the marks alike: a corner turned over covers whatever
+    // the sheet had on it, which is most of what makes it read as a fold rather
+    // than as a shape drawn on the paper. Only the tape is above it, and the tape
+    // is not on the surface at all.
+    this.surface.append(
+      this.grain,
+      this.tear,
+      this.age,
+      this.body,
+      this.bend,
+      this.worn,
+      this.ear,
+    );
     // Tape last, because it is stuck over the front of the sheet — and over the
     // curl, since a taped corner is a corner that is not lifting.
     this.el.append(this.shadow.el, this.surface, ...this.tape.nodes);
@@ -1019,9 +1081,16 @@ class PaperView implements View {
     // `plain` is in the guard for the reason it is in the polaroid's: a zoom
     // across 35% changes it without changing anything the document says, and a
     // bind that returns here never reaches `writeHand`.
-    if (this.boundCold === cold && plain === this.boundPlain) return;
+    //
+    // And the fold is in it because the silhouette is no longer the seed's alone
+    // (T-190): a corner turning over changes the polygon while the item's cold
+    // record does not change at all, so the cold identity on its own would leave
+    // the sheet wearing the shape it had before it was ever folded.
+    const ear = Math.round(this.earDepth * 10);
+    if (this.boundCold === cold && plain === this.boundPlain && ear === this.boundEar) return;
     this.boundCold = cold;
     this.boundPlain = plain;
+    this.boundEar = ear;
     const stock = defaultStock(cold.type, cold.seed);
     this.el.dataset["stock"] = stock;
     // The silhouette, where its corners are, and where the pulp shows. All of
@@ -1033,7 +1102,11 @@ class PaperView implements View {
     // corner, and the corner of the item's rectangle is not where the paper ends
     // (`edge.ts`). A fold anchored on the box has its highlight clipped away by
     // the very silhouette it is meant to belong to.
-    const edge = sheetEdge(stock, cold.seed);
+    const edge = sheetEdge(
+      stock,
+      cold.seed,
+      this.folded < 0 ? null : { corner: this.folded, depth: ear / 10 },
+    );
     // Written here rather than left to `items.css` because these four are
     // *inline* styles, and an inline style beats a stylesheet rule (T-198). The
     // LOD block in `items.css` can hide a node it does not otherwise touch, and
@@ -1053,7 +1126,14 @@ class PaperView implements View {
     else delete this.el.dataset["tear"];
     // The stock's own colour stays at every tier: it is the flat paper, and it
     // is what still tells a legal pad from an index card when nothing else can.
-    this.surface.style.background = stockBase(stock);
+    const base = stockBase(stock);
+    this.surface.style.background = base;
+    // And the same colour again as a property, for the one layer that has to be
+    // *opaque* paper rather than a wash over it: the flap of a dog-eared corner
+    // shows the back of this sheet, and the back of a legal pad has no rules
+    // printed on it. A translucent flap would let the ruling through and the fold
+    // would read as a shadow rather than as paper.
+    this.el.style.setProperty("--stock-base", base);
     // The ruling does not. Its lines are a third of a device pixel apart at 35%,
     // which is a flat grey wash drawn the most expensive way available.
     this.surface.style.backgroundImage = plain ? "none" : stockRuling(stock);
@@ -1124,11 +1204,29 @@ class PaperView implements View {
     this.el.classList.toggle(IS_AGED, wear > 0);
     if (wear <= 0) {
       for (const prop of WEAR_PROPS) this.el.style.removeProperty(prop);
+      delete this.el.dataset["ear"];
+      this.folded = -1;
+      this.earDepth = 0;
       this.creaseRot = Number.NaN;
       this.facedRot = Number.NaN;
       return;
     }
     this.el.style.setProperty("--age", wear.toFixed(2));
+
+    // The fold, and it is the one mark here that `bind` has to act on rather than
+    // hand to the stylesheet: it cuts the silhouette. So this writes the depth
+    // and the corner and leaves the polygon to the block below, which is guarded
+    // on the depth this line just set.
+    const dogEar = dogEarOf(seed, wear);
+    this.folded = dogEar.amount > 0 ? dogEar.corner : -1;
+    this.earDepth = dogEar.depth;
+    if (this.folded < 0) {
+      delete this.el.dataset["ear"];
+      this.el.style.removeProperty("--ear");
+    } else {
+      this.el.dataset["ear"] = EAR_CORNERS[this.folded]!;
+      this.el.style.setProperty("--ear", `${dogEar.depth.toFixed(1)}%`);
+    }
 
     const crease = creaseOf(seed, wear);
     this.el.style.setProperty("--crease", crease.amount.toFixed(2));
@@ -1192,13 +1290,18 @@ class PaperView implements View {
     // writes both of these — but a pooled node wearing the last sheet's tear is
     // exactly the class of bug the polaroid's release is a paragraph long about.
     delete this.el.dataset["tear"];
+    delete this.el.dataset["ear"];
     this.surface.style.removeProperty("clip-path");
+    this.el.style.removeProperty("--stock-base");
     for (const prop of [...EDGE_PROPS, ...CURL_PROPS, ...FACE_PROPS, ...WEAR_PROPS]) {
       this.el.style.removeProperty(prop);
     }
     this.el.classList.remove(IS_AGED);
     this.written.fill(-9);
     this.boundWear = -1;
+    this.folded = -1;
+    this.earDepth = 0;
+    this.boundEar = -1;
     this.creaseRot = Number.NaN;
     this.facedRot = Number.NaN;
     this.tape.release();
@@ -1731,7 +1834,11 @@ export class DomItemLayer implements ItemLayer {
       // two chances to disagree about the same sheet.
       const taped = tapedCorners(cold.seed, scene.pinCount(id));
       view.setTape(cold.seed, taped);
-      cornerCurl(scene, id, slot, taped, this.corners);
+      // `view.folded` and not a second `dogEarOf`, for the reason directly above:
+      // the bind a few lines up has already decided whether this sheet has a fold
+      // and where, and asking again would be a second chance to disagree about
+      // the one corner the two marks share (`curl.ts`).
+      cornerCurl(scene, id, slot, taped, view.folded, this.corners);
       cornerFace(scene.renderRot(slot), this.corners, this.faces);
       view.setCurl(this.corners, this.faces);
     }

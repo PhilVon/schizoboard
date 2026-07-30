@@ -157,6 +157,7 @@ export function cornerCurl(
   id: string,
   slot: number,
   taped: number,
+  folded: number,
   out: Float32Array,
 ): void {
   const hw = scene.w[slot]! / 2;
@@ -195,4 +196,15 @@ export function cornerCurl(
   // this moment rather than about the seed. The caller asks it once and both
   // this and the strips themselves are drawn off the one answer.
   for (let c = 0; c < out.length; c++) if (taped & (1 << c)) out[c] = 0;
+
+  // And a corner that has been folded over does not curl either (`wear.ts`,
+  // T-190). Not because something is holding it down — nothing is — but because
+  // the flap is already lying flat on the sheet, and the paper that would have
+  // lifted has been cut out of the silhouette by `edge.ts`. A curl there would be
+  // shading a corner the sheet no longer has, with a highlight running off into
+  // the cork past the fold line.
+  //
+  // The two marks therefore never disagree about a corner: the fold wins, and it
+  // wins at the one place they could both have an opinion.
+  if (folded >= 0 && folded < out.length) out[folded] = 0;
 }
