@@ -149,7 +149,28 @@ export async function exportPdf(
   if (!(await writer.choose(title))) return { done: "cancelled" };
 
   const view = exportPage(bounds, limits);
+  const path = await posed(stage, view, () =>
+    writer.write({ width: view.inches.width, height: view.inches.height }),
+  );
+  return { done: "saved", path, view };
+}
 
+/**
+ * Put the board where an export needs it, run `body`, and put it back whatever
+ * happens.
+ *
+ * Shared by both export routes, and it is the piece of this file that had to
+ * be: a `hold` never released is T-90's performance work silently undone and a
+ * camera left at the export view is a board that has apparently teleported.
+ * Neither failure looks like an export failing — the board is simply wrong
+ * afterwards and nothing says why — so there is one `finally` and both routes
+ * are inside it rather than each remembering.
+ */
+export async function posed<T>(
+  stage: Stage,
+  view: ExportView,
+  body: () => Promise<T>,
+): Promise<T> {
   const before = {
     x: stage.camera.x,
     y: stage.camera.y,
@@ -174,12 +195,7 @@ export async function exportPdf(
     stage.settle(view.zoom);
     stage.redraw();
     await stage.frames(SETTLING_FRAMES);
-
-    const path = await writer.write({
-      width: view.inches.width,
-      height: view.inches.height,
-    });
-    return { done: "saved", path, view };
+    return await body();
   } finally {
     release();
     stage.camera.x = before.x;
