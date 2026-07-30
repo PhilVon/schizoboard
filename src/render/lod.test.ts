@@ -214,4 +214,51 @@ describe("Lod.rise", () => {
     // one guaranteed pass every layer needs is the settle's, not this.
     expect(lod.rise(1)).toBe(false);
   });
+
+  /**
+   * An export frames the whole board, which is a zoom of a few per cent, which is
+   * `card` — so the first PDF this project produced was flat sheets with no
+   * ruling and no ageing, and said `16% · card` in the HUD inside the file
+   * (T-205, D-36).
+   */
+  describe("holding the tier for an export", () => {
+    it("keeps full detail at a zoom that would otherwise be a card", () => {
+      const lod = new Lod();
+      lod.settle(0.05);
+      expect(lod.tier).toBe("card");
+
+      const release = lod.hold("full");
+      expect(lod.tier).toBe("full");
+      expect(lod.detailed).toBe(true);
+      // And the frame loop cannot argue it back down while the file is drawing.
+      expect(lod.settle(0.05)).toBe(false);
+      expect(lod.rise(0.05)).toBe(false);
+      expect(lod.tier).toBe("full");
+
+      release();
+      expect(lod.tier).toBe("card");
+    });
+
+    it("gives the tier back to the zoom afterwards", () => {
+      const lod = new Lod();
+      lod.settle(0.05);
+      lod.hold("full")();
+      // The performance work of T-90 is only undone if a hold outlives its
+      // export, so what matters is that the loop is listened to again.
+      expect(lod.settle(1)).toBe(true);
+      expect(lod.tier).toBe("full");
+      expect(lod.settle(0.05)).toBe(true);
+      expect(lod.tier).toBe("card");
+    });
+
+    it("tells the layers, both ways, because they hold their own bitmaps", () => {
+      const lod = new Lod();
+      lod.settle(0.05);
+      const seen: string[] = [];
+      lod.on((tier) => seen.push(tier));
+      const release = lod.hold("full");
+      release();
+      expect(seen).toEqual(["full", "card"]);
+    });
+  });
 });
