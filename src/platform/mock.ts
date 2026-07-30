@@ -238,11 +238,14 @@ export class MockPlatform implements Platform {
    * shell: a browser download has no cancel to report. Nobody is asked where
    * the file goes, so nobody can decline.
    */
-  async exportChoose(title: string, kind: ExportKind): Promise<boolean> {
-    if (kind !== "png") return unavailable("Exporting a board as a PDF");
+  async exportChoose(title: string, kind: ExportKind): Promise<string | null> {
+    if (kind !== "image") return unavailable("Exporting a board as a PDF");
     const stem = title.replace(/[^\p{L}\p{N} _.-]/gu, "").trim() || "board";
+    // PNG, and no way to ask for anything else: a browser download has no
+    // dialog to hang a format filter off, and inventing one in the page would
+    // be a picker the shell does not have.
     this.exportName = `${stem}.png`;
-    return true;
+    return "png";
   }
 
   exportPdfWrite(): Promise<string> {

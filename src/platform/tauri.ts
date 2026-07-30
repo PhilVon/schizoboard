@@ -194,8 +194,8 @@ export class TauriPlatform implements Platform {
   // between the two calls. Nothing of the board itself crosses: it prints its
   // own webview, so `app/exportPdf.ts` has already put the board where the page
   // needs it by the time the write is called.
-  exportChoose(title: string, kind: ExportKind): Promise<boolean> {
-    return invoke<boolean>("export_choose", { title, kind });
+  exportChoose(title: string, kind: ExportKind): Promise<string | null> {
+    return invoke<string | null>("export_choose", { title, kind });
   }
 
   exportPdfWrite(page: PdfPage): Promise<string> {

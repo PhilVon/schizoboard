@@ -117,7 +117,12 @@ impl PageSpec {
 #[derive(Clone, Copy)]
 pub enum ExportKind {
     Pdf,
-    Png,
+    /// Both raster formats at once - which one the file is comes back from the
+    /// *dialog*, as the extension of the name the user settled on. Offering
+    /// them as filters rather than as two more menu rows is what a save dialog
+    /// is for, and it means the board's own menu does not grow a row for every
+    /// format anybody ever adds.
+    Image,
 }
 
 impl ExportKind {
@@ -127,36 +132,42 @@ impl ExportKind {
     fn parse(kind: &str) -> Result<Self, String> {
         match kind {
             "pdf" => Ok(Self::Pdf),
-            "png" => Ok(Self::Png),
+            "image" => Ok(Self::Image),
             other => Err(format!("unknown export kind: {other}")),
         }
     }
 
-    fn extension(self) -> &'static str {
+    /// What the dialog opens on, and so also the default format. PNG, because
+    /// lossless is what somebody who has not thought about it wants; WebP is
+    /// there for somebody who has seen the file size.
+    fn default_extension(self) -> &'static str {
         match self {
             Self::Pdf => "pdf",
-            Self::Png => "png",
+            Self::Image => "png",
         }
     }
 
     fn dialog_title(self) -> &'static str {
         match self {
             Self::Pdf => "Export board as PDF",
-            Self::Png => "Export board as an image",
+            Self::Image => "Export board as an image",
         }
     }
 
-    fn filter(self) -> &'static str {
+    /// Label and extension for each offered format, in the order the dialog
+    /// shows them.
+    fn filters(self) -> &'static [(&'static str, &'static str)] {
         match self {
-            Self::Pdf => "PDF",
-            Self::Png => "PNG image",
+            Self::Pdf => &[("PDF", "pdf")],
+            Self::Image => &[("PNG image", "png"), ("WebP image", "webp")],
         }
     }
 }
 
-/// Ask the user where an export should go, and remember the answer.
+/// Ask the user where an export should go and in which format, and remember
+/// the answer.
 ///
-/// `false` is a cancelled dialog — an ordinary outcome and not a failure, the
+/// `null` is a cancelled dialog — an ordinary outcome and not a failure, the
 /// same thing `asset_export`'s `false` and `bundle_save_as`'s `null` mean.
 /// Nothing is written and nothing on the board need move.
 ///
@@ -170,8 +181,20 @@ impl ExportKind {
 /// the user named `.png`. That is a caller confusing itself with a file the
 /// user did agree to, in a place they agreed to it — not something this side
 /// can be tricked into, and not worth a second slot to make impossible.
+///
+/// **What comes back is the format**, taken from the extension the dialog
+/// settled on, and that is the whole reason this is a string rather than a
+/// boolean: the renderer encodes the picture, so it has to be told what to
+/// encode it *as*, and the answer belongs to the dialog rather than to a menu
+/// row. An extension we did not offer falls back to `png` - what somebody who
+/// typed their own name over the top gets - which is the safe direction,
+/// because PNG is lossless and always encodes where WebP can hand back nothing.
 #[tauri::command]
-pub async fn export_choose(app: AppHandle, title: String, kind: String) -> Result<bool, String> {
+pub async fn export_choose(
+    app: AppHandle,
+    title: String,
+    kind: String,
+) -> Result<Option<String>, String> {
     let kind = ExportKind::parse(&kind)?;
     let stem = crate::assets::safe_stem(&title).unwrap_or_else(|| "board".to_string());
 
@@ -179,24 +202,44 @@ pub async fn export_choose(app: AppHandle, title: String, kind: String) -> Resul
     // then waits for it. See `asset_export`.
     let handle = app.clone();
     let picked = tauri::async_runtime::spawn_blocking(move || {
-        handle
+        let mut dialog = handle
             .dialog()
             .file()
             .set_title(kind.dialog_title())
-            .set_file_name(format!("{stem}.{}", kind.extension()))
-            .add_filter(kind.filter(), &[kind.extension()])
-            .blocking_save_file()
+            .set_file_name(format!("{stem}.{}", kind.default_extension()));
+        for (label, extension) in kind.filters() {
+            dialog = dialog.add_filter(*label, &[*extension]);
+        }
+        dialog.blocking_save_file()
     })
     .await
     .map_err(|e| e.to_string())?;
 
     let Some(dest) = picked else {
-        return Ok(false);
+        return Ok(None);
     };
     let dest = dest.into_path().map_err(|e| e.to_string())?;
+    let format = chosen_format(&dest, kind);
 
     *app.state::<PendingExport>().0.lock().expect("export lock") = Some(dest);
-    Ok(true)
+    Ok(Some(format))
+}
+
+/// Which of the offered formats the chosen filename names.
+///
+/// Case-folded, because a dialog hands back `Board.PNG` as readily as
+/// `board.png` and the renderer switches on this string.
+fn chosen_format(dest: &std::path::Path, kind: ExportKind) -> String {
+    let extension = dest
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(str::to_ascii_lowercase)
+        .unwrap_or_default();
+    kind.filters()
+        .iter()
+        .find(|(_, offered)| *offered == extension)
+        .map(|(_, offered)| (*offered).to_string())
+        .unwrap_or_else(|| kind.default_extension().to_string())
 }
 
 /// Write an already-encoded image into the file the user chose.
@@ -446,11 +489,33 @@ mod tests {
 
     #[test]
     fn both_export_kinds_are_understood_and_nothing_else_is() {
-        assert_eq!(ExportKind::parse("pdf").unwrap().extension(), "pdf");
-        assert_eq!(ExportKind::parse("png").unwrap().extension(), "png");
+        assert_eq!(ExportKind::parse("pdf").unwrap().default_extension(), "pdf");
+        assert_eq!(ExportKind::parse("image").unwrap().default_extension(), "png");
         assert!(ExportKind::parse("PDF").is_err());
-        assert!(ExportKind::parse("jpeg").is_err());
+        assert!(ExportKind::parse("png").is_err());
         assert!(ExportKind::parse("").is_err());
+    }
+
+    #[test]
+    fn the_image_dialog_offers_png_first_and_webp_beside_it() {
+        let offered: Vec<_> = ExportKind::Image.filters().iter().map(|f| f.1).collect();
+        assert_eq!(offered, ["png", "webp"]);
+    }
+
+    /// The renderer switches on what this returns, so an extension it does not
+    /// recognise has to land on the format that always encodes rather than on
+    /// the one that can hand back nothing.
+    #[test]
+    fn the_format_comes_from_the_name_the_dialog_settled_on() {
+        let f = |name: &str| chosen_format(std::path::Path::new(name), ExportKind::Image);
+        assert_eq!(f("C:/wall/board.png"), "png");
+        assert_eq!(f("C:/wall/board.webp"), "webp");
+        assert_eq!(f("C:/wall/board.WEBP"), "webp");
+        // A name somebody typed over the top of the offered one.
+        assert_eq!(f("C:/wall/board.jpg"), "png");
+        assert_eq!(f("C:/wall/board"), "png");
+        // And a board whose own title ends in something that looks like one.
+        assert_eq!(f("C:/wall/notes.webp.png"), "png");
     }
 
     #[test]

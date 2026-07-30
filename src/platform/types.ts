@@ -122,8 +122,25 @@ export interface BundleOpened {
 }
 
 /** A page for the PDF export (T-207), in the units the print pipeline takes. */
-/** Which file an export is going to be — see `exportChoose`. */
-export type ExportKind = "pdf" | "png";
+/**
+ * Which *dialog* an export opens — see `exportChoose`.
+ *
+ * `image` is one kind and two formats: the dialog offers PNG and WebP as
+ * filters and reports back which the user settled on, so the choice lives where
+ * a person picks a filename rather than in a menu row per format.
+ */
+export type ExportKind = "pdf" | "image";
+
+/**
+ * Which file an image export turns out to be, as `exportChoose` reports it.
+ *
+ * PNG is lossless and always encodes. WebP is roughly a twentieth of the size
+ * on a board of photographs (measured: 456 MB against 23 MB) and is not free —
+ * it encodes three times slower, and past about 220 megapixels of photographic
+ * content Chromium's encoder gives up and hands back nothing. See
+ * `MAX_WEBP_PIXELS`.
+ */
+export type ImageFormat = "png" | "webp";
 
 export interface PdfPage {
   /** Inches, because `ICoreWebView2PrintSettings` and `ExportView.inches` both
@@ -349,7 +366,7 @@ export interface Platform {
    * differ in three strings, and everything worth getting right about them is
    * the same.
    */
-  exportChoose(title: string, kind: ExportKind): Promise<boolean>;
+  exportChoose(title: string, kind: ExportKind): Promise<string | null>;
 
   /**
    * Print the board into the file already chosen, one page of the given size in

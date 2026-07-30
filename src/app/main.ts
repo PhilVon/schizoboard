@@ -1186,7 +1186,9 @@ async function boot(): Promise<void> {
         exportBounds(scene, selection.members),
         boardTitle(board),
         {
-          choose: (title) => native.exportChoose(title, "pdf"),
+          // A format comes back where this route only ever wanted a yes:
+          // one dialog command serves both, and the PDF has one format.
+          choose: async (title) => (await native.exportChoose(title, "pdf")) !== null,
           write: (page) => native.exportPdfWrite(page),
         },
       );
@@ -1227,6 +1229,17 @@ async function boot(): Promise<void> {
    * other painters have already drawn on. What came out was one blue curve on
    * white — the last painter's, alone — which looks nothing like the bug it is.
    */
+  /**
+   * WebP's quality, and the one number in this export nobody can derive.
+   *
+   * 0.9 rather than Chromium's 0.8 default: the board is photographs and
+   * handwriting, and handwriting is thin dark strokes on pale paper — the first
+   * thing a lossy encoder softens and the thing this whole export exists to
+   * carry. It costs perhaps a third more bytes than the default and is still a
+   * twentieth of the PNG.
+   */
+  const WEBP_QUALITY = 0.9;
+
   const saveBoardImage = async (): Promise<void> => {
     try {
       const outcome = await exportImage(
@@ -1246,18 +1259,53 @@ async function boot(): Promise<void> {
             { name: "ropes-over", paint: (ctx) => ropesOver.drawInto(ctx, scene, ropes, camera) },
           ],
           now: () => performance.now(),
-          encode: async (canvas) => {
+          /**
+           * `toBlob` resolving `null` is how a canvas says no, and WebP says it
+           * for a reason PNG never does: past roughly 220 megapixels of
+           * photographic content Chromium's encoder simply gives up
+           * (`MAX_WEBP_PIXELS`). The ceiling keeps an ordinary export well
+           * clear of that, but it is a bound on something content-dependent, so
+           * the message names the format and points at the one that always
+           * works rather than saying the board could not be saved.
+           */
+          encode: async (canvas, format) => {
             const blob = await new Promise<Blob | null>((resolve) =>
-              canvas.toBlob(resolve, "image/png"),
+              canvas.toBlob(resolve, `image/${format}`, format === "webp" ? WEBP_QUALITY : undefined),
             );
-            if (blob === null) throw new Error("the board would not encode as a PNG");
+            if (blob === null) {
+              throw new Error(
+                format === "webp"
+                  ? "this board is too large to encode as WebP — PNG will take it"
+                  : "the board would not encode as a PNG",
+              );
+            }
             return new Uint8Array(await blob.arrayBuffer());
+          },
+          /**
+           * Read the file back and say how big it is.
+           *
+           * `createImageBitmap` rather than an `<img>`: it takes the blob
+           * directly, needs no object URL to revoke, and decodes off the main
+           * thread — which matters, because the thing being measured is up to
+           * a couple of hundred megapixels.
+           */
+          measure: async (bytes, format) => {
+            const bitmap = await createImageBitmap(
+              new Blob([bytes], { type: `image/${format}` }),
+            );
+            const { width, height } = bitmap;
+            bitmap.close();
+            return { width, height };
           },
         },
         exportBounds(scene, selection.members),
         boardTitle(board),
         {
-          choose: (title) => native.exportChoose(title, "png"),
+          // The dialog picks the format, not this call — see `ImageWriter`.
+          choose: async (title) => {
+            const chosen = await native.exportChoose(title, "image");
+            return chosen === "webp" ? "webp" : chosen === null ? null : "png";
+          },
           write: (bytes) => native.exportImageWrite(bytes),
         },
       );
@@ -1270,7 +1318,7 @@ async function boot(): Promise<void> {
       // minutes and the interesting part is *which* minute. The flash gets the
       // one sentence somebody standing there needs.
       console.info(
-        `[export] ${outcome.view.width}×${outcome.view.height}, ` +
+        `[export] ${outcome.format}, ${outcome.view.width}×${outcome.view.height}, ` +
           `${Math.round(outcome.bytes / 1048576)} MB, ` +
           `${outcome.painted.map((p) => `${p.name} ${p.ms}ms`).join(", ")}, ` +
           `encode ${outcome.encodeMs}ms`,
@@ -1282,10 +1330,14 @@ async function boot(): Promise<void> {
       const size = `${outcome.view.width} × ${outcome.view.height}`;
       const mb = outcome.bytes / 1048576;
       const weight = mb >= 10 ? `, ${Math.round(mb)} MB` : "";
+      // The format is in the sentence because the two are not interchangeable —
+      // one is lossless and one is a twentieth of the size — and the file it
+      // went to is named for it.
+      const what = outcome.format === "webp" ? "WebP" : "PNG";
       flash.say(
         outcome.view.reduced
-          ? `Board saved as an image (${size}${weight}, reduced to fit)`
-          : `Board saved as an image (${size}${weight})`,
+          ? `Board saved as ${what} (${size}${weight}, reduced to fit)`
+          : `Board saved as ${what} (${size}${weight})`,
       );
     } catch (error) {
       console.warn("[export] the board could not be saved as an image", error);
