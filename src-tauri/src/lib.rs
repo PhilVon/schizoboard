@@ -6,7 +6,8 @@
 //! `docs/ARCHITECTURE.md` section 4.
 //!
 //! Modules land as their tasks do: `assets` (T-21), `protocol` (T-22),
-//! `docstore` (T-20), `clipboard` (T-23), `bundle` (T-84), `sync` (T-69).
+//! `docstore` (T-20), `clipboard` (T-23), `bundle` (T-84), `sync` (T-69),
+//! `print` (T-207).
 //!
 //! ## Nothing runs on the main thread
 //!
@@ -23,6 +24,7 @@ mod board;
 mod bundle;
 mod clipboard;
 mod docstore;
+mod print;
 mod protocol;
 pub mod sync;
 
@@ -1210,6 +1212,7 @@ pub fn run() {
             doc_compact,
             bundle_save_as,
             bundle_open,
+            print::export_pdf,
             clipboard::clipboard_read_manifest,
             clipboard::clipboard_read_item,
             clipboard::clipboard_source_url,

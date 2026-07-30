@@ -3719,6 +3719,8 @@ dependencies = [
  "tokio",
  "tokio-tungstenite",
  "ureq",
+ "webview2-com",
+ "windows",
  "windows-sys 0.60.2",
  "yrs",
  "zip",

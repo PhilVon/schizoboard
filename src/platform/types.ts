@@ -121,6 +121,17 @@ export interface BundleOpened {
   missing: string[];
 }
 
+/** A page for the PDF export (T-207), in the units the print pipeline takes. */
+export interface PdfPage {
+  /** Inches, because `ICoreWebView2PrintSettings` and `ExportView.inches` both
+   *  speak them. Refused on the other side unless finite, positive and inside
+   *  the format's own 200-inch limit. */
+  width: number;
+  height: number;
+  /** The board's title, as a suggested filename. Reduced by Rust before use. */
+  title: string;
+}
+
 export type ClipboardKind = "image" | "text" | "html" | "files";
 
 export interface ClipboardManifest {
@@ -317,6 +328,27 @@ export interface Platform {
    * Resolves `null` for a cancelled dialog.
    */
   bundleOpen(): Promise<BundleOpened | null>;
+
+  // --- export (T-207) -----------------------------------------------------
+  /**
+   * Print the board into a PDF, one page of the given size in inches.
+   *
+   * The *whole* of what crosses is a page and a name, because the drawing is
+   * already done by the time this is called: the shell asks its own webview to
+   * print itself, so what lands in the file is whatever is on screen at that
+   * moment. `app/exportPdf.ts` is what makes that moment the right one — the
+   * camera, the canvases and the detail tier are put where the page needs them
+   * first, and put back after.
+   *
+   * Takes no destination, on the standing `assetExport` and `bundleSaveAs` both
+   * set out. `title` is a *suggestion* Rust reduces to a filename before the
+   * save dialog shows it.
+   *
+   * Resolves `null` for a cancelled dialog and the saved path otherwise — a
+   * string to show a person ("saved to …"), not a handle: no command on the
+   * other side takes a path back.
+   */
+  exportPdf(page: PdfPage): Promise<string | null>;
 
   // --- clipboard ---------------------------------------------------------
   clipboardReadManifest(): Promise<ClipboardManifest>;
