@@ -475,10 +475,22 @@ describe.skipIf(relayBinary === undefined)("the relay's secret", () => {
         unlisten();
         resolve(reason);
       });
+      // Fifteen seconds inside a twenty-second test, and it used to be five.
+      //
+      // This is a *backstop*, not a measurement. Nothing here is asserting how
+      // fast a refusal arrives — the assertion is that one arrives at all — so
+      // the only thing a tight budget buys is a failure on a busy machine. It
+      // bought one: running inside the full 105-file suite this resolved null
+      // and the test read "the relay let a prefix secret through", which is a
+      // security regression rather than a slow socket (T-217). Confirmed by
+      // toggling it the other way: at 150 ms this test fails every run.
+      //
+      // Still bounded rather than left to the runner, because `null` here gives
+      // a legible assertion and a hung promise gives a timeout with no subject.
       setTimeout(() => {
         unlisten();
         resolve(null);
-      }, 5_000);
+      }, 15_000);
     });
   }
 

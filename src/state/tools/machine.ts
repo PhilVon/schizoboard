@@ -60,6 +60,17 @@ export interface ToolMachineOptions {
   selection: Selection;
   write: BoardWriter;
   hitTest: (boardX: number, boardY: number) => string | null;
+  /**
+   * Where the *paper* is rather than where the rectangle is — see
+   * `ToolContext.inkHitTest` (T-186).
+   *
+   * Optional here alone, and it falls back to `hitTest`. A machine driven in a
+   * test is almost never asking about the few board units between a sheet's
+   * edge and its silhouette, and every one of those harnesses would otherwise
+   * have to declare a second hit test identical to its first. The real one is
+   * wired in `app/main.ts`, where it is emphatically not the same function.
+   */
+  inkHitTest?: (boardX: number, boardY: number) => string | null;
   /** Screen space, not board — see `ToolContext.hitPin`. */
   hitPin: (screenX: number, screenY: number) => string | null;
   /** Board space, and against the rope particles — see `ToolContext.hitString`. */
@@ -164,6 +175,7 @@ export class ToolMachine {
       selection: options.selection,
       write: options.write,
       hitTest: options.hitTest,
+      inkHitTest: options.inkHitTest ?? options.hitTest,
       hitPin: options.hitPin,
       hitString: options.hitString,
       edit: options.edit ?? (() => undefined),

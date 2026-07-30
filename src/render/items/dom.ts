@@ -52,7 +52,14 @@ import {
   stockRuling,
 } from "@/render/items/paper";
 import { cornerCurl, cornerFace, CURL_PROPS, FACE_PROPS } from "@/render/items/curl";
-import { EDGE_PROPS, sheetEdge, tearEdge } from "@/render/items/edge";
+import {
+  edgePoints,
+  EDGE_PROPS,
+  insideEdge,
+  sheetEdge,
+  tearEdge,
+  type SheetEdge,
+} from "@/render/items/edge";
 import { ItemInk } from "@/render/ink/canvas";
 import { TextEditor, type ItemEditorHooks } from "@/render/items/editor";
 import { clearHand, writeHand } from "@/render/items/hand";
@@ -212,6 +219,49 @@ const MAX_RASTERS_PER_FRAME = 3;
 
 function archetypeOf(type: string): Archetype {
   return type === "polaroid" ? "polaroid" : "paper";
+}
+
+/**
+ * The polygon a sheet is cut to — **the one answer the paint and the pen
+ * share** (T-186).
+ *
+ * Two callers, in this file, and that is why this exists rather than each of
+ * them calling `sheetEdge` with its own arguments. `PaperView.bind` writes it
+ * as a `clip-path`; `ItemLayer.walk` asks whether a board point is on the paper
+ * inside it. A silhouette computed twice from the same inputs is fine right up
+ * until one of the two quantises differently, and then a stroke stops a fifth
+ * of a unit from the edge it was drawn against, on the one edge where anybody
+ * would see it.
+ *
+ * The quantisation is the part worth naming. Wear goes to hundredths so that
+ * the board's clock ticking rewrites the sheets whose wear actually moved
+ * rather than all of them, and the fold's depth to tenths of a percent because
+ * that is what `--ear` is written at. Both are the *stylesheet's* roundings and
+ * the boundary adopts them — the pen agreeing with what is drawn matters more
+ * than the pen being exact about a hand-torn edge.
+ */
+/**
+ * A sheet's silhouette resolved for the size it is currently drawn at, plus
+ * everything it was resolved *from* — which is what makes the cache honest
+ * rather than a guess at when to drop it.
+ */
+export interface Silhouette {
+  /** Identity, not a copy: the binding replaces the whole record on a change. */
+  readonly cold: ItemCold;
+  readonly worn: number;
+  readonly w: number;
+  readonly h: number;
+  /** `x, y` pairs about the item's centre. */
+  readonly points: Float32Array;
+  readonly n: number;
+}
+
+function sheetEdgeOf(cold: ItemCold, wear: number): SheetEdge {
+  const worn = Math.round(wear * 100) / 100;
+  const ear = dogEarOf(cold.seed, worn);
+  const fold =
+    ear.amount > 0 ? { corner: ear.corner, depth: Math.round(ear.depth * 10) / 10 } : null;
+  return sheetEdge(defaultStock(cold.type, cold.seed), cold.seed, fold);
 }
 
 interface View {
@@ -1102,11 +1152,12 @@ class PaperView implements View {
     // corner, and the corner of the item's rectangle is not where the paper ends
     // (`edge.ts`). A fold anchored on the box has its highlight clipped away by
     // the very silhouette it is meant to belong to.
-    const edge = sheetEdge(
-      stock,
-      cold.seed,
-      this.folded < 0 ? null : { corner: this.folded, depth: ear / 10 },
-    );
+    // Asked of the shared function rather than assembled here from `this.folded`
+    // and `this.earDepth`, so that what is *cut* and what the pen *stops at* can
+    // never be two answers (T-186). It re-derives the fold from the same seed
+    // and the same quantised wear `paintAge` just used, so this is the same
+    // polygon by construction rather than by two files agreeing to be careful.
+    const edge = sheetEdgeOf(cold, worn / 100);
     // Written here rather than left to `items.css` because these four are
     // *inline* styles, and an inline style beats a stylesheet rule (T-198). The
     // LOD block in `items.css` can hide a node it does not otherwise touch, and
@@ -1409,6 +1460,16 @@ export class DomItemLayer implements ItemLayer {
   /** Reused by `hitTest`, which walks the paint order on every pointer move. */
   private readonly probe: Point = { x: 0, y: 0 };
 
+  /**
+   * Each sheet's silhouette, resolved into its own coordinates — see
+   * [`silhouette`].
+   *
+   * Bounded by the document rather than growing: one entry per item that a pen
+   * or a pointer has been over, and cleared with `order` when the document
+   * underneath is replaced.
+   */
+  private readonly edges = new Map<string, Silhouette>();
+
   /** Reused by the curl pass, for the same reason: one per frame, not one per
    *  sheet in the viewport. */
   private readonly corners = new Float32Array(CURL_PROPS.length);
@@ -1575,7 +1636,16 @@ export class DomItemLayer implements ItemLayer {
       const view = this.views.get(id);
       const slot = scene.slotOf(id);
       if (!view || slot === undefined) continue;
-      view.ink.update(scene.strokesOf(id), this.inkScale, scene.w[slot]!, scene.h[slot]!);
+      // The sheet's outline goes with it: committed ink stops at the paper, not
+      // at the rectangle (T-186), and it is the *same* polygon the pen tested
+      // and the wet stroke was clipped to.
+      view.ink.update(
+        scene.strokesOf(id),
+        this.inkScale,
+        scene.w[slot]!,
+        scene.h[slot]!,
+        this.silhouette(scene, id, slot),
+      );
       budget--;
     }
   }
@@ -1902,6 +1972,50 @@ export class DomItemLayer implements ItemLayer {
    * rotation per candidate instead of four corners.
    */
   hitTest(scene: Scene, boardX: number, boardY: number): string | null {
+    return this.walk(scene, boardX, boardY, false);
+  }
+
+  /**
+   * The same walk, stopping at the **paper** rather than at the rectangle — what
+   * a pen is over (T-186, Q-149).
+   *
+   * ## Why this is a second walk and not a filter on the first
+   *
+   * The obvious build is to call `hitTest` and then reject its answer when the
+   * point turns out to be in the strip a torn edge gave up. That is wrong, and
+   * quietly: Q-149's rule is "inside the rectangle but outside the silhouette
+   * reads as **the surface below**", and the surface below is very often another
+   * item rather than the cork. A photograph tucked under the torn head of a
+   * legal pad is exactly the arrangement this board is for. So the walk has to
+   * *carry on* past a rejected candidate, which is something only the walk can
+   * do.
+   *
+   * ## And why the grab test does not do this
+   *
+   * Q-149 chose the pen alone. A grab target wants to be forgiving and a mark
+   * wants to land where you can see paper — so a 1-3 px band round every note,
+   * and up to 9 along one side of a legal pad, stays clickable and draggable
+   * while no longer taking ink. The two therefore **disagree**, deliberately,
+   * and `state/tools/marker.ts` says where.
+   *
+   * ## The tier may not reach this
+   *
+   * `PaperView.bind` drops the `clip-path` entirely below 35% zoom, because a
+   * wander of under a pixel is not worth a twenty-point polygon per sheet. This
+   * boundary does not follow it. If it did, the same gesture over the same spot
+   * would file ink on the item at 100% and on the cork at 30% — a document that
+   * depends on how far out the camera happened to be.
+   */
+  inkHitTest(scene: Scene, boardX: number, boardY: number): string | null {
+    return this.walk(scene, boardX, boardY, true);
+  }
+
+  private walk(
+    scene: Scene,
+    boardX: number,
+    boardY: number,
+    toTheSilhouette: boolean,
+  ): string | null {
     for (let i = this.order.length - 1; i >= 0; i--) {
       const id = this.order[i]!;
       const slot = scene.slotOf(id);
@@ -1916,11 +2030,62 @@ export class DomItemLayer implements ItemLayer {
         Math.sin(angle),
         this.probe,
       );
-      if (Math.abs(local.x) <= scene.w[slot]! / 2 && Math.abs(local.y) <= scene.h[slot]! / 2) {
-        return id;
+      if (Math.abs(local.x) > scene.w[slot]! / 2 || Math.abs(local.y) > scene.h[slot]! / 2) {
+        continue;
       }
+      // Only ever asked of a candidate the rectangle has already accepted, which
+      // is what keeps a polygon test off the hot path: a pointer move tests one
+      // or two, not the whole board.
+      if (toTheSilhouette) {
+        const paper = this.silhouette(scene, id, slot);
+        if (paper !== null && !insideEdge(paper.points, paper.n, local.x, local.y)) continue;
+      }
+      return id;
     }
     return null;
+  }
+
+  /**
+   * An item's silhouette in its own coordinates, or null when it has none.
+   *
+   * Null is a **photograph**, and it means the rectangle stands: a polaroid is a
+   * machine-cut border and `PolaroidView` has never asked `edge.ts` for
+   * anything. It is not "no answer" — it is the answer.
+   *
+   * Cached per item, keyed on everything the polygon is a function of. The
+   * marker asks this per *sample* of a stroke (T-137's crossing rule re-asks
+   * "what am I over" every time), so recomputing a twenty-vertex seeded walk
+   * each time would put trigonometry under the pen. Rebuilt when the cold
+   * record, the wear or the sheet's size changes, and that is the whole of the
+   * invalidation because those are the only things it depends on.
+   */
+  silhouetteOf(scene: Scene, id: string): Silhouette | null {
+    const slot = scene.slotOf(id);
+    return slot === undefined ? null : this.silhouette(scene, id, slot);
+  }
+
+  private silhouette(scene: Scene, id: string, slot: number): Silhouette | null {
+    const cold = scene.coldAt(slot);
+    if (cold === null || archetypeOf(cold.type) !== "paper") return null;
+    const worn = Math.round(wearOf(cold.seed, this.ageDays(cold)) * 100) / 100;
+    const w = scene.w[slot]!;
+    const h = scene.h[slot]!;
+    const held = this.edges.get(id);
+    if (held && held.cold === cold && held.worn === worn && held.w === w && held.h === h) {
+      return held;
+    }
+    const edge = sheetEdgeOf(cold, worn);
+    const n = edge.outline.length / 4;
+    const fresh: Silhouette = {
+      cold,
+      worn,
+      w,
+      h,
+      n,
+      points: edgePoints(edge.outline, w, h, new Float32Array(n * 2)),
+    };
+    this.edges.set(id, fresh);
+    return fresh;
   }
 
   /** Every item on the board in paint order, bottom to top — not just the
@@ -2098,5 +2263,6 @@ export class DomItemLayer implements ItemLayer {
     this.order = [];
     this.orderedBy.clear();
     this.rank.clear();
+    this.edges.clear();
   }
 }

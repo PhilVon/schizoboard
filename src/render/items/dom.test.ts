@@ -2,9 +2,10 @@
  * @vitest-environment happy-dom
  */
 
-import { beforeEach, describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { CAPTION_BOTTOM, CAPTION_HEIGHT, FRAME_BOTTOM } from "@/lib/polaroid";
+import { ItemInk } from "@/render/ink/canvas";
 import { DomItemLayer, type AssetResolver, type AssetView } from "@/render/items/dom";
 import { tapedCorners } from "@/render/items/tape";
 import { dogEarOf } from "@/render/items/wear";
@@ -474,6 +475,142 @@ describe("hitTest", () => {
     scene.setPose("a", { rot: Math.PI / 2 });
     expect(layer.hitTest(scene, 80, 0)).toBeNull();
     expect(layer.hitTest(scene, 0, 80)).toBe("a");
+  });
+
+  /**
+   * T-186 — the pen's boundary, and the one property that makes it a second
+   * walk rather than a filter on the first.
+   *
+   * A sheet is not its rectangle. `hitTest` takes the rectangle because a grab
+   * target wants to be forgiving; `inkHitTest` takes the paper, because a mark
+   * has to land where you can see paper. The tests below are about the *walk*.
+   * Whether the polygon is the right shape is `edge.test.ts`'s business.
+   */
+  describe("inkHitTest", () => {
+    /** The deepest tear this board has: a legal pad, torn along its head. */
+    function torn(id: string, cold: Partial<ItemCold> = {}): void {
+      add(id, { type: "note", seed: 7, ...cold }, { x: 0, y: 0, w: 400, h: 300 });
+    }
+
+    /** A board point in the strip a torn head gave up, or null if this seed's
+     *  tear does not reach far enough to test with. */
+    function inTheStrip(id: string): { x: number; y: number } | null {
+      const h = 300;
+      for (let dy = 0.5; dy < 9; dy += 0.25) {
+        const y = -h / 2 + dy;
+        for (let x = -150; x <= 150; x += 5) {
+          if (layer.hitTest(scene, x, y) === id && layer.inkHitTest(scene, x, y) !== id) {
+            return { x, y };
+          }
+        }
+      }
+      return null;
+    }
+
+    it("agrees with hitTest over the paper, which is nearly all of a sheet", () => {
+      torn("s");
+      layer.sync(scene, dirty, null);
+      expect(layer.hitTest(scene, 0, 0)).toBe("s");
+      expect(layer.inkHitTest(scene, 0, 0)).toBe("s");
+    });
+
+    it("stops at the paper, not the rectangle, along a torn edge", () => {
+      torn("s");
+      layer.sync(scene, dirty, null);
+      const spot = inTheStrip("s");
+      expect(spot, "a legal pad's torn head should recede somewhere").not.toBeNull();
+      expect(layer.hitTest(scene, spot!.x, spot!.y)).toBe("s");
+      expect(layer.inkHitTest(scene, spot!.x, spot!.y)).toBeNull();
+    });
+
+    it("carries on down the paint order — the strip is not a hole to the cork", () => {
+      // THE reason this is a second walk. A photograph tucked under the torn
+      // head of a legal pad is the arrangement this board is for, and a point
+      // in the strip belongs to *it*, not to the cork. A filter on hitTest's
+      // answer could only ever have said null here.
+      torn("top", { z: "a5" });
+      add("below", { type: "polaroid", z: "a0" }, { x: 0, y: 0, w: 400, h: 300 });
+      layer.sync(scene, dirty, null);
+      const spot = inTheStrip("top");
+      expect(spot).not.toBeNull();
+      expect(layer.hitTest(scene, spot!.x, spot!.y)).toBe("top");
+      expect(layer.inkHitTest(scene, spot!.x, spot!.y)).toBe("below");
+    });
+
+    it("takes the whole rectangle of a photograph, which has no silhouette", () => {
+      // A polaroid is a machine-cut border and has never asked `edge.ts` for
+      // anything. Null from `silhouette` is the answer, not the absence of one.
+      add("photo", { type: "polaroid" }, { x: 0, y: 0, w: 400, h: 300 });
+      layer.sync(scene, dirty, null);
+      for (const [x, y] of [
+        [-199.5, 0],
+        [199.5, 0],
+        [0, -149.5],
+        [0, 149.5],
+      ]) {
+        expect(layer.inkHitTest(scene, x!, y!)).toBe("photo");
+      }
+    });
+
+    it("does not follow the paint below 35% zoom, or ink would depend on the camera", () => {
+      // `PaperView.bind` drops the clip-path at the card tier because the
+      // wander is sub-pixel there. If the boundary followed it, the same
+      // gesture over the same spot would file ink on the item at 100% and on
+      // the cork at 30% — the document depending on the view of it.
+      torn("s");
+      layer.sync(scene, dirty, null);
+      const spot = inTheStrip("s");
+      expect(spot).not.toBeNull();
+      layer.setTier("card");
+      layer.sync(scene, dirty, null);
+      expect(layer.inkHitTest(scene, spot!.x, spot!.y)).toBeNull();
+      expect(layer.hitTest(scene, spot!.x, spot!.y)).toBe("s");
+    });
+
+    it("hands the outline to the raster, so committed ink stops at the paper too", () => {
+      // The wiring, and it is the half that fails silently: everything below
+      // this line can be perfectly correct while the INK phase quietly passes
+      // null and the pen and the paint disagree about every torn edge. The
+      // mutation that replaces this argument with `null` breaks no other test.
+      torn("s");
+      add("photo", { type: "polaroid" }, { x: 500, y: 0, w: 400, h: 300 });
+      layer.sync(scene, dirty, null);
+
+      const raster = vi.spyOn(ItemInk.prototype, "update").mockImplementation(() => {});
+      try {
+        dirty.ink.add("s");
+        dirty.ink.add("photo");
+        layer.paintInk(scene, dirty);
+        // Two rasters, and exactly one of them carries a polygon: the sheet.
+        // A photograph is machine-cut and gets null, which is the answer.
+        const outlines = raster.mock.calls.map((call) => call[4] ?? null);
+        expect(outlines).toHaveLength(2);
+        expect(outlines.filter((o) => o !== null)).toHaveLength(1);
+        const sheet = outlines.find((o) => o !== null)!;
+        expect(sheet.n).toBeGreaterThan(8);
+        expect(sheet.points.length).toBe(sheet.n * 2);
+      } finally {
+        raster.mockRestore();
+      }
+    });
+
+    it("re-cuts the silhouette when the sheet is resized", () => {
+      // The polygon is percentages and offsets, so a resize moves it. A cache
+      // keyed on the item alone would leave the pen stopping where the paper
+      // used to end.
+      torn("s");
+      layer.sync(scene, dirty, null);
+      const spot = inTheStrip("s");
+      expect(spot).not.toBeNull();
+      expect(layer.inkHitTest(scene, spot!.x, spot!.y)).toBeNull();
+
+      // Twice as tall about the same centre: the head moves up and away, so
+      // that same board point is now well inside the paper.
+      scene.setPose("s", { h: 600 });
+      dirty.item("s");
+      layer.sync(scene, dirty, null);
+      expect(layer.inkHitTest(scene, spot!.x, spot!.y)).toBe("s");
+    });
   });
 
   it("ignores items that left the scene", () => {

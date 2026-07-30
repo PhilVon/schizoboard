@@ -1050,6 +1050,14 @@ async function boot(): Promise<void> {
    * a press asks during one, and has to get the same answers.
    */
   const hitItem = (bx: number, by: number): string | null => items.hitTest(scene, bx, by);
+  // The pen's, and it is a *different answer* rather than a stricter one — the
+  // strip a torn edge gave up is grabbable and is not writable (T-186, Q-149).
+  const hitPaper = (bx: number, by: number): string | null => items.inkHitTest(scene, bx, by);
+  // Where a sheet's paper ends, for the wet stroke's clip. The item layer owns
+  // the answer and caches it; the overlay asks rather than deriving a second one
+  // (T-186) — a wet stroke stopping somewhere the committed one does not is a
+  // mark that changes shape at pen-up.
+  overlay.setPaperResolver((forScene, id) => items.silhouetteOf(forScene, id));
   // Screen space, because a pin's grab radius is in screen pixels and has a
   // floor — see `render/pins/dom.ts`.
   const hitPin = (sx: number, sy: number): string | null => pins.hitTest(scene, camera, sx, sy);
@@ -1065,6 +1073,7 @@ async function boot(): Promise<void> {
     selection,
     write: writer,
     hitTest: hitItem,
+    inkHitTest: hitPaper,
     hitPin,
     hitString,
     /** A double-click on paper puts a caret in it (Q-92). */

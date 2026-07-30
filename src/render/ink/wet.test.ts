@@ -121,8 +121,26 @@ function glued(samples: readonly InkSample[]): WetStroke {
 
 /** Half-extents big enough that the paper clip is not what these tests are
  *  about; the clip has its own describe below. */
-function frame(cx: number, cy: number, angle = 0, hw = 1e6, hh = 1e6): ItemFrame {
-  return { cx, cy, cos: Math.cos(angle), sin: Math.sin(angle), hw, hh };
+function frame(
+  cx: number,
+  cy: number,
+  angle = 0,
+  hw = 1e6,
+  hh = 1e6,
+  paper: Float32Array | null = null,
+): ItemFrame {
+  return {
+    cx,
+    cy,
+    cos: Math.cos(angle),
+    sin: Math.sin(angle),
+    hw,
+    hh,
+    // Null is a photograph: its own rectangle, which is what every test written
+    // before T-186 assumes and what the four-corner branch still does.
+    points: paper,
+    n: paper === null ? 0 : paper.length / 2,
+  };
 }
 
 function spreadY(): number {
@@ -346,5 +364,71 @@ describe("the edge of the paper, while the pen is still down", () => {
     // at the moment it lands.
     expect(calls.clips).toBe(0);
     expect(calls.lines).toEqual([]);
+  });
+});
+
+/**
+ * The wet stroke and the committed one are clipped to the *same* polygon —
+ * T-186, AC-544.
+ *
+ * The four-corner clip above is what an item with no silhouette gets, which is
+ * a photograph. A sheet of paper has an outline, its edge wanders inside the
+ * rectangle, and the pen has already stopped at that outline (`marker.ts`). If
+ * the wet clip stayed rectangular, a fat nib near a torn head would paint over
+ * the strip while the pen was down and lose it the instant the pen came up — a
+ * mark that visibly changes shape at the moment you stop drawing it, on exactly
+ * the edge that made this task necessary.
+ */
+describe("a sheet's outline, while the pen is still down", () => {
+  /** A silhouette that is emphatically not the rectangle: a 100x60 sheet whose
+   *  head has been torn away by ten units. */
+  function tornSheet(): Float32Array {
+    return new Float32Array([-50, -20, 50, -20, 50, 30, -50, 30]);
+  }
+
+  it("clips to the outline rather than to the rectangle", () => {
+    camera.setView(0, 0, 1);
+    ink.draw(stubContext(), camera, glued(straight(4)), frame(0, 0, 0, 50, 30, tornSheet()));
+
+    expect(calls.clips).toBe(1);
+    const ys = calls.lines.map((p) => p[1]);
+    // 50 units tall, not the rectangle's 60: the ten the tear took are gone.
+    expect(Math.max(...ys) - Math.min(...ys)).toBeCloseTo(50, 3);
+    expect(Math.min(...ys)).toBeCloseTo(-20, 3);
+  });
+
+  it("uses every vertex, not just the first four", () => {
+    // A rectangle has four; a ragged sheet has around twenty, and a clip built
+    // from the first four of them would be a quadrilateral cutting corners off
+    // the paper.
+    camera.setView(0, 0, 1);
+    const many = new Float32Array(
+      Array.from({ length: 12 }, (_, i) => {
+        const a = (i / 12) * Math.PI * 2;
+        return [Math.cos(a) * 40, Math.sin(a) * 25];
+      }).flat(),
+    );
+    ink.draw(stubContext(), camera, glued(straight(4)), frame(0, 0, 0, 50, 30, many));
+    expect(calls.lines).toHaveLength(12);
+  });
+
+  it("turns the outline with the paper, like the four corners do", () => {
+    camera.setView(0, 0, 1);
+    ink.draw(
+      stubContext(),
+      camera,
+      glued(straight(4)),
+      frame(0, 0, Math.PI / 2, 50, 30, tornSheet()),
+    );
+    const xs = calls.lines.map((p) => p[0]);
+    expect(Math.max(...xs) - Math.min(...xs)).toBeCloseTo(50, 3);
+  });
+
+  it("falls back to the rectangle for an item that has no outline", () => {
+    // Null is a photograph, and it is an answer rather than a missing one.
+    camera.setView(0, 0, 1);
+    ink.draw(stubContext(), camera, glued(straight(4)), frame(0, 0, 0, 50, 30, null));
+    const ys = calls.lines.map((p) => p[1]);
+    expect(Math.max(...ys) - Math.min(...ys)).toBeCloseTo(60, 3);
   });
 });

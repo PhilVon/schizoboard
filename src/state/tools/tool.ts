@@ -489,6 +489,18 @@ export interface ToolContext {
    *  order — but it answers from the scene, never from the DOM. */
   hitTest(boardX: number, boardY: number): string | null;
   /**
+   * The same, stopping at the **paper** rather than at the item's rectangle —
+   * what a pen is over (T-186, Q-149).
+   *
+   * A second question rather than a stricter version of the first, because the
+   * two have different right answers and the difference is deliberate. A sheet's
+   * silhouette recedes from its rectangle by up to nine board units along a torn
+   * head, and a mark has to land where you can see paper while a grab target
+   * wants to be forgiving. So `hitTest` is what you can pick up and this is what
+   * you can write on; only the pens ask this one.
+   */
+  inkHitTest(boardX: number, boardY: number): string | null;
+  /**
    * The pin under a **screen** point, or null.
    *
    * Screen rather than board, unlike every other geometry question a tool asks,

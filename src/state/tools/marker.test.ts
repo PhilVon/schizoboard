@@ -139,6 +139,13 @@ function live(): WetStroke | null {
   return runs[runs.length - 1] ?? null;
 }
 
+/**
+ * Where the *paper* is, when a test needs it to differ from where the rectangle
+ * is — the strip a torn edge gives up (T-186). Null means the two agree, which
+ * is what every test written before T-186 assumes.
+ */
+let paperAt: ((bx: number, by: number) => string | null) | null = null;
+
 /** Every run in flight, for the tests that are about the crossing itself. */
 function runs(): readonly WetStroke[] {
   return tool.runsInFlight;
@@ -153,6 +160,7 @@ beforeEach(() => {
   scene = new Scene();
   under = null;
   byGeometry = false;
+  paperAt = null;
   tool = new MarkerTool({ onDone: () => done++ });
   ctx = {
     scene,
@@ -168,6 +176,13 @@ beforeEach(() => {
       }
       return null;
     },
+    /**
+     * The pen's boundary, which is a *different question* from the grab's
+     * (T-186, Q-149) — so the harness has to be able to answer them
+     * differently, or the tests that are about the difference cannot be
+     * written. `paperAt` is null by default and the two agree.
+     */
+    inkHitTest: (bx, by) => (paperAt ?? ctx.hitTest)(bx, by),
     hitPin: () => null,
     hitString: () => null,
     // Nothing to put a caret in, in a harness with no presentation (T-179).
@@ -1067,5 +1082,112 @@ describe("the id a run is filed under", () => {
     named.handle({ kind: "down", at: at(100, 100) }, ctx);
     named.handle({ kind: "move", at: at(150, 100), trail: [at(150, 100)] }, ctx);
     expect(named.runsInFlight[0]!.id).toBe("run-1");
+  });
+});
+
+/**
+ * The strip a torn edge gives up — T-186, Q-149.
+ *
+ * The marker asks `inkHitTest` and the select tool asks `hitTest`, and after
+ * T-186 those are **different questions with different right answers**. A
+ * sheet's silhouette recedes from its rectangle by up to nine board units along
+ * a torn head, and ink may not land in the gap.
+ *
+ * What is asserted here is the *tool's* half: that the pen follows the paper
+ * boundary rather than the grab boundary, and that a sample landing in the
+ * strip is handed to the surface below by the same crossing rule that handles
+ * running off the edge entirely. Whether the polygon itself is right is
+ * `render/items/edge.test.ts`'s business, and whether the walk continues past a
+ * rejected sheet is `render/items/dom.test.ts`'s.
+ */
+describe("the strip between a sheet's rectangle and its paper", () => {
+  /** A sheet spanning board 0..200 on both axes. */
+  function sheet(id: string, cx = 100, cy = 100): void {
+    scene.putItem(
+      { id, type: "note", z: "a0", seed: 1, assetId: null, createdBy: 1, createdAt: 0, text: "" },
+      { x: cx, y: cy, rot: 0, w: 200, h: 200 },
+    );
+    byGeometry = true;
+  }
+
+  /**
+   * The sheet is paper everywhere except a nine-unit band along its head, which
+   * is what a torn legal pad looks like: still inside the rectangle, no longer
+   * inside the silhouette.
+   */
+  function torn(id: string): void {
+    paperAt = (bx, by) => {
+      if (bx < 0 || bx > 200 || by < 0 || by > 200) return null;
+      return by < 9 ? null : id;
+    };
+  }
+
+  it("does not file ink in the strip on the sheet it is inside the rectangle of", () => {
+    sheet("s");
+    torn("s");
+    // Straight down the head of the sheet, four units in — inside the
+    // rectangle for its whole length, and on no paper at all.
+    down(40, 4);
+    move([at(80, 4), at(120, 4)]);
+    up(160, 4);
+
+    expect(committed).toHaveLength(1);
+    // The cork, because the paper is not there. Before T-186 this said "s".
+    expect(committed[0]!.item).toBeNull();
+  });
+
+  it("hands the run over at the paper's edge, not at the rectangle's", () => {
+    sheet("s");
+    torn("s");
+    // Down through the strip and onto the paper below it.
+    down(100, 2);
+    move([at(100, 6), at(100, 40)]);
+    up(100, 80);
+
+    expect(committed).toHaveLength(2);
+    expect(committed[0]!.item).toBeNull();
+    expect(committed[1]!.item).toBe("s");
+  });
+
+  it("still draws in the strip — it is a different surface, not a dead zone", () => {
+    // The failure Q-149 warns about: narrowing the clip without moving the
+    // boundary would leave ink filed on the item and painted nowhere, a hole in
+    // the line as wide as the tear. Nothing is ever dropped.
+    sheet("s");
+    torn("s");
+    down(100, 2);
+    move([at(100, 6), at(100, 40)]);
+    up(100, 80);
+
+    const all = committed.flatMap((run) => run.samples);
+    expect(all.length).toBeGreaterThanOrEqual(4);
+    expect(committed.every((run) => run.samples.length >= 2)).toBe(true);
+  });
+
+  it("leaves the grab boundary alone, which is the whole of Q-149's answer", () => {
+    // Same board point, two questions. The pen says cork; what you would pick
+    // up is still the sheet, because a grab target wants to be forgiving and
+    // the strip is the notch of a hand-torn edge, which is where a hand aims.
+    sheet("s");
+    torn("s");
+    expect(ctx.inkHitTest(100, 4)).toBeNull();
+    expect(ctx.hitTest(100, 4)).toBe("s");
+    // And on the paper proper they agree, which is nearly the whole sheet.
+    expect(ctx.inkHitTest(100, 100)).toBe("s");
+    expect(ctx.hitTest(100, 100)).toBe("s");
+  });
+
+  it("is not consulted when Ctrl forced the gesture onto the cork", () => {
+    // `forced` opts the whole gesture out of asking at all, so a torn edge
+    // cannot re-file a mark the person deliberately put on the board.
+    sheet("s");
+    torn("s");
+    tool.handle({ kind: "down", at: { ...at(100, 100), ctrl: true } }, ctx);
+    move([at(100, 40), at(100, 4)]);
+    up(100, 2);
+    // One run, on the cork, all the way through — the strip never gets a say
+    // because nothing asked it anything.
+    expect(committed).toHaveLength(1);
+    expect(committed[0]!.item).toBeNull();
   });
 });

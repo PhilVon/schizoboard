@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { sheetEdge, tearEdge, type Fold } from "@/render/items/edge";
+import { edgePoints, insideEdge, sheetEdge, tearEdge, type Fold } from "@/render/items/edge";
 import type { PaperStock } from "@/render/items/paper";
 
 const SEED = 0x51ac7e;
@@ -253,6 +253,183 @@ describe("edgeClipPath", () => {
     for (const corner of corners) {
       expect(inset(corner.x)).toBeGreaterThan(0);
       expect(inset(corner.y)).toBeGreaterThan(0);
+    }
+  });
+});
+
+/**
+ * The silhouette as numbers — T-186.
+ *
+ * The whole point of the numeric form is that there is now only **one**
+ * polygon, and the CSS is a rendering of it. So the assertion that matters most
+ * is not that the numbers are right in isolation; it is that resolving them and
+ * parsing the stylesheet give the same shape. Two walks emitting the same
+ * polygon in two formats is how the paint and the ink come to disagree about
+ * where a torn edge is, by a few units, on the one edge where it shows.
+ */
+describe("the outline behind the clip path", () => {
+  const W = 400;
+  const H = 300;
+
+  /** `edgePoints` for a sheet, plus the vertex count. */
+  function resolved(stock: PaperStock, seed: number, fold: Fold | null = null) {
+    const edge = sheetEdge(stock, seed, fold);
+    const n = edge.outline.length / 4;
+    const points = edgePoints(edge.outline, W, H, new Float32Array(n * 2));
+    return { edge, n, points };
+  }
+
+  it("carries four numbers per vertex, one vertex per point in the path", () => {
+    const { edge, n } = resolved("cream", SEED);
+    expect(edge.outline.length % 4).toBe(0);
+    expect(n).toBe(parse(edge.path).length);
+  });
+
+  it("resolves to the same shape the stylesheet describes", () => {
+    // Every coordinate the CSS can hold, resolved by hand the way a browser
+    // would, against the same w and h — and then compared with what
+    // `edgePoints` produced. If these ever drift, a stroke stops at a different
+    // place from the paper it is drawn on.
+    const { edge, points } = resolved("legal", SEED, { corner: 1, depth: 12 });
+    const css = (coord: string, size: number): number => {
+      const bare = /^(-?[\d.]+)px$/.exec(coord);
+      if (bare) return Number(bare[1]);
+      const back = /^calc\(100% - (-?[\d.]+)px\)$/.exec(coord);
+      if (back) return size - Number(back[1]);
+      return (Number(/^([\d.]+)%$/.exec(coord)![1]) / 100) * size;
+    };
+    const written = parse(edge.path);
+    expect(written.length).toBeGreaterThan(8);
+    /**
+     * A quarter of a board unit, and the slack is *the stylesheet's*.
+     *
+     * The numbers are the polygon; the string is a rendering of it, rounded to
+     * two decimals of a length and one of a percentage. On a 400-unit sheet
+     * that last digit of a percentage is 0.2 units — so the painted edge is up
+     * to a fifth of a unit from the exact one, and the ink gets the exact one.
+     * At 100% zoom that is a fifth of a pixel, which is the right way round:
+     * the lossy copy is the one that only has to look like paper.
+     */
+    const ROUNDING = 0.25;
+    written.forEach((point, i) => {
+      // Minus a half-extent, because the stylesheet measures from the corner
+      // and everything else on this board measures from the middle.
+      expect(Math.abs(points[i * 2]! - (css(point.x, W) - W / 2))).toBeLessThan(ROUNDING);
+      expect(Math.abs(points[i * 2 + 1]! - (css(point.y, H) - H / 2))).toBeLessThan(ROUNDING);
+    });
+  });
+
+  it("is measured about the centre, so it lands where the ink and the hit test look", () => {
+    const { points, n } = resolved("index", SEED);
+    // An index card barely wanders, so every vertex is within a whisker of the
+    // rectangle's own edge — and the rectangle runs -200..200 by -150..150.
+    for (let i = 0; i < n; i++) {
+      expect(Math.abs(points[i * 2]!)).toBeLessThanOrEqual(W / 2);
+      expect(Math.abs(points[i * 2 + 1]!)).toBeLessThanOrEqual(H / 2);
+    }
+    expect(Math.max(...Array.from({ length: n }, (_, i) => points[i * 2]!))).toBeGreaterThan(190);
+    expect(Math.min(...Array.from({ length: n }, (_, i) => points[i * 2]!))).toBeLessThan(-190);
+  });
+
+  it("never grows past the item's own rectangle, whatever the stock", () => {
+    // The rectangle is what the culler, the selection chrome and the hit test
+    // all agree the item occupies. A silhouette that grew would put paper
+    // outside it — which is the assumption the whole render stack shares.
+    for (const stock of ["white", "cream", "legal", "graph", "index"] as PaperStock[]) {
+      const { points, n } = resolved(stock, SEED);
+      for (let i = 0; i < n; i++) {
+        expect(Math.abs(points[i * 2]!)).toBeLessThanOrEqual(W / 2 + 1e-4);
+        expect(Math.abs(points[i * 2 + 1]!)).toBeLessThanOrEqual(H / 2 + 1e-4);
+      }
+    }
+  });
+});
+
+describe("insideEdge", () => {
+  const W = 400;
+  const H = 300;
+  function sheet(stock: PaperStock, seed: number, fold: Fold | null = null) {
+    const edge = sheetEdge(stock, seed, fold);
+    const n = edge.outline.length / 4;
+    return { points: edgePoints(edge.outline, W, H, new Float32Array(n * 2)), n };
+  }
+
+  it("says yes in the middle of the paper", () => {
+    const { points, n } = sheet("cream", SEED);
+    expect(insideEdge(points, n, 0, 0)).toBe(true);
+  });
+
+  it("says no well outside the rectangle", () => {
+    const { points, n } = sheet("cream", SEED);
+    expect(insideEdge(points, n, 500, 0)).toBe(false);
+    expect(insideEdge(points, n, 0, -400)).toBe(false);
+    expect(insideEdge(points, n, -1e6, 1e6)).toBe(false);
+  });
+
+  it("says no in the strip a tear gave up — which is the whole of T-186", () => {
+    // A legal pad is torn along its head, up to nine units deep. The rectangle
+    // says this point is on the item; the paper is not there.
+    const { points, n } = sheet("legal", SEED);
+    // The deepest point of the tear, found rather than assumed: the tear is
+    // seeded, so which sample is deepest is not a number a test can hardcode.
+    let deepest = -Infinity;
+    let atX = 0;
+    for (let i = 0; i < n; i++) {
+      const y = points[i * 2 + 1]!;
+      if (y > deepest && y < 0) {
+        deepest = y;
+        atX = points[i * 2]!;
+      }
+    }
+    expect(deepest).toBeGreaterThan(-H / 2 + 2);
+    // Just inside the rectangle's top edge, under the deepest notch.
+    expect(insideEdge(points, n, atX, -H / 2 + 0.05)).toBe(false);
+    // And a whisker below the notch is paper again.
+    expect(insideEdge(points, n, atX, deepest + 1)).toBe(true);
+  });
+
+  it("says no inside a folded corner, because the paper is genuinely gone", () => {
+    // T-190 put the dog-ear in the silhouette rather than in the paint, so this
+    // falls out of the same test rather than needing one of its own.
+    const folded = sheet("white", SEED, { corner: 0, depth: 20 });
+    const flat = sheet("white", SEED);
+    // A point well inside the cut at the top left: 20% of 400 is 80 units in x
+    // and 20% of 300 is 60 in y, so the fold line runs between them.
+    const x = -W / 2 + 12;
+    const y = -H / 2 + 12;
+    expect(insideEdge(flat.points, flat.n, x, y)).toBe(true);
+    expect(insideEdge(folded.points, folded.n, x, y)).toBe(false);
+  });
+
+  it("counts a crossing once on the scanline through a vertex itself", () => {
+    // The failure this guards is exact rather than statistical, which is why a
+    // sweep at whole-unit steps does not find it. At a y that is *exactly* a
+    // vertex's, the two edges meeting there both have an endpoint on the line,
+    // and what decides whether the crossing is counted once or twice is that
+    // the two ends are compared the *same* way. Either strictly-above rule
+    // works; a mixed one counts that vertex for both edges, the parity flips
+    // twice, and the middle of the sheet reads as cork — so a pen sample
+    // landing on that one line would file its ink on the board.
+    for (const stock of ["white", "legal", "graph"] as PaperStock[]) {
+      const { points, n } = sheet(stock, SEED);
+      for (let i = 0; i < n; i++) {
+        const y = points[i * 2 + 1]!;
+        // Only the vertices along the sides: a scanline through the head or the
+        // tail is genuinely on the boundary and is promised to neither side.
+        if (Math.abs(y) > H / 2 - 12) continue;
+        expect(insideEdge(points, n, 0, y)).toBe(true);
+      }
+    }
+  });
+
+  it("counts a crossing once, so a vertex's own scanline is not a hole", () => {
+    // The classic failure of a crossing-number test is a horizontal edge or a
+    // vertex counted twice, which puts a one-line hole through the polygon. A
+    // sweep down the middle of the sheet must be inside for every row between
+    // the head and the tail.
+    const { points, n } = sheet("graph", SEED);
+    for (let y = -H / 2 + 12; y < H / 2 - 12; y += 1) {
+      expect(insideEdge(points, n, 0, y)).toBe(true);
     }
   });
 });

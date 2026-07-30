@@ -58,6 +58,7 @@
 import type { InkSample } from "@/lib/ink";
 import {
   clipToPaper,
+  clipToSheet,
   COMPOSITE,
   inkBounds,
   paintStrokes,
@@ -65,6 +66,7 @@ import {
   regionFor,
   type InkBox,
   type InkRegion,
+  type SheetOutline,
 } from "@/render/ink/dry";
 import { outlineStroke, strokeOptions, traceOutline } from "@/render/ink/geometry";
 import type { SceneStroke } from "@/state/scene";
@@ -139,7 +141,12 @@ export class InkCanvas {
    * `paper` is the surface the pen stops at, or null for a surface with no edge
    * — see the note at the top of the file and `paintStrokes`.
    */
-  update(strokes: readonly SceneStroke[], scale: number, paper: InkBox | null): void {
+  update(
+    strokes: readonly SceneStroke[],
+    scale: number,
+    paper: InkBox | null,
+    edge: SheetOutline | null = null,
+  ): void {
     const inked = strokes.length === 0 ? null : inkBounds(strokes, box);
     // The overlap, not the ink: the pen stops at the edge of the paper (T-136),
     // so anything past it is neither drawn nor worth a pixel of backing store.
@@ -175,7 +182,7 @@ export class InkCanvas {
     // placed either way; phase 6 is not a place to raise.
     if (this.ctx === null) this.ctx = canvas.getContext("2d");
     if (this.ctx === null) return;
-    paintStrokes(this.ctx, strokes, region, paper);
+    paintStrokes(this.ctx, strokes, region, paper, edge);
   }
 
   /**
@@ -198,7 +205,12 @@ export class InkCanvas {
    * False when there is no bitmap to rub, which is a surface with no ink on it:
    * nothing to erase, and nothing to show for trying.
    */
-  rub(samples: readonly InkSample[], size: number, paper: InkBox | null): boolean {
+  rub(
+    samples: readonly InkSample[],
+    size: number,
+    paper: InkBox | null,
+    edge: SheetOutline | null = null,
+  ): boolean {
     const region = this.region;
     if (this.ctx === null || region === null || samples.length === 0) return false;
     const outline = outlineStroke(samples, strokeOptions("erase", size, false));
@@ -218,7 +230,7 @@ export class InkCanvas {
     this.ctx.save();
     if (paper !== null) {
       this.ctx.beginPath();
-      this.ctx.rect(paper.minX, paper.minY, paper.maxX - paper.minX, paper.maxY - paper.minY);
+      clipToSheet(this.ctx, paper, edge);
       this.ctx.clip();
     }
     this.ctx.globalCompositeOperation = COMPOSITE.erase;
@@ -279,6 +291,15 @@ export class ItemInk {
   private readonly paper: InkBox = { minX: 0, minY: 0, maxX: 0, maxY: 0 };
   private boxW = 0;
   private boxH = 0;
+  /**
+   * The silhouette the last raster was clipped to, so the rubber stops exactly
+   * where the ink it is taking away stops (T-186).
+   *
+   * Held rather than re-asked: `rub` runs on a pointer that is down and has no
+   * scene to ask, and a rubber clipped to a different polygon from the ink
+   * would leave a rind of mark it could not reach.
+   */
+  private edge: SheetOutline | null = null;
 
   constructor(host: HTMLElement) {
     this.canvas = new InkCanvas(host, "item-ink");
@@ -292,19 +313,28 @@ export class ItemInk {
     return this.canvas.pixels;
   }
 
-  update(strokes: readonly SceneStroke[], scale: number, w: number, h: number): void {
+  update(
+    strokes: readonly SceneStroke[],
+    scale: number,
+    w: number,
+    h: number,
+    edge: SheetOutline | null = null,
+  ): void {
     // Remembered so that a resize re-rasters: the clip is a function of the
     // item's size, and a note dragged wider has to give back the ink its old
     // edge was hiding. `render/items/dom.ts` asks with [`staleBox`].
     this.boxW = w;
     this.boxH = h;
-    this.canvas.update(strokes, scale, paperBox(w, h, this.paper));
+    this.edge = edge;
+    this.canvas.update(strokes, scale, paperBox(w, h, this.paper), edge);
   }
 
   /** The live smudge, clipped to this item's paper — the pen stops at the edge
    *  (T-136) and so does the rubber. */
   rub(samples: readonly InkSample[], size: number): boolean {
-    return this.canvas.rub(samples, size, paperBox(this.boxW, this.boxH, this.paper));
+    // The outline the last raster used, so the rubber stops exactly where the
+    // ink it is taking away stops.
+    return this.canvas.rub(samples, size, paperBox(this.boxW, this.boxH, this.paper), this.edge);
   }
 
   /**

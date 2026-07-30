@@ -71,6 +71,18 @@ export interface ItemFrame {
    *  allowed to mark. See the clip in [`WetInk.draw`]. */
   hw: number;
   hh: number;
+  /**
+   * The sheet's silhouette in item-local coordinates, `x, y` pairs, or null for
+   * an item that is its own rectangle — a photograph (T-186).
+   *
+   * Here rather than derived, because the clip below and the boundary the pen
+   * tested have to be the same polygon: a wet stroke clipped to the rectangle
+   * while the committed one is clipped to the paper would visibly change shape
+   * at pen-up, on the one edge where anybody would look.
+   */
+  points: Float32Array | null;
+  /** How many vertices of [`points`] are live. */
+  n: number;
 }
 
 export class WetInk {
@@ -153,9 +165,16 @@ export class WetInk {
     // disagree about where the paper is.
     if (frame !== null && stroke.item !== null) {
       const paper = new Path2D();
-      for (let i = 0; i < 4; i++) {
-        const lx = i === 0 || i === 3 ? -frame.hw : frame.hw;
-        const ly = i < 2 ? -frame.hh : frame.hh;
+      // The sheet's own outline when it has one, and its four corners when it
+      // does not (T-186). Same loop either way: the vertices come out of the
+      // item's frame and through the camera exactly as the samples above did,
+      // so the two cannot disagree about where the paper is.
+      const count = frame.points === null ? 4 : frame.n;
+      for (let i = 0; i < count; i++) {
+        const lx =
+          frame.points === null ? (i === 0 || i === 3 ? -frame.hw : frame.hw) : frame.points[i * 2]!;
+        const ly =
+          frame.points === null ? (i < 2 ? -frame.hh : frame.hh) : frame.points[i * 2 + 1]!;
         rotateOut(lx, ly, frame.cx, frame.cy, frame.cos, frame.sin, this.board);
         camera.boardToScreen(this.board.x, this.board.y, this.at);
         if (i === 0) paper.moveTo(this.at.x, this.at.y);
