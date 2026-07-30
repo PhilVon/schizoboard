@@ -26,9 +26,26 @@
  *
  * Photographs are the same hazard one step further out and are handled the same
  * way; see [`inlineAssets`].
+ *
+ * ## Why this is in `render/items/` and not in `app/`
+ *
+ * Because the alternative is a second module with an opinion about how an item
+ * is represented, and the seam next door forbids exactly that:
+ *
+ * > If it ever leaks an `HTMLElement`, the escalation stops being one directory.
+ * > — `view.ts`
+ *
+ * An export that reached into the layer for nodes would have to know that items
+ * are `<div>`s, that they stack with `z-index` rather than in document order,
+ * and that their shadows hang outside their own boxes. All three are true, all
+ * three were measured, and all three are this directory's business (D-37). So
+ * the layer gets a *painter* — the fifth of five, and the only one that had to
+ * be invented — and `app/` composes painters without ever seeing an element.
  */
 
 import type { AssetVariant } from "@/platform/types";
+import { SHADOW_BLEED } from "@/render/items/shadow";
+import { TAPE_LENGTH } from "@/render/items/tape";
 
 /** The face the board writes in, and the one thing an export must not lose. */
 export const BOARD_FONT_URL = "/fonts/patrick-hand.woff2";
@@ -389,4 +406,186 @@ export function cloneForExport(el: Element, inert = inertDocument()): HTMLElemen
  */
 export function inertDocument(): Document {
   return document.implementation.createHTMLDocument("");
+}
+
+/**
+ * How much room to leave round an item's raster, board units.
+ *
+ * An item paints outside its own box in two ways, and both were measured rather
+ * than assumed. The shadow is a sibling element hanging past every edge
+ * (`SHADOW_BLEED`), and tape crosses a corner at forty-five degrees and sticks
+ * out by about half its length. On a 330×296 polaroid at rest the subtree
+ * reaches 13.7 / 12.4 / 17.2 / 18.5 units past the sheet — asymmetric, because
+ * the light is off the top left — and a tenth of a 48-unit ring around it comes
+ * back painted.
+ *
+ * A `foreignObject` clips to its rect, so a raster cut to the item's own width
+ * and height loses all of that. The picture still looks like a board; it just
+ * looks like a board with no shadows on it, which is not a thing anybody can
+ * see without the real one beside it.
+ */
+export const ITEM_BLEED = Math.ceil(Math.max(SHADOW_BLEED, TAPE_LENGTH / 2));
+
+/**
+ * The camera an export draws at: the board coordinate at the canvas's top-left
+ * corner, and how many pixels a board unit is worth.
+ *
+ * Structural and tiny on purpose. `app/export.ts`'s `ExportView` satisfies it,
+ * and `render/` must not import from `app/` to say so.
+ */
+export interface RasterCamera {
+  readonly x: number;
+  readonly y: number;
+  readonly zoom: number;
+}
+
+/** One item to draw: its node, and where the scene says it is. */
+export interface RasterItem {
+  readonly id: string;
+  readonly el: Element;
+  /** Paint order, low first — `z-index`, never document order (D-37). */
+  readonly rank: number;
+  /** Drawn centre, drawn angle, and the sheet's own size, in board units. */
+  readonly x: number;
+  readonly y: number;
+  readonly rot: number;
+  readonly w: number;
+  readonly h: number;
+}
+
+/** What an item raster cost, and whether any of it went missing. */
+export interface RasterReport {
+  readonly items: number;
+  /** Items that reached the canvas. Short of `items` means an SVG would not
+   *  parse, which is the failure that draws nothing and throws nothing. */
+  readonly drawn: number;
+  readonly inlined: number;
+  readonly unreadable: number;
+  readonly bytes: number;
+}
+
+/**
+ * The board's own stylesheet, with the font's bytes carried in — everything a
+ * cloned item needs to be styled from inside a `data:` SVG.
+ *
+ * Once per export rather than once per item: it is 52 kB, and it is the same 52
+ * kB for every sheet on the board.
+ */
+export async function exportStylesheet(
+  sheets: Iterable<CSSStyleSheet> = document.styleSheets,
+  url = BOARD_FONT_URL,
+): Promise<string> {
+  const css = collectStyles(sheets);
+  const response = await fetch(url);
+  if (!response.ok) throw new Error(`${url} — ${response.status}`);
+  return inlineFont(css, fontDataUri(await response.arrayBuffer()), url);
+}
+
+/**
+ * The part of a canvas context an item raster touches.
+ *
+ * Narrow because it is the whole testable surface: ordering, the shadow's room
+ * and the placement arithmetic are all readable from the calls made against
+ * this, and none of them needs a real canvas to be checked.
+ */
+export type RasterTarget = Pick<
+  CanvasRenderingContext2D,
+  "save" | "restore" | "translate" | "rotate" | "scale" | "drawImage"
+>;
+
+/**
+ * The three things [`rasteriseItems`] reaches the world through.
+ *
+ * `decode` is here for one reason and it is not elegance: an SVG becomes pixels
+ * by being loaded into an `<img>`, and happy-dom neither loads nor fails one —
+ * it simply never fires, so a test would hang rather than pass or fail. Real
+ * decoding is proved in the real webview instead; what a test can check is
+ * everything either side of it.
+ */
+export interface RasterDeps {
+  read?: ReadBytes;
+  bleed?: number;
+  decode?: (uri: string) => Promise<CanvasImageSource | null>;
+}
+
+/**
+ * Draw items into a canvas at an export camera.
+ *
+ * Sequential, and deliberately so: each item holds a stylesheet, a font and a
+ * photograph as one string — measured at 12 MB across 24 sheets — and doing
+ * them at once is that figure times the board. One at a time, the peak is one
+ * item and the total is the same.
+ *
+ * Sorted by `rank` here rather than trusted from the caller, because getting it
+ * wrong is invisible: on a board built in order document order *is* paint order,
+ * and it stops being so the first time anybody brings something to the front
+ * (D-37).
+ */
+export async function rasteriseItems(
+  items: Iterable<RasterItem>,
+  ctx: RasterTarget,
+  camera: RasterCamera,
+  css: string,
+  deps: RasterDeps = {},
+): Promise<RasterReport> {
+  const { read = fetchBytes, bleed = ITEM_BLEED, decode: toImage = decode } = deps;
+  const ordered = [...items].sort((a, b) => a.rank - b.rank);
+  const inert = inertDocument();
+  const cache = new Map<string, Promise<string | null>>();
+  let drawn = 0;
+  let inlined = 0;
+  let unreadable = 0;
+  let bytes = 0;
+
+  for (const item of ordered) {
+    const width = Math.ceil(item.w + 2 * bleed);
+    const height = Math.ceil(item.h + 2 * bleed);
+    if (!(width > 0) || !(height > 0)) continue;
+
+    // The item, square on at the origin, inside the room its shadow needs.
+    const clone = cloneForExport(item.el, inert);
+    clone.style.position = "absolute";
+    clone.style.left = `${bleed}px`;
+    clone.style.top = `${bleed}px`;
+    const framed = inert.createElement("div");
+    framed.setAttribute("style", `position:relative;width:${width}px;height:${height}px`);
+    framed.append(clone);
+
+    const cost = await inlineAssets(framed, read, cache);
+    inlined += cost.inlined;
+    unreadable += cost.unreadable;
+    bytes += cost.bytes;
+
+    const image = await toImage(svgDataUri(svgFor(serialise(framed), css, width, height)));
+    // An SVG that would not parse draws nothing and throws nothing, so this is
+    // the one place the failure is visible at all. Counted, not thrown: one
+    // sheet missing is a hole in the picture, and refusing the whole export
+    // would be a worse answer to it than handing over the rest.
+    if (image === null) continue;
+
+    ctx.save();
+    // Placement is the canvas's arithmetic, not the clone's — see
+    // [`cloneForExport`]. Board units all the way down: translate to the item's
+    // drawn centre, turn to its drawn angle, then scale, so the bleed and the
+    // half-sizes below are the numbers the scene actually holds.
+    ctx.translate((item.x - camera.x) * camera.zoom, (item.y - camera.y) * camera.zoom);
+    ctx.rotate(item.rot);
+    ctx.scale(camera.zoom, camera.zoom);
+    ctx.drawImage(image, -item.w / 2 - bleed, -item.h / 2 - bleed, width, height);
+    ctx.restore();
+    drawn += 1;
+  }
+
+  return { items: ordered.length, drawn, inlined, unreadable, bytes };
+}
+
+/** An `<img>` that has loaded, or `null`. Never rejects: a sheet that will not
+ *  parse is counted by the caller, not thrown at the user. */
+async function decode(uri: string): Promise<HTMLImageElement | null> {
+  const image = new Image();
+  return new Promise((resolve) => {
+    image.onload = () => resolve(image);
+    image.onerror = () => resolve(null);
+    image.src = uri;
+  });
 }

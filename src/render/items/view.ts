@@ -14,6 +14,7 @@
  * If it ever leaks an `HTMLElement`, the escalation stops being one directory.
  */
 
+import type { RasterCamera, RasterReport } from "@/render/items/raster";
 import type { Tier } from "@/render/lod";
 import type { AgeClock } from "@/render/items/wear";
 import type { DirtySets } from "@/state/dirty";
@@ -131,6 +132,39 @@ export interface ItemLayer {
    * texture in the same place.
    */
   paintInk(scene: Scene, dirty: DirtySets): void;
+
+  /**
+   * EXPORT. Draw the items into `ctx` at an export camera (D-37).
+   *
+   * The fifth painter, and the only one that had to be invented: cork, the
+   * board-ink tiles and both rope layers already draw themselves into a canvas
+   * at an arbitrary camera, which is what keeps a line crisp at every zoom and
+   * what makes an *export* camera cost them nothing new (D-34 §1). Items were
+   * the exception because they are DOM, and this is that exception closed —
+   * from *this* side of the seam, so that an export never sees an element and
+   * the escalation stays one directory.
+   *
+   * Three things only the layer knows, and each one is silent when it is wrong:
+   * items stack by `z-index` and not in document order, an item's shadow hangs
+   * outside its own box, and an item reaches its place on the board with a
+   * transform that has to come off before it will draw at all.
+   *
+   * **Draws what is mounted**, which makes posing the camera the caller's job
+   * and not a thing this can check: `app/exportPdf.ts`'s `Stage` frames the
+   * whole board and takes the detail tier off the zoom, and without that this
+   * draws the viewport at whatever tier the zoom was sitting in.
+   *
+   * Asynchronous where every other painter is synchronous, because a DOM item
+   * becomes pixels by being decoded as an image and its photographs have to be
+   * read off the disk first. The alternative is being handed pre-decoded
+   * images, which is the caller doing this layer's job with this layer's
+   * knowledge.
+   */
+  rasterise(
+    scene: Scene,
+    ctx: CanvasRenderingContext2D,
+    camera: RasterCamera,
+  ): Promise<RasterReport>;
 
   /** How many item presentations currently exist — for the dev HUD. */
   readonly mounted: number;

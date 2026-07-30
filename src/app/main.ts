@@ -2525,6 +2525,17 @@ async function boot(): Promise<void> {
        * window throttles to something that has long since moved on.
        */
       lod,
+      /**
+       * The item layer, for its export painter (T-206, D-37).
+       *
+       * The one thing here that is not just a handle on state: `rasterise` is
+       * how the items become pixels, and it is the half of an image export
+       * that no test can check. happy-dom neither loads an SVG into an `<img>`
+       * nor fails to — it never fires — so whether a sheet actually draws, and
+       * in the right hand, with its photographs and its shadow, is only ever
+       * answerable in the real webview.
+       */
+      items,
       ops,
       tools,
       /**

@@ -52,6 +52,13 @@ import { ItemInk } from "@/render/ink/canvas";
 import { TextEditor, type ItemEditorHooks } from "@/render/items/editor";
 import { clearHand, writeHand } from "@/render/items/hand";
 import {
+  exportStylesheet,
+  rasteriseItems,
+  type RasterCamera,
+  type RasterItem,
+  type RasterReport,
+} from "@/render/items/raster";
+import {
   emergeDelay,
   EMERGE_MIN_PX,
   FILM_CLASSES,
@@ -1318,6 +1325,47 @@ export class DomItemLayer implements ItemLayer {
 
   get mounted(): number {
     return this.views.size;
+  }
+
+  /**
+   * Draw the mounted items into a canvas at an export camera — see `view.ts`
+   * for what this is and D-37 for why it is here rather than in `app/`.
+   *
+   * Everything below is a lookup: the ranking this layer already computed for
+   * `z-index`, the node each view already owns, and the drawn pose off the
+   * scene's own readers. `renderX`/`renderY`/`renderRot` and not the fields
+   * behind them — the swing is part of where an item *is* (T-177), and an
+   * export that read `rot` would put every hanging item back at the angle it
+   * was drawn at before it settled.
+   *
+   * Items with no slot are skipped rather than drawn at the origin. That is a
+   * view mounted for an item the scene has since dropped — a delete arriving on
+   * a merge between the pose and the draw — and a pile of sheets at 0,0 is a
+   * worse answer to it than a board without them.
+   */
+  async rasterise(
+    scene: Scene,
+    ctx: CanvasRenderingContext2D,
+    camera: RasterCamera,
+  ): Promise<RasterReport> {
+    const css = await exportStylesheet();
+    const items: RasterItem[] = [];
+    for (const [id, view] of this.views) {
+      const slot = scene.slotOf(id);
+      const pose = scene.poseOf(id);
+      if (slot === undefined || pose === null) continue;
+      items.push({
+        id,
+        el: view.el,
+        rank: this.rank.get(id) ?? 0,
+        x: scene.renderX(slot),
+        y: scene.renderY(slot),
+        rot: scene.renderRot(slot),
+        w: pose.w,
+        h: pose.h,
+      });
+    }
+    return rasteriseItems(items, ctx, camera, css);
   }
 
   get inked(): number {

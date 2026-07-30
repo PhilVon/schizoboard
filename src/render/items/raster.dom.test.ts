@@ -20,11 +20,16 @@ import {
   cloneForExport,
   inertDocument,
   inlineAssets,
+  ITEM_BLEED,
+  rasteriseItems,
+  type RasterItem,
+  type RasterTarget,
   type ReadBytes,
   serialise,
   svgDataUri,
   svgFor,
-} from "@/app/exportImage";
+} from "@/render/items/raster";
+import { SHADOW_BLEED } from "@/render/items/shadow";
 
 /** What the browser will do with the string, and the only assertion worth making. */
 function parse(svg: string): Document {
@@ -354,5 +359,167 @@ describe("the data URI", () => {
     const round = decodeURIComponent(svgDataUri(svg).slice("data:image/svg+xml;charset=utf-8,".length));
     expect(round).toBe(svg);
     expect(brokeOn(round)).toBeNull();
+  });
+});
+
+/**
+ * The painter: what order things are drawn in, how much room a sheet is given,
+ * and where on the canvas it lands.
+ *
+ * Every one of these is silent when it is wrong. A board drawn in document
+ * order looks like a board — with the wrong thing on top. A sheet cut to its
+ * own size looks like a sheet — with no shadow. A placement that ignores the
+ * swing looks like a board — hanging at the angle it had before it settled.
+ */
+describe("drawing the items into a canvas", () => {
+  /** A context that records what it was told to do, and nothing else. */
+  function target(): RasterTarget & { readonly calls: unknown[][] } {
+    const calls: unknown[][] = [];
+    const record =
+      (name: string) =>
+      (...args: unknown[]): void => {
+        calls.push([name, ...args]);
+      };
+    return {
+      calls,
+      save: record("save"),
+      restore: record("restore"),
+      translate: record("translate"),
+      rotate: record("rotate"),
+      scale: record("scale"),
+      drawImage: record("drawImage"),
+    } as RasterTarget & { readonly calls: unknown[][] };
+  }
+
+  const sheet = (over: Partial<RasterItem> = {}): RasterItem => ({
+    id: "i1",
+    el: polaroid(""),
+    rank: 0,
+    x: 0,
+    y: 0,
+    rot: 0,
+    w: 100,
+    h: 80,
+    ...over,
+  });
+
+  /** Stands in for the `<img>` happy-dom will never load. */
+  const decode = async (): Promise<CanvasImageSource> => ({}) as CanvasImageSource;
+  const deps = { decode, bleed: 0 };
+
+  it("draws in rank order, whatever order it was handed them", async () => {
+    const ctx = target();
+    const report = await rasteriseItems(
+      [sheet({ id: "top", rank: 9, x: 90 }), sheet({ id: "bottom", rank: 1, x: 10 })],
+      ctx,
+      { x: 0, y: 0, zoom: 1 },
+      "",
+      deps,
+    );
+    expect(report.drawn).toBe(2);
+    const xs = ctx.calls.filter((c) => c[0] === "translate").map((c) => c[1]);
+    expect(xs).toEqual([10, 90]);
+  });
+
+  /**
+   * The measured failure. On a board built in order document order *is* paint
+   * order, so this only ever goes wrong on a board somebody has restacked —
+   * and then it goes wrong quietly.
+   */
+  it("puts a brought-to-front sheet last even when it is first in the list", async () => {
+    const ctx = target();
+    await rasteriseItems(
+      [sheet({ id: "raised", rank: 24, x: 1 }), sheet({ id: "a", rank: 2, x: 2 })],
+      ctx,
+      { x: 0, y: 0, zoom: 1 },
+      "",
+      deps,
+    );
+    const xs = ctx.calls.filter((c) => c[0] === "translate").map((c) => c[1]);
+    expect(xs).toEqual([2, 1]);
+  });
+
+  /**
+   * A `foreignObject` clips to its rect and the shadow is a sibling hanging
+   * past every edge, so a raster cut to the sheet takes the shadow off it.
+   */
+  it("gives the sheet room for its shadow, and draws the whole of that room", async () => {
+    const ctx = target();
+    const seen: string[] = [];
+    await rasteriseItems([sheet()], ctx, { x: 0, y: 0, zoom: 1 }, "", {
+      bleed: 20,
+      decode: async (uri: string) => {
+        seen.push(decodeURIComponent(uri));
+        return {} as CanvasImageSource;
+      },
+    });
+
+    // 100×80 with 20 of room on every side.
+    expect(seen[0]).toContain('width="140"');
+    expect(seen[0]).toContain('height="120"');
+    // And the sheet sits inside it, off the corner by the same amount.
+    expect(seen[0]).toContain("left: 20px");
+    expect(seen[0]).toContain("top: 20px");
+
+    const draw = ctx.calls.find((c) => c[0] === "drawImage");
+    // Centred on the item's own middle, which is 20 further out on each side.
+    expect(draw?.slice(2)).toEqual([-70, -60, 140, 120]);
+  });
+
+  it("has a bleed big enough for the widest shadow the board draws", () => {
+    expect(ITEM_BLEED).toBeGreaterThanOrEqual(SHADOW_BLEED);
+  });
+
+  /**
+   * Board units all the way down: to the drawn centre, turn to the drawn angle,
+   * *then* scale. Scaling first would put the rotation in pixel space, which is
+   * the same picture only while the zoom is 1.
+   */
+  it("places a sheet at its drawn centre, angle and zoom", async () => {
+    const ctx = target();
+    await rasteriseItems(
+      [sheet({ x: 300, y: 200, rot: 0.25, w: 100, h: 80 })],
+      ctx,
+      { x: 100, y: 50, zoom: 2 },
+      "",
+      deps,
+    );
+    expect(ctx.calls).toEqual([
+      ["save"],
+      ["translate", 400, 300],
+      ["rotate", 0.25],
+      ["scale", 2, 2],
+      ["drawImage", expect.anything(), -50, -40, 100, 80],
+      ["restore"],
+    ]);
+  });
+
+  /**
+   * An SVG that will not parse draws nothing and throws nothing — this is the
+   * only place that failure is visible at all. One hole in the picture is a
+   * better answer than refusing to hand over the rest of the board.
+   */
+  it("counts a sheet that would not draw rather than failing the export", async () => {
+    const ctx = target();
+    const report = await rasteriseItems([sheet({ id: "a" }), sheet({ id: "b" })], ctx, { x: 0, y: 0, zoom: 1 }, "", {
+      bleed: 0,
+      decode: async () => null,
+    });
+    expect(report).toMatchObject({ items: 2, drawn: 0 });
+    expect(ctx.calls).toEqual([]);
+  });
+
+  it("reads each photograph once across the whole board", async () => {
+    const PHOTO = "asset://sha256/shared?v=display";
+    const read = reader({ [PHOTO]: [1, 2, 3] });
+    const report = await rasteriseItems(
+      [sheet({ id: "a", el: polaroid(PHOTO) }), sheet({ id: "b", el: polaroid(PHOTO) })],
+      target(),
+      { x: 0, y: 0, zoom: 1 },
+      "",
+      { decode, bleed: 0, read },
+    );
+    expect(read.asked).toEqual([PHOTO]);
+    expect(report.inlined).toBe(2);
   });
 });

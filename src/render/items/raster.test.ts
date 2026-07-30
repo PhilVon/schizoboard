@@ -19,7 +19,7 @@ import {
   fontDataUri,
   fontWasInlined,
   inlineFont,
-} from "@/app/exportImage";
+} from "@/render/items/raster";
 
 /** A stylesheet stub with only the surface `collectStyles` reads. */
 const sheet = (...cssText: string[]): CSSStyleSheet =>

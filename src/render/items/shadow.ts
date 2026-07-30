@@ -63,6 +63,24 @@ const RECIPES: Record<Elevation, Recipe> = {
 export const RESTING_LIFT = RECIPES.rest.offset;
 
 /**
+ * How far past its own edges the widest shadow reaches, board units.
+ *
+ * Exported for the export (D-37). The shadow element sits *inside* the item at
+ * `inset: -slice`, and an item's raster is cut to a rectangle — so a rectangle
+ * cut to the item's own width and height takes the shadow off every sheet on
+ * the board, and nothing about the resulting file looks wrong. It only reads
+ * flatter than the board does, which is not a thing anyone can see without the
+ * board beside it.
+ *
+ * The lifted recipe rather than the resting one, even though nothing is being
+ * carried while a menu is open: this is a bound, and a bound that is right only
+ * while an assumption holds is the kind that stops being right silently.
+ */
+export const SHADOW_BLEED = Math.max(
+  ...Object.values(RECIPES).map((recipe) => Math.ceil(recipe.blur * 3) + recipe.offset),
+);
+
+/**
  * Never black. "Shadow colour is never black. It's a desaturated warm brown
  * drawn from the cork, at low alpha." (DESIGN section 4.1)
  *
