@@ -214,12 +214,27 @@ export class Camera {
    * than as two constants disagreeing (T-135).
    */
   fit(bounds: Bounds, marginPx = FIT_MARGIN_PX): void {
+    this.zoom = this.zoomToFit(bounds, marginPx);
+    this.centreOn((bounds.minX + bounds.maxX) / 2, (bounds.minY + bounds.maxY) / 2);
+  }
+
+  /**
+   * The zoom [`fit`] would choose, without going there.
+   *
+   * Split out for `state/flight.ts`, which needs the destination before it
+   * starts easing toward it. A second copy of this arithmetic would be a second
+   * opinion about `FIT_MARGIN_PX` and about the clamp, and T-135 is the whole
+   * story of what two opinions about that margin cost: the shortcut that says
+   * "fit" framed a different view from the one the board had just opened on, and
+   * it read as the key being slightly wrong rather than as two constants
+   * disagreeing.
+   */
+  zoomToFit(bounds: Bounds, marginPx = FIT_MARGIN_PX): number {
     const bw = Math.max(1e-6, bounds.maxX - bounds.minX);
     const bh = Math.max(1e-6, bounds.maxY - bounds.minY);
     const vw = Math.max(1, this.width - marginPx * 2);
     const vh = Math.max(1, this.height - marginPx * 2);
-    this.zoom = clampZoom(Math.min(vw / bw, vh / bh));
-    this.centreOn((bounds.minX + bounds.maxX) / 2, (bounds.minY + bounds.maxY) / 2);
+    return clampZoom(Math.min(vw / bw, vh / bh));
   }
 
   /** Board rectangle currently on screen, optionally grown by a fraction of
