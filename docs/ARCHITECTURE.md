@@ -163,7 +163,6 @@ doc_compact(snapshot)
 // no path in either direction, for the reason `asset_export` gives below
 bundle_save_as(manifest, snapshot) → { embedded, missing[], bytes } | null
 bundle_open()              → { manifest, snapshot, ingested[], missing[] } | null
-bundle_recent()                              // not built — see T-84's note
 
 // export to PDF, in two halves — see the note under `asset_export` below
 export_pdf_choose(title)   → bool            // a save dialog; the path stays here
@@ -199,6 +198,8 @@ Prefer this shape wherever the boundary is asked for a location: take the *inten
 It is two commands rather than one because of *ordering*, not security. The board has to be posed for the page before the print — a print lays out at the paper width and fires no `resize` — and a single command would have printed the instant the dialog closed, so the window was already zoomed out to its own bounds while somebody was still typing a filename. Asking first also makes the common case the cheap one: cancelling now moves nothing at all.
 
 **Both bundle commands took the advice** (T-84). `bundle_save_as` was written above as `bundle_save_as(path)` and does not take one: it takes the board's title, on exactly the standing `origName` has — a suggestion `safe_stem` reduces before the dialog shows it — and the save dialog supplies the rest. `bundle_open` takes nothing at all and opens a picker. Between them and `asset_export` that is every place in the application where a file is chosen, and none of them lets the webview name one.
+
+**There is no `bundle_recent`.** This list used to carry one, unbuilt, beside the two above — a recent-boards list, of the kind every application with a *File* menu has. Nothing in DESIGN or DATA-MODEL ever mentioned recent boards, so that line was the only evidence the feature had been wanted at all, and Q-111 changed what it would mean before anyone built it: *Open a board…* **replaces** the board in this window rather than opening a second one. A list of recently opened boards is therefore a list of one-click ways to destroy the board you are looking at — each behind the same native confirmation as the picker, and with none of the deliberateness of going and finding a file, which is the part of the gesture actually doing the protecting. Struck on Q-145 rather than left standing as an unbuilt promise; D-38 is the record.
 
 What crosses instead is a manifest and a snapshot, framed as `[u32 le length][json][snapshot]` in one raw body, because Tauri's raw payload is all-or-nothing and a document sent as a JSON array of numbers is the mistake §4.3 already rejected for photographs. Rust reads the manifest and never the snapshot: it is handed a title, a schema version and a list of hashes, which is the whole of what a bundle is from a side that owns bytes and no schema.
 
