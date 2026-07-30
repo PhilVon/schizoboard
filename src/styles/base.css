@@ -503,3 +503,106 @@ body {
   /* Nothing to ease in from - a confirmation is late if it arrives gradually. */
   transition: opacity 90ms ease-in;
 }
+
+
+/* --- what must not be in an export (T-208, D-36) -------------------------- */
+
+/*
+ * The PDF route is Chromium's own print pipeline (Q-128), which renders this
+ * document exactly as it stands - so everything on screen that is not the board
+ * ends up in the file. That is not a hypothesis: the first PDF this project
+ * produced had the dev HUD in it, fps counter and doc size, and the whole hint
+ * line across the bottom.
+ *
+ * A stylesheet rather than a JavaScript toggle, and the reason is failure rather
+ * than tidiness. A toggle has to be undone, and a print that throws between the
+ * two leaves the user looking at a board with no HUD, no hint line and no way to
+ * know why. `@media print` cannot be left half-applied.
+ *
+ * `!important` because two of these carry inline styles - the menu is positioned
+ * where the cursor was, and the HUD is written every frame - and a print is not
+ * the place to lose a race with an inline `display`.
+ */
+@media print {
+  /* Chrome. None of it is the board. */
+  .hud,
+  .hint,
+  .notice,
+  .flash,
+  .menu {
+    display: none !important;
+  }
+
+  /*
+   * Cursors, drag ghosts, selection outlines and wet ink: somebody's *session*
+   * rather than the board. A file handed to another person should not have your
+   * selection in it, and it certainly should not have a peer's cursor.
+   */
+  .layer-overlay {
+    display: none !important;
+  }
+
+  /* No printer margins: the page is sized to the board (T-205), so anything
+   * added round the edge crops it. Both routes ask for zero as well - this is
+   * the half the document gets to state. */
+  @page {
+    margin: 0;
+  }
+
+  /*
+   * The cork, the paper colours, the ruling and the ageing are all CSS
+   * backgrounds, and a print drops backgrounds by default in Chromium's dialog
+   * and in WebView2's print settings alike - measured, D-36: 31 image objects
+   * with them and 27 without, and the cork among what goes.
+   *
+   * So the document says so itself. `print-color-adjust: exact` is the one part
+   * of that decision this side owns, and it means an export cannot come out as a
+   * page of white paper because a caller forgot a flag.
+   */
+  html,
+  body,
+  #board-root,
+  .layer,
+  .layer-cork,
+  .item,
+  .paper-surface,
+  .paper-grain {
+    print-color-adjust: exact;
+    -webkit-print-color-adjust: exact;
+  }
+}
+
+/*
+ * The two effects that would otherwise cost the file its vector text.
+ *
+ * A `mix-blend-mode` and a `filter` each force their group to be rasterised, and
+ * the writing is inside that group — so a full-detail print came out as bitmaps
+ * of sheets rather than as text on paper. Measured on the same board, one page:
+ *
+ *                          as it stands      with these two off
+ *     file                    13.7 MB              1.5 MB
+ *     embedded font           none                 PatrickHand
+ *     text operators          112                  1,410
+ *     image objects           75                   28
+ *
+ * Nine times smaller, and the handwriting is selectable, searchable and sharp at
+ * any magnification instead of being pixels — which is the whole of what Q-128
+ * chose the print route for. That was not a foregone conclusion: it looked at
+ * first as though full detail and vector text were simply in tension, and the
+ * two cheapest effects on the board turned out to be the entire reason.
+ *
+ * What it costs, honestly: the per-sheet tint (a hue shift of a few degrees and
+ * a couple of per cent of brightness — the reason fifty notes do not read as
+ * fifty copies of one note) and the grain's multiply. The grain is still drawn,
+ * just composited normally, so the paper reads very slightly flatter in a file
+ * than on the board. Against selectable writing and a ninth of the bytes.
+ */
+@media print {
+  .paper-grain {
+    mix-blend-mode: normal !important;
+  }
+
+  .paper-surface {
+    filter: none !important;
+  }
+}
