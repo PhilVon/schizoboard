@@ -841,6 +841,12 @@ async function boot(): Promise<void> {
    * Null is the ordinary case rather than the failure: `Search.run` answers null
    * when refining a query has left you on the match you were already reading,
    * and moving then would be the bug.
+   *
+   * A null **does not cancel a flight already under way**, and that is the one
+   * case worth stating. Type one more character mid-journey and find nothing,
+   * and the camera finishes its trip to the last thing that did match — which
+   * is a place you asked to be taken and can read. Stopping dead would leave it
+   * in mid-air, at a view nobody chose and nothing on screen explains.
    */
   const flyTo = (id: string | null): void => {
     if (id === null) return;
@@ -2914,6 +2920,21 @@ async function boot(): Promise<void> {
        * what was supposed to be on the canvas at the time.
        */
       flashes,
+      /**
+       * The search's own three, and here for exactly the reason `flashes` is.
+       *
+       * A flight is over in 300ms and a flash in 800, so the two things this
+       * feature does are both gone before a screenshot of the window has been
+       * encoded — and the third, the match list, is deliberately not drawn at
+       * all, because DESIGN section 2.5 forbids a search from putting a view of
+       * the board on the board. So `search.count` and `search.current` are the
+       * only readout there is for whether the right thing was found, and
+       * `flight.active` is the only one for whether the camera is on its way
+       * somewhere or has been taken off it by a hand.
+       */
+      search,
+      flight,
+      found,
       /**
        * Everybody else, as this board has them — the store the overlay draws
        * from, cursors and hold-chrome and claimed segments alike.
