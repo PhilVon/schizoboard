@@ -49,6 +49,21 @@
  * repeat. The clip costs nothing measurable — it is a mask on a paint that was
  * already happening, not a filter.
  *
+ * ## A folded corner is the same polygon with a corner taken out
+ *
+ * DESIGN 4.7's dog-ear is the one mark on that list that is not paint, and this
+ * is why it lives here rather than in `wear.ts`: the paper is genuinely not there
+ * any more, so the silhouette is what has to say so. One corner vertex becomes
+ * two — one on each of the edges that meet there — and the fold line is the edge
+ * between them. `items.css` draws the flap on the paper side of that line.
+ *
+ * Its depth is a *percentage* where every other length here is board units, and
+ * `wear.ts` argues that half. The half that belongs to this file is that a length
+ * in board units would have to be clamped against `w` and `h` so that a fold
+ * could not swallow a small sheet — and `w`/`h` are pose, not cold, so the path
+ * would be rewritten on every frame of a resize. A percentage cannot overrun a
+ * sheet it is measured in.
+ *
  * ## What it does not clip
  *
  * An item's ink canvas is a child of the item *root*, not of the surface, so the
@@ -131,6 +146,21 @@ export function tearEdge(stock: PaperStock): TornEdge | null {
   return treatmentOf(stock).tear;
 }
 
+/**
+ * A folded corner, as the silhouette sees it — `wear.ts` decides when a sheet
+ * has one and this file decides what shape it leaves.
+ *
+ * Taken as two numbers rather than as `wear.ts`'s `DogEar` so that neither file
+ * has to import the other: this one knows nothing about how old anything is, and
+ * that one knows nothing about polygons.
+ */
+export interface Fold {
+  /** Which corner, clockwise from the top left. */
+  corner: number;
+  /** How far the fold reaches from it, as a percentage of the sheet. */
+  depth: number;
+}
+
 export interface SheetEdge {
   /** The silhouette, as a `clip-path` value. */
   path: string;
@@ -155,7 +185,7 @@ export interface SheetEdge {
  * both axes — a corner that receded on one axis only is a bevel, and a bevel is
  * a thing a machine does.
  */
-export function sheetEdge(stock: PaperStock, seed: number): SheetEdge {
+export function sheetEdge(stock: PaperStock, seed: number, fold: Fold | null = null): SheetEdge {
   const treatment = treatmentOf(stock);
   const amplitude = (edge: TornEdge): number =>
     edge === treatment.tear ? TEAR_AMPLITUDE : treatment.ragged;
@@ -183,11 +213,12 @@ export function sheetEdge(stock: PaperStock, seed: number): SheetEdge {
    * from a salt of its own so that where a vertex sits does not predict how deep
    * it goes. The two corners stay put: they belong to two edges at once.
    */
-  const along = (edge: TornEdge, i: number): string => {
+  const alongAt = (edge: TornEdge, i: number): number => {
     const n = samples(edge);
     const slip = (valueAt(seed, `edge-along-${edge}`, i) * 2 - 1) * 0.38;
-    return `${(((i + slip) / (n - 1)) * 100).toFixed(1)}%`;
+    return ((i + slip) / (n - 1)) * 100;
   };
+  const along = (edge: TornEdge, i: number): string => `${alongAt(edge, i).toFixed(1)}%`;
 
   const near = (edge: TornEdge, i: number): string => `${depth(edge, i).toFixed(2)}px`;
   const far = (edge: TornEdge, i: number): string =>
@@ -199,23 +230,88 @@ export function sheetEdge(stock: PaperStock, seed: number): SheetEdge {
   const left = samples("left");
   const points: string[] = [];
 
+  /**
+   * How far the fold reaches from corner `c`, as a percentage, and 0 at the
+   * three corners that are not folded — which is every corner on almost every
+   * sheet, and is what makes the branches below cost nothing.
+   */
+  const cut = (c: number): number =>
+    fold !== null && fold.corner === c && fold.depth > 0 ? fold.depth : 0;
+  const cutTL = cut(0);
+  const cutTR = cut(1);
+  const cutBR = cut(2);
+  const cutBL = cut(3);
+  const pc = (value: number): string => `${value.toFixed(1)}%`;
+  /**
+   * Whether sample `i` of `edge` survives the fold — it does not if the fold has
+   * taken the paper it was a wobble in.
+   *
+   * The fold has to eat them rather than sit between them. A vertex left inside
+   * the cut is a spur of paper reaching out past the fold line, and under the
+   * non-zero winding rule it is not even a visible spur: it is a notch out of the
+   * flap, at the one place on the sheet the eye is already looking.
+   *
+   * `near`/`far` are the two ends: a sample is *before* the fold at the low end
+   * of an edge and *after* it at the high end.
+   */
+  const kept = (from: number, to: number, at: number): boolean => at > from && at < 100 - to;
+
   // Top left, then east along the head. The left profile runs top to bottom and
   // the top profile runs left to right, so index 0 of each is this corner.
-  points.push(`${near("left", 0)} ${near("top", 0)}`);
-  for (let i = 1; i < top - 1; i++) points.push(`${along("top", i)} ${near("top", i)}`);
+  //
+  // A folded corner is two vertices instead of one, and they are emitted in the
+  // order the walk arrives at them: coming *up* the spine and leaving *along* the
+  // head, so the point on the left edge comes first. The line between them is the
+  // fold, and `items.css` draws the flap on the paper side of it.
+  if (cutTL > 0) {
+    points.push(`${near("left", 0)} ${pc(cutTL)}`);
+    points.push(`${pc(cutTL)} ${near("top", 0)}`);
+  } else {
+    points.push(`${near("left", 0)} ${near("top", 0)}`);
+  }
+  for (let i = 1; i < top - 1; i++) {
+    if (kept(cutTL, cutTR, alongAt("top", i))) points.push(`${along("top", i)} ${near("top", i)}`);
+  }
 
   // Top right, then south down the fore-edge.
-  points.push(`${far("right", 0)} ${near("top", top - 1)}`);
-  for (let i = 1; i < right - 1; i++) points.push(`${far("right", i)} ${along("right", i)}`);
+  if (cutTR > 0) {
+    points.push(`${pc(100 - cutTR)} ${near("top", top - 1)}`);
+    points.push(`${far("right", 0)} ${pc(cutTR)}`);
+  } else {
+    points.push(`${far("right", 0)} ${near("top", top - 1)}`);
+  }
+  for (let i = 1; i < right - 1; i++) {
+    if (kept(cutTR, cutBR, alongAt("right", i))) {
+      points.push(`${far("right", i)} ${along("right", i)}`);
+    }
+  }
 
   // Bottom right, then west along the tail — backwards through the bottom
   // profile, which is stored left to right like the top one.
-  points.push(`${far("right", right - 1)} ${far("bottom", bottom - 1)}`);
-  for (let i = bottom - 2; i > 0; i--) points.push(`${along("bottom", i)} ${far("bottom", i)}`);
+  if (cutBR > 0) {
+    points.push(`${far("right", right - 1)} ${pc(100 - cutBR)}`);
+    points.push(`${pc(100 - cutBR)} ${far("bottom", bottom - 1)}`);
+  } else {
+    points.push(`${far("right", right - 1)} ${far("bottom", bottom - 1)}`);
+  }
+  for (let i = bottom - 2; i > 0; i--) {
+    if (kept(cutBL, cutBR, alongAt("bottom", i))) {
+      points.push(`${along("bottom", i)} ${far("bottom", i)}`);
+    }
+  }
 
   // Bottom left, then north up the spine.
-  points.push(`${near("left", left - 1)} ${far("bottom", 0)}`);
-  for (let i = left - 2; i > 0; i--) points.push(`${near("left", i)} ${along("left", i)}`);
+  if (cutBL > 0) {
+    points.push(`${pc(cutBL)} ${far("bottom", 0)}`);
+    points.push(`${near("left", left - 1)} ${pc(100 - cutBL)}`);
+  } else {
+    points.push(`${near("left", left - 1)} ${far("bottom", 0)}`);
+  }
+  for (let i = left - 2; i > 0; i--) {
+    if (kept(cutTL, cutBL, alongAt("left", i))) {
+      points.push(`${near("left", i)} ${along("left", i)}`);
+    }
+  }
 
   // The same four corners the walk above emitted, as numbers rather than as
   // CSS. Read off `depth` again rather than parsed back out of the string.

@@ -1151,6 +1151,110 @@ textarea.item-field::-webkit-scrollbar {
 }
 
 /*
+ * The flap of a dog-eared corner - DESIGN 4.7's one mark that is not paint.
+ *
+ * The paper is genuinely gone at that corner: `edge.ts` cuts the silhouette
+ * along the fold, so the cork shows through where the triangle used to be. This
+ * layer is the *other* half of the same fold - that same triangle, turned over
+ * and now lying on the front of the sheet, showing its back.
+ *
+ * ## The box is the fold, and the clip is which way it points
+ *
+ * `--ear` is one percentage and it is used as both a width and a height, so it
+ * resolves against the sheet's width on one axis and its height on the other -
+ * which is exactly where `edge.ts` put the two ends of the cut. A square-ish
+ * sheet therefore folds at 45 degrees and an oblong one folds a few degrees off
+ * it, which is what a hand makes anyway (`wear.ts` says the same about a
+ * crease's angle).
+ *
+ * The triangle is the *complement* of the one that was cut away: the corner half
+ * of the box is missing from the sheet and this is the other half, which is what
+ * you get by folding along their shared diagonal.
+ *
+ * ## The flap deliberately overhangs the cut
+ *
+ * The two lines are not the same line, and that is load-bearing rather than
+ * sloppy. The cut's ends are pulled in from the box by the ragged silhouette's
+ * own depth - a couple of board units, and up to nine on a torn head - so the
+ * cut sits a little *inside* the flap's diagonal all the way along. The flap
+ * therefore covers the paper right up to the fold and its overhang falls outside
+ * the silhouette, where `.paper-surface`'s own clip path takes it.
+ *
+ * Matching them exactly would mean threading `--edge-*` into this box, and the
+ * failure mode of getting it a fraction wrong is a hairline of front-face paper
+ * - ruling and all - along the fold. Overhanging cannot produce that hairline at
+ * any depth, so this is the way round that has no bad case.
+ *
+ * ## Opaque, and light-independent
+ *
+ * `--stock-base` rather than a wash, because this is the *back* of the sheet and
+ * the back of a legal pad has no rules printed on it. A translucent flap would
+ * let the ruling through and the fold would read as a shadow lying on the paper
+ * rather than as paper lying on the paper.
+ *
+ * And there is no signed `--face-*` term here, which every other relief on this
+ * board has (`curl.ts`, `creaseFace`). That is not an oversight, it is the
+ * physics: a curling corner and a crease are *tipped*, so which side of them is
+ * lit is a fact about where the board's light is. A dog-ear is folded flat. It
+ * has no flank turned into the light and no flank turned away, and inventing a
+ * highlight for one would be DESIGN 4.1's wrongly-lit element with extra steps.
+ *
+ * What it does have is occlusion, which is direction-free: the tip where its two
+ * free edges meet is the most enclosed point of the join, and the doubled paper
+ * shades toward it. That is the single gradient below, running down the fold's
+ * normal - 135/225/315/45 degrees for the four corners, the same four angles
+ * `.paper-bend` uses and for the same reason.
+ */
+.paper-ear {
+  position: absolute;
+  display: none;
+  pointer-events: none;
+  width: var(--ear, 0%);
+  height: var(--ear, 0%);
+  background:
+    linear-gradient(
+      var(--ear-angle, 135deg),
+      rgba(96, 74, 46, 0.1) 0%,
+      rgba(96, 74, 46, 0.04) 46%,
+      rgba(96, 74, 46, 0.09) 82%,
+      rgba(84, 62, 36, 0.16) 100%
+    ),
+    var(--stock-base, #f7f3e8);
+}
+
+.item[data-ear] .paper-ear {
+  display: block;
+}
+
+.item[data-ear="tl"] .paper-ear {
+  top: 0;
+  left: 0;
+  --ear-angle: 135deg;
+  clip-path: polygon(100% 0, 100% 100%, 0 100%);
+}
+
+.item[data-ear="tr"] .paper-ear {
+  top: 0;
+  right: 0;
+  --ear-angle: 225deg;
+  clip-path: polygon(0 0, 100% 100%, 0 100%);
+}
+
+.item[data-ear="br"] .paper-ear {
+  bottom: 0;
+  right: 0;
+  --ear-angle: 315deg;
+  clip-path: polygon(0 0, 100% 0, 0 100%);
+}
+
+.item[data-ear="bl"] .paper-ear {
+  bottom: 0;
+  left: 0;
+  --ear-angle: 45deg;
+  clip-path: polygon(0 0, 100% 0, 100% 100%);
+}
+
+/*
  * What the light took out of a print.
  *
  * The *global* half of a photograph's ageing is a filter on `.pol-frame`
@@ -1240,6 +1344,7 @@ textarea.item-field::-webkit-scrollbar {
     .paper-age,
     .paper-bend,
     .paper-worn,
+    .paper-ear,
     .pol-gloss,
     .pol-age,
     .item-tape
