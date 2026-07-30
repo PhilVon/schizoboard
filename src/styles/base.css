@@ -606,3 +606,39 @@ body {
     filter: none !important;
   }
 }
+
+/*
+ * The same two effects on a photograph, which are in different places (T-211).
+ *
+ * The block above is a *sheet's* two, and it is why a note's writing comes out
+ * as text. A polaroid carries its equivalents elsewhere and neither rule reached
+ * them, so on the board this was written on, six of eleven items printed their
+ * caption as a bitmap while five printed theirs as text:
+ *
+ *     .item-polaroid   the per-sheet tint, on the item element itself
+ *                      (`DomItemLayer`'s `this.el.style.filter`, where a sheet
+ *                      puts the identical `sheetTint` on `.paper-surface`)
+ *     .pol-frame       `wearFilter` — the sepia and desaturation of an old print
+ *
+ * **Both, or neither.** One at a time changes nothing at all, which is exactly
+ * what a wrong hypothesis looks like and is why this took three exports to find.
+ * With both off, on one polaroid exported alone:
+ *
+ *                          as it stands      with both off
+ *     file                    1,171,119            770,132
+ *     embedded font           none                 PatrickHand
+ *     extracted text          ""                   "Bearded Viking Man"
+ *
+ * What it costs is more than the block above cost, and Q-134 took the trade
+ * knowingly: `wearFilter` is a photograph's *ageing*, so a print that has faded
+ * on the board comes out of the file unfaded. The frame's yellowing, the crease,
+ * the light-wash overlay and the tape are backgrounds and gradients rather than
+ * filters, so they all survive — what goes is the global dye loss, and what is
+ * bought is every caption on every photograph being real text.
+ */
+@media print {
+  .item-polaroid,
+  .pol-frame {
+    filter: none !important;
+  }
+}
