@@ -19,6 +19,7 @@
 //! nobody can attribute to anything.
 
 mod assets;
+mod board;
 mod bundle;
 mod clipboard;
 mod docstore;
@@ -344,6 +345,48 @@ struct PendingInvite(std::sync::Mutex<Option<String>>);
 #[tauri::command]
 async fn sync_take_invite(app: AppHandle) -> Option<String> {
     app.state::<PendingInvite>().0.lock().expect("invite lock").take()
+}
+
+// --- which board this is (T-195) -------------------------------------------
+
+/// The board this installation is on, or `None` for the one it starts on.
+///
+/// Asked once, at boot, before there is a provider — which is why it cannot be
+/// folded into `sync_status`, whose answers are all about a relay that is by
+/// then already running. `app/sync.ts` decides what `None` means; all this side
+/// knows is whether anybody has ever said otherwise.
+#[tauri::command]
+async fn board_remembered(app: AppHandle) -> Option<String> {
+    // The state is read *inside* the closure rather than handed to it, because
+    // `tauri::State` borrows the handle and `spawn_blocking` takes ownership —
+    // the same shape every other command here uses `store_of` for.
+    tauri::async_runtime::spawn_blocking(move || -> Option<String> {
+        app.try_state::<board::BoardStore>()?.get()
+    })
+    .await
+    .ok()
+    .flatten()
+}
+
+/// This is the board from now on (Q-114).
+///
+/// One caller: a bundle open, which has just replaced the document and is about
+/// to reload the window into a room the board it discarded is not in. See
+/// `board.rs` for why that room has to survive a relaunch and not merely a
+/// reload.
+///
+/// The name is minted by the frontend, because `app/sync.ts` is where what a
+/// board may be called has always been decided — and it is checked again here,
+/// because it becomes a file name under `secrets/` on the very next launch.
+#[tauri::command]
+async fn board_remember(app: AppHandle, board_id: String) -> Result<(), String> {
+    blocking(move || -> Result<(), String> {
+        app.try_state::<board::BoardStore>()
+            .ok_or_else(|| "this board's name cannot be kept".to_string())?
+            .remember(&board_id)
+            .map_err(|error| error.to_string())
+    })
+    .await
 }
 
 /// A link on its way to the frontend.
@@ -1070,6 +1113,12 @@ pub fn run() {
             // what is on it, and a document handed to somebody as a bundle
             // (T-84) must not carry the key to the board it came from.
             app.manage(sync::secret::SecretStore::new(data.join("secrets"))?);
+            // Which board those secrets are keyed by, when it is no longer the
+            // one every installation starts on (T-195, Q-114). Beside them and
+            // beside the document for the same reason: it is the third thing
+            // that says which board this is, and all three have to be the same
+            // age or a launch resolves a mixture of two.
+            app.manage(board::BoardStore::new(data.join("board-id"))?);
             app.manage(Hosting::default());
             app.manage(PendingInvite::default());
             if let Some(window) = app.get_webview_window("main") {
@@ -1142,6 +1191,8 @@ pub fn run() {
             sync_stop,
             sync_status,
             sync_take_invite,
+            board_remembered,
+            board_remember,
             asset_ingest_bytes,
             asset_ingest_path,
             asset_ingest_url,

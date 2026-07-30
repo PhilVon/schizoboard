@@ -55,7 +55,7 @@ import { Paste } from "@/app/paste";
 import { Mesh } from "@/app/mesh";
 import { formatInvite, inviteSearch, openingPlan, parseInvite } from "@/app/invite";
 import * as prefs from "@/app/prefs";
-import { dialAddress, identityFor } from "@/app/sync";
+import { dialAddress, freshBoardId, identityFor } from "@/app/sync";
 import { DEFAULT_ERASER_SIZE, type InkSurface, type WetStroke } from "@/lib/ink";
 import { initPlatform } from "@/platform";
 import { variantFor } from "@/platform/types";
@@ -1177,12 +1177,52 @@ async function boot(): Promise<void> {
       flash.say("That board could not replace this one — nothing has changed");
       return;
     }
+    /**
+     * The board that has just been replaced is not one this window may be
+     * talked back into (T-195, Q-114).
+     *
+     * The document was written locally and nothing above this line touched
+     * sync — so on a board with a peer, the reload below would re-attach the
+     * provider, the relay would answer this client's state vector with the
+     * difference, and the difference is *the whole of the board that was just
+     * replaced*. It merges straight back in on top of the bundle's, and the
+     * user is looking at two boards at once having been told one of them was
+     * gone. DATA-MODEL section 12 says the same thing about destructive
+     * migrations: an old client that reconnects can resurrect the old shape,
+     * and the merge will accept it.
+     *
+     * So the answer is not to reason about the old room but to leave it: a
+     * fresh board id, which is a fresh secret and a fresh mDNS fingerprint by
+     * construction (`sync/secret.rs`, `sync/discovery.rs`). Both halves are
+     * needed and they fail in opposite directions — the query string is what
+     * gets *this* reload into the new room, and the shell's copy is what keeps
+     * it there on the next launch, which has no query string at all.
+     *
+     * After the write rather than before it, because a replace that failed has
+     * changed nothing and must leave this window exactly where it was.
+     */
+    const boardId = freshBoardId();
+    try {
+      await native.rememberBoardId(boardId);
+    } catch (error) {
+      // Loud, and still not a reason to stop. This window is safe either way —
+      // the reload names the board itself — and what has been lost is the next
+      // launch, which will go back to the room the replaced board is in and
+      // merge it. Better said out loud now than discovered tomorrow.
+      console.error("[bundle] this board's new name could not be kept", error);
+    }
+
     if (opened.missing.length > 0) {
       // Survives the reload as a query the next boot reads, because this window
       // is about to stop existing and a flash lasts 2.4 seconds.
       console.warn(`[bundle] ${opened.missing.length} photographs were not in that bundle`);
     }
-    window.location.reload();
+    // The whole query string, not just `board=`: every parameter this
+    // application reads off one names a board or somewhere to look for it
+    // (`planSync`), and the board they were naming no longer exists here. A
+    // window that opened a bundle is hosting its own new board, and `?relay=`
+    // pointing at somebody else's is the clearest way to be wrong about that.
+    window.location.search = `board=${boardId}`;
   };
 
   root.addEventListener("contextmenu", (e) => {
@@ -1464,7 +1504,11 @@ async function boot(): Promise<void> {
   // The address bar, or the invite that launched this window — see
   // `openingPlan`. Cold arrivals cost nothing here: there is no provider yet, so
   // the link is simply the plan.
-  const plan = await openingPlan(() => native.syncTakeInvite(), window.location.search);
+  const plan = await openingPlan(
+    () => native.syncTakeInvite(),
+    () => native.rememberedBoardId(),
+    window.location.search,
+  );
   if (plan.complaint !== null) console.warn(`[sync] ignored: ${plan.complaint}`);
   const address = await dialAddress(native, plan.config);
   const provider = address === null ? null : new WireProvider(board.doc, address);

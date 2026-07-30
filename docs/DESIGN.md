@@ -786,6 +786,8 @@ Assets move as a side channel on the same connection: peers advertise what they 
 
 A `.schizo` bundle: a zip containing a manifest, a document snapshot and the assets. **Export always embeds assets**, so a board you hand to someone is never half a board.
 
+**Opening one replaces the board in that window, and what it opens is a new board.** The window mints a fresh board id, so it is no longer in the room the replaced board was in — anybody connected stays on the old board, nothing of it merges back in, and the invite that reached them no longer reaches here (Q-114). That is not a detail of implementation: a document with peers is not one client's to replace, and the honest version of "replace" is to leave rather than to overwrite what everybody else is holding.
+
 ---
 
 ## 8. Application architecture

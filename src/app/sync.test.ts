@@ -10,7 +10,7 @@
 
 import { describe, expect, it } from "vitest";
 
-import { dialAddress, identityFor, planSync } from "@/app/sync";
+import { dialAddress, freshBoardId, identityFor, isBoardName, planSync } from "@/app/sync";
 import { SELECT_STROKE } from "@/render/overlay";
 import type { Platform } from "@/platform/types";
 import { STRING_COLORS } from "@/lib/palette";
@@ -136,6 +136,61 @@ describe("planning a connection", () => {
       boardId: "board",
     });
     expect(plan.complaint).toContain("no/good");
+  });
+});
+
+/**
+ * Which board a window opens, when it is not the one every installation starts
+ * on (T-195, Q-114).
+ *
+ * The rule is one line — query string, then the board this installation was
+ * moved onto, then the default — and it exists because a packaged application
+ * has no address bar to hold the middle one.
+ */
+describe("the board this installation is on", () => {
+  it("opens the board it was moved onto when nothing else says", () => {
+    expect(planSync("", "board-abc123").config.boardId).toBe("board-abc123");
+    expect(planSync("", "board-abc123").complaint).toBeNull();
+  });
+
+  it("is the room on the end of the relay address too", () => {
+    // Otherwise a window in relay mode would carry the new board's name in its
+    // config and dial the old board's room, which is the bug wearing a disguise.
+    expect(planSync("?relay=1234", "board-abc123").config.url).toBe(
+      "ws://127.0.0.1:1234/board-abc123",
+    );
+  });
+
+  it("gives way to a board somebody is asking for now", () => {
+    expect(planSync("?board=theirs", "board-abc123").config.boardId).toBe("theirs");
+  });
+
+  it("is ignored, with a complaint, when the file has been edited by hand", () => {
+    // It came off our own disk and it is still checked: it becomes a room name
+    // on the wire and a file name under `secrets/`. `board.rs` refuses the same
+    // strings on the way out, so this is the second of four gates, not the only.
+    for (const bad of ["", "../secrets", "two words", "a".repeat(65)]) {
+      const plan = planSync("", bad);
+      expect(plan.config.boardId, bad).toBe("board");
+      if (bad !== "") expect(plan.complaint, bad).toContain("kept name");
+    }
+  });
+
+  it("mints a name no board has been called before", () => {
+    const fresh = freshBoardId();
+    expect(isBoardName(fresh)).toBe(true);
+    expect(fresh).not.toBe("board");
+    // Distinguishable from a secret at a glance, since both are hex and both end
+    // up in the same query string.
+    expect(fresh).toMatch(/^board-[0-9a-f]{32}$/);
+    expect(new Set(Array.from({ length: 32 }, freshBoardId)).size).toBe(32);
+  });
+
+  it("is a different room from the one the replaced board is in", () => {
+    // The whole of T-195 in one line. A bundle open replaces the document and
+    // reloads; if the reloaded window planned the same board, the relay — which
+    // holds a document — would answer with everything that was just discarded.
+    expect(planSync("", freshBoardId()).config.boardId).not.toBe(planSync("").config.boardId);
   });
 });
 

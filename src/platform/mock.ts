@@ -101,6 +101,8 @@ export class MockPlatform implements Platform {
   private readonly updates: Uint8Array[] = [];
   private snapshot: Uint8Array | null = null;
   private readonly bus = new EventTarget();
+  /** Which board this "installation" is on — in memory, like everything else. */
+  private board: string | null = null;
 
   async assetIngestBytes(bytes: Uint8Array, mime?: string): Promise<AssetMeta> {
     const sha256 = await sha256Hex(bytes);
@@ -241,6 +243,24 @@ export class MockPlatform implements Platform {
    */
   async syncTakeInvite(): Promise<string | null> {
     return null;
+  }
+
+  /**
+   * Implemented rather than refused even though the only thing that mints one is
+   * a bundle open, which this platform has no picker for: the *reader* runs on
+   * every boot, including in a plain browser, and a boot that threw on the way
+   * to deciding which board to open would be a board that does not open.
+   *
+   * In memory, like the document and the assets, so a reloaded tab is back on
+   * the board it started on — which is the one place the mock will surprise you
+   * and is stated at the top of this file.
+   */
+  async rememberedBoardId(): Promise<string | null> {
+    return this.board;
+  }
+
+  async rememberBoardId(boardId: string): Promise<void> {
+    this.board = boardId;
   }
 
   // --- asset transfer -----------------------------------------------------

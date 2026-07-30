@@ -69,6 +69,32 @@ export function isSecret(value: string): boolean {
 const DEFAULT_BOARD = "board";
 
 /**
+ * A board nothing has ever been on before (T-195, Q-114).
+ *
+ * Opening a bundle replaces this window's document (Q-111), and a replaced board
+ * is not one this window may be talked back into: the relay *holds* a document,
+ * so reconnecting to the room the old board was in is answered with everything
+ * that was just discarded — DATA-MODEL section 12's warning about destructive
+ * migrations, one level up. Q-114 settled the fix as minting a name instead of
+ * reasoning about the old one, and the name is minted here because this module
+ * is where what a board may be called has always been decided.
+ *
+ * The secret needs no minting: `sync/secret.rs` keeps one per board name and
+ * invents one for a name it has never seen, so a fresh id is a fresh secret by
+ * construction, and the fingerprint this window advertises over mDNS changes
+ * with it (`sync/discovery.rs`, `is_joinable`).
+ *
+ * 128 bits from the platform CSPRNG, and the prefix is not decoration: a board
+ * id and a board secret are both hex and both end up in the same query string,
+ * so a bare one would be indistinguishable from the other at a glance in a log.
+ */
+export function freshBoardId(): string {
+  const bytes = new Uint8Array(16);
+  crypto.getRandomValues(bytes);
+  return `${DEFAULT_BOARD}-${[...bytes].map((b) => b.toString(16).padStart(2, "0")).join("")}`;
+}
+
+/**
  * What a board secret may look like (T-70).
  *
  * Hex, because that is what `sync/secret.rs` generates and because a secret
@@ -97,13 +123,28 @@ export interface SyncPlan {
  * case (host on loopback, board `board`), and a query somebody got wrong falls
  * back to the same thing with a complaint attached, because a typo in an address
  * should not be the difference between a board that opens and one that does not.
+ *
+ * `remembered` is the board this *installation* is on — `board_remembered` on
+ * the shell side, and `null` on every installation that has never opened a
+ * bundle. It sits between the query string and the default, and that order is
+ * the whole of it: a query names a board somebody is asking for *now*, and the
+ * remembered one is what this machine goes back to when nobody asks. The
+ * packaged application never has a query string at all, which is why this needed
+ * somewhere to live other than the address bar (T-195, Q-114).
  */
-export function planSync(search: string): SyncPlan {
+export function planSync(search: string, remembered?: string | null): SyncPlan {
   const params = new URLSearchParams(search);
   const complaints: string[] = [];
 
   const asked = params.get("board");
   let boardId = DEFAULT_BOARD;
+  // Checked rather than trusted even though it came off our own disk: it becomes
+  // a room name on the wire and a file name under `secrets/`, and a file that
+  // has been edited by hand is not a case worth a fourth spelling of the rule.
+  if (remembered !== undefined && remembered !== null) {
+    if (BOARD_NAME.test(remembered)) boardId = remembered;
+    else complaints.push(`this board's kept name ${JSON.stringify(remembered)} is not a name`);
+  }
   if (asked !== null) {
     if (BOARD_NAME.test(asked)) boardId = asked;
     else complaints.push(`board name ${JSON.stringify(asked)} is not [A-Za-z0-9_-]{1,64}`);
