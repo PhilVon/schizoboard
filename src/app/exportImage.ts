@@ -32,6 +32,83 @@
 export const BOARD_FONT_URL = "/fonts/patrick-hand.woff2";
 
 /**
+ * An SVG carrying a piece of the board, ready to be drawn into a canvas.
+ *
+ * ## Three things about this that are XML and not HTML
+ *
+ * A `data:` SVG is parsed by the **XML** parser, which does not forgive what the
+ * HTML one does — and it fails by refusing the whole image rather than by
+ * dropping the bad part. `drawImage` of an SVG that would not parse draws
+ * nothing and throws nothing, so all three of these are silent:
+ *
+ * 1. **The markup has to be well-formed**, which is what `XMLSerializer` on a
+ *    cloned node gives and what `innerHTML` does not (`<br>`, `<img>` and
+ *    unquoted attributes all come back unclosed).
+ * 2. **The stylesheet has to be escaped.** CSS is allowed `<` and `&` — in a
+ *    `content:` string, in a `url()` with a query — and either one ends the
+ *    document as far as an XML parser is concerned. A `CDATA` section is the
+ *    obvious way and is the worse one: it cannot contain its own terminator, so
+ *    a stylesheet with `]]>` anywhere in it closes the section early and takes
+ *    the export with it. Escaping has no such hole.
+ * 3. **The XHTML namespace has to be declared on the wrapper**, not inherited.
+ *    Inside `<foreignObject>` the default namespace is still SVG, so an
+ *    undeclared `<div>` is an *SVG* div, which is nothing, and the subtree
+ *    silently does not render.
+ *
+ * `width`/`height` are CSS pixels and the `viewBox` matches them one to one, so
+ * the caller scales by drawing the image at whatever size it wants rather than
+ * by baking a scale in here.
+ */
+export function svgFor(markup: string, css: string, width: number, height: number): string {
+  return (
+    `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}" ` +
+    `viewBox="0 0 ${width} ${height}">` +
+    `<foreignObject x="0" y="0" width="${width}" height="${height}">` +
+    `<div xmlns="http://www.w3.org/1999/xhtml">` +
+    `<style>${escapeText(css)}</style>` +
+    markup +
+    `</div>` +
+    `</foreignObject>` +
+    `</svg>`
+  );
+}
+
+/**
+ * The three characters that end something they were not meant to end.
+ *
+ * `&` first, or the ampersands this introduces are escaped again on the next
+ * pass and `&lt;` reaches the parser as the literal text.
+ */
+function escapeText(text: string): string {
+  return text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+}
+
+/**
+ * The SVG as something `<img src>` will take.
+ *
+ * `encodeURIComponent` rather than base64: it is a third smaller for markup,
+ * needs no unicode dance to get a note written in Japanese through
+ * `btoa`, and — the reason that actually decided it — a URI-encoded payload can
+ * be read in a debugger, where a base64 one is a wall. An export that comes back
+ * blank is going to need reading.
+ */
+export function svgDataUri(svg: string): string {
+  return `data:image/svg+xml;charset=utf-8,${encodeURIComponent(svg)}`;
+}
+
+/**
+ * A node as XML, which is the only form a `data:` SVG will accept.
+ *
+ * Deliberately not `outerHTML`. The HTML serialiser emits `<br>`, `<img src=x>`
+ * and boolean attributes in forms the XML parser rejects outright, and the board
+ * has `<img>` on every photograph — so this is the difference between an export
+ * and a blank canvas, on the most common item there is.
+ */
+export function serialise(node: Element, serialiser = new XMLSerializer()): string {
+  return serialiser.serializeToString(node);
+}
+
+/**
  * Every stylesheet this document has, as one string.
  *
  * Same-origin only, and quietly skipping the rest: a sheet from another origin
