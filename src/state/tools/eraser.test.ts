@@ -90,6 +90,7 @@ beforeEach(() => {
     camera,
     selection: new Selection(),
     hitTest: () => under,
+    inkHitTest: () => under,
     hitPin: () => null,
     hitString: () => null,
     // Nothing to put a caret in, in a harness with no presentation (T-179).

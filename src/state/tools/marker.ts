@@ -438,12 +438,38 @@ export class MarkerTool implements Tool {
   /**
    * The surface under a board point — the item there, or null for the cork.
    *
-   * The hit test the select tool uses, so "what am I drawing on" and "what would
-   * I pick up" can never disagree about where a photograph's edge is.
+   * ## This is *not* the hit test the select tool uses, and that is deliberate
+   *
+   * It used to be, and this comment used to say so — that "what am I drawing on"
+   * and "what would I pick up" can never disagree about where a photograph's
+   * edge is. T-186 broke that on purpose, and Q-149 is the argument.
+   *
+   * A sheet's silhouette recedes from its rectangle: up to 0.7 board units on an
+   * index card, 3.2 on cream stock, and as much as 9 along the torn head of a
+   * legal pad or the torn spine of graph paper. Ink clipped to the rectangle
+   * could therefore sit in that strip with cork visibly showing through
+   * underneath it — a mark on a piece of paper that is not there.
+   *
+   * So the two questions now have different right answers. **A grab target wants
+   * to be forgiving and a mark wants to land where you can see paper.** Select,
+   * drag, rotate and the marquee all still take the whole rectangle, because the
+   * strip that would stop being clickable is the notch of a hand-torn edge,
+   * which is exactly where a hand aims. The pens stop at the paper.
+   *
+   * Note what does *not* change with this: `ctx.inkHitTest` walks the same paint
+   * order and is answered by the same layer, so the two can differ only in the
+   * few units between a sheet's rectangle and its silhouette. They cannot
+   * disagree about z-order, about a rotated pose, or about which items exist.
+   *
+   * The strip is not a hole. A sample that lands in it reads as **the surface
+   * below** — the item beneath, or the cork — so T-137's crossing rule hands the
+   * run over and the mark carries on being drawn there. Refining only the clip
+   * and not this would have been the bug worth avoiding: ink still filed on the
+   * item and now painted nowhere, leaving a gap in the line as wide as the tear.
    */
   private surfaceAt(at: PointerSample, ctx: ToolContext): string | null {
     const board = ctx.camera.screenToBoard(at.x, at.y);
-    return ctx.hitTest(board.x, board.y);
+    return ctx.inkHitTest(board.x, board.y);
   }
 
   /**

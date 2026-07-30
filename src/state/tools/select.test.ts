@@ -252,6 +252,7 @@ beforeEach(() => {
     camera,
     selection,
     hitTest,
+    inkHitTest: hitTest,
     hitPin,
     hitString,
     edit: (itemId) => edits.push(itemId),
