@@ -169,6 +169,8 @@ export class Lod {
   private readonly listeners: TierListener[] = [];
   /** Whether anybody has been told anything yet. See the note above. */
   private announced = false;
+  /** Whether a caller has taken the tier away from the zoom — see [`hold`]. */
+  private held = false;
 
   get tier(): Tier {
     return this.current;
@@ -214,9 +216,36 @@ export class Lod {
    * when there is something to see.
    */
   rise(zoom: number): boolean {
+    if (this.held) return false;
     const next = tierAt(zoom, this.current);
     if (DETAIL[next] <= DETAIL[this.current]) return false;
     return this.apply(next);
+  }
+
+  /**
+   * Take the tier away from the zoom until the returned function gives it back
+   * (T-205).
+   *
+   * For an export, and it is not an optimisation to skip: an export frames the
+   * whole board, which is a zoom of a few per cent, which is `card` — so the
+   * first PDF this project produced came out as flat sheets with no ruling, no
+   * ageing and no curl, and the dev HUD *inside the file* said `16% · card`
+   * (D-36). The tier is a judgement about what is worth drawing in 16
+   * milliseconds; a file has no frame budget and wants everything.
+   *
+   * A release rather than a second call, because the failure that matters is
+   * forgetting to put it back — a board left holding `full` at 5% zoom is the
+   * performance work of T-90 silently undone. The caller can put this in a
+   * `finally` and cannot get it wrong.
+   */
+  hold(tier: Tier): () => void {
+    const before = this.current;
+    this.held = true;
+    this.apply(tier);
+    return () => {
+      this.held = false;
+      this.apply(before);
+    };
   }
 
   /**
@@ -224,6 +253,7 @@ export class Lod {
    * caller can raise its full dirty pass only when there is something to see.
    */
   settle(zoom: number): boolean {
+    if (this.held) return false;
     return this.apply(tierAt(zoom, this.current));
   }
 
