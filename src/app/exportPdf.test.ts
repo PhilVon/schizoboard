@@ -30,7 +30,7 @@ const board = (minX: number, minY: number, maxX: number, maxY: number): Bounds =
 });
 
 interface Recorder {
-  readonly stage: Stage;
+  stage: Stage;
   /** Canvas sizes, in the order they were asked for. */
   readonly canvases: Array<[number, number]>;
   readonly settled: number[];
@@ -45,25 +45,26 @@ interface Recorder {
  * 1440 x 900 viewport looking at the board from (100, 50) at 1:1.
  */
 function recorder(): Recorder {
+  const canvases: Array<[number, number]> = [];
+  const settled: number[] = [];
   const out: Recorder = {
-    stage: null as unknown as Stage,
-    canvases: [],
-    settled: [],
+    stage: {
+      camera: { x: 100, y: 50, zoom: 1, width: 1440, height: 900, version: 7 },
+      resizeCanvases: (width: number, height: number) => void canvases.push([width, height]),
+      hold: () => {
+        out.holds += 1;
+        return () => void (out.releases += 1);
+      },
+      settle: (zoom: number) => void settled.push(zoom),
+      redraw: () => void (out.redraws += 1),
+      frames: async (count: number) => void (out.framesAwaited += count),
+    },
+    canvases,
+    settled,
     redraws: 0,
     framesAwaited: 0,
     holds: 0,
     releases: 0,
-  };
-  out.stage = {
-    camera: { x: 100, y: 50, zoom: 1, width: 1440, height: 900, version: 7 },
-    resizeCanvases: (width, height) => void out.canvases.push([width, height]),
-    hold: () => {
-      out.holds += 1;
-      return () => void (out.releases += 1);
-    },
-    settle: (zoom) => void out.settled.push(zoom),
-    redraw: () => void (out.redraws += 1),
-    frames: async (count) => void (out.framesAwaited += count),
   };
   return out;
 }
