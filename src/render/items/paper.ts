@@ -36,6 +36,53 @@ const STOCKS: Record<PaperStock, Stock> = {
 
 const NOTE_STOCKS: PaperStock[] = ["white", "cream", "legal", "graph"];
 
+/**
+ * Where the writing sits, so the ruling can be printed under it rather than
+ * between the lines (T-182).
+ *
+ * > the text has to start on a line — DESIGN section 4.4, of the index card
+ *
+ * It did not. `.paper-text` has 14px of top padding and a 22px line box, and
+ * the ruling was drawn at the *bottom* of each 22px band — so the first
+ * baseline landed at 32px and the rules at 21, 43, 65, leaving the writing
+ * hanging ten pixels under every line for the whole sheet. Nobody writes on a
+ * legal pad like that. It predates the handwriting face: Segoe Script at 17px
+ * had it too, and a bigger face only made it visible.
+ *
+ * The 18 is **measured, not derived** — a baseline is a property of the face,
+ * and Patrick Hand's sits where it sits. Taken in the shell off an untransformed
+ * `.paper-text` with the bundled font confirmed loaded, by reading the top of a
+ * zero-height `vertical-align: baseline` span: 32px from the box top, of which
+ * 14 is the padding. The second line measured 54, so the advance really is the
+ * line box and not something the face negotiates.
+ *
+ * Nothing enforces the agreement with the stylesheet, and there is no honest way
+ * to: these are two numbers in a CSS file that a layout would have to be read to
+ * recover. If `.paper-text`'s padding or `line-height` moves, the ruling drifts
+ * back out from under the writing — which is exactly T-182, and these names
+ * exist so that the next person searching for why finds both ends of it.
+ * `app/ingest.ts` mirrors the same two numbers for a third purpose.
+ */
+const TEXT_PAD_TOP = 14;
+const TEXT_BASELINE_IN_LINE = 18;
+const FIRST_BASELINE = TEXT_PAD_TOP + TEXT_BASELINE_IN_LINE;
+
+/**
+ * How far into a band the rule is drawn, so that a rule lands on a baseline.
+ *
+ * Modulo, because the band repeats from the top of the sheet: a rule at the
+ * first baseline implies one every `spacing` above and below it, and the one
+ * that lands in the top padding is what a pad's top rule has always been.
+ *
+ * Only `legal` gets *every* line on a rule, because only its spacing is the
+ * line height. On `index` (20) and `graph` (14) the first line lands and the
+ * rest drift, which is inherent to ruling a sheet at a spacing the writing does
+ * not share — and is the half of this DESIGN 4.4 actually asks for.
+ */
+export function rulePhase(spacing: number): number {
+  return FIRST_BASELINE % spacing;
+}
+
 /** Which stock a sheet gets when nobody has chosen one. */
 export function defaultStock(type: string, seed: number): PaperStock {
   if (type === "card") return "index";
@@ -50,11 +97,16 @@ export function stockBase(stock: PaperStock): string {
 /**
  * The ruling, as a CSS background. Board units, so it scales with the camera
  * exactly like the sheet it is printed on.
+ *
+ * The horizontal rules are phased to the writing's baseline — see [`rulePhase`].
+ * The vertical ones are not: a column has no baseline to meet, and the graph's
+ * squares stay squares whatever their phase.
  */
 export function stockRuling(stock: PaperStock): string {
   const rule = (STOCKS[stock] ?? STOCKS.white).rule;
   if (!rule) return "none";
-  const lines = `repeating-linear-gradient(to bottom, transparent 0 ${rule.spacing - 1}px, ${rule.color} ${rule.spacing - 1}px ${rule.spacing}px)`;
+  const at = rulePhase(rule.spacing);
+  const lines = `repeating-linear-gradient(to bottom, transparent 0 ${at}px, ${rule.color} ${at}px ${at + 1}px, transparent ${at + 1}px ${rule.spacing}px)`;
   if (stock === "graph") {
     const columns = `repeating-linear-gradient(to right, transparent 0 ${rule.spacing - 1}px, ${rule.color} ${rule.spacing - 1}px ${rule.spacing}px)`;
     return `${lines}, ${columns}`;
