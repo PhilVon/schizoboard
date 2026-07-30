@@ -13,8 +13,8 @@
  * `<svg><foreignObject>`, serialise it, load it as a `data:` URL and draw it to
  * the export canvas. It works — but a foreignObject subtree is styled by what is
  * *inside* the SVG and by nothing else, and it can reach nothing outside the
- * data URL it arrived in. So two things have to be carried in with it, and
- * neither of them announces itself when it is missing:
+ * data URL it arrived in. So things have to be carried in with it, and **not one
+ * of them announces itself when it is missing**:
  *
  * 1. **The stylesheet.** Without it the clone comes back as unstyled text.
  * 2. **The font, as bytes.** `items.css` names the woff2 by a *relative* URL,
@@ -23,9 +23,13 @@
  *    machine has. Measured ink extent for the same words at 19px: Patrick Hand
  *    138.1px, Segoe Script 214.7px — so it is not a subtle difference, it is
  *    every note in the wrong hand *wrapping differently* (D-34 §4).
- *
- * Photographs are the same hazard one step further out and are handled the same
- * way; see [`inlineAssets`].
+ * 3. **Photographs**, the same hazard one step further out and the loudest of
+ *    them: `asset://` is not resolvable from a `data:` document either. See
+ *    [`inlineAssets`].
+ * 4. **Ink**, which is not about reachability at all and is why it was missed
+ *    (T-215). `cloneNode` copies a `<canvas>` element and not its backing
+ *    store, so a note somebody drew on clones as a correctly-sized transparent
+ *    rectangle. See [`inlineInk`].
  *
  * ## Why this is in `render/items/` and not in `app/`
  *
@@ -366,6 +370,66 @@ async function readDataUri(url: string, read: ReadBytes): Promise<string | null>
 }
 
 /**
+ * Carry every live bitmap into the clone as an image, because a cloned canvas is
+ * a *blank* canvas (T-215).
+ *
+ * The third of exactly the same trap, and the quietest of the three. The
+ * stylesheet, the font and the photographs all had to be carried in because a
+ * `data:` SVG can reach nothing outside itself; ink has to be carried in because
+ * `cloneNode` copies a `<canvas>` **element** and not its backing store. Nothing
+ * throws, the clone has a correctly-sized transparent rectangle exactly where
+ * the ink was, and the file comes back looking like a note nobody drew on.
+ *
+ * The pairing is positional, which is safe for one reason and only one: `clone`
+ * is a whole-subtree copy of `live` made a moment ago and not yet touched, so
+ * `querySelectorAll` walks both in the same order. Do this **before** anything
+ * restructures the clone.
+ *
+ * The canvas is replaced rather than backed with a `background-image`, so that
+ * the ink keeps its place in the tree: `.item-ink` is positioned by its class
+ * and by four inline properties `InkCanvas.update` wrote, it is deliberately the
+ * item's *last* child so DOM order alone paints it over the photograph, and an
+ * `<img>` that inherits the class, the inline style and the same position among
+ * its siblings is the same box in the same order.
+ *
+ * Returns how many bitmaps were carried. Zero is the ordinary answer: most
+ * items have no ink and therefore no canvas at all.
+ */
+export function inlineInk(live: Element, clone: Element): number {
+  const sources = live.querySelectorAll("canvas");
+  const targets = clone.querySelectorAll("canvas");
+  let carried = 0;
+
+  for (let i = 0; i < targets.length && i < sources.length; i++) {
+    const source = sources[i];
+    const target = targets[i];
+    // A released bitmap is removed from the DOM, so a zero-sized canvas here is
+    // one that never painted. `toDataURL` on it is a 1×1 in some engines and a
+    // throw in others, and both are worse than leaving it alone.
+    if (source.width === 0 || source.height === 0) continue;
+
+    let uri: string;
+    try {
+      uri = source.toDataURL("image/png");
+    } catch {
+      // Counted by nobody and not thrown, on the standing an unreadable
+      // photograph already has: one item's ink missing is a hole in the
+      // picture, and refusing the whole export is a worse answer to it.
+      continue;
+    }
+
+    const image = clone.ownerDocument.createElement("img");
+    image.setAttribute("class", target.getAttribute("class") ?? "");
+    image.setAttribute("style", target.getAttribute("style") ?? "");
+    image.setAttribute("src", uri);
+    target.replaceWith(image);
+    carried += 1;
+  }
+
+  return carried;
+}
+
+/**
  * A copy of an item that will not load anything.
  *
  * `cloneNode` produces a node in the live document, and a node in the live
@@ -462,6 +526,15 @@ export interface RasterReport {
   readonly inlined: number;
   readonly unreadable: number;
   readonly bytes: number;
+  /**
+   * Live bitmaps carried into the clones as images — ink, in practice (T-215).
+   *
+   * Reported because its failure is silent in both directions: a clone with an
+   * empty canvas draws a note nobody wrote on, and there is nothing in the file
+   * to say a bitmap was ever meant to be there. Zero on most boards, because
+   * most items have no ink.
+   */
+  readonly inked: number;
 }
 
 /**
@@ -533,6 +606,7 @@ export async function rasteriseItems(
   const inert = inertDocument();
   const cache = new Map<string, Promise<string | null>>();
   let drawn = 0;
+  let inked = 0;
   let inlined = 0;
   let unreadable = 0;
   let bytes = 0;
@@ -544,6 +618,8 @@ export async function rasteriseItems(
 
     // The item, square on at the origin, inside the room its shadow needs.
     const clone = cloneForExport(item.el, inert);
+    // Before anything else touches the clone: the pairing is positional.
+    inked += inlineInk(item.el, clone);
     clone.style.position = "absolute";
     clone.style.left = `${bleed}px`;
     clone.style.top = `${bleed}px`;
@@ -576,7 +652,7 @@ export async function rasteriseItems(
     drawn += 1;
   }
 
-  return { items: ordered.length, drawn, inlined, unreadable, bytes };
+  return { items: ordered.length, drawn, inked, inlined, unreadable, bytes };
 }
 
 /** An `<img>` that has loaded, or `null`. Never rejects: a sheet that will not
