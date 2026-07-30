@@ -466,9 +466,12 @@ async function boot(): Promise<void> {
    * the item is sliding onto it — so waiting for the release costs nothing
    * visible and the picture at rest is always right.
    *
-   * The scan itself is over pins whose index the LAYOUT phase has already
-   * rebuilt this frame, and returns nothing at all on a board that is already
-   * correct — which is every frame except the handful this exists for.
+   * The scan itself is over pins whose index has already been rebuilt this
+   * frame, and returns nothing at all on a board that is already correct —
+   * which is every frame except the handful this exists for. Rebuilt by
+   * whichever phase asked first, *not* by LAYOUT: LAYOUT invalidates and the
+   * DOM phase's curl question pays (`Scene.overStale`). This runs in phase 9
+   * and so is always downstream of both.
    */
   const rehomed: PinHome[] = [];
   const rehome = (): void => {
