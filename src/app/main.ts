@@ -73,7 +73,7 @@ import { Culler } from "@/render/cull";
 import { BoardInkLayer } from "@/render/ink/board";
 import { DomItemLayer, type AssetView } from "@/render/items/dom";
 import { NO_AGEING, WALL_CLOCK } from "@/render/items/wear";
-import { Lod } from "@/render/lod";
+import { Lod, READING_ZOOM } from "@/render/lod";
 import { FrameLoop } from "@/render/loop";
 import { Overlay, type PendingRun } from "@/render/overlay";
 import { Janitor } from "@/crdt/janitor";
@@ -852,7 +852,10 @@ async function boot(): Promise<void> {
     if (id === null) return;
     const box = scene.boundsOf(id, 0, foundBox);
     if (box === null) return;
-    flight.toBox(camera, box);
+    // A floor under the landing zoom, not a target — Q-153. From a fitted board
+    // every sheet is a flat card (T-198), so arriving at the current zoom means
+    // arriving at a rectangle; searching from 100% changes no zoom at all.
+    flight.toBox(camera, box, undefined, READING_ZOOM);
     foundPending = id;
   };
   const searchField = new SearchField(world.layers.ui, {

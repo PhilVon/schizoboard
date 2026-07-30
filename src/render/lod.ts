@@ -105,6 +105,45 @@ export type Tier = "full" | "card";
 /** DESIGN section 6.6 — "below 35% zoom", items become simplified cards. */
 export const CARD_ZOOM = 0.35;
 
+/**
+ * `items.css` `.paper-body` — the board's handwriting, in board units.
+ *
+ * Named here rather than inferred because the number below is derived from it,
+ * and it has moved once already: 17 to 19 when the face became Patrick Hand,
+ * whose x-height is smaller at the same nominal size. If it moves again, the
+ * reading zoom moves with it and this is the line that says so.
+ */
+const BODY_UNITS = 19;
+
+/**
+ * How large the board's writing has to be drawn before it can be *read*, in
+ * screen pixels — not merely be present, which is what [`CARD_ZOOM`] answers.
+ *
+ * Two different questions, and conflating them is the trap. `CARD_ZOOM` is
+ * where per-glyph text stops being drawn at all, so below it there is nothing
+ * to read by construction; at it, the writing is drawn and is 6.7 px tall,
+ * which is a grey smudge in the shape of a paragraph.
+ *
+ * Measured rather than picked. The wordiest note on a real board, rendered at
+ * 35 / 45 / 55 / 65 / 80 percent: 6.7 px is a smudge, 8.6 px resolves into word
+ * shapes you can nearly guess at, and 10.5 px is where a rotated, handwritten,
+ * hundred-and-fifty-character note simply reads. Above that it grows more
+ * comfortable and buys nothing a search needs, at the cost of the surrounding
+ * board — which is the thing DESIGN section 2.3 is about.
+ */
+const READABLE_PX = 10.5;
+
+/**
+ * The zoom a camera has to reach for the writing on a sheet to be legible —
+ * Q-153, and the floor a search flight lands at (T-85).
+ *
+ * A quotient rather than a constant so there is one opinion about legibility
+ * and it is held in the unit legibility is actually about. `0.55` written here
+ * directly would be a number that silently stopped being true the next time the
+ * body size moved.
+ */
+export const READING_ZOOM = READABLE_PX / BODY_UNITS;
+
 
 /**
  * The far edge of the hysteresis band, as a fraction of the threshold.

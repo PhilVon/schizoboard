@@ -157,14 +157,31 @@ export class Flight {
    * screen: a search that found a note among forty has to put it in the middle
    * whether or not a corner of it was showing, or "next match" sometimes does
    * nothing at all and reads as the key having missed.
+   *
+   * ## `minZoom` — the floor under where this lands
+   *
+   * Zero by default, which is the rule above unchanged. A search passes
+   * `READING_ZOOM` (Q-153): carrying you to a note you cannot read is close to
+   * not having arrived, and from a fitted board every sheet is a flat card by
+   * design. It is a **floor and not a target** — search from 100% and nothing
+   * about the zoom changes, because you were already able to read it.
+   *
+   * A fit still wins over the floor. If the match is so large that honouring
+   * the floor would push its edges off screen, the whole of it at a smaller
+   * scale beats a legible corner of it: an item that fills the viewport is one
+   * whose *place* you can no longer be in any doubt about, which is what a
+   * search was for. That case needs an item some nine thousand board units
+   * across on this viewport and has never yet occurred; it is here so that the
+   * two rules cannot deadlock, each undoing the other's zoom.
    */
-  toBox(camera: Camera, box: Bounds, marginPx?: number): void {
+  toBox(camera: Camera, box: Bounds, marginPx?: number, minZoom = 0): void {
     const bw = Math.max(1e-6, box.maxX - box.minX);
     const bh = Math.max(1e-6, box.maxY - box.minY);
     const cx = (box.minX + box.maxX) / 2;
     const cy = (box.minY + box.maxY) / 2;
-    if (bw * camera.zoom <= camera.width && bh * camera.zoom <= camera.height) {
-      this.to(camera, cx, cy, camera.zoom);
+    const wanted = Math.max(camera.zoom, minZoom);
+    if (bw * wanted <= camera.width && bh * wanted <= camera.height) {
+      this.to(camera, cx, cy, wanted);
       return;
     }
     // Asked of a copy of the camera rather than reimplemented: `fit`'s margin

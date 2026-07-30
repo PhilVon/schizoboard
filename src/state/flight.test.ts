@@ -253,5 +253,98 @@ describe("Flight", () => {
       expect(centre(c).x).toBeCloseTo(850, 6);
       expect(centre(c).y).toBeCloseTo(650, 6);
     });
+
+    // --- the floor under the landing zoom, Q-153 ---------------------------
+
+    it("lifts the zoom to the floor when you searched from further out than that", () => {
+      // The case Q-153 is about: from a fitted board every sheet is a flat card
+      // (T-198), so arriving at the zoom you were at means arriving at a
+      // rectangle with no writing on it.
+      const c = camera();
+      c.setView(0, 0, 0.16);
+      const f = new Flight();
+      f.toBox(c, box(3000, 3000, 3300, 3300), undefined, 0.55);
+      run(f, c);
+      expect(c.zoom).toBeCloseTo(0.55, 9);
+      expect(centre(c).x).toBeCloseTo(3150, 6);
+    });
+
+    it("is a floor and not a target — a zoom already above it is left alone", () => {
+      // Searching from 100% must not zoom you *out* to a reading minimum. You
+      // could already read it; the zoom is yours.
+      const c = camera();
+      c.setView(0, 0, 1);
+      const f = new Flight();
+      f.toBox(c, box(3000, 3000, 3300, 3300), undefined, 0.55);
+      run(f, c);
+      expect(c.zoom).toBe(1);
+    });
+
+    it("changes no zoom at all when no floor is asked for", () => {
+      const c = camera();
+      c.setView(0, 0, 0.16);
+      const f = new Flight();
+      f.toBox(c, box(3000, 3000, 3300, 3300));
+      run(f, c);
+      expect(c.zoom).toBeCloseTo(0.16, 9);
+    });
+
+    it("lets a fit win over the floor, so the two rules cannot undo each other", () => {
+      // A match too large to fit at the reading zoom. Honouring the floor would
+      // push its edges off screen; honouring the fit shows the whole of it. If
+      // the floor were re-applied after the fit the camera would be asked for
+      // two different zooms by two rules, each correct on its own terms.
+      const c = camera();
+      c.setView(0, 0, 0.16);
+      const b = box(0, 0, 20000, 16000);
+      const f = new Flight();
+      f.toBox(c, b, undefined, 0.55);
+      run(f, c);
+      expect(c.zoom).toBeLessThan(0.55);
+
+      const shortcut = camera();
+      shortcut.fit(b);
+      expect(c.zoom).toBeCloseTo(shortcut.zoom, 9);
+    });
+
+    it("asks whether it fits at the zoom it is going to, not the one it is at", () => {
+      // The boundary the whole rule turns on, and the one an obvious build gets
+      // wrong: this box fits comfortably at 0.16 and does not fit at 0.55. Ask
+      // the question at the old zoom and the answer is "it fits", so the floor
+      // is honoured and the match lands with its edges off screen — which is
+      // the failure the fit branch exists to prevent, reached by the door the
+      // floor opened.
+      const c = camera();
+      c.setView(0, 0, 0.16);
+      const b = box(0, 0, 2000, 1600);
+      expect(2000 * 0.16).toBeLessThan(c.width);
+      expect(2000 * 0.55).toBeGreaterThan(c.width);
+
+      const f = new Flight();
+      f.toBox(c, b, undefined, 0.55);
+      run(f, c);
+      expect(c.zoom).toBeLessThan(0.55);
+      expect(2000 * c.zoom).toBeLessThanOrEqual(c.width);
+
+      const shortcut = camera();
+      shortcut.fit(b);
+      expect(c.zoom).toBeCloseTo(shortcut.zoom, 9);
+    });
+
+    it("still eases into the new zoom rather than snapping to it", () => {
+      // The zoom is the interesting half of the journey when the floor lifts
+      // it, and it must travel the same way the centre does.
+      const c = camera();
+      c.setView(0, 0, 0.16);
+      const f = new Flight();
+      f.toBox(c, box(3000, 3000, 3300, 3300), undefined, 0.55);
+      f.step(c, 16);
+      expect(c.zoom).toBeGreaterThan(0.16);
+      expect(c.zoom).toBeLessThan(0.55);
+      // And in logs, not linearly: at the midpoint a linear ramp would be at
+      // 0.355 and the geometric mean of 0.16 and 0.55 is 0.297.
+      f.step(c, FLIGHT_MS / 2 - 16);
+      expect(c.zoom).toBeLessThan(0.34);
+    });
   });
 });
