@@ -446,11 +446,12 @@ export class Scene {
    * stationary pin is now on it, and no pin was written to. Sets are cleared
    * and refilled rather than replaced, so a still board allocates nothing.
    *
-   * *When* it is rebuilt is [`overStale`]'s, and it is not the LAYOUT phase —
-   * that phase **invalidates** this and rebuilds nothing. The first reader
-   * afterwards pays, which on a dirty frame is the DOM phase asking for the
-   * paper curl. Anything reasoning about ordering should start there and not
-   * here.
+   * *When* it is rebuilt is [`overStale`]'s, and no phase does it: the setters
+   * invalidate and the first reader afterwards pays, which on a frame something
+   * was dragged is `sim/torsion.ts` in phase 3. The LAYOUT phase used to
+   * invalidate here and no longer does — see `layoutPins`, which is where that
+   * line's whole story is. Anything reasoning about ordering should start at
+   * [`overStale`] and not here.
    */
   private readonly byOver = new Map<string, Set<string>>();
 

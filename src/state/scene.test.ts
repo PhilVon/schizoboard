@@ -340,34 +340,88 @@ describe("which items a pin is pushed through", () => {
       expect([...scene.pinsOf("a")]).toEqual(["hangs"]);
     });
 
+    /**
+     * A pin riding a swinging item is the case the two poses can genuinely put
+     * in different places - the sole pin of a hanging note cannot, because
+     * `drift` is defined as the translation that holds it still. So this is the
+     * one that says the *pin* side of the containment test is settled too, and
+     * not only the box it is tested against.
+     */
+    it("does not let a pin swing into an item on its parent's drift", () => {
+      const scene = new Scene();
+      scene.putItem(cold("swinger"), pose({ x: 0, y: 0, w: 100, h: 100 }));
+      scene.putPin(pin("p", "swinger", 0, 0));
+      scene.putItem(cold("target"), pose({ x: 300, y: 0, w: 100, h: 100 }));
+      expect(scene.pinCount("target")).toBe(0);
+
+      // The pin is drawn 300 units to the right of where it is stored, which is
+      // the middle of `target`.
+      scene.driftX[scene.slotOf("swinger")!] = 300;
+      scene.setPose("target", {});
+      expect(scene.renderX(scene.slotOf("swinger")!)).toBe(300);
+
+      expect(scene.pinCount("target")).toBe(0);
+      expect([...scene.pinsOf("target")]).toEqual([]);
+    });
+
     it("gives every caller in one frame the same answer", () => {
       const scene = new Scene();
       scene.putItem(cold("a"), pose({ x: 0, y: 0, w: 200, h: 200 }));
       scene.putPin(pin("p", null, 0, 0));
+      scene.putItem(cold("elsewhere"), pose({ x: 9_000, y: 0 }));
 
       // Phase 3: torsion asks, then writes the drift its answer produced.
       const asked = scene.pinCount("a");
       scene.driftX[scene.slotOf("a")!] = 5_000;
-      // Phase 4, and then phase 5's paper curl asking the same question.
+      // And something unrelated moves in the same frame, which is what puts a
+      // rebuild between the two questions. Without it they agree for the
+      // uninteresting reason that nothing rebuilt.
+      scene.setPose("elsewhere", { x: 9_100 });
       scene.layoutPins();
+
+      // Phase 5's paper curl, asking what phase 3 asked.
       expect(scene.pinCount("a")).toBe(asked);
     });
 
+    /**
+     * The largest visual offset on this board, and the one nobody would defend
+     * as physics: T-82/T-178 lay a note flat to be written on, un-rotating it
+     * about its pin over 120ms. A note that picked up pins from the cork while
+     * its editor was open, and dropped them again on blur, would be the whole
+     * hazard in one gesture.
+     *
+     * The pin is placed *after* the flatten and at the drawn centre, computed
+     * rather than guessed, because the offset depends on the pin's own offset
+     * and the angle. Placing it first would also have made the item two-pinned,
+     * and `setFlatten` reads `solePin` - so the flatten would have produced no
+     * offset at all and the test would have proved nothing.
+     */
     it("is not moved by the un-rotate that opens a text editor", () => {
       const scene = new Scene();
       // Off-centre pin and a real angle: a note pinned through its middle hangs
       // plumb, and un-rotating it about its own centre moves nothing at all.
-      scene.putItem(cold("a"), pose({ x: 0, y: 0, w: 200, h: 200, rot: 0.6 }));
-      scene.putPin(pin("p", "a", -80, -80));
-      scene.putPin(pin("edge", null, 130, 130));
+      scene.putItem(cold("a"), pose({ x: 0, y: 0, w: 100, h: 100, rot: 2 }));
+      scene.putPin(pin("p", "a", -45, -45));
       scene.layoutPins();
-      const before = [...scene.pinsOf("a")].sort();
+      expect(scene.pinCount("a")).toBe(1);
 
-      // T-82/T-178: the note lies flat to be written on, which is a large
-      // visual offset and not an edit.
       expect(scene.setFlatten("a", 1)).toBe(true);
-      scene.setPose("a", {});
-      expect([...scene.pinsOf("a")].sort()).toEqual(before);
+      const slot = scene.slotOf("a")!;
+      const drawnX = scene.renderX(slot);
+      const drawnY = scene.renderY(slot);
+      expect(scene.renderRot(slot)).toBeCloseTo(0);
+      // The sheet really is drawn somewhere else - far enough that its own
+      // centre is now outside where the document says the paper is.
+      expect(Math.hypot(drawnX, drawnY)).toBeGreaterThan(71);
+
+      // Dead centre of the paper as drawn, and well clear of it as stored.
+      scene.putPin(pin("swept", null, drawnX, drawnY));
+
+      expect(scene.pinCount("a")).toBe(1);
+      expect([...scene.pinsOf("a")]).toEqual(["p"]);
+      // And the cork keeps it: it is over nothing, which is what it looks like
+      // in the document.
+      expect(scene.topOver("swept")).toBeNull();
     });
 
     it("still moves when the item really moves", () => {
