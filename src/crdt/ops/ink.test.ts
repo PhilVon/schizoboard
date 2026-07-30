@@ -20,6 +20,7 @@ import {
   deleteItems,
   deleteStrokes,
 } from "@/crdt/ops";
+import { checkInvariants } from "@/crdt/invariants";
 import { Origin } from "@/crdt/origins";
 import { readStroke, type YMap } from "@/crdt/schema";
 import { UndoHistory } from "@/crdt/undo";
@@ -413,6 +414,171 @@ describe("what is not committed", () => {
     expect(
       commitStroke(b, { item: "nobody", tool: "marker", color: "#000", size: 6, samples: samples() }),
     ).toBeNull();
+  });
+});
+
+/**
+ * Invariant 1 for ink, which items and pins have had since T-155 and this file
+ * had not (T-221).
+ *
+ * Asserted through `checkInvariants` rather than by reading the fields back,
+ * because the claim being made is the document's and not this function's: a
+ * NaN that got past here does not throw, it sits in the board looking like a
+ * stroke, with a bbox that contains no point in it and — on bare cork — a tile
+ * key of `"NaN,NaN"` that nothing will ever look in.
+ */
+describe("a sample that is not a number", () => {
+  /**
+   * The wandering path with its **first** reading spoilt, and the index is the
+   * point of the helper.
+   *
+   * A NaN in the middle of a path never reaches the packer at all: the simplify
+   * ranks points by `chordError`, which is NaN against a NaN point, and
+   * `NaN > worst` is false — so the offending sample loses every comparison and
+   * is dropped as an unremarkable interior point. The stroke then commits
+   * cleanly, one reading short, and nothing is ever wrong with the document.
+   * Testing that shape would pin nothing.
+   *
+   * The ends are always kept (`simplifyStroke`), so a spoilt endpoint is what
+   * actually reaches `packStroke`. Removing the guard and committing this
+   * stores a forty-sample stroke as eight bytes: the packer deltas each point
+   * against the last, so one NaN poisons the running position and every
+   * subsequent delta is NaN too, all coerced to zero by `Uint8Array.from`. The
+   * points unpack at the origin and the bbox was measured off the real
+   * coordinates, which is invariant 7.
+   *
+   * Infinity needs no such care about where it sits — `Infinity > worst` is
+   * true, so an infinite sample is ranked *most* worth keeping and survives
+   * from anywhere in the path.
+   */
+  function spoilt(field: "x" | "y" | "pressure", value: number): InkSample[] {
+    const out = samples();
+    out[0] = { ...out[0]!, [field]: value };
+    return out;
+  }
+
+  /**
+   * Every sample gone, which is the realistic one: these coordinates have been
+   * through the camera and, on an item, through that item's inverse rotation,
+   * and a transform that is producing NaN does not produce it for one reading
+   * out of forty.
+   */
+  function allSpoilt(): InkSample[] {
+    return samples().map(() => ({ x: NaN, y: NaN, pressure: NaN }));
+  }
+
+  it.each([
+    ["x", NaN],
+    ["y", NaN],
+    ["pressure", NaN],
+    ["x", Infinity],
+    ["y", -Infinity],
+  ] as const)("refuses the run and leaves the board clean — %s of %s", (field, value) => {
+    const b = board();
+    const id = note(b);
+
+    expect(
+      commitStroke(b, {
+        item: id,
+        tool: "marker",
+        color: "#1f1b17",
+        size: 6,
+        samples: spoilt(field, value),
+      }),
+    ).toBeNull();
+    expect(strokeMap(b, id).size).toBe(0);
+    expect(checkInvariants(b)).toEqual([]);
+  });
+
+  /** Invariant 1 rather than 7: with nothing finite to measure, the box is
+   *  stored at the `±Infinity` the packer seeded it with. */
+  it("refuses a run in which nothing is a number", () => {
+    const b = board();
+    const id = note(b);
+    expect(
+      commitStroke(b, { item: id, tool: "marker", color: "#1f1b17", size: 6, samples: allSpoilt() }),
+    ).toBeNull();
+    expect(strokeMap(b, id).size).toBe(0);
+    expect(checkInvariants(b)).toEqual([]);
+  });
+
+  /**
+   * The bare-cork half, and the failure with the longest tail: the box that
+   * stayed at its seeds means `inkTileKey` is handed
+   * `(Infinity + -Infinity) / 2`, so the stroke is filed under the tile
+   * `"NaN,NaN"` — a bucket nothing will ever look in, and one that
+   * `deleteBoardStrokes` cannot be pointed at because no reader will produce
+   * its key.
+   */
+  it("creates no tile for a stroke that has no numbers in it", () => {
+    const b = board();
+    expect(
+      commitStroke(b, { item: null, tool: "marker", color: "#1f1b17", size: 6, samples: allSpoilt() }),
+    ).toBeNull();
+    expect([...b.boardInk.keys()]).toEqual([]);
+    expect(checkInvariants(b)).toEqual([]);
+  });
+
+  /**
+   * Not a slow test — a hung one, without the guard. `writeVarint` halves its
+   * value until it drops below 128 and Infinity never does, so this is an
+   * unbounded loop pushing NaN into an array rather than a stroke that comes
+   * out wrong. The guard runs before the pack for exactly this reason.
+   */
+  it("returns at all for an infinite sample", { timeout: 2000 }, () => {
+    const b = board();
+    const id = note(b);
+    expect(
+      commitStroke(b, {
+        item: id,
+        tool: "marker",
+        color: "#1f1b17",
+        size: 6,
+        samples: [
+          { x: 0, y: 0, pressure: 0.5 },
+          { x: Infinity, y: 0, pressure: 0.5 },
+          { x: 10, y: 10, pressure: 0.5 },
+        ],
+      }),
+    ).toBeNull();
+    expect(strokeMap(b, id).size).toBe(0);
+  });
+
+  /** The three numbers that go in the map unexamined, next to the samples. */
+  it.each([
+    ["size", { size: NaN, opacity: 1, seed: 7 }],
+    ["opacity", { size: 6, opacity: NaN, seed: 7 }],
+    ["seed", { size: 6, opacity: 1, seed: NaN }],
+  ] as const)("refuses a non-finite %s", (_field, fields) => {
+    const b = board();
+    const id = note(b);
+    expect(
+      commitStroke(b, { item: id, tool: "marker", color: "#1f1b17", samples: samples(), ...fields }),
+    ).toBeNull();
+    expect(strokeMap(b, id).size).toBe(0);
+    expect(checkInvariants(b)).toEqual([]);
+  });
+
+  /**
+   * One bad run does not take the gesture with it. The marker breaks a stroke
+   * at every edge it crosses (T-137), so a gesture arrives here as several runs
+   * in several coordinate spaces — and it is the space belonging to a broken
+   * transform that produces NaN, which means the piece on the *cork* can be
+   * perfectly good while the piece on the note is not.
+   */
+  it("keeps the good runs of a gesture that had a bad one", () => {
+    const b = board();
+    const id = note(b);
+    const written = commitStrokes(b, [
+      { item: id, tool: "marker", color: "#1f1b17", size: 6, samples: allSpoilt() },
+      { item: null, tool: "marker", color: "#1f1b17", size: 6, samples: samples() },
+    ]);
+
+    expect(written).toHaveLength(1);
+    expect(written[0]!.item).toBeNull();
+    expect(written[0]!.tile).not.toContain("NaN");
+    expect(strokeMap(b, id).size).toBe(0);
+    expect(checkInvariants(b)).toEqual([]);
   });
 });
 
