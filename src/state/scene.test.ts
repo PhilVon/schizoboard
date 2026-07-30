@@ -273,8 +273,10 @@ describe("which items a pin is pushed through", () => {
     expect(scene.pinCount("sick")).toBe(0);
     expect(scene.pinCount("well")).toBe(1);
 
-    // The swing is the transient T-194 left non-finite. It is not in the
-    // document and never can be, so this is the only way the state exists.
+    // The swing is the transient T-194 left non-finite. Since T-189 the index
+    // does not read it at all, so this can no longer reach the grid - asserted
+    // here anyway, because it is what a caller would try first and a silent
+    // change of reason is worth pinning.
     scene.swing[scene.slotOf("sick")!] = NaN;
     scene.setPose("sick", {});
 
@@ -282,6 +284,102 @@ describe("which items a pin is pushed through", () => {
     expect(scene.solePin("sick")).toBeNull();
     // And it has not taken the pin away from the item that really holds it.
     expect(scene.pinCount("well")).toBe(1);
+
+    // The route that is still open, and the one the guard in `fileOver` is now
+    // solely responsible for: a tool writing a non-finite *stored* pose. The
+    // document cannot carry one - `crdt/schema.ts` drops it - but `setPose`
+    // takes what it is given.
+    scene.setPose("sick", { x: NaN });
+    expect(scene.pinCount("sick")).toBe(0);
+    expect(scene.solePin("sick")).toBeNull();
+    expect(scene.pinCount("well")).toBe(1);
+  });
+
+  /**
+   * T-189, Q-146: the index is a function of the *stored* pose and of nothing
+   * else. `setPose(id, {})` throughout is how a rebuild is forced without
+   * changing anything - the same idiom the NaN test above uses - because the
+   * point of every one of these is that the answer came out of the pose rather
+   * than out of a cache nothing had invalidated.
+   */
+  describe("and a swing cannot change what holds what", () => {
+    it("keeps the pin an item has swung a long way from", () => {
+      const scene = new Scene();
+      scene.putItem(cold("a"), pose({ x: 0, y: 0, w: 200, h: 200 }));
+      scene.putPin(pin("p", null, 0, 0));
+      expect(scene.pinCount("a")).toBe(1);
+
+      // What `sim/torsion.ts` writes, exactly as it writes it: straight into the
+      // typed arrays, past every setter. T-188's repro ended 23,000 units out.
+      scene.driftX[scene.slotOf("a")!] = 23_000;
+      scene.setPose("a", {});
+
+      // Off the drawn pose this is 0, and the note it is hanging from would let
+      // go of the pin holding it up because it had swung.
+      expect(scene.pinCount("a")).toBe(1);
+      expect(scene.solePin("a")?.id).toBe("p");
+    });
+
+    it("does not let a note swing itself onto a second pin and go rigid", () => {
+      const scene = new Scene();
+      scene.putItem(cold("a"), pose({ x: 0, y: 0, w: 100, h: 100 }));
+      scene.putPin(pin("hangs", null, 0, 0));
+      // Well outside the paper where it is stored, and inside where a swing of
+      // 300 units would draw it.
+      scene.putPin(pin("cork", null, 300, 0));
+      expect(scene.pinCount("a")).toBe(1);
+
+      scene.driftX[scene.slotOf("a")!] = 300;
+      scene.setPose("a", {});
+
+      // The count alone would not catch this - it is 1 either way. Which pin is
+      // the loop: off the drawn pose the item hangs from `cork`, so torsion
+      // takes its pivot from a pin the swing put there, and the swing is
+      // computed from the pivot.
+      expect(scene.solePin("a")?.id).toBe("hangs");
+      expect([...scene.pinsOf("a")]).toEqual(["hangs"]);
+    });
+
+    it("gives every caller in one frame the same answer", () => {
+      const scene = new Scene();
+      scene.putItem(cold("a"), pose({ x: 0, y: 0, w: 200, h: 200 }));
+      scene.putPin(pin("p", null, 0, 0));
+
+      // Phase 3: torsion asks, then writes the drift its answer produced.
+      const asked = scene.pinCount("a");
+      scene.driftX[scene.slotOf("a")!] = 5_000;
+      // Phase 4, and then phase 5's paper curl asking the same question.
+      scene.layoutPins();
+      expect(scene.pinCount("a")).toBe(asked);
+    });
+
+    it("is not moved by the un-rotate that opens a text editor", () => {
+      const scene = new Scene();
+      // Off-centre pin and a real angle: a note pinned through its middle hangs
+      // plumb, and un-rotating it about its own centre moves nothing at all.
+      scene.putItem(cold("a"), pose({ x: 0, y: 0, w: 200, h: 200, rot: 0.6 }));
+      scene.putPin(pin("p", "a", -80, -80));
+      scene.putPin(pin("edge", null, 130, 130));
+      scene.layoutPins();
+      const before = [...scene.pinsOf("a")].sort();
+
+      // T-82/T-178: the note lies flat to be written on, which is a large
+      // visual offset and not an edit.
+      expect(scene.setFlatten("a", 1)).toBe(true);
+      scene.setPose("a", {});
+      expect([...scene.pinsOf("a")].sort()).toEqual(before);
+    });
+
+    it("still moves when the item really moves", () => {
+      // The other half, and the reason this is not simply "freeze the index":
+      // a drag writes the pose, so a drag still changes what holds what.
+      const scene = new Scene();
+      scene.putItem(cold("a"), pose({ x: 0, y: 0, w: 100, h: 100 }));
+      scene.putPin(pin("p", null, 300, 0));
+      expect(scene.pinCount("a")).toBe(0);
+      scene.setPose("a", { x: 300 });
+      expect(scene.pinCount("a")).toBe(1);
+    });
   });
 
   it("stops holding anything once the item is gone", () => {

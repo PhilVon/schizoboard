@@ -481,17 +481,57 @@ export class Scene {
   /**
    * Whether [`byOver`] is behind the scene, so the next question rebuilds it.
    *
-   * Rebuilt on demand rather than in a phase, and that is not a micro-decision.
-   * The obvious home is the LAYOUT phase, next to the pin world positions this
-   * reads — but `sim/torsion.ts` asks the physics question in phase *3*, and
-   * `sim/ropes.ts` already carries a comment about that exact hazard. An index
-   * built one phase after its readers is an index that is silently a frame stale
-   * for the thing that cares most, and every test that puts a pin down would
-   * have to know to run a phase before asking what it holds.
+   * ## What the index is a function of, which is the whole of T-189
+   *
+   * **The stored pose. Never the drawn one** (Q-146). `x`, `y`, `rot` and the
+   * pin's own `lx`/`ly` — not `renderX`/`renderY`/`renderRot`, and therefore not
+   * `driftX`, `driftY`, `swing` or the flatten offsets. Only a real move changes
+   * what holds what.
+   *
+   * Three reasons, and the first is the one that makes it a correctness rule
+   * rather than a preference.
+   *
+   * **It closes a loop that `pinPivot` already refuses to close.** That method
+   * reads the settled pose because "everything that asks this is computing
+   * something the swing is then applied *to*", and a pivot read off the drawn
+   * pose would be a function of the swing it is used to produce. Membership is
+   * the same loop one level up: `pinCount` decides hanging-versus-rigid and
+   * `solePin` decides the pivot, both in `sim/torsion.ts`, which then writes the
+   * very drift the drawn pose is made of. Off the drawn pose a note could swing
+   * itself over a second pin, become rigid, and stop swinging — the physics
+   * driven by a visual offset that is never stored and that two peers
+   * legitimately differ on.
+   *
+   * **It makes the answer the same in every phase.** `sim/torsion.ts` writes
+   * `swing`/`driftX`/`driftY` straight into the typed arrays, `state/tools/
+   * select.ts` writes `swing`, and `setFlatten` writes the flatten offsets —
+   * none of them a setter, so none of them could raise this flag without being
+   * told to. While the index read them, phase 3 built it from last frame's drift
+   * and phase 5 rebuilt it from this frame's, and the board answered one
+   * question two ways inside one frame. It cannot now: those fields are not in
+   * the answer.
+   *
+   * **It keeps a `NaN` out of the one place it was worst.** `fileOver` explains
+   * what a non-finite pose does to this index. The drawn pose is arithmetic done
+   * every frame by the simulation; the stored one comes through `crdt/schema.ts`
+   * and is finite or it is not there. The guard stays — a tool can still write a
+   * bad pose — but the sim no longer has a route into it.
+   *
+   * ## When it is rebuilt
+   *
+   * On demand rather than in a phase, and that is not a micro-decision. The
+   * obvious home is the LAYOUT phase, next to the pin world positions — but
+   * `sim/torsion.ts` asks the physics question in phase *3*, and `sim/ropes.ts`
+   * already carries a comment about that exact hazard. An index built one phase
+   * after its readers is an index that is silently a frame stale for the thing
+   * that cares most, and every test that puts a pin down would have to know to
+   * run a phase before asking what it holds.
    *
    * So: anything that moves an item or a pin sets this, and the first question
    * afterwards pays for the rebuild. At most one rebuild per frame however many
-   * callers ask, and a still board pays a boolean.
+   * callers ask, and a still board pays a boolean. A board that is only
+   * *swinging* now pays a boolean too, which it did not before — see
+   * `layoutPins`.
    */
   private overStale = true;
 
@@ -987,7 +1027,21 @@ export class Scene {
       if (changedItems && pin.parent !== null && !changedItems.has(pin.parent)) continue;
       this.layoutPin(pin);
     }
-    this.overStale = true;
+    // And it does *not* invalidate the over-index, which it used to do here.
+    //
+    // That line was load-bearing by accident: the index read the drawn pose, no
+    // writer of drift raised the flag, and this was the one thing that made the
+    // simulation's own output show up in the answer at all — one phase late, and
+    // only on frames something else had already dirtied. Now that the index is a
+    // function of the stored pose (see `overStale`), this method writes nothing
+    // the index reads: it refreshes `wx`/`wy`, and `layoutOver` computes pin
+    // positions itself rather than reading those. Every real mutation already
+    // raises the flag in its own setter.
+    //
+    // Worth stating because of what it buys. A hanging note is dirty on every
+    // frame it swings, so this rebuilt the whole index — every item re-bucketed,
+    // a point query per pin — once a frame for the entire settle, inside the
+    // phase the loop designates write-only. A swing is now free.
   }
 
   /**
@@ -1007,8 +1061,9 @@ export class Scene {
   private layoutOver(): void {
     this.overStale = false;
     for (const [id, slot] of this.slots) {
-      const cos = Math.abs(Math.cos(this.renderRot(slot)));
-      const sin = Math.abs(Math.sin(this.renderRot(slot)));
+      // Stored, not drawn — Q-146, and see [`overStale`] for the whole of why.
+      const cos = Math.abs(Math.cos(this.rot[slot]!));
+      const sin = Math.abs(Math.sin(this.rot[slot]!));
       const w = this.w[slot]!;
       const h = this.h[slot]!;
       // The upright box around the rotated one. Bigger than the item, which is
@@ -1016,8 +1071,8 @@ export class Scene {
       // exact test below rejects the corners it over-claims.
       const hw = (cos * w + sin * h) / 2;
       const hh = (sin * w + cos * h) / 2;
-      const cx = this.renderX(slot);
-      const cy = this.renderY(slot);
+      const cx = this.x[slot]!;
+      const cy = this.y[slot]!;
       overRect.minX = cx - hw;
       overRect.minY = cy - hh;
       overRect.maxX = cx + hw;
@@ -1033,8 +1088,9 @@ export class Scene {
       // that has come off everything must not keep last frame's answer, and
       // this loop is the only place that knows it has.
       this.overTop.delete(pin.id);
-      // Computed, not read off the pin: see [`pinWorld`].
-      this.pinWorld(pin, overPoint);
+      // Computed, not read off the pin: see [`pinWorld`]. And settled rather
+      // than drawn, to match the boxes above.
+      this.pinSettled(pin, overPoint);
       const cx = Math.floor(overPoint.x / this.overGrid.cell);
       const cy = Math.floor(overPoint.y / this.overGrid.cell);
       const bucket = this.overGrid.bucketAt(cx, cy);
@@ -1050,12 +1106,14 @@ export class Scene {
   private fileOver(pin: PinNode, slot: number): void {
     const id = this.ids[slot];
     if (id === null || id === undefined) return;
-    const angle = this.renderRot(slot);
+    // Settled, like the box in `layoutOver` and the point in `overPoint`. All
+    // three terms of this test come from the document's pose or from none.
+    const angle = this.rot[slot]!;
     rotateIn(
       overPoint.x,
       overPoint.y,
-      this.renderX(slot),
-      this.renderY(slot),
+      this.x[slot]!,
+      this.y[slot]!,
       Math.cos(angle),
       Math.sin(angle),
       scratch,
@@ -1144,6 +1202,40 @@ export class Scene {
    * be indexing every pin at the origin. So it computes, and does not store.
    */
   private pinWorld(pin: PinNode, out: Point): Point {
+    // Rendered rotation about the rendered centre: a pin stays on the
+    // photograph while the photograph swings — and, because `drift` is
+    // defined as the translation that holds the pivot still, a *single*
+    // pin's world position comes back unchanged by the swing entirely, which
+    // is what makes it look pushed into the cork rather than sliding across
+    // it.
+    return this.pinAt(pin, out, true);
+  }
+
+  /**
+   * Where a pin is once everything has stopped moving — the same point, read in
+   * the pose the document holds rather than the one the frame draws.
+   *
+   * [`layoutOver`]'s half of the pair, and the two must not be mixed: an index
+   * that put settled item boxes against drawn pin positions would be asking
+   * whether a pin is inside a rectangle neither of them is in. Q-146 chose the
+   * settled pose for the index, so *both* sides of the test are settled and the
+   * question "which pins hold this item" has no term in it that a swing can
+   * move.
+   *
+   * For the overwhelmingly common pin this is the identical point — a sole pin's
+   * drawn position is its settled one, by drift's definition — so the split
+   * costs nothing on a board of hanging notes. Where it bites is exactly where
+   * it should: a pin parented to an item it is not over, riding that item's
+   * swing, which used to be able to swing itself in and out of a *third* item's
+   * physics.
+   */
+  private pinSettled(pin: PinNode, out: Point): Point {
+    return this.pinAt(pin, out, false);
+  }
+
+  /** The shared body of the two above: `pin` in board coordinates, read through
+   *  its parent's drawn pose or its stored one. */
+  private pinAt(pin: PinNode, out: Point, drawn: boolean): Point {
     if (pin.parent === null) {
       out.x = pin.lx;
       out.y = pin.ly;
@@ -1155,24 +1247,12 @@ export class Scene {
       out.y = pin.ly;
       return out;
     }
-    // Rendered rotation about the rendered centre: a pin stays on the
-    // photograph while the photograph swings — and, because `drift` is
-    // defined as the translation that holds the pivot still, a *single*
-    // pin's world position comes back unchanged by the swing entirely, which
-    // is what makes it look pushed into the cork rather than sliding across
-    // it.
-    const angle = this.renderRot(slot);
+    const angle = drawn ? this.renderRot(slot) : this.rot[slot]!;
+    const cx = drawn ? this.renderX(slot) : this.x[slot]!;
+    const cy = drawn ? this.renderY(slot) : this.y[slot]!;
     // Into the caller's object — this runs over every pin on the board on every
     // frame anything moved, so it must not mint one per pin.
-    return rotateOut(
-      pin.lx,
-      pin.ly,
-      this.renderX(slot),
-      this.renderY(slot),
-      Math.cos(angle),
-      Math.sin(angle),
-      out,
-    );
+    return rotateOut(pin.lx, pin.ly, cx, cy, Math.cos(angle), Math.sin(angle), out);
   }
 
   /**
