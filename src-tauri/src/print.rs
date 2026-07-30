@@ -442,11 +442,18 @@ async fn print_to_pdf(
         .ok_or_else(|| "the print ended without saying whether it worked".to_string())?
 }
 
-/// Everywhere else, for now.
+/// Everywhere else — a backstop, and nothing should reach it.
 ///
-/// `PrintToPdf` is WebView2's, and Tauri exposes only `print()` — the *dialog* —
-/// on the other platforms. T-210 is the task that decides what they get; until
-/// it lands this says so out loud rather than silently producing nothing.
+/// `PrintToPdf` is WebView2's. Tauri's own `print()` is the print *dialog* and
+/// only on macOS; the cross-platform one is JS `window.print()`, which cannot
+/// be handed the page size the board computed and never says when it finished.
+/// So Q-139 chose not to ship a second, worse PDF: on macOS and Linux the menu
+/// has no PDF row, and the image export — which composites in the renderer and
+/// only needs a `write` from this side — is the picture there (T-210).
+///
+/// This stays anyway. The row being absent is a frontend fact, and a command is
+/// reachable by anything that can call one; an error is a better answer to that
+/// than a zero-byte `.pdf` on somebody's desktop.
 #[cfg(not(windows))]
 async fn print_to_pdf(
     _app: &AppHandle,
@@ -454,7 +461,7 @@ async fn print_to_pdf(
     _width: f64,
     _height: f64,
 ) -> Result<(), String> {
-    Err("PDF export is Windows-only for now (T-210)".to_string())
+    Err("PDF export is Windows only — export the board as an image instead".to_string())
 }
 
 #[cfg(test)]

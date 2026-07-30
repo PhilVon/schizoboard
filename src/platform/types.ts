@@ -262,6 +262,26 @@ export type Unlisten = () => void;
 export interface Platform {
   readonly kind: "tauri" | "mock";
 
+  /**
+   * Whether this shell can write a PDF at all (T-210, Q-139).
+   *
+   * `PrintToPdf` is WebView2's. Tauri's own `print()` is the *dialog*, and only
+   * on macOS; the cross-platform one is JS `window.print()`, which cannot be
+   * handed the page shape the board computed and does not say when it finished
+   * — so it is neither the same file nor a thing `posed()` could restore after.
+   * Rather than ship a second, worse PDF nobody here can test, macOS and Linux
+   * get the image export, which was already cross-platform: it composites in
+   * the renderer and the shell only writes the bytes.
+   *
+   * So this is read once, at the menu: false removes the row rather than
+   * disabling it, on exactly the standing the bundle rows have — a menu entry
+   * that cannot work is a question nothing on screen can answer.
+   *
+   * Not a method, because it never changes within a run and the menu is built
+   * synchronously.
+   */
+  readonly canPrintPdf: boolean;
+
   // --- assets: Rust owns bytes ------------------------------------------
   assetIngestBytes(bytes: Uint8Array, mime?: string): Promise<AssetMeta>;
   assetIngestPath(path: string): Promise<AssetMeta>;

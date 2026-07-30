@@ -97,6 +97,10 @@ interface Partial {
 export class MockPlatform implements Platform {
   readonly kind = "mock" as const;
 
+  /** A browser prints its own page and cannot write a file, and every export
+   *  row is already gone with the shell. False so nothing has to ask twice. */
+  readonly canPrintPdf = false;
+
   private readonly assets = new Map<string, StoredAsset>();
   private readonly partials = new Map<string, Partial>();
   private readonly updates: Uint8Array[] = [];

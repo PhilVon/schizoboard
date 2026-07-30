@@ -806,6 +806,8 @@ Three things an export must force that the screen never does, each of which was 
 - **The detail tier is held at full.** A whole-board zoom is a few per cent, and §6.6's tier draws flat paper there — so an export otherwise comes out as sheets with no ruling, no ageing and no curl, however large the file.
 - **The font travels inside the file** — the image route only, since Chromium embeds it for the PDF. `items.css` loads the woff2 by relative URL and a `data:` SVG cannot resolve one, so the writing silently falls back to whatever cursive the machine has: a different hand, wrapping differently, in every note, in a file that otherwise looks correct.
 
+**The PDF is Windows only, and the menu says so by having one row fewer** (Q-139). Printing a document to a file is WebView2's `PrintToPdf`; the cross-platform alternative is a system print dialog, which chooses its own paper and never says when it finished — so it is neither the same file nor one an export could put the board back after. The image needs no such thing: it composites in the renderer and the shell only writes bytes. So on macOS and Linux the image *is* the picture, and there is no row offering a PDF that cannot arrive.
+
 **A board too big to draw is scaled, never dropped.** An image is drawn at twice board scale and a PDF at one — the PDF gains nothing from being laid out larger, since its text is already vector and its photographs would only resample further from their stored size. From there each has its own ceiling: 268 megapixels for a canvas, 200 inches a side for a page. Past either, the export camera zooms out until it fits, rather than handing back a blank file that opens.
 
 ---

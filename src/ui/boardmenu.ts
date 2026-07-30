@@ -366,7 +366,17 @@ export function boardMenuRows(
   selected: readonly string[],
   invite: { link: string | null; copy(link: string): void },
   ageing: { on: boolean; set(on: boolean): void },
-  board: { export(): void; open(): void; pdf(): void; image(): void } | null,
+  /**
+   * `null` in a plain browser, where none of these four can happen at all.
+   *
+   * `pdf` is separately nullable, and it is the only one that is: PDF export is
+   * WebView2's `PrintToPdf`, so a macOS or Linux shell has all the others and
+   * not that one (T-210, Q-139). Null removes the row on the same standing null
+   * removes the whole group — a row that cannot work is a question nothing on
+   * screen can answer, and this one would answer it by opening a save dialog
+   * and then failing after the file had been named.
+   */
+  board: { export(): void; open(): void; pdf: (() => void) | null; image(): void } | null,
 ): MenuEntry[] {
   const rows = stringMenuRows(scene, write, strings);
   const below: MenuEntry[] = [
@@ -436,32 +446,40 @@ export function boardMenuRows(
       // heavier of the two.
       run: () => board.export(),
     });
-    below.push({
-      /**
-       * The picture, where the row above it is the board itself (T-209).
-       *
-       * Under *Export board…* because a `.schizo` is the board — everything on
-       * it, reopenable, and the thing to send somebody who is going to work on
-       * it. A PDF is what it *looked* like: DESIGN section 1's "taking a picture
-       * of your thinking", for somebody who is only going to read it. The order
-       * is which of those two a person means more often when they are handing a
-       * board over, and it is the first.
-       *
-       * **The label says what the file will cover.** Not decoration: a
-       * right-click on bare cork leaves the item selection standing, so the
-       * menu can perfectly well be open over a board with three notes held —
-       * and the export would then be of those three and their neighbours
-       * (Q-127), not of the wall. "The board" would be a lie in exactly the
-       * case where nothing else on screen would correct it.
-       *
-       * *Selection* rather than a count, because a count would promise a cutout
-       * of that many things and Q-127 chose the *region*: the file has whatever
-       * else is inside those bounds, and "3 items" is the one wording that
-       * makes the neighbours look like a bug.
-       */
-      label: selected.length > 0 ? "Export the selection as PDF…" : "Export the board as PDF…",
-      run: () => board.pdf(),
-    });
+    /**
+     * The picture, where the row above it is the board itself (T-209).
+     *
+     * Under *Export board…* because a `.schizo` is the board — everything on
+     * it, reopenable, and the thing to send somebody who is going to work on
+     * it. A PDF is what it *looked* like: DESIGN section 1's "taking a picture
+     * of your thinking", for somebody who is only going to read it. The order
+     * is which of those two a person means more often when they are handing a
+     * board over, and it is the first.
+     *
+     * **The label says what the file will cover.** Not decoration: a
+     * right-click on bare cork leaves the item selection standing, so the
+     * menu can perfectly well be open over a board with three notes held —
+     * and the export would then be of those three and their neighbours
+     * (Q-127), not of the wall. "The board" would be a lie in exactly the
+     * case where nothing else on screen would correct it.
+     *
+     * *Selection* rather than a count, because a count would promise a cutout
+     * of that many things and Q-127 chose the *region*: the file has whatever
+     * else is inside those bounds, and "3 items" is the one wording that
+     * makes the neighbours look like a bug.
+     *
+     * **And it is the one row here that a platform can take away** (T-210).
+     * `PrintToPdf` is WebView2's, so this row exists on Windows and not on
+     * macOS or Linux — where the row below it, which needs no shell but a
+     * `write`, is the picture instead.
+     */
+    const pdf = board.pdf;
+    if (pdf !== null) {
+      below.push({
+        label: selected.length > 0 ? "Export the selection as PDF…" : "Export the board as PDF…",
+        run: pdf,
+      });
+    }
     below.push({
       /**
        * The other picture, and it goes below the PDF for one reason (T-206).
@@ -479,6 +497,9 @@ export function boardMenuRows(
        * two rows sit next to each other, and one saying *the board* while its
        * neighbour said *the selection* would read as a difference in what they
        * cover rather than in what they write.
+       *
+       * On a platform with no PDF row it has no neighbour and is simply the
+       * picture (T-210) — which is why *this* row is the unconditional one.
        */
       label:
         selected.length > 0
