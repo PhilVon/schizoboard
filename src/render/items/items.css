@@ -440,12 +440,21 @@
     radial-gradient(120% 90% at 50% 45%, rgba(0, 0, 0, 0) 60%, rgba(20, 14, 8, 0.16) 100%);
 }
 
+/*
+ * `bottom` and `height` are NOT here, and must not be (T-216). A percentage on
+ * either resolves against the frame's *height*, and the white band this sits in
+ * is a fraction of its *width* — so the two agreed only at the one aspect ratio
+ * they were eyeballed at, and a portrait print's caption rode up over the
+ * picture. Both are written per item by `PolaroidView.transform`, off the same
+ * width the padding and the font size already come from.
+ *
+ * `left` and `right` stay: a percentage on those is a percentage of the width
+ * already, which is the unit that was wanted all along.
+ */
 .pol-caption {
   position: absolute;
   left: 8%;
   right: 8%;
-  bottom: 4%;
-  height: 11%;
   display: flex;
   align-items: center;
   overflow: hidden;

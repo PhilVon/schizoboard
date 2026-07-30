@@ -19,6 +19,28 @@ export const FRAME_SIDE = 0.045;
 export const FRAME_BOTTOM = 0.17;
 
 /**
+ * The caption's box inside that bottom band — **also fractions of the width**,
+ * and that is the entire fix in T-216.
+ *
+ * The band is a fraction of the *width*, because that is what a polaroid is:
+ * the white below the picture does not get deeper because the picture is a tall
+ * one. The caption used to be placed with `bottom: 4%` and `height: 11%` in the
+ * stylesheet, and a percentage on either resolves against the frame's
+ * **height** — so the two agreed only at the aspect ratio they were eyeballed
+ * at. On a portrait photograph the caption box grew past the whole band and
+ * rode up over the picture: measured on a 1200×1800 print, a box 0.174 of the
+ * width tall whose top sat 0.067 of the width *above* the photograph's bottom
+ * edge, against a band 0.17 deep.
+ *
+ * The numbers are the classic print's own, read off the rendered item before
+ * the change and rounded: the box centred in the band with an equal margin
+ * above and below it (0.035 + 0.1 + 0.035 = 0.17). So a square-ish polaroid
+ * looks exactly as it did, and every other shape now looks like it too.
+ */
+export const CAPTION_BOTTOM = 0.035;
+export const CAPTION_HEIGHT = 0.1;
+
+/**
  * "Polaroid at the paste point, at natural aspect ratio, capped to a
  * comfortable size" (DESIGN section 3.1).
  *

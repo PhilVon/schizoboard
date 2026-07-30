@@ -36,7 +36,12 @@ import "@/render/items/items.css";
 // transform, so every percentage in an item would silently compute to zero.
 import { carryScale } from "@/lib/carry";
 import type { InkSample } from "@/lib/ink";
-import { FRAME_BOTTOM, FRAME_SIDE } from "@/lib/polaroid";
+import {
+  CAPTION_BOTTOM,
+  CAPTION_HEIGHT,
+  FRAME_BOTTOM,
+  FRAME_SIDE,
+} from "@/lib/polaroid";
 import { rotateIn, type Point } from "@/lib/rotate";
 import {
   defaultStock,
@@ -778,10 +783,17 @@ class PolaroidView implements View {
       const bottom = w * FRAME_BOTTOM;
       this.frame.style.padding = `${side.toFixed(1)}px ${side.toFixed(1)}px ${bottom.toFixed(1)}px`;
       this.caption.style.fontSize = `${Math.max(9, w * 0.055).toFixed(1)}px`;
-      // The caption's size is written per width rather than declared, so the
-      // field has to be told the same number or the caption changes size the
-      // moment you click into it.
-      if (this.field) this.field.style.fontSize = this.caption.style.fontSize;
+      // The caption's *box*, for the reason set out above `CAPTION_BOTTOM`: it
+      // sits in the bottom band, the band is a fraction of the width, and the
+      // stylesheet could only have said so as a percentage of the height
+      // (T-216). Written here rather than declared there, beside the padding it
+      // has to stay inside.
+      this.caption.style.bottom = `${(w * CAPTION_BOTTOM).toFixed(1)}px`;
+      this.caption.style.height = `${(w * CAPTION_HEIGHT).toFixed(1)}px`;
+      // The caption's size and box are written per width rather than declared,
+      // so the field has to be told the same numbers or the caption moves and
+      // changes size the moment you click into it.
+      if (this.field) this.sizeField(this.field);
     }
     writeTransform(this.el, x, y, rot, w, h, lift);
     // Elevation before the offset: swapping sprites invalidates the written
@@ -821,8 +833,23 @@ class PolaroidView implements View {
     field.className = "item-field pol-caption";
     // Not `is-empty`: an uncaptioned photograph hides its caption, and the
     // whole point of clicking into one is to give it a caption it has not got.
-    field.style.fontSize = this.caption.style.fontSize;
+    this.sizeField(field);
     this.frame.append(field);
+  }
+
+  /**
+   * Give the editor the box the static caption has.
+   *
+   * Everything about that box is written per item rather than declared — the
+   * font size off the width, and since T-216 the height and the offset too —
+   * so a field that only copied the stylesheet would sit somewhere else and be
+   * a different size, and the caption would jump the moment a caret entered it.
+   * One place, called from both the create and the resize.
+   */
+  private sizeField(field: HTMLElement): void {
+    field.style.fontSize = this.caption.style.fontSize;
+    field.style.bottom = this.caption.style.bottom;
+    field.style.height = this.caption.style.height;
   }
 
   release(): void {
