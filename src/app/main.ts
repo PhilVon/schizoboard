@@ -51,7 +51,7 @@ import { AssetExchange, Priority } from "@/crdt/sync/exchange";
 import { WireProvider } from "@/crdt/sync/provider";
 import { UndoHistory } from "@/crdt/undo";
 import { exportBounds } from "@/app/export";
-import { exportImage } from "@/app/exportImage";
+import { exportImage, phraseFor, type ExportPhase } from "@/app/exportImage";
 import { exportPdf, type Stage as PdfStage } from "@/app/exportPdf";
 import { noteSizeFor } from "@/app/ingest";
 import { Paste } from "@/app/paste";
@@ -1240,7 +1240,45 @@ async function boot(): Promise<void> {
    */
   const WEBP_QUALITY = 0.9;
 
+  /**
+   * The progress line, and the seconds ticking under it.
+   *
+   * A phase on its own is not enough for the encode: it is ninety seconds on a
+   * large board, `toBlob` offers no progress of its own, and a sentence that
+   * has not changed in a minute reads exactly like a window that has stopped.
+   * A number going up is the smallest thing that says otherwise.
+   *
+   * `setInterval` rather than the frame loop, and that is not laziness: the
+   * painters hold the main thread for seconds at a time and the loop is not
+   * running frames during an export anyway. A one-second timer fires in the
+   * gaps between awaits, which is exactly when there is something new to say.
+   */
+  const exportProgress = (): { report: (phase: ExportPhase) => void; done: () => void } => {
+    let ticking: ReturnType<typeof setInterval> | null = null;
+    const stop = (): void => {
+      if (ticking !== null) clearInterval(ticking);
+      ticking = null;
+    };
+    return {
+      report: (phase) => {
+        stop();
+        const phrase = phraseFor(phase);
+        flash.hold(phrase);
+        // Only the long one gets a clock. On the others it would be a counter
+        // that never left zero, which says "this is slow" about something that
+        // is not.
+        if (phase.at !== "encoding") return;
+        const startedAt = performance.now();
+        ticking = setInterval(() => {
+          flash.hold(`${phrase} — ${Math.round((performance.now() - startedAt) / 1000)}s`);
+        }, 1000);
+      },
+      done: stop,
+    };
+  };
+
   const saveBoardImage = async (): Promise<void> => {
+    const progress = exportProgress();
     try {
       const outcome = await exportImage(
         {
@@ -1308,8 +1346,14 @@ async function boot(): Promise<void> {
           },
           write: (bytes) => native.exportImageWrite(bytes),
         },
+        {},
+        progress.report,
       );
-      if (outcome.done === "cancelled") return;
+      if (outcome.done === "cancelled") {
+        // Nothing was said, because nothing happened: `choose` comes before the
+        // board moves, so a cancelled export never reached a phase.
+        return;
+      }
       if (outcome.done === "empty") {
         flash.say("There is nothing on this board to export yet");
         return;
@@ -1342,6 +1386,11 @@ async function boot(): Promise<void> {
     } catch (error) {
       console.warn("[export] the board could not be saved as an image", error);
       flash.say("The board could not be saved as an image — the reason is in the console");
+    } finally {
+      // The timer, always. A held progress line is replaced by whichever
+      // sentence follows it, but a ticking one left running would go on
+      // rewriting the flash *over* that sentence, once a second, for ever.
+      progress.done();
     }
   };
 

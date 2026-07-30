@@ -13,7 +13,9 @@
  * `ui/notice.ts` is a standing statement — these photographs are missing, and
  * they will still be missing in a minute. This is the opposite: a thing that
  * just happened, which stops being true almost immediately and would be a lie
- * if it stayed. They also cannot share an element, because a board can perfectly
+ * if it stayed. [`hold`] is the one exception and it proves the rule — it is
+ * for something that is *still happening*, and it ends by being replaced with
+ * the sentence saying it finished. They also cannot share an element, because a board can perfectly
  * well be missing three photographs at the moment you copy an invite, and the
  * more important of those two sentences is the one that is still true.
  *
@@ -55,13 +57,46 @@ export class Flash {
    * at somebody who has moved on.
    */
   say(message: string): void {
-    if (this.clearing !== null) clearTimeout(this.clearing);
-    this.el.textContent = message;
-    this.el.classList.add("is-live");
+    this.write(message);
     this.clearing = setTimeout(() => {
       this.el.classList.remove("is-live");
       this.clearing = null;
     }, HOLD_MS);
+  }
+
+  /**
+   * Say `message` and keep saying it, until a [`say`] or a [`clear`].
+   *
+   * The one thing on this board that takes long enough to need it: an image
+   * export of a large board is ninety seconds of a window that has zoomed
+   * itself out to the whole board and gone quiet, and without a word somewhere
+   * that is indistinguishable from having hung. Ordinary messages here are
+   * things that *happened* and stop being true; this is a thing that is
+   * happening and stays true until it stops.
+   *
+   * Same element, and deliberately: the sentence that follows a progress line
+   * is the result of the same action, and a person who has been watching one
+   * corner should not have to find another. It also means this inherits
+   * `@media print`'s `display: none` — a progress line about making a file must
+   * not appear *in* the file, and the PDF route prints the live document.
+   */
+  hold(message: string): void {
+    this.write(message);
+  }
+
+  /** Take down a held message without putting anything in its place. */
+  clear(): void {
+    if (this.clearing !== null) clearTimeout(this.clearing);
+    this.clearing = null;
+    this.el.classList.remove("is-live");
+    this.el.textContent = "";
+  }
+
+  private write(message: string): void {
+    if (this.clearing !== null) clearTimeout(this.clearing);
+    this.clearing = null;
+    this.el.textContent = message;
+    this.el.classList.add("is-live");
   }
 
   destroy(): void {

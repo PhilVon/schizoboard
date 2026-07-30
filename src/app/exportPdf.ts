@@ -193,6 +193,9 @@ export async function posed<T>(
   stage: Stage,
   view: ExportView,
   body: () => Promise<T>,
+  /** Called once the board is about to move, for a caller with something to
+   *  say about it — see `app/exportImage.ts`. */
+  starting: () => void = () => {},
 ): Promise<T> {
   const before = {
     x: stage.camera.x,
@@ -202,6 +205,7 @@ export async function posed<T>(
     height: stage.camera.height,
   };
   const release = stage.hold();
+  starting();
 
   try {
     stage.camera.x = view.x;

@@ -20,6 +20,8 @@ import {
   exportImage,
   MAX_WEBP_PIXELS,
   MAX_WEBP_SIDE,
+  phraseFor,
+  type ExportPhase,
   type BoardPainter,
   type ImageStage,
   type ImageWriter,
@@ -414,5 +416,126 @@ describe("an encoder that disagrees with what it was handed", () => {
     const r = recorder(["cork"]);
     const outcome = await exportImage(r.stage, board(0, 0, 400, 300), "Board", writer());
     expect(outcome.done).toBe("saved");
+  });
+});
+
+/**
+ * The progress line.
+ *
+ * An image export of a large board is a minute and a half in which the window
+ * has zoomed itself out to the whole board and stopped answering — which is
+ * indistinguishable from having hung. These are the only sentences in the
+ * application somebody reads while *waiting*, which is when a vague one costs
+ * the most.
+ */
+describe("saying how far along it is", () => {
+  const phasesOf = async (
+    r: Recorder,
+    writerFor: ImageWriter = writer(),
+    bounds = board(0, 0, 400, 300),
+  ): Promise<ExportPhase[]> => {
+    const seen: ExportPhase[] = [];
+    await exportImage(r.stage, bounds, "Board", writerFor, {}, (p) => seen.push(p));
+    return seen;
+  };
+
+  it("reports every stage, in the order they happen", async () => {
+    const seen = await phasesOf(recorder(["cork"]));
+    expect(seen.map((p) => p.at)).toEqual([
+      "framing",
+      "drawing",
+      "encoding",
+      "checking",
+      "writing",
+    ]);
+  });
+
+  /**
+   * The framing is the part where the board visibly rearranges itself, so it is
+   * the part most in need of a word — and it has to be said *before* the camera
+   * moves rather than after, or the sentence arrives explaining something the
+   * person has already watched happen.
+   */
+  it("says it is framing before the board has moved", async () => {
+    const r = recorder(["cork"]);
+    const seen: Array<[string, number]> = [];
+    await exportImage(r.stage, board(0, 0, 400, 300), "Board", writer(), {}, (p) =>
+      seen.push([p.at, r.stage.camera.zoom]),
+    );
+    // The window's own zoom, not the export's: nothing has been posed yet.
+    expect(seen[0]).toEqual(["framing", 1]);
+  });
+
+  /** A cancelled export never moved the board, so it has nothing to report. */
+  it("says nothing at all when the dialog is closed", async () => {
+    const r = recorder(["cork"]);
+    const seen = await phasesOf(r, { choose: async () => null, write: async () => "never" });
+    expect(seen).toEqual([]);
+  });
+
+  /**
+   * Said *before* the write, not after. A progress line that appears once the
+   * thing it describes has finished is not progress, it is a caption — and the
+   * write is a shell round-trip with a multi-hundred-megabyte payload, so it is
+   * long enough to be worth covering.
+   */
+  it("says it is saving while the saving is happening", async () => {
+    const r = recorder(["cork"]);
+    const seen: ExportPhase[] = [];
+    const duringWrite: string[] = [];
+    await exportImage(
+      r.stage,
+      board(0, 0, 400, 300),
+      "Board",
+      {
+        choose: async () => "png",
+        write: async () => {
+          duringWrite.push(...seen.map((p) => p.at));
+          return "C:/somewhere/Board.png";
+        },
+      },
+      {},
+      (p) => seen.push(p),
+    );
+    expect(duringWrite).toContain("writing");
+  });
+
+  it("names the format it is encoding as, because that is the slow part", async () => {
+    const seen = await phasesOf(
+      recorder(["cork"]),
+      writer(async () => "C:/somewhere/Board.webp", "webp"),
+    );
+    expect(seen.find((p) => p.at === "encoding")).toEqual({ at: "encoding", format: "webp" });
+  });
+
+  it("reports up to the point it fails, and not past it", async () => {
+    const r = recorder(["cork"]);
+    r.measured = { width: 1, height: 1 };
+    const seen: ExportPhase[] = [];
+    await expect(
+      exportImage(r.stage, board(0, 0, 400, 300), "Board", writer(), {}, (p) => seen.push(p)),
+    ).rejects.toThrow();
+    // Checking is where it died, so "Saving" must never have been said.
+    expect(seen.map((p) => p.at)).toEqual(["framing", "drawing", "encoding", "checking"]);
+  });
+
+  it("has a sentence for every phase, and none of them is empty", () => {
+    const all: ExportPhase[] = [
+      { at: "framing" },
+      { at: "drawing" },
+      { at: "encoding", format: "png" },
+      { at: "encoding", format: "webp" },
+      { at: "checking" },
+      { at: "writing" },
+    ];
+    for (const phase of all) {
+      expect(phraseFor(phase).length, phase.at).toBeGreaterThan(0);
+    }
+    expect(phraseFor({ at: "encoding", format: "webp" })).toContain("WebP");
+    expect(phraseFor({ at: "encoding", format: "png" })).toContain("PNG");
+    // The encode gets a running count of seconds appended, so it must not
+    // already end in an ellipsis.
+    expect(phraseFor({ at: "encoding", format: "png" })).not.toContain("…");
+    expect(phraseFor({ at: "drawing" })).toContain("…");
   });
 });

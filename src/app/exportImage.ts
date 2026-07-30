@@ -143,6 +143,58 @@ export interface PainterCost {
 }
 
 /**
+ * Where an export has got to.
+ *
+ * Reported rather than logged, because an image export of a large board is a
+ * minute and a half during which the window has zoomed itself out to the whole
+ * board and stopped responding to anything — and a board that has gone quiet
+ * and rearranged itself is indistinguishable from a board that has hung.
+ *
+ * Coarse on purpose. The per-painter numbers go to the console because they are
+ * a developer's question; a person waiting wants to know that it is still
+ * going and roughly what it is doing, and "drawing" then "encoding" is the
+ * whole of that. The encode is its own phase because it is the long one — on
+ * the board this was measured against, ninety of the hundred seconds.
+ */
+export type ExportPhase =
+  /** Moving the camera to the whole board and letting it settle. */
+  | { readonly at: "framing" }
+  /** The five painters, start to finish. */
+  | { readonly at: "drawing" }
+  /** Turning the canvas into a file. The long one. */
+  | { readonly at: "encoding"; readonly format: ImageFormat }
+  /** Reading the file back to check the encoder did not crop it. */
+  | { readonly at: "checking" }
+  /** Handing the bytes to the shell. */
+  | { readonly at: "writing" };
+
+/**
+ * What to put on screen for each phase.
+ *
+ * Here rather than in `app/main.ts` on the standing argument: the wiring module
+ * has no tests, so wording left there is wording nothing checks — and these are
+ * the only sentences in the application somebody reads while *waiting*, which
+ * is when a vague one is most expensive.
+ *
+ * No ellipsis on the encode: it carries a running count of seconds instead, and
+ * a number that is going up says "still working" in a way three dots do not.
+ */
+export function phraseFor(phase: ExportPhase): string {
+  switch (phase.at) {
+    case "framing":
+      return "Framing the board…";
+    case "drawing":
+      return "Drawing the board…";
+    case "encoding":
+      return `Encoding as ${phase.format === "webp" ? "WebP" : "PNG"}`;
+    case "checking":
+      return "Checking the file…";
+    case "writing":
+      return "Saving…";
+  }
+}
+
+/**
  * Export the board — or the selection, if there is one — as an image.
  *
  * `bounds` is `exportBounds(scene, selection)`, taken by the caller because the
@@ -154,6 +206,7 @@ export async function exportImage(
   title: string,
   writer: ImageWriter,
   limits: ExportLimits = {},
+  report: (phase: ExportPhase) => void = () => {},
 ): Promise<ImageOutcome> {
   if (bounds === null) return { done: "empty" };
 
@@ -170,32 +223,45 @@ export async function exportImage(
   const painted: PainterCost[] = [];
   let encodeMs = 0;
 
-  const bytes = await posed(stage, view, async () => {
-    const canvas = stage.canvas(view.width, view.height);
-    const ctx = canvas.getContext("2d");
-    if (ctx === null) throw new Error("no 2d context for a board this size");
-    for (const painter of stage.painters) {
+  const bytes = await posed(
+    stage,
+    view,
+    async () => {
+      const canvas = stage.canvas(view.width, view.height);
+      const ctx = canvas.getContext("2d");
+      if (ctx === null) throw new Error("no 2d context for a board this size");
+      report({ at: "drawing" });
+      for (const painter of stage.painters) {
+        const at = stage.now();
+        await painter.paint(ctx, view);
+        painted.push({ name: painter.name, ms: Math.round(stage.now() - at) });
+      }
+
+      report({ at: "encoding", format });
       const at = stage.now();
-      await painter.paint(ctx, view);
-      painted.push({ name: painter.name, ms: Math.round(stage.now() - at) });
-    }
-    const at = stage.now();
-    const encoded = await stage.encode(canvas, format);
-    encodeMs = Math.round(stage.now() - at);
+      const encoded = await stage.encode(canvas, format);
+      encodeMs = Math.round(stage.now() - at);
 
-    // The file is not handed over until it has been read back. An encoder that
-    // quietly dropped part of the board would otherwise reach somebody's disk
-    // looking exactly like a board that small.
-    const actual = await stage.measure(encoded, format);
-    if (actual.width !== canvas.width || actual.height !== canvas.height) {
-      throw new Error(
-        `the ${format} encoder returned ${actual.width}×${actual.height} for a ` +
-          `${canvas.width}×${canvas.height} board — part of it would have been missing`,
-      );
-    }
-    return encoded;
-  });
+      // The file is not handed over until it has been read back. An encoder
+      // that quietly dropped part of the board would otherwise reach somebody's
+      // disk looking exactly like a board that small.
+      report({ at: "checking" });
+      const actual = await stage.measure(encoded, format);
+      if (actual.width !== canvas.width || actual.height !== canvas.height) {
+        throw new Error(
+          `the ${format} encoder returned ${actual.width}×${actual.height} for a ` +
+            `${canvas.width}×${canvas.height} board — part of it would have been missing`,
+        );
+      }
+      return encoded;
+    },
+    // Reported from inside `posed`, because the framing is the part where the
+    // board visibly rearranges itself and is therefore the part most in need of
+    // a word. It is also the first thing that happens after the dialog closes.
+    () => report({ at: "framing" }),
+  );
 
+  report({ at: "writing" });
   const path = await writer.write(bytes);
   return { done: "saved", path, view, painted, format, encodeMs, bytes: bytes.length };
 }
