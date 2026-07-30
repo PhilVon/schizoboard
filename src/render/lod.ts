@@ -89,8 +89,26 @@ export type Tier = "full" | "card" | "flat";
 /** DESIGN section 6.6 — "below 35% zoom", items become simplified cards. */
 export const CARD_ZOOM = 0.35;
 
-/** DESIGN section 6.6 — "below 15% zoom", items are flat rectangles. */
-export const FLAT_ZOOM = 0.15;
+/**
+ * The bottom tier's threshold — DESIGN section 6.6, and 20% rather than the 15%
+ * the section first named (Q-120, T-204).
+ *
+ * It moved because `MIN_ZOOM` moved. The camera's floor was raised to 0.15 so the
+ * board never mounts five hundred items at once, and 0.15 was also this number —
+ * with an exclusive comparison, which meant the camera could reach the bottom
+ * tier's threshold and never pass it. The tier was unreachable, and a section of
+ * DESIGN that cannot be entered is worse than one that was never written.
+ *
+ * 20% gives it a real range of 15 to 20, which is not a leftover: it is precisely
+ * the band where a board is at its heaviest, 370 mounted items on the bench board
+ * against 142 at 35%. And it is where its three clauses become defensible —
+ * a rope's sag really is sub-pixel there, and a pin really is four pixels across.
+ *
+ * The tier's fourth clause, "items are flat coloured rectangles", is not here and
+ * was never built: it measured at zero against a flat card (D-33 section 5) and it
+ * cost a visible pop, so DESIGN dropped it rather than this file implementing it.
+ */
+export const FLAT_ZOOM = 0.2;
 
 /**
  * The far edge of the hysteresis band, as a fraction of the threshold.

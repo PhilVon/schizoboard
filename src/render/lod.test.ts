@@ -22,23 +22,26 @@ describe("tierAt", () => {
   });
 
   /**
-   * The two constants now interact, and the interaction is a live design
-   * question rather than a detail (T-204, Q-120).
+   * The two constants interact, and this is the test that keeps them honest
+   * (T-204, Q-120).
    *
-   * `MIN_ZOOM` was raised to 0.15 so the board never mounts five hundred items at
-   * once, and 0.15 is exactly `FLAT_ZOOM`. The comparison is exclusive, so the
-   * camera can reach the bottom tier's threshold and never pass it: **the bottom
-   * tier is unreachable at this floor.**
+   * The camera's floor was raised to 0.15 so the board never mounts five hundred
+   * items at once — and 0.15 was also `FLAT_ZOOM`, with an exclusive comparison,
+   * which left the bottom tier reachable in principle and never entered in
+   * practice. So the tier moved to 20%, giving it a genuine 15-to-20 band.
    *
-   * Written down as a test rather than a comment so that neither number can move
-   * without somebody being told. If the floor drops below 0.15, or the bottom
-   * tier's threshold rises above it, this fails and the answer to Q-120 has
-   * changed.
+   * Written down rather than commented so that neither number can move without
+   * somebody being told: if the floor rises to meet the threshold again, the
+   * bottom tier silently stops existing.
    */
-  it("records that the current floor puts the bottom tier out of reach", () => {
-    expect(MIN_ZOOM).toBe(FLAT_ZOOM);
-    expect(tierAt(MIN_ZOOM, "full")).toBe("card");
-    expect(tierAt(MIN_ZOOM, "card")).toBe("card");
+  it("keeps the bottom tier reachable above the camera's floor", () => {
+    expect(FLAT_ZOOM).toBeGreaterThan(MIN_ZOOM);
+    // The floor itself is in the bottom tier, which is the point of the band.
+    expect(tierAt(MIN_ZOOM, "full")).toBe("flat");
+    expect(tierAt(MIN_ZOOM, "card")).toBe("flat");
+    // And the band is wide enough that the hysteresis cannot swallow it: leaving
+    // `flat` needs 22%, which is inside the range the camera can reach.
+    expect(FLAT_ZOOM * (1 + TIER_BAND)).toBeLessThan(CARD_ZOOM);
   });
 
   it("is exclusive at the threshold: 35% itself is still the full item", () => {
@@ -176,9 +179,12 @@ describe("Lod.rise", () => {
     lod.settle(0.05);
     lod.on((tier) => seen.push(tier));
 
-    // A zoom in, frame by frame. 16.5% and 38.5% are the hysteresis edges.
+    // A zoom in, frame by frame. 22% and 38.5% are the hysteresis edges — the
+    // bottom tier is left a band above its 20% threshold, exactly as the top one
+    // is above 35%.
     expect(lod.rise(0.1)).toBe(false);
-    expect(lod.rise(0.2)).toBe(true);
+    expect(lod.rise(0.21)).toBe(false);
+    expect(lod.rise(0.23)).toBe(true);
     expect(lod.rise(0.3)).toBe(false);
     expect(lod.rise(0.4)).toBe(true);
     expect(seen).toEqual(["card", "full"]);
