@@ -165,6 +165,16 @@ export interface SheetEdge {
   /** The silhouette, as a `clip-path` value. */
   path: string;
   /**
+   * The same silhouette as numbers: four per vertex — x percent, x offset in
+   * board units, then y percent, y offset. [`path`] is generated from this.
+   *
+   * Two consumers, and they are the reason it is a percentage and an offset
+   * rather than a point: a stylesheet resolves it against the element's box and
+   * the ink resolves it against `w` and `h`, which are *pose* and are not known
+   * here. See [`edgePoints`].
+   */
+  outline: Float32Array;
+  /**
    * How far each corner of the paper sits inside the corner of the item's own
    * rectangle, in board units: `[x, y]` per corner, clockwise from the top left.
    *
@@ -218,17 +228,42 @@ export function sheetEdge(stock: PaperStock, seed: number, fold: Fold | null = n
     const slip = (valueAt(seed, `edge-along-${edge}`, i) * 2 - 1) * 0.38;
     return ((i + slip) / (n - 1)) * 100;
   };
-  const along = (edge: TornEdge, i: number): string => `${alongAt(edge, i).toFixed(1)}%`;
-
-  const near = (edge: TornEdge, i: number): string => `${depth(edge, i).toFixed(2)}px`;
-  const far = (edge: TornEdge, i: number): string =>
-    `calc(100% - ${depth(edge, i).toFixed(2)}px)`;
+  /**
+   * A coordinate, as the pair every vertex in this polygon turns out to be:
+   * a percentage of the sheet plus an offset in board units.
+   *
+   * That is not a generalisation invented for the numeric form — it is the
+   * shape the CSS was already in. `10%`, `3.2px` and `calc(100% - 3.2px)` are
+   * (10, 0), (0, 3.2) and (100, -3.2), and there is no fourth form.
+   */
+  const along = (edge: TornEdge, i: number): [number, number] => [alongAt(edge, i), 0];
+  /** In from the low side — the left edge and the top. */
+  const near = (edge: TornEdge, i: number): [number, number] => [0, depth(edge, i)];
+  /** In from the high side — the right edge and the bottom. */
+  const far = (edge: TornEdge, i: number): [number, number] => [100, -depth(edge, i)];
+  const pc = (value: number): [number, number] => [value, 0];
 
   const top = samples("top");
   const right = samples("right");
   const bottom = samples("bottom");
   const left = samples("left");
-  const points: string[] = [];
+
+  /**
+   * The vertices, four numbers each: x percent, x offset, y percent, y offset.
+   *
+   * **This is the polygon and the string below is a rendering of it.** Until
+   * T-186 the walk emitted CSS directly and the numbers were thrown away at the
+   * last step — which was fine while only a stylesheet wanted the silhouette,
+   * and stopped being fine the moment the ink had to stop at the same edge. Two
+   * walks emitting the same polygon in two formats is the shape of T-135's two
+   * opinions about `FIT_MARGIN_PX`, and the two opinions here would be *where
+   * the paper ends for paint* and *where it ends for ink* — a disagreement that
+   * would show up as a stroke hanging a pixel past the tear it was clipped to.
+   */
+  const verts: number[] = [];
+  const push = (x: [number, number], y: [number, number]): void => {
+    verts.push(x[0], x[1], y[0], y[1]);
+  };
 
   /**
    * How far the fold reaches from corner `c`, as a percentage, and 0 at the
@@ -241,7 +276,6 @@ export function sheetEdge(stock: PaperStock, seed: number, fold: Fold | null = n
   const cutTR = cut(1);
   const cutBR = cut(2);
   const cutBL = cut(3);
-  const pc = (value: number): string => `${value.toFixed(1)}%`;
   /**
    * Whether sample `i` of `edge` survives the fold — it does not if the fold has
    * taken the paper it was a wobble in.
@@ -264,52 +298,52 @@ export function sheetEdge(stock: PaperStock, seed: number, fold: Fold | null = n
   // head, so the point on the left edge comes first. The line between them is the
   // fold, and `items.css` draws the flap on the paper side of it.
   if (cutTL > 0) {
-    points.push(`${near("left", 0)} ${pc(cutTL)}`);
-    points.push(`${pc(cutTL)} ${near("top", 0)}`);
+    push(near("left", 0), pc(cutTL));
+    push(pc(cutTL), near("top", 0));
   } else {
-    points.push(`${near("left", 0)} ${near("top", 0)}`);
+    push(near("left", 0), near("top", 0));
   }
   for (let i = 1; i < top - 1; i++) {
-    if (kept(cutTL, cutTR, alongAt("top", i))) points.push(`${along("top", i)} ${near("top", i)}`);
+    if (kept(cutTL, cutTR, alongAt("top", i))) push(along("top", i), near("top", i));
   }
 
   // Top right, then south down the fore-edge.
   if (cutTR > 0) {
-    points.push(`${pc(100 - cutTR)} ${near("top", top - 1)}`);
-    points.push(`${far("right", 0)} ${pc(cutTR)}`);
+    push(pc(100 - cutTR), near("top", top - 1));
+    push(far("right", 0), pc(cutTR));
   } else {
-    points.push(`${far("right", 0)} ${near("top", top - 1)}`);
+    push(far("right", 0), near("top", top - 1));
   }
   for (let i = 1; i < right - 1; i++) {
     if (kept(cutTR, cutBR, alongAt("right", i))) {
-      points.push(`${far("right", i)} ${along("right", i)}`);
+      push(far("right", i), along("right", i));
     }
   }
 
   // Bottom right, then west along the tail — backwards through the bottom
   // profile, which is stored left to right like the top one.
   if (cutBR > 0) {
-    points.push(`${far("right", right - 1)} ${pc(100 - cutBR)}`);
-    points.push(`${pc(100 - cutBR)} ${far("bottom", bottom - 1)}`);
+    push(far("right", right - 1), pc(100 - cutBR));
+    push(pc(100 - cutBR), far("bottom", bottom - 1));
   } else {
-    points.push(`${far("right", right - 1)} ${far("bottom", bottom - 1)}`);
+    push(far("right", right - 1), far("bottom", bottom - 1));
   }
   for (let i = bottom - 2; i > 0; i--) {
     if (kept(cutBL, cutBR, alongAt("bottom", i))) {
-      points.push(`${along("bottom", i)} ${far("bottom", i)}`);
+      push(along("bottom", i), far("bottom", i));
     }
   }
 
   // Bottom left, then north up the spine.
   if (cutBL > 0) {
-    points.push(`${pc(cutBL)} ${far("bottom", 0)}`);
-    points.push(`${near("left", left - 1)} ${pc(100 - cutBL)}`);
+    push(pc(cutBL), far("bottom", 0));
+    push(near("left", left - 1), pc(100 - cutBL));
   } else {
-    points.push(`${near("left", left - 1)} ${far("bottom", 0)}`);
+    push(near("left", left - 1), far("bottom", 0));
   }
   for (let i = left - 2; i > 0; i--) {
     if (kept(cutTL, cutBL, alongAt("left", i))) {
-      points.push(`${near("left", i)} ${along("left", i)}`);
+      push(near("left", i), along("left", i));
     }
   }
 
@@ -326,7 +360,94 @@ export function sheetEdge(stock: PaperStock, seed: number, fold: Fold | null = n
     depth("bottom", 0),
   ]);
 
-  return { path: `polygon(${points.join(", ")})`, corners };
+  return { path: cssPath(verts), corners, outline: new Float32Array(verts) };
+}
+
+/**
+ * The vertices as a `clip-path: polygon()` value — a *rendering* of the
+ * polygon, not a second copy of it.
+ *
+ * Three forms, and every coordinate is exactly one of them. A percentage alone
+ * where there is no offset, a length alone where there is no percentage, and
+ * `calc()` only for the one case that genuinely needs both — which is always
+ * `100% - n`, the far side of the sheet. Emitting `calc(0% + 3.2px)` for a plain
+ * offset would be correct and would be a stylesheet that reads as generated.
+ */
+function cssPath(verts: readonly number[]): string {
+  const parts: string[] = [];
+  for (let i = 0; i < verts.length; i += 4) {
+    parts.push(`${axis(verts[i]!, verts[i + 1]!)} ${axis(verts[i + 2]!, verts[i + 3]!)}`);
+  }
+  return `polygon(${parts.join(", ")})`;
+}
+
+function axis(percent: number, offset: number): string {
+  if (offset === 0) return `${percent.toFixed(1)}%`;
+  if (percent === 0) return `${offset.toFixed(2)}px`;
+  // The only coordinate in this polygon that is both is the far side of the
+  // sheet, where the percentage is exactly 100 and the offset is an inset from
+  // it — so `100%` is written as a literal rather than formatted. A fractional
+  // percentage arriving here would be a vertex nothing above emits.
+  return `calc(100% - ${(-offset).toFixed(2)}px)`;
+}
+
+/**
+ * The silhouette in an item's own coordinates — the space the ink, the hit test
+ * and the wet stroke's clip all speak (T-186).
+ *
+ * **About the centre**, not the top left, and that is the whole reason this is a
+ * function rather than the array being handed out raw. `clip-path` measures from
+ * an element's top left corner because that is what CSS does; everything else on
+ * this board measures from an item's middle, because that is where DESIGN
+ * section 2.5 puts the origin and what `rotateIn` and `paperBox` already assume.
+ * A caller resolving the array itself would be a caller choosing an origin, and
+ * the ink being half a sheet out is not a bug that announces itself.
+ *
+ * Writes `x, y` pairs into `out`, which must hold two floats per vertex —
+ * `outline.length / 2`. Held by the caller rather than allocated here: this is
+ * asked per stroke and, through the marker, per sample of one.
+ */
+export function edgePoints(
+  outline: Float32Array,
+  w: number,
+  h: number,
+  out: Float32Array,
+): Float32Array {
+  for (let i = 0, o = 0; i < outline.length; i += 4, o += 2) {
+    out[o] = (outline[i]! / 100) * w + outline[i + 1]! - w / 2;
+    out[o + 1] = (outline[i + 2]! / 100) * h + outline[i + 3]! - h / 2;
+  }
+  return out;
+}
+
+/**
+ * Is an item-local point on the paper, rather than merely inside its rectangle?
+ *
+ * The crossing-number test, which is the one that does not care whether the
+ * polygon is convex — and a sheet with a torn head and a folded corner is
+ * emphatically not. `points` is what [`edgePoints`] wrote and `n` is how many
+ * vertices of it are live.
+ *
+ * A point exactly on the boundary is not promised to either side. Nothing here
+ * needs it to be: the two callers are "what am I drawing on" and "what does this
+ * stroke get clipped to", and a sample landing on the mathematical edge of a
+ * hand-torn silhouette is a coin toss in the world as well as in the code.
+ */
+export function insideEdge(points: Float32Array, n: number, x: number, y: number): boolean {
+  let inside = false;
+  for (let i = 0, j = n - 1; i < n; j = i++) {
+    const yi = points[i * 2 + 1]!;
+    const yj = points[j * 2 + 1]!;
+    // Strictly one above and one below, so a horizontal edge is not counted
+    // twice — the classic off-by-one that puts a hole in a polygon along one
+    // scanline.
+    if (yi > y !== yj > y) {
+      const xi = points[i * 2]!;
+      const xj = points[j * 2]!;
+      if (x < xi + ((xj - xi) * (y - yi)) / (yj - yi)) inside = !inside;
+    }
+  }
+  return inside;
 }
 
 /**
