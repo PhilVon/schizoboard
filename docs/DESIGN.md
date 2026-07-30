@@ -788,6 +788,26 @@ A `.schizo` bundle: a zip containing a manifest, a document snapshot and the ass
 
 **Opening one replaces the board in that window, and what it opens is a new board.** The window mints a fresh board id, so it is no longer in the room the replaced board was in — anybody connected stays on the old board, nothing of it merges back in, and the invite that reached them no longer reaches here (Q-114). That is not a detail of implementation: a document with peers is not one client's to replace, and the honest version of "replace" is to leave rather than to overwrite what everybody else is holding.
 
+### 7.9 The picture
+
+Two more exports beside the bundle, and they answer a different question. A `.schizo` *is* the board — reopenable, everything on it, the thing to send someone who is going to work on it. A PDF or an image is what it **looked like** — §1.4's picture of your thinking, for someone who is only going to read it, and the only sense in which this application exports anything to be shown.
+
+**What an export covers is a region, not a cutout** (Q-127). With nothing selected it is the whole board; with something selected it is the bounds of that selection — and whatever else falls inside those bounds comes too. The menu row says which, because a right-click on bare cork leaves a selection standing and "the board" would otherwise be a lie in exactly the case nothing on screen corrects.
+
+**The PDF is vector, and the handwriting is why** (Q-128). The webview prints the live document, so a note arrives as embedded, subsetted, selectable text in the right face — sharp at any magnification, where a bitmap of the same note is pixels forever. One page, exactly the shape of the board: not A4, not tiled. Backgrounds are forced on, because a print drops them by default and the cork, the paper colours, the ruling and the ageing are all CSS backgrounds.
+
+**The image is composited, not printed.** Every layer but the items is already a painter that takes a camera — cork, board ink, and the rope pass under the items and the one over them — so each is asked to draw into a single offscreen canvas at the export camera; the items rasterise through `foreignObject` in their place in that stack. PNG by default because lossless is what someone who has not thought about it wants, with WebP offered beside it in the same save dialog for someone who has seen the file size (Q-138) — a whole-board PNG measured 456 MB.
+
+**Neither carries chrome.** No dev HUD, no help bar, no fps counter. This is not automatic: the first PDF this project produced printed all of it.
+
+Three things an export must force that the screen never does, each of which was invisible until a rendered page was looked at:
+
+- **The camera fits the page, not the window.** A print lays the document out at the paper width and fires no `resize`, so a board fitted for the window sits in the corner of a mostly empty page with its ropes cut off at the old width.
+- **The detail tier is held at full.** A whole-board zoom is a few per cent, and §6.6's tier draws flat paper there — so an export otherwise comes out as sheets with no ruling, no ageing and no curl, however large the file.
+- **The font travels inside the file** — the image route only, since Chromium embeds it for the PDF. `items.css` loads the woff2 by relative URL and a `data:` SVG cannot resolve one, so the writing silently falls back to whatever cursive the machine has: a different hand, wrapping differently, in every note, in a file that otherwise looks correct.
+
+**A board too big to draw is scaled, never dropped.** An image is drawn at twice board scale and a PDF at one — the PDF gains nothing from being laid out larger, since its text is already vector and its photographs would only resample further from their stored size. From there each has its own ceiling: 268 megapixels for a canvas, 200 inches a side for a page. Past either, the export camera zooms out until it fits, rather than handing back a blank file that opens.
+
 ---
 
 ## 8. Application architecture
