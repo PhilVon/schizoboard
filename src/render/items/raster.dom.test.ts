@@ -20,6 +20,7 @@ import {
   cloneForExport,
   inertDocument,
   inlineAssets,
+  inlineInk,
   ITEM_BLEED,
   rasteriseItems,
   type RasterItem,
@@ -332,6 +333,143 @@ describe("the copy an export is made from", () => {
     const a = cloneForExport(polaroid(""), inert);
     const b = cloneForExport(polaroid(""), inert);
     expect(a.ownerDocument).toBe(b.ownerDocument);
+  });
+});
+
+/**
+ * T-215. The quietest of the four things a clone cannot reach, and the only one
+ * that is not about reachability: `cloneNode` copies a `<canvas>` element and
+ * leaves its backing store behind, so a note somebody drew on clones as a
+ * correctly-sized transparent rectangle. It was found in a file, not in a test —
+ * the export said it had drawn every item, and it had.
+ */
+describe("carrying the ink in", () => {
+  /** An item with an ink canvas on it, built the way `InkCanvas` builds one:
+   *  last child, its class, and its box as four inline properties. */
+  function inked(uri: string | null, px = 200, py = 120): HTMLElement {
+    const el = polaroid("");
+    const canvas = document.createElement("canvas");
+    canvas.className = "item-ink";
+    canvas.width = px;
+    canvas.height = py;
+    canvas.style.width = "100px";
+    canvas.style.height = "60px";
+    canvas.style.marginLeft = "-50px";
+    canvas.style.marginTop = "-30px";
+    canvas.toDataURL = () => {
+      if (uri === null) throw new Error("tainted");
+      return uri;
+    };
+    el.append(canvas);
+    return el;
+  }
+
+  const INK = "data:image/png;base64,SU5L";
+
+  it("replaces the blank clone canvas with the live bitmap", () => {
+    const live = inked(INK);
+    const clone = cloneForExport(live);
+
+    expect(inlineInk(live, clone)).toBe(1);
+
+    expect(clone.querySelector("canvas")).toBeNull();
+    const image = clone.querySelector("img.item-ink");
+    expect(image?.getAttribute("src")).toBe(INK);
+    // And the live board is untouched — it is still the thing being looked at.
+    expect(live.querySelector("canvas.item-ink")).not.toBeNull();
+  });
+
+  /**
+   * The box is four inline properties and a class, and the canvas is
+   * deliberately the item's *last* child so DOM order alone paints it over the
+   * photograph. An image that inherits all three is the same box in the same
+   * order; one that does not is ink in the wrong place, which is the sort of
+   * thing nobody sees and everybody feels.
+   */
+  it("keeps the class, the box and the place in the tree", () => {
+    const live = inked(INK);
+    const clone = cloneForExport(live);
+    inlineInk(live, clone);
+
+    const image = clone.lastElementChild as HTMLElement;
+    expect(image.tagName.toLowerCase()).toBe("img");
+    expect(image.className).toBe("item-ink");
+    expect(image.style.width).toBe("100px");
+    expect(image.style.height).toBe("60px");
+    expect(image.style.marginLeft).toBe("-50px");
+    expect(image.style.marginTop).toBe("-30px");
+  });
+
+  /** Most items have no ink and therefore no canvas at all, and that walk has
+   *  to cost the export nothing. */
+  it("does nothing to an item nobody drew on", () => {
+    const live = polaroid("asset://sha256/abc?v=display");
+    const clone = cloneForExport(live);
+
+    expect(inlineInk(live, clone)).toBe(0);
+    expect(clone.querySelector("img.pol-photo")?.getAttribute("src")).toBe(
+      "asset://sha256/abc?v=display",
+    );
+  });
+
+  /**
+   * `release()` takes the canvas out of the DOM, so a zero-sized one here never
+   * painted. `toDataURL` on it is a 1×1 in some engines and a throw in others,
+   * and both are worse than leaving it alone.
+   */
+  it("leaves a canvas that never painted where it is", () => {
+    const live = inked(INK, 0, 0);
+    const clone = cloneForExport(live);
+
+    expect(inlineInk(live, clone)).toBe(0);
+    expect(clone.querySelector("canvas")).not.toBeNull();
+    expect(clone.querySelector("img.item-ink")).toBeNull();
+  });
+
+  /** One item's ink missing is a hole in the picture; refusing the whole export
+   *  is a worse answer to it — the standing an unreadable photograph has. */
+  it("gives up on one bitmap rather than on the export", () => {
+    const live = inked(null);
+    const clone = cloneForExport(live);
+
+    expect(() => inlineInk(live, clone)).not.toThrow();
+    expect(inlineInk(live, clone)).toBe(0);
+  });
+
+  /**
+   * The pairing is positional and safe only because the clone has not been
+   * touched yet. Two canvases is the case that would silently swap them.
+   */
+  it("pairs the canvases in order", () => {
+    const live = polaroid("");
+    for (const [name, uri] of [
+      ["first", "data:image/png;base64,QUFB"],
+      ["second", "data:image/png;base64,QkJC"],
+    ]) {
+      const canvas = document.createElement("canvas");
+      canvas.className = name;
+      canvas.width = 10;
+      canvas.height = 10;
+      canvas.toDataURL = () => uri;
+      live.append(canvas);
+    }
+    const clone = cloneForExport(live);
+
+    expect(inlineInk(live, clone)).toBe(2);
+    expect(clone.querySelector("img.first")?.getAttribute("src")).toBe(
+      "data:image/png;base64,QUFB",
+    );
+    expect(clone.querySelector("img.second")?.getAttribute("src")).toBe(
+      "data:image/png;base64,QkJC",
+    );
+  });
+
+  /** And what comes out still has to go through the XML parser. */
+  it("comes back through the XML parser with the ink in it", () => {
+    const live = inked(INK);
+    const clone = cloneForExport(live);
+    inlineInk(live, clone);
+    expect(brokeOn(svgFor(serialise(clone), "", 330, 330))).toBeNull();
   });
 });
 
