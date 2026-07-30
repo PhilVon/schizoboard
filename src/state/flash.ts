@@ -16,6 +16,22 @@
  * second, and the answer to "what did that just do?" is on the board rather
  * than in your memory of it.
  *
+ * ## Two things raise a flash, and they hold separate instances
+ *
+ * Since T-85 a search raises one too, on the match it has just flown you to
+ * (Q-151) — the same amber box, meaning the same thing it has always meant:
+ * *the board pointing at one item*. That is a policy change and it is stated
+ * here rather than assumed, because until T-85 this file said only undo and
+ * redo ever lit anything.
+ *
+ * A search flash goes into its **own** `Flashes`, not into the undo one, and the
+ * reason is not tidiness. `app/main.ts` reads `flashes.items` back to decide
+ * where to take the camera after an undo (`state/reveal.ts`, Q-79) — so a search
+ * flash still fading in the shared map would widen that box to span a note you
+ * merely looked for, and the undo would fly you somewhere neither it nor you
+ * touched. Two instances, one painter: `render/overlay.ts` draws any
+ * `FlashSource` and neither knows about the other.
+ *
  * ## Where the ids come from
  *
  * From the dirty sets, which is to say from `crdt/binding.ts`, which is the
@@ -73,11 +89,28 @@ export class Flashes {
   }
 
   /**
+   * Light one item, directly — no write and no diff. The search's way in.
+   *
+   * Separate from [`around`] because there is nothing to diff: a search changes
+   * nothing on the board, so "what did that write touch" has no answer. What it
+   * has instead is one id, chosen deliberately, which is why this takes it
+   * rather than deriving it.
+   *
+   * Still gated on the item existing, for [`raiseItem`]'s reason: an id can
+   * stop naming anything between the frame that chose it and the frame that
+   * would draw it, and a flash needs something to be drawn around.
+   */
+  raise(id: string, scene: Scene): void {
+    if (scene.has(id)) this.items.set(id, 1);
+  }
+
+  /**
    * Run a document write and light whatever it turned out to change.
    *
-   * Only undo and redo come through here. Every other write is something the
-   * person just did on purpose and is already looking at; a flash on those
-   * would be a board that blinks whenever it is used.
+   * Only undo and redo come through *here* — a search raises its own with
+   * [`raise`], into its own instance. Every other write is something the person
+   * just did on purpose and is already looking at; a flash on those would be a
+   * board that blinks whenever it is used.
    */
   around<T>(dirty: DirtySets, scene: Scene, write: () => T): T {
     copy(dirty.items, this.wasItems);

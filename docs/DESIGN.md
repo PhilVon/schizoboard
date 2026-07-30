@@ -340,8 +340,18 @@ Undo: text edits are character-level and merge into sensible entries by typing p
 | Actual size | `Ctrl+1` |
 | Frame selection | `F` |
 | Search | `Ctrl+F` — flies the camera to a match. **Never filters or hides.** |
+| Next / previous match | `Enter` / `Shift+Enter` while the field is open |
+| Close the search | `Escape` |
 
 Zoom range is **15% to 400%**. The board is unbounded in every direction.
+
+**What "flies" means, and what search is allowed to do** (T-85, Q-150, Q-151). The camera *eases* to a match over about 300ms rather than jumping, and it is the only camera move on the board that does. That is a §2.3 decision rather than a decorative one: the board earns its keep on spatial memory — you know roughly where a thing is because you put it there — and a teleport spends it, six times over if you step through six matches. `reveal` (§7.6, after an undo) rightly still jumps: it moves only when something is *already* off screen, and its job is to show you a change rather than to carry you. Any pan, zoom or other camera move cancels a flight in progress; the hand always outranks it.
+
+The match you arrive at flashes, one at a time, in the same amber §7.6 uses. Flashing *every* match — so you could see the shape of the answer — was considered and rejected: eleven items pulsing at once is the board sorting itself for you, which is the thing §2.5 rules out, and it stops the flash meaning "this one". The field reports a count ("3 of 7") and that is the entire extent of the summary. There is no result list to click, nothing is dimmed, and every item on the board stays exactly where it was and exactly as visible.
+
+Refining a query does not move you: as long as the match you are reading still matches, the camera stays on it. Search is the one shortcut handled *before* the text-field bail, because the thing it opens is itself a text field.
+
+A flight lands at a zoom the match can be **read** at (Q-153) — `READING_ZOOM` in `render/lod.ts`, the zoom at which the board's 19-unit handwriting is drawn at 10.5 screen pixels. It is a *floor and not a target*: search from 100% and nothing about the zoom changes. It exists because searching from a fitted board otherwise carries you to a flat card — §6.6 stops drawing per-glyph text below 35%, so "the match" at that zoom is a rectangle, and arriving somewhere you cannot read is close to not having arrived. This is the one place the camera takes a zoom decision on your behalf, and it only ever zooms *in*. A match too large to fit at that zoom is fitted instead: an item filling the viewport is one whose place you can no longer be in any doubt about, which is what the search was for.
 
 The floor was 5% and was raised, and it is a performance decision as much as a product one (T-204). 5% is the zoom at which every item on a five-hundred-item board is on screen at once, and §6.6's measurements say that having them all mounted — not the act of mounting them — is what costs. Capping how far out the camera goes is the lever that finally puts *every* stage where the camera is holding still inside frame budget, at every zoom. It costs exactly one thing: `Ctrl+0` and `F` on a board larger than 15% can frame will centre it and show most of it rather than all of it — a board over roughly 8,500 by 5,700 units, about 28 by 19 pasted photographs.
 
@@ -369,6 +379,7 @@ Editing         Ctrl+V paste · Ctrl+C copy · Ctrl+X cut · Ctrl+Z undo · Ctrl
 Modifiers       Ctrl+drag keep a pin in its item · Alt+drag pull string · Alt+click remove pin
                 Shift+click extend selection · Ctrl at pen-down force board ink
 Strings         1–9 slack presets · Alt+wheel whole-string slack · Enter/Esc end run
+Search          Ctrl+F find · Enter next match · Shift+Enter previous · Esc close
 ```
 
 ---

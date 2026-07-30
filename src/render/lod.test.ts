@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 
-import { CARD_ZOOM, Lod, TIER_BAND, tierAt, type Tier } from "@/render/lod";
+import { CARD_ZOOM, Lod, READING_ZOOM, TIER_BAND, tierAt, type Tier } from "@/render/lod";
 import { MAX_ZOOM, MIN_ZOOM } from "@/state/camera";
 
 /** Where a tier is left, going back up. */
@@ -260,5 +260,35 @@ describe("Lod.rise", () => {
       release();
       expect(seen).toEqual(["full", "card"]);
     });
+  });
+});
+
+describe("READING_ZOOM", () => {
+  it("is above the card threshold, because below it there is nothing to read", () => {
+    // The two constants answer different questions and the trap is treating
+    // them as one. CARD_ZOOM is where per-glyph text stops being drawn at all;
+    // this is where what *is* drawn becomes legible. A reading zoom at or below
+    // the card threshold would be a promise to take you somewhere you can read,
+    // honoured by taking you somewhere with no writing on it.
+    expect(READING_ZOOM).toBeGreaterThan(CARD_ZOOM);
+  });
+
+  it("clears the hysteresis band too, so arriving cannot leave the tier flapping", () => {
+    // A flight that landed inside the band would sit at a zoom where the tier
+    // it is in depends on the tier it came from — so the same match would
+    // arrive readable or not depending on which direction you flew from.
+    expect(READING_ZOOM).toBeGreaterThan(CARD_ZOOM * (1 + TIER_BAND));
+  });
+
+  it("is a zoom a person can actually be at", () => {
+    expect(READING_ZOOM).toBeGreaterThanOrEqual(MIN_ZOOM);
+    expect(READING_ZOOM).toBeLessThanOrEqual(MAX_ZOOM);
+  });
+
+  it("draws the board's 19-unit body text at about ten and a half pixels", () => {
+    // The derivation, asserted rather than left in a comment: this is the one
+    // opinion about legibility and it is held in screen pixels of text. A
+    // change to the body size that forgot this line would fail here.
+    expect(19 * READING_ZOOM).toBeCloseTo(10.5, 6);
   });
 });
