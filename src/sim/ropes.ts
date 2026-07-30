@@ -851,6 +851,12 @@ export class RopeSet {
  * concatenation — `["ab", "c"]` and `["a", "bc"]` are famously the same string
  * once you join them with nothing.
  *
+ * Written as the escape `\0` and never as the byte itself (T-156). One raw NUL
+ * anywhere in a file makes ripgrep and grep classify the *whole file* as binary
+ * and skip it, so a search for `pin` across the codebase silently misses every
+ * line of this module and reports nothing rather than an error. It cost a
+ * detour during T-76 before anybody worked out why the simulation was invisible.
+ *
  * The *drawable* run, not the document's. Two runs that differ only in nodes
  * nothing draws produce the same segments over the same pins, and rebuilding
  * for that would throw the particles away mid-swing to arrive at the pose they
@@ -858,7 +864,7 @@ export class RopeSet {
  * rope so much as twitching.
  */
 function runSignature(pins: readonly string[], closed: boolean): string {
-  return `${pins.join(" ")}|${closed ? "c" : "o"}`;
+  return `${pins.join("\0")}|${closed ? "c" : "o"}`;
 }
 
 /**
