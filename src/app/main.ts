@@ -1245,6 +1245,7 @@ async function boot(): Promise<void> {
             { name: "items", paint: (ctx, view) => items.rasterise(scene, ctx, view) },
             { name: "ropes-over", paint: (ctx) => ropesOver.drawInto(ctx, scene, ropes, camera) },
           ],
+          now: () => performance.now(),
           encode: async (canvas) => {
             const blob = await new Promise<Blob | null>((resolve) =>
               canvas.toBlob(resolve, "image/png"),
@@ -1265,11 +1266,26 @@ async function boot(): Promise<void> {
         flash.say("There is nothing on this board to export yet");
         return;
       }
+      // The console rather than the flash: an export of a large board takes
+      // minutes and the interesting part is *which* minute. The flash gets the
+      // one sentence somebody standing there needs.
+      console.info(
+        `[export] ${outcome.view.width}×${outcome.view.height}, ` +
+          `${Math.round(outcome.bytes / 1048576)} MB, ` +
+          `${outcome.painted.map((p) => `${p.name} ${p.ms}ms`).join(", ")}, ` +
+          `encode ${outcome.encodeMs}ms`,
+      );
+      // Pixels *and* megabytes. A whole-board export at the canvas ceiling is
+      // 22181 × 12096 and 456 MB of PNG — measured, on a board of two dozen
+      // photographs — and somebody about to attach that to an email is better
+      // off finding out here than from the thing that refuses it.
       const size = `${outcome.view.width} × ${outcome.view.height}`;
+      const mb = outcome.bytes / 1048576;
+      const weight = mb >= 10 ? `, ${Math.round(mb)} MB` : "";
       flash.say(
         outcome.view.reduced
-          ? `Board saved as an image (${size}, reduced to fit)`
-          : `Board saved as an image (${size})`,
+          ? `Board saved as an image (${size}${weight}, reduced to fit)`
+          : `Board saved as an image (${size}${weight})`,
       );
     } catch (error) {
       console.warn("[export] the board could not be saved as an image", error);

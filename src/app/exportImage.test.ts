@@ -34,6 +34,7 @@ interface Recorder {
   holds: number;
   releases: number;
   encoded: number;
+  clock: number;
 }
 
 /** A painter that records and, optionally, takes a turn of the loop to do it —
@@ -70,6 +71,9 @@ function recorder(
       settle: (zoom: number) => void settled.push(zoom),
       redraw: () => void (out.redraws += 1),
       frames: async () => {},
+      // A clock that ticks a known amount per call, so the timings are a fact
+      // rather than a number that changes every run.
+      now: () => (out.clock += 10),
       canvas: (width: number, height: number) => {
         canvases.push([width, height]);
         return { width, height, getContext: () => ({}) } as unknown as HTMLCanvasElement;
@@ -89,6 +93,7 @@ function recorder(
     holds: 0,
     releases: 0,
     encoded: 0,
+    clock: 0,
   };
   return out;
 }
@@ -153,7 +158,24 @@ describe("the composite", () => {
   it("says which painters reached the file", async () => {
     const r = recorder(["cork", "items"]);
     const outcome = await exportImage(r.stage, board(0, 0, 400, 300), "Board", writer());
-    expect(outcome).toMatchObject({ done: "saved", painted: ["cork", "items"] });
+    expect(outcome).toMatchObject({
+      done: "saved",
+      painted: [
+        { name: "cork", ms: 10 },
+        { name: "items", ms: 10 },
+      ],
+    });
+  });
+
+  /**
+   * An export of a large board takes minutes rather than seconds, and every
+   * painter is somebody else's module behind one `await` — so without this
+   * there is no answer at all to "which part of it".
+   */
+  it("says what the encode cost and how big the file came out", async () => {
+    const r = recorder(["cork"]);
+    const outcome = await exportImage(r.stage, board(0, 0, 400, 300), "Board", writer());
+    expect(outcome).toMatchObject({ done: "saved", encodeMs: 10, bytes: 4 });
   });
 
   it("draws into a canvas the size of the export view, and hands over what it encoded", async () => {

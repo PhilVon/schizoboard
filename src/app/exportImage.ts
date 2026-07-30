@@ -73,6 +73,11 @@ export interface ImageStage extends Stage {
   readonly painters: readonly BoardPainter[];
   /** The canvas as the bytes of a file. */
   encode(canvas: HTMLCanvasElement): Promise<Uint8Array>;
+  /**
+   * A monotonic clock, injected so the timings above are a fact a test can
+   * assert rather than a number that changes every run.
+   */
+  now(): number;
 }
 
 /** Ask first, then draw — `exportPdf`'s argument for the pair, unchanged: a
@@ -91,10 +96,30 @@ export type ImageOutcome =
       readonly done: "saved";
       readonly path: string;
       readonly view: ExportView;
-      /** Which painters ran, in order — the one readout that says a layer made
-       *  it into the file, since a missing one leaves no trace of itself. */
-      readonly painted: readonly string[];
+      /**
+       * Which painters ran, in order, and what each cost.
+       *
+       * The names alone are the readout that says a layer made it into the file
+       * — a missing one leaves no trace of itself, so the board simply has no
+       * strings on it and looks like a board with no strings. The milliseconds
+       * are here because an export of a large board is *slow*, in minutes
+       * rather than seconds, and "which part" is otherwise unanswerable from
+       * outside: every painter is somebody else's module and the whole thing is
+       * one `await` from here.
+       */
+      readonly painted: readonly PainterCost[];
+      /** What turning the canvas into a file cost, which on a board near the
+       *  canvas ceiling is the largest number here by a distance. */
+      readonly encodeMs: number;
+      /** And what the file came to. */
+      readonly bytes: number;
     };
+
+/** One layer's share of an export. */
+export interface PainterCost {
+  readonly name: string;
+  readonly ms: number;
+}
 
 /**
  * Export the board — or the selection, if there is one — as an image.
@@ -117,19 +142,24 @@ export async function exportImage(
   if (!(await writer.choose(title))) return { done: "cancelled" };
 
   const view = exportView(bounds, limits);
-  const painted: string[] = [];
+  const painted: PainterCost[] = [];
+  let encodeMs = 0;
 
   const bytes = await posed(stage, view, async () => {
     const canvas = stage.canvas(view.width, view.height);
     const ctx = canvas.getContext("2d");
     if (ctx === null) throw new Error("no 2d context for a board this size");
     for (const painter of stage.painters) {
+      const at = stage.now();
       await painter.paint(ctx, view);
-      painted.push(painter.name);
+      painted.push({ name: painter.name, ms: Math.round(stage.now() - at) });
     }
-    return stage.encode(canvas);
+    const at = stage.now();
+    const encoded = await stage.encode(canvas);
+    encodeMs = Math.round(stage.now() - at);
+    return encoded;
   });
 
   const path = await writer.write(bytes);
-  return { done: "saved", path, view, painted };
+  return { done: "saved", path, view, painted, encodeMs, bytes: bytes.length };
 }
