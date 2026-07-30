@@ -42,6 +42,7 @@
  * smaller board.
  */
 
+import type { ImageFormat } from "@/platform/types";
 import type { Bounds } from "@/state/scene";
 
 /** CSS pixels to the inch. Chromium's print pipeline uses this and so must we,
@@ -85,6 +86,83 @@ export interface ExportView {
   readonly asked: number;
   /** Whether a ceiling brought the scale down. */
   readonly reduced: boolean;
+}
+
+/**
+ * Where an export has got to.
+ *
+ * Here rather than in either route because both of them take minutes and both
+ * of them do it while the board has zoomed itself out to its own bounds and
+ * stopped answering — which is indistinguishable from having hung. The two
+ * pipelines share the framing and nothing else: an image is drawn and encoded
+ * in the renderer, a PDF is rendered by Chromium on the far side of a command,
+ * so the phases in between are genuinely different work and are named for what
+ * each is actually doing.
+ *
+ * Coarse on purpose. Per-painter milliseconds go to the console because they
+ * are a developer's question; a person waiting wants to know it is still going
+ * and roughly what it is doing.
+ */
+export type ExportPhase =
+  /** Moving the camera to the whole board and letting it settle. Both routes. */
+  | { readonly at: "framing" }
+  /** The five painters, start to finish. Image only. */
+  | { readonly at: "drawing" }
+  /** Turning the canvas into a file. The long one, image only. */
+  | { readonly at: "encoding"; readonly format: ImageFormat }
+  /** Reading the file back to check the encoder did not crop it. Image only. */
+  | { readonly at: "checking" }
+  /** Handing finished bytes to the shell. Image only, and quick. */
+  | { readonly at: "writing" }
+  /** Chromium laying the document out and writing the file. The long one, PDF
+   *  only — and unlike the image route it happens on the far side of a command,
+   *  so this side knows only that it has started. */
+  | { readonly at: "printing" };
+
+/**
+ * What to put on screen for each phase.
+ *
+ * Here rather than in `app/main.ts` on the standing argument: the wiring module
+ * has no tests, so wording left there is wording nothing checks — and these are
+ * the only sentences in the application somebody reads while *waiting*, which
+ * is when a vague one is most expensive.
+ *
+ * No ellipsis on the two slow ones: they carry a running count of seconds
+ * instead, and a number that is going up says "still working" in a way three
+ * dots do not.
+ */
+export function phraseFor(phase: ExportPhase): string {
+  switch (phase.at) {
+    case "framing":
+      return "Framing the board…";
+    case "drawing":
+      return "Drawing the board…";
+    case "encoding":
+      return `Encoding as ${phase.format === "webp" ? "WebP" : "PNG"}`;
+    case "checking":
+      return "Checking the file…";
+    case "writing":
+      return "Saving…";
+    case "printing":
+      return "Printing the board";
+  }
+}
+
+/**
+ * Whether this phase is long enough to need a clock under it.
+ *
+ * The two that are: encoding a canvas and printing a document. Neither offers
+ * any progress of its own — `toBlob` has no callback and the print is a single
+ * command on the far side of the boundary — so without a number going up they
+ * are a sentence that has not changed in a minute, which reads exactly like a
+ * window that has stopped.
+ *
+ * A predicate rather than a flag on each variant, because it is a fact about
+ * how long the work takes rather than about what the work is, and the answer
+ * has already changed once: `printing` was added after the counter existed.
+ */
+export function phaseTicks(phase: ExportPhase): boolean {
+  return phase.at === "encoding" || phase.at === "printing";
 }
 
 export interface ExportLimits {

@@ -18,6 +18,7 @@
 
 import { describe, expect, it, vi } from "vitest";
 
+import { phaseTicks, phraseFor, type ExportPhase } from "@/app/export";
 import { exportPdf, type PdfWriter, type Stage } from "@/app/exportPdf";
 import type { PdfPage } from "@/platform/types";
 import type { Bounds } from "@/state/scene";
@@ -326,5 +327,115 @@ describe("the board afterwards", () => {
     expect(pose(r.stage)).toEqual({ ...before, version: 9 });
     expect(r.canvases.at(-1)).toEqual([1440, 900]);
     expect(r.releases).toBe(1);
+  });
+});
+
+/**
+ * The progress line, on the route where this side can say least about it.
+ *
+ * Everything slow about a print happens on the far side of one command: the
+ * board is posed here, and then Chromium lays the document out and writes the
+ * file with nothing coming back until it is done. So the only honest thing to
+ * say is that it has started — which is exactly why it has to be said *before*
+ * the command goes out rather than after.
+ */
+describe("saying how far along a print is", () => {
+  it("reports the framing and then the printing, in that order", async () => {
+    const r = recorder();
+    const seen: ExportPhase[] = [];
+
+    await exportPdf(r.stage, board(0, 0, 400, 300), "Board", writer(), {}, (p) => seen.push(p));
+
+    expect(seen.map((p) => p.at)).toEqual(["framing", "printing"]);
+  });
+
+  it("says it is framing before the board has moved", async () => {
+    const r = recorder();
+    const seen: Array<[string, number]> = [];
+
+    await exportPdf(r.stage, board(0, 0, 400, 300), "Board", writer(), {}, (p) =>
+      seen.push([p.at, r.stage.camera.zoom]),
+    );
+
+    // The window's own zoom, not the page's: nothing has been posed yet.
+    expect(seen[0]).toEqual(["framing", 1]);
+  });
+
+  /**
+   * A print that appeared to start only once it had finished would be a
+   * caption. This is the whole point of the phase on this route — there is no
+   * second thing to report.
+   */
+  it("says it is printing while the print is happening", async () => {
+    const r = recorder();
+    const seen: ExportPhase[] = [];
+    const duringWrite: string[] = [];
+
+    await exportPdf(
+      r.stage,
+      board(0, 0, 400, 300),
+      "Board",
+      {
+        choose: async () => true,
+        write: async () => {
+          duringWrite.push(...seen.map((p) => p.at));
+          return "C:/somewhere/Board.pdf";
+        },
+      },
+      {},
+      (p) => seen.push(p),
+    );
+
+    expect(duringWrite).toEqual(["framing", "printing"]);
+  });
+
+  it("says nothing at all when the dialog is closed", async () => {
+    const r = recorder();
+    const seen: ExportPhase[] = [];
+
+    await exportPdf(
+      r.stage,
+      board(0, 0, 400, 300),
+      "Board",
+      { choose: async () => false, write: async () => "never" },
+      {},
+      (p) => seen.push(p),
+    );
+
+    expect(seen).toEqual([]);
+  });
+
+  it("reports the framing even when the print then fails", async () => {
+    const r = recorder();
+    const seen: ExportPhase[] = [];
+
+    await expect(
+      exportPdf(
+        r.stage,
+        board(0, 0, 400, 300),
+        "Board",
+        writer(async () => {
+          throw new Error("the webview could not write Board.pdf");
+        }),
+        {},
+        (p) => seen.push(p),
+      ),
+    ).rejects.toThrow(/could not write/);
+
+    expect(seen.map((p) => p.at)).toEqual(["framing", "printing"]);
+    // And the board is back, which is the thing a failed print must not cost.
+    expect(r.releases).toBe(1);
+  });
+
+  /**
+   * The print is opaque and slow, so it earns a clock for the same reason the
+   * image route's encode does. The framing does not: it is three frames.
+   */
+  it("is one of the two phases long enough to need a clock", () => {
+    expect(phaseTicks({ at: "printing" })).toBe(true);
+    expect(phaseTicks({ at: "framing" })).toBe(false);
+    // And it carries no ellipsis, because a count of seconds is appended to it.
+    expect(phraseFor({ at: "printing" })).not.toContain("…");
+    expect(phraseFor({ at: "printing" })).toMatch(/print/i);
   });
 });

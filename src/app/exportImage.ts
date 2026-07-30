@@ -33,7 +33,12 @@
 import type { ImageFormat } from "@/platform/types";
 import type { Bounds } from "@/state/scene";
 
-import { exportView, type ExportLimits, type ExportView } from "@/app/export";
+import {
+  exportView,
+  type ExportLimits,
+  type ExportPhase,
+  type ExportView,
+} from "@/app/export";
 import { posed, type Stage } from "@/app/exportPdf";
 
 /**
@@ -140,58 +145,6 @@ export type ImageOutcome =
 export interface PainterCost {
   readonly name: string;
   readonly ms: number;
-}
-
-/**
- * Where an export has got to.
- *
- * Reported rather than logged, because an image export of a large board is a
- * minute and a half during which the window has zoomed itself out to the whole
- * board and stopped responding to anything — and a board that has gone quiet
- * and rearranged itself is indistinguishable from a board that has hung.
- *
- * Coarse on purpose. The per-painter numbers go to the console because they are
- * a developer's question; a person waiting wants to know that it is still
- * going and roughly what it is doing, and "drawing" then "encoding" is the
- * whole of that. The encode is its own phase because it is the long one — on
- * the board this was measured against, ninety of the hundred seconds.
- */
-export type ExportPhase =
-  /** Moving the camera to the whole board and letting it settle. */
-  | { readonly at: "framing" }
-  /** The five painters, start to finish. */
-  | { readonly at: "drawing" }
-  /** Turning the canvas into a file. The long one. */
-  | { readonly at: "encoding"; readonly format: ImageFormat }
-  /** Reading the file back to check the encoder did not crop it. */
-  | { readonly at: "checking" }
-  /** Handing the bytes to the shell. */
-  | { readonly at: "writing" };
-
-/**
- * What to put on screen for each phase.
- *
- * Here rather than in `app/main.ts` on the standing argument: the wiring module
- * has no tests, so wording left there is wording nothing checks — and these are
- * the only sentences in the application somebody reads while *waiting*, which
- * is when a vague one is most expensive.
- *
- * No ellipsis on the encode: it carries a running count of seconds instead, and
- * a number that is going up says "still working" in a way three dots do not.
- */
-export function phraseFor(phase: ExportPhase): string {
-  switch (phase.at) {
-    case "framing":
-      return "Framing the board…";
-    case "drawing":
-      return "Drawing the board…";
-    case "encoding":
-      return `Encoding as ${phase.format === "webp" ? "WebP" : "PNG"}`;
-    case "checking":
-      return "Checking the file…";
-    case "writing":
-      return "Saving…";
-  }
 }
 
 /**

@@ -18,6 +18,9 @@ import {
   exportBounds,
   exportPage,
   exportView,
+  phaseTicks,
+  phraseFor,
+  type ExportPhase,
 } from "@/app/export";
 import type { Bounds } from "@/state/scene";
 
@@ -158,5 +161,52 @@ describe("the page, for the route that thinks in paper", () => {
     const view = exportPage(board(0, 0, 19_000, 13_000), { margin: 0 });
     expect(view.reduced).toBe(false);
     expect(view.inches.width).toBeCloseTo(19_000 / 96, 6);
+  });
+});
+
+/**
+ * The phase vocabulary, which both routes share.
+ *
+ * It lives here rather than in either of them because the framing is common and
+ * everything else is genuinely different work — an image is drawn and encoded
+ * in the renderer, a PDF is rendered by Chromium on the far side of a command.
+ */
+describe("what an export says it is doing", () => {
+  const ALL: ExportPhase[] = [
+    { at: "framing" },
+    { at: "drawing" },
+    { at: "encoding", format: "png" },
+    { at: "encoding", format: "webp" },
+    { at: "checking" },
+    { at: "writing" },
+    { at: "printing" },
+  ];
+
+  it("has a sentence for every phase, and none of them is empty", () => {
+    for (const phase of ALL) {
+      expect(phraseFor(phase).length, phase.at).toBeGreaterThan(0);
+    }
+  });
+
+  it("names the format it is encoding as, because that is what the wait is for", () => {
+    expect(phraseFor({ at: "encoding", format: "webp" })).toContain("WebP");
+    expect(phraseFor({ at: "encoding", format: "png" })).toContain("PNG");
+  });
+
+  /**
+   * The two slow ones carry a running count of seconds, so they must not
+   * already trail off — and everything else must, because it will not.
+   */
+  it("trails off exactly where no clock is coming", () => {
+    for (const phase of ALL) {
+      expect(phraseFor(phase).endsWith("…"), `${phase.at} ends in an ellipsis`).toBe(
+        !phaseTicks(phase),
+      );
+    }
+  });
+
+  it("puts a clock on the two phases that are opaque and slow", () => {
+    const ticking = ALL.filter(phaseTicks).map((p) => p.at);
+    expect([...new Set(ticking)]).toEqual(["encoding", "printing"]);
   });
 });

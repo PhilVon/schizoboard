@@ -50,8 +50,13 @@ import { Persistence } from "@/crdt/persistence";
 import { AssetExchange, Priority } from "@/crdt/sync/exchange";
 import { WireProvider } from "@/crdt/sync/provider";
 import { UndoHistory } from "@/crdt/undo";
-import { exportBounds } from "@/app/export";
-import { exportImage, phraseFor, type ExportPhase } from "@/app/exportImage";
+import {
+  exportBounds,
+  phaseTicks,
+  phraseFor,
+  type ExportPhase,
+} from "@/app/export";
+import { exportImage } from "@/app/exportImage";
 import { exportPdf, type Stage as PdfStage } from "@/app/exportPdf";
 import { noteSizeFor } from "@/app/ingest";
 import { Paste } from "@/app/paste";
@@ -1179,6 +1184,7 @@ async function boot(): Promise<void> {
 
   const printBoard = async (): Promise<void> => {
     const stage = exportStage();
+    const progress = exportProgress();
 
     try {
       const outcome = await exportPdf(
@@ -1191,6 +1197,8 @@ async function boot(): Promise<void> {
           choose: async (title) => (await native.exportChoose(title, "pdf")) !== null,
           write: (page) => native.exportPdfWrite(page),
         },
+        {},
+        progress.report,
       );
       if (outcome.done === "cancelled") return;
       if (outcome.done === "empty") {
@@ -1211,6 +1219,11 @@ async function boot(): Promise<void> {
     } catch (error) {
       console.warn("[export] the board could not be printed", error);
       flash.say("The board could not be saved as a PDF — the reason is in the console");
+    } finally {
+      // Always, and for the reason the image route does it: a ticking line left
+      // running goes on rewriting the flash *over* whatever sentence replaced
+      // it, once a second, for ever.
+      progress.done();
     }
   };
 
@@ -1264,10 +1277,10 @@ async function boot(): Promise<void> {
         stop();
         const phrase = phraseFor(phase);
         flash.hold(phrase);
-        // Only the long one gets a clock. On the others it would be a counter
-        // that never left zero, which says "this is slow" about something that
-        // is not.
-        if (phase.at !== "encoding") return;
+        // Only the long ones get a clock — see `phaseTicks`. On the others it
+        // would be a counter that never left zero, which says "this is slow"
+        // about something that is not.
+        if (!phaseTicks(phase)) return;
         const startedAt = performance.now();
         ticking = setInterval(() => {
           flash.hold(`${phrase} — ${Math.round((performance.now() - startedAt) / 1000)}s`);

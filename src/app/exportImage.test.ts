@@ -16,12 +16,12 @@ import type { Bounds } from "@/state/scene";
 
 import type { ImageFormat } from "@/platform/types";
 
+import { phraseFor, type ExportPhase } from "@/app/export";
+
 import {
   exportImage,
   MAX_WEBP_PIXELS,
   MAX_WEBP_SIDE,
-  phraseFor,
-  type ExportPhase,
   type BoardPainter,
   type ImageStage,
   type ImageWriter,

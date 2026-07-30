@@ -47,7 +47,12 @@
 import type { PdfPage } from "@/platform/types";
 import type { Bounds } from "@/state/scene";
 
-import { exportPage, type ExportLimits, type ExportView } from "@/app/export";
+import {
+  exportPage,
+  type ExportLimits,
+  type ExportPhase,
+  type ExportView,
+} from "@/app/export";
 
 /**
  * The board, as an export needs to be able to move it.
@@ -164,6 +169,7 @@ export async function exportPdf(
   title: string,
   writer: PdfWriter,
   limits: ExportLimits = {},
+  report: (phase: ExportPhase) => void = () => {},
 ): Promise<PdfOutcome> {
   if (bounds === null) return { done: "empty" };
 
@@ -172,8 +178,17 @@ export async function exportPdf(
   if (!(await writer.choose(title))) return { done: "cancelled" };
 
   const view = exportPage(bounds, limits);
-  const path = await posed(stage, view, () =>
-    writer.write({ width: view.inches.width, height: view.inches.height }),
+  const path = await posed(
+    stage,
+    view,
+    () => {
+      // Said before the command goes out, not after it comes back: everything
+      // slow about a print is on the far side of it, and this side will not
+      // hear another word until the file exists.
+      report({ at: "printing" });
+      return writer.write({ width: view.inches.width, height: view.inches.height });
+    },
+    () => report({ at: "framing" }),
   );
   return { done: "saved", path, view };
 }
