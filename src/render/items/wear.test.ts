@@ -255,14 +255,18 @@ describe("dogEarOf", () => {
       throw new Error("no seed folds");
     })();
     let last = -1;
-    let partial = 0;
+    const full = dogEarOf(seed, 1).depth;
+    // The *depth* part-grown, not the amount: `edge.ts` cuts on the depth alone,
+    // so an amount that eased while the depth snapped to its final value would
+    // still take the corner off between two frames.
+    const growing = new Set<number>();
     for (let wear = 0; wear <= 1.001; wear += 0.01) {
       const ear = dogEarOf(seed, wear);
       expect(ear.depth).toBeGreaterThanOrEqual(last);
-      if (ear.amount > 0 && ear.amount < 1) partial++;
+      if (ear.depth > 0 && ear.depth < full) growing.add(Math.round(ear.depth * 10));
       last = ear.depth;
     }
-    expect(partial).toBeGreaterThan(4);
+    expect(growing.size).toBeGreaterThan(4);
   });
 
   it("does not decide the fold off the same coin as the crease or the ring", () => {

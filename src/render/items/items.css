@@ -1201,9 +1201,35 @@ textarea.item-field::-webkit-scrollbar {
  *
  * What it does have is occlusion, which is direction-free: the tip where its two
  * free edges meet is the most enclosed point of the join, and the doubled paper
- * shades toward it. That is the single gradient below, running down the fold's
+ * shades toward it. That is the second gradient below, running down the fold's
  * normal - 135/225/315/45 degrees for the four corners, the same four angles
  * `.paper-bend` uses and for the same reason.
+ *
+ * ## The back of a sheet is younger than its front, but not new
+ *
+ * This layer is over `.paper-age`, so without the wash below it would show the
+ * stock's colour with none of the yellowing on it, and it is at the corner -
+ * where that ellipse is at its strongest. Measured on an aged legal pad before
+ * the wash went in: the flap came out at luma 220.8 against the sheet's 181.2,
+ * a forty-level step and comfortably the loudest thing on the board. DESIGN 4.7
+ * asks for the opposite of that - "always subtle enough that nobody consciously
+ * notices it".
+ *
+ * So the flap yellows too, at rather less than the face: 0.26 against the 0.34
+ * `.paper-age` reaches at a corner. Less rather than equal because it is the
+ * side that has been against the cork. What is left is a lighter triangle, which
+ * is what an old sheet with a turned corner actually looks like - the point is
+ * the size of the step, not its direction.
+ *
+ * ## No shadow under the free edges, and this is a rule rather than a shortcut
+ *
+ * The flap lies on the sheet and casts a hairline where its two free edges meet
+ * it. Neither way of drawing that is available: `filter: drop-shadow` follows a
+ * clip path but a filter *anywhere* inside an item rasterises the item's whole
+ * stacking context (Q-137), which is how a note's writing stops being text in a
+ * PDF; and DESIGN 9.4 rules out `box-shadow` on items outright. So the edge is
+ * carried by the tone step alone, which is what it is mostly carried by on real
+ * paper seen face-on.
  */
 .paper-ear {
   position: absolute;
@@ -1212,12 +1238,19 @@ textarea.item-field::-webkit-scrollbar {
   width: var(--ear, 0%);
   height: var(--ear, 0%);
   background:
+    /* The occlusion, deepening toward the tip. Nothing at the fold end, which is
+     * where the flap is thickest against the light and is also the end the cut
+     * has taken away. */
     linear-gradient(
       var(--ear-angle, 135deg),
-      rgba(96, 74, 46, 0.1) 0%,
-      rgba(96, 74, 46, 0.04) 46%,
-      rgba(96, 74, 46, 0.09) 82%,
-      rgba(84, 62, 36, 0.16) 100%
+      rgba(96, 74, 46, 0) 0%,
+      rgba(96, 74, 46, 0.05) 55%,
+      rgba(84, 62, 36, 0.17) 100%
+    ),
+    /* and the years on the back of the sheet */
+      linear-gradient(
+      rgba(156, 110, 50, calc(0.26 * var(--age, 0))) 0%,
+      rgba(156, 110, 50, calc(0.26 * var(--age, 0))) 100%
     ),
     var(--stock-base, #f7f3e8);
 }
