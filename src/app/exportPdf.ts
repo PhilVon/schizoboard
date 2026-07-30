@@ -92,6 +92,20 @@ export interface Stage {
   redraw(): void;
   /** Resolve after `count` frames have actually been drawn. */
   frames(count: number): Promise<void>;
+  /**
+   * Is any layer's bitmap still behind what it is a picture of?
+   *
+   * [`SETTLING_FRAMES`] is enough for the mount and the layout; it is not
+   * always enough for the *rasters*, which are deliberately rationed — board
+   * ink repaints at most three tiles a frame and an item's ink has a budget of
+   * its own. So a board somebody has been drawing on can be posed, laid out and
+   * photographed with its ink half-filled, and what comes out looks exactly
+   * like ink that was half-drawn.
+   *
+   * Optional because a stage with no ink layers has nothing to answer, and the
+   * wait is bounded either way — see [`SETTLING_SPINS`].
+   */
+  settling?(): boolean;
 }
 
 /**
@@ -117,6 +131,15 @@ export type PdfOutcome =
  * in a test.
  */
 const SETTLING_FRAMES = 3;
+
+/**
+ * How many further frames an export will wait for the rasters to catch up.
+ *
+ * Sixty, which at three tiles a frame is a hundred and eighty re-rasters — well
+ * past any board this has been run on, and still a second of waiting rather
+ * than a window that never comes back.
+ */
+const SETTLING_SPINS = 60;
 
 /**
  * The two halves of the shell's side, in the order they happen.
@@ -149,7 +172,28 @@ export async function exportPdf(
   if (!(await writer.choose(title))) return { done: "cancelled" };
 
   const view = exportPage(bounds, limits);
+  const path = await posed(stage, view, () =>
+    writer.write({ width: view.inches.width, height: view.inches.height }),
+  );
+  return { done: "saved", path, view };
+}
 
+/**
+ * Put the board where an export needs it, run `body`, and put it back whatever
+ * happens.
+ *
+ * Shared by both export routes, and it is the piece of this file that had to
+ * be: a `hold` never released is T-90's performance work silently undone and a
+ * camera left at the export view is a board that has apparently teleported.
+ * Neither failure looks like an export failing — the board is simply wrong
+ * afterwards and nothing says why — so there is one `finally` and both routes
+ * are inside it rather than each remembering.
+ */
+export async function posed<T>(
+  stage: Stage,
+  view: ExportView,
+  body: () => Promise<T>,
+): Promise<T> {
   const before = {
     x: stage.camera.x,
     y: stage.camera.y,
@@ -174,12 +218,16 @@ export async function exportPdf(
     stage.settle(view.zoom);
     stage.redraw();
     await stage.frames(SETTLING_FRAMES);
-
-    const path = await writer.write({
-      width: view.inches.width,
-      height: view.inches.height,
-    });
-    return { done: "saved", path, view };
+    // And then however many more the rasters need, up to a stop. Bounded rather
+    // than "until it is quiet", because `settling` is answered by layers that
+    // can be woken by things an export does not control — a photograph landing
+    // from a peer, a peer drawing — and an export that waited for a genuinely
+    // busy board would simply never produce a file. A slightly soft picture
+    // beats no picture and beats a hang.
+    for (let spin = 0; spin < SETTLING_SPINS && stage.settling?.() === true; spin++) {
+      await stage.frames(1);
+    }
+    return await body();
   } finally {
     release();
     stage.camera.x = before.x;

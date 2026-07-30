@@ -51,6 +51,7 @@ import { AssetExchange, Priority } from "@/crdt/sync/exchange";
 import { WireProvider } from "@/crdt/sync/provider";
 import { UndoHistory } from "@/crdt/undo";
 import { exportBounds } from "@/app/export";
+import { exportImage } from "@/app/exportImage";
 import { exportPdf, type Stage as PdfStage } from "@/app/exportPdf";
 import { noteSizeFor } from "@/app/ingest";
 import { Paste } from "@/app/paste";
@@ -1149,28 +1150,35 @@ async function boot(): Promise<void> {
    * `resize` above does — a resized canvas has a blank backing store, so every
    * cached screen-space path is a picture of a canvas that no longer exists.
    */
+  const exportStage = (): PdfStage => ({
+    camera,
+    resizeCanvases: (width, height) => {
+      world.resizeCanvases(width, height);
+      ropesUnder.invalidate();
+      ropesOver.invalidate();
+    },
+    hold: () => lod.hold("full"),
+    settle: (zoom) => world.settle(zoom),
+    redraw: () => dirty.everything(),
+    frames: (count) =>
+      new Promise<void>((resolve) => {
+        let left = count;
+        const tick = (): void => {
+          left -= 1;
+          if (left <= 0) resolve();
+          else requestAnimationFrame(tick);
+        };
+        requestAnimationFrame(tick);
+      }),
+    // Both export routes wait on this. A re-raster is rationed across frames,
+    // so three of them is enough for the mount and the layout and is not always
+    // enough for the bitmaps — and a board photographed mid-raster comes out
+    // with its ink half-drawn.
+    settling: () => boardInk.settling,
+  });
+
   const printBoard = async (): Promise<void> => {
-    const stage: PdfStage = {
-      camera,
-      resizeCanvases: (width, height) => {
-        world.resizeCanvases(width, height);
-        ropesUnder.invalidate();
-        ropesOver.invalidate();
-      },
-      hold: () => lod.hold("full"),
-      settle: (zoom) => world.settle(zoom),
-      redraw: () => dirty.everything(),
-      frames: (count) =>
-        new Promise<void>((resolve) => {
-          let left = count;
-          const tick = (): void => {
-            left -= 1;
-            if (left <= 0) resolve();
-            else requestAnimationFrame(tick);
-          };
-          requestAnimationFrame(tick);
-        }),
-    };
+    const stage = exportStage();
 
     try {
       const outcome = await exportPdf(
@@ -1178,7 +1186,7 @@ async function boot(): Promise<void> {
         exportBounds(scene, selection.members),
         boardTitle(board),
         {
-          choose: (title) => native.exportPdfChoose(title),
+          choose: (title) => native.exportChoose(title, "pdf"),
           write: (page) => native.exportPdfWrite(page),
         },
       );
@@ -1201,6 +1209,87 @@ async function boot(): Promise<void> {
     } catch (error) {
       console.warn("[export] the board could not be printed", error);
       flash.say("The board could not be saved as a PDF — the reason is in the console");
+    }
+  };
+
+  /**
+   * The board as a picture of itself (T-206).
+   *
+   * The five painters, in `render/world.ts`'s own stack order, which is the one
+   * thing about this list that is not free to change: a string that passes
+   * behind a photograph on screen and in front of it in the file is wrongness
+   * nobody can prove without the two side by side.
+   *
+   * Every painter here is the application's own, and the ropes go through
+   * `drawInto` rather than `draw` for a reason that cost a driven run to find:
+   * `draw` clears the canvas first, which is right for a layer that owns one
+   * and wipes the cork, the ink and the items off an export canvas that four
+   * other painters have already drawn on. What came out was one blue curve on
+   * white — the last painter's, alone — which looks nothing like the bug it is.
+   */
+  const saveBoardImage = async (): Promise<void> => {
+    try {
+      const outcome = await exportImage(
+        {
+          ...exportStage(),
+          canvas: (width, height) => {
+            const canvas = document.createElement("canvas");
+            canvas.width = width;
+            canvas.height = height;
+            return canvas;
+          },
+          painters: [
+            { name: "cork", paint: (ctx, view) => cork.paintInto(ctx, view) },
+            { name: "board-ink", paint: (ctx, view) => boardInk.drawInto(ctx, view) },
+            { name: "ropes-under", paint: (ctx) => ropesUnder.drawInto(ctx, scene, ropes, camera) },
+            { name: "items", paint: (ctx, view) => items.rasterise(scene, ctx, view) },
+            { name: "ropes-over", paint: (ctx) => ropesOver.drawInto(ctx, scene, ropes, camera) },
+          ],
+          now: () => performance.now(),
+          encode: async (canvas) => {
+            const blob = await new Promise<Blob | null>((resolve) =>
+              canvas.toBlob(resolve, "image/png"),
+            );
+            if (blob === null) throw new Error("the board would not encode as a PNG");
+            return new Uint8Array(await blob.arrayBuffer());
+          },
+        },
+        exportBounds(scene, selection.members),
+        boardTitle(board),
+        {
+          choose: (title) => native.exportChoose(title, "png"),
+          write: (bytes) => native.exportImageWrite(bytes),
+        },
+      );
+      if (outcome.done === "cancelled") return;
+      if (outcome.done === "empty") {
+        flash.say("There is nothing on this board to export yet");
+        return;
+      }
+      // The console rather than the flash: an export of a large board takes
+      // minutes and the interesting part is *which* minute. The flash gets the
+      // one sentence somebody standing there needs.
+      console.info(
+        `[export] ${outcome.view.width}×${outcome.view.height}, ` +
+          `${Math.round(outcome.bytes / 1048576)} MB, ` +
+          `${outcome.painted.map((p) => `${p.name} ${p.ms}ms`).join(", ")}, ` +
+          `encode ${outcome.encodeMs}ms`,
+      );
+      // Pixels *and* megabytes. A whole-board export at the canvas ceiling is
+      // 22181 × 12096 and 456 MB of PNG — measured, on a board of two dozen
+      // photographs — and somebody about to attach that to an email is better
+      // off finding out here than from the thing that refuses it.
+      const size = `${outcome.view.width} × ${outcome.view.height}`;
+      const mb = outcome.bytes / 1048576;
+      const weight = mb >= 10 ? `, ${Math.round(mb)} MB` : "";
+      flash.say(
+        outcome.view.reduced
+          ? `Board saved as an image (${size}${weight}, reduced to fit)`
+          : `Board saved as an image (${size}${weight})`,
+      );
+    } catch (error) {
+      console.warn("[export] the board could not be saved as an image", error);
+      flash.say("The board could not be saved as an image — the reason is in the console");
     }
   };
 
@@ -1410,6 +1499,7 @@ async function boot(): Promise<void> {
               export: () => void exportBoard(),
               open: () => void openBundle(),
               pdf: () => void printBoard(),
+              image: () => void saveBoardImage(),
             }
           : null,
       ),
@@ -2525,6 +2615,17 @@ async function boot(): Promise<void> {
        * window throttles to something that has long since moved on.
        */
       lod,
+      /**
+       * The item layer, for its export painter (T-206, D-37).
+       *
+       * The one thing here that is not just a handle on state: `rasterise` is
+       * how the items become pixels, and it is the half of an image export
+       * that no test can check. happy-dom neither loads an SVG into an `<img>`
+       * nor fails to — it never fires — so whether a sheet actually draws, and
+       * in the right hand, with its photographs and its shadow, is only ever
+       * answerable in the real webview.
+       */
+      items,
       ops,
       tools,
       /**
@@ -2560,6 +2661,13 @@ async function boot(): Promise<void> {
        * the export and then go and answer a window.
        */
       printBoard,
+      /**
+       * And the image, for the same reason and one more of its own: the picture
+       * is composited here rather than by Chromium, so "does every layer reach
+       * the file" is a question only a real webview and a real disk can answer.
+       * happy-dom neither loads an SVG into an `<img>` nor fails to.
+       */
+      saveBoardImage,
     };
   }
 

@@ -350,10 +350,135 @@ export class Cork {
     }
   }
 
+  /**
+   * EXPORT. The same cork, drawn into a canvas at an export camera (T-206).
+   *
+   * The cork is the one board layer that is DOM rather than a painter — three
+   * tiled backgrounds over a flat colour — so an export either repaints it here
+   * or hands over a board with nothing behind it. Repainting is a handful of
+   * pattern fills, and it is the difference between a picture of a corkboard
+   * and a picture of some photographs floating on nothing.
+   *
+   * **The alpha and the blend are read off the live elements**, not written down
+   * again. `mix-blend-mode: overlay` at 0.4 and `soft-light` at 0.55 live in
+   * `base.css`, and a copy of them here would be a copy that goes stale the
+   * first time somebody tunes the cork — silently, in a file nobody opens
+   * beside the stylesheet. `getComputedStyle` costs three reads once per export
+   * and cannot disagree.
+   *
+   * The vignette is deliberately not drawn. It is anchored to the viewport
+   * rather than to the board — a lens on the window, not a mark on the cork —
+   * and an export has no viewport. T-208 makes the same call for the print.
+   */
+  async paintInto(ctx: CanvasRenderingContext2D, camera: CameraPose): Promise<void> {
+    const { width, height } = ctx.canvas;
+    ctx.save();
+    ctx.globalCompositeOperation = "source-over";
+    ctx.globalAlpha = 1;
+    ctx.fillStyle = `rgb(${CORK_BASE.r} ${CORK_BASE.g} ${CORK_BASE.b})`;
+    ctx.fillRect(0, 0, width, height);
+
+    for (const step of this.exportLayers(camera)) {
+      const image = await loadImage(step.url);
+      if (image === null) continue;
+      const pattern = ctx.createPattern(image, "repeat");
+      if (pattern === null) continue;
+      // The tile is drawn at `size` board-units-worth of pixels wherever the
+      // camera has put the world origin — the same two numbers `apply` writes
+      // as `background-size` and `background-position`, because it is the same
+      // picture and they must not be able to disagree.
+      pattern.setTransform(
+        new DOMMatrix().translateSelf(step.offsetX, step.offsetY).scaleSelf(step.size / image.width),
+      );
+      ctx.globalAlpha = step.alpha;
+      ctx.globalCompositeOperation = step.blend;
+      ctx.fillStyle = pattern;
+      ctx.fillRect(0, 0, width, height);
+    }
+    ctx.restore();
+  }
+
+  /**
+   * What each tiled layer becomes on an export canvas — separated from the
+   * drawing because this half is arithmetic and the other half needs a browser.
+   */
+  exportLayers(camera: CameraPose): CorkFill[] {
+    const zoom = camera.zoom;
+    return this.layers
+      .filter((layer) => layer.url !== "")
+      .map((layer) => {
+        const style = getComputedStyle(layer.el);
+        const declared = Number(style.opacity);
+        return {
+          url: layer.url,
+          size: layer.tile * zoom,
+          offsetX: -camera.x * zoom,
+          offsetY: -camera.y * zoom,
+          // The grain's own fade is written by `apply` as an inline opacity, so
+          // the computed value already has it; anything else falls back to the
+          // stylesheet's.
+          alpha: (Number.isFinite(declared) ? declared : 1) * (layer.lod ? grainLod(zoom) : 1),
+          blend: blendOf(style.mixBlendMode),
+        };
+      });
+  }
+
   destroy(): void {
     for (const layer of this.layers) {
       if (layer.url) URL.revokeObjectURL(layer.url);
     }
     this.host.replaceChildren();
   }
+}
+
+/** One tiled cork layer, as an export canvas has to fill it. */
+export interface CorkFill {
+  readonly url: string;
+  /** Board-units-worth of pixels one tile covers. */
+  readonly size: number;
+  readonly offsetX: number;
+  readonly offsetY: number;
+  readonly alpha: number;
+  readonly blend: GlobalCompositeOperation;
+}
+
+/** Just the pose — `Camera` itself is more than an export needs and carries a
+ *  viewport an export does not have. */
+export interface CameraPose {
+  readonly x: number;
+  readonly y: number;
+  readonly zoom: number;
+}
+
+/**
+ * A CSS blend mode as a canvas one.
+ *
+ * The two vocabularies agree on every mode the cork uses, and `normal` is the
+ * name CSS gives to what canvas calls `source-over` — the one place they differ
+ * and the only one that has to be translated. Anything unrecognised composites
+ * normally rather than throwing: a cork layer that lands in the export
+ * un-blended is a slightly flatter board, and that is a better outcome than an
+ * export that refuses.
+ */
+function blendOf(cssBlendMode: string): GlobalCompositeOperation {
+  const mode = cssBlendMode.trim();
+  if (mode === "" || mode === "normal") return "source-over";
+  return CANVAS_BLENDS.has(mode) ? (mode as GlobalCompositeOperation) : "source-over";
+}
+
+const CANVAS_BLENDS = new Set([
+  "multiply", "screen", "overlay", "darken", "lighten", "color-dodge", "color-burn",
+  "hard-light", "soft-light", "difference", "exclusion", "hue", "saturation", "color",
+  "luminosity",
+]);
+
+/** `null` rather than a throw: a cork layer that will not load is a flatter
+ *  board, not a failed export. */
+async function loadImage(url: string): Promise<HTMLImageElement | null> {
+  const image = new Image();
+  return new Promise((resolve) => {
+    image.onload = () => resolve(image);
+    image.onerror = () => resolve(null);
+    image.src = url;
+  });
 }

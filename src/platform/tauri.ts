@@ -24,6 +24,7 @@ import type {
   ClipboardManifest,
   ClipboardPayload,
   DocState,
+  ExportKind,
   PdfPage,
   Platform,
   PlatformEvents,
@@ -193,12 +194,18 @@ export class TauriPlatform implements Platform {
   // between the two calls. Nothing of the board itself crosses: it prints its
   // own webview, so `app/exportPdf.ts` has already put the board where the page
   // needs it by the time the write is called.
-  exportPdfChoose(title: string): Promise<boolean> {
-    return invoke<boolean>("export_pdf_choose", { title });
+  exportChoose(title: string, kind: ExportKind): Promise<boolean> {
+    return invoke<boolean>("export_choose", { title, kind });
   }
 
   exportPdfWrite(page: PdfPage): Promise<string> {
     return invoke<string>("export_pdf_write", { page });
+  }
+
+  // Raw, for the reason `assetIngestBytes` is: a four-megabyte PNG as a JSON
+  // array of numbers is about six times the bytes and a parse stall on top.
+  exportImageWrite(bytes: Uint8Array): Promise<string> {
+    return invoke<string>("export_image_write", bytes);
   }
 
   clipboardReadManifest(): Promise<ClipboardManifest> {

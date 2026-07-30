@@ -142,6 +142,129 @@ beforeEach(() => {
  * a grey bar on white paper. These pin the decision, so a well-meant
  * reintroduction has to argue with a failing test rather than with a comment.
  */
+/**
+ * The export path, and the one thing that separates it from the board's.
+ *
+ * `draw` owns its canvas and clears it; `drawInto` is given somebody else's,
+ * with the cork, the board ink, the items and the other rope layer already on
+ * it. The first export driven with a string on the board came back as a single
+ * blue curve on white — the last painter's, alone — which looks like four
+ * layers failing rather than like one layer wiping them.
+ */
+describe("drawing into an export canvas", () => {
+  /** A layer and the context it was built over, which is the one an export
+   *  hands back to it. */
+  const exportLayer = (which: "over" | "under") => {
+    const canvas = stubCanvas();
+    return {
+      layer: new RopeLayer(canvas, which),
+      ctx: canvas.getContext("2d") as unknown as CanvasRenderingContext2D,
+    };
+  };
+
+  it("does not clear what four other painters have already put down", () => {
+    const { layer, ctx } = exportLayer("over");
+    string("s1", "p1", "p2");
+    const drawn = layer.drawInto(ctx, scene, ropes, camera);
+
+    expect(drawn).toBeGreaterThan(0);
+    expect(calls.clearRect).toBe(0);
+  });
+
+  it("still clears when it is drawing on its own canvas", () => {
+    const layer = new RopeLayer(stubCanvas(), "over");
+    string("s1", "p1", "p2");
+    draw(layer);
+    expect(calls.clearRect).toBeGreaterThan(0);
+  });
+
+  it("draws the same three passes it would on the board", () => {
+    const { layer, ctx } = exportLayer("over");
+    string("s1", "p1", "p2");
+    layer.drawInto(ctx, scene, ropes, camera);
+    const exported = calls.strokes.map((stroke) => ({ ...stroke }));
+
+    calls.strokes.length = 0;
+    layer.invalidate();
+    draw(layer);
+
+    expect(exported).toHaveLength(calls.strokes.length);
+    expect(exported[0]!.style).toBe(calls.strokes[0]!.style);
+    expect(exported[0]!.width).toBeCloseTo(calls.strokes[0]!.width, 6);
+  });
+
+  /**
+   * The paths an export leaves behind were walked at the *export* camera, while
+   * the layer still believes it is cached at the window's. A later frame that
+   * dirties one string rebuilds only that one and keeps the rest — so without
+   * this, one string moving on a board somebody has just exported redraws every
+   * other string at the export's scale.
+   *
+   * Two strings, because with one there is nothing left to reuse.
+   */
+  it("leaves no path cached at a camera the window is not at", () => {
+    const { layer, ctx } = exportLayer("over");
+    pin("p3", 0, 120);
+    pin("p4", 200, 120);
+    string("s1", "p1", "p2");
+    string("s2", "p3", "p4");
+
+    // What a full walk of both strings costs, and what a walk of one costs.
+    layer.invalidate();
+    calls.lines.length = 0;
+    draw(layer);
+    const both = calls.lines.length;
+
+    calls.lines.length = 0;
+    dirty.rope("s1");
+    draw(layer);
+    const one = calls.lines.length;
+    expect(one).toBeGreaterThan(0);
+    expect(one).toBeLessThan(both);
+
+    // Now export at a different camera, and dirty the same one string. The
+    // layer must re-walk *everything*: what it has cached for `s2` was built
+    // for the export's scale, and reusing it draws that string into the window
+    // at the wrong size while `s1` alone comes out right.
+    const exportCamera = new Camera();
+    exportCamera.resize(4000, 3000);
+    exportCamera.zoomTo(0.25, 0, 0);
+    layer.drawInto(ctx, scene, ropes, exportCamera);
+
+    calls.lines.length = 0;
+    dirty.rope("s1");
+    draw(layer);
+    expect(calls.lines.length).toBe(both);
+  });
+
+  /**
+   * `inked` is a fact about the layer's *own* canvas, and an export never
+   * touches it. A `drawInto` that cleared the flag would tell the layer its
+   * canvas is blank while the last ropes are still on it — and the next frame
+   * that finds no strings left skips the clear, so they stay there for ever.
+   */
+  it("does not tell the layer its own canvas has been emptied", () => {
+    const { layer, ctx } = exportLayer("over");
+    string("s1", "p1", "p2");
+    draw(layer);
+    layer.drawInto(ctx, scene, ropes, camera);
+
+    // Every string gone: the layer has to clear what it drew.
+    ropes.removeString(dirty, "s1");
+    scene.strings.delete("s1");
+    calls.clearRect = 0;
+    draw(layer);
+    expect(calls.clearRect).toBeGreaterThan(0);
+  });
+
+  it("draws only its own layer", () => {
+    const { layer: under, ctx } = exportLayer("under");
+    string("s1", "p1", "p2");
+    expect(under.drawInto(ctx, scene, ropes, camera)).toBe(0);
+    expect(calls.strokes).toEqual([]);
+  });
+});
+
 describe("the shadow of a string lying on an item", () => {
   /** Put a photograph under the string and let the rope settle onto it. */
   function drapeOverItem(): void {

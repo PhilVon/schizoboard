@@ -100,6 +100,48 @@ export class BoardInkLayer {
   }
 
   /**
+   * Is any tile's bitmap still behind its strokes?
+   *
+   * An export asks this before it draws. A re-raster is deliberately spread
+   * over frames ([`MAX_RASTERS_PER_FRAME`]), so posing the board and counting
+   * three frames is enough for a board with a few marks on it and is not enough
+   * for one somebody has been drawing on — and the failure is a file with the
+   * ink half-drawn, which looks like ink that was half-drawn.
+   */
+  get settling(): boolean {
+    return this.pending.size > 0;
+  }
+
+  /**
+   * EXPORT. Draw the mounted tiles into a canvas at an export camera (T-206).
+   *
+   * Board ink is already a bitmap in board coordinates, so unlike the items
+   * there is nothing to invent here: each tile is one `drawImage` at the box
+   * `InkCanvas.placed` reports, put through the camera. `.board-ink` anchors a
+   * tile's origin to the board origin, which is what makes that box a board
+   * coordinate directly rather than after a translation.
+   *
+   * Returns how many tiles it drew, which is the only way to tell an unmarked
+   * board from a layer that was never given a chance to mount.
+   */
+  drawInto(ctx: CanvasRenderingContext2D, camera: InkCamera): number {
+    let drawn = 0;
+    for (const tile of this.tiles.values()) {
+      const placed = tile.placed;
+      if (placed === null) continue;
+      ctx.drawImage(
+        placed.canvas,
+        (placed.x - camera.x) * camera.zoom,
+        (placed.y - camera.y) * camera.zoom,
+        placed.w * camera.zoom,
+        placed.h * camera.zoom,
+      );
+      drawn += 1;
+    }
+    return drawn;
+  }
+
+  /**
    * Is this tile's canvas still behind its strokes?
    *
    * The cork's half of `DomItemLayer.awaitingInk`, and it answers the same
@@ -253,4 +295,11 @@ function overlaps(bbox: BoardInkTile["bbox"], rect: Bounds): boolean {
   return (
     bbox[0] <= rect.maxX && bbox[2] >= rect.minX && bbox[1] <= rect.maxY && bbox[3] >= rect.minY
   );
+}
+
+/** Just the pose. `Camera` carries a viewport an export does not have. */
+export interface InkCamera {
+  readonly x: number;
+  readonly y: number;
+  readonly zoom: number;
 }

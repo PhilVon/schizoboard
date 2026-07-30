@@ -366,7 +366,7 @@ export function boardMenuRows(
   selected: readonly string[],
   invite: { link: string | null; copy(link: string): void },
   ageing: { on: boolean; set(on: boolean): void },
-  board: { export(): void; open(): void; pdf(): void } | null,
+  board: { export(): void; open(): void; pdf(): void; image(): void } | null,
 ): MenuEntry[] {
   const rows = stringMenuRows(scene, write, strings);
   const below: MenuEntry[] = [
@@ -461,6 +461,30 @@ export function boardMenuRows(
        */
       label: selected.length > 0 ? "Export the selection as PDF…" : "Export the board as PDF…",
       run: () => board.pdf(),
+    });
+    below.push({
+      /**
+       * The other picture, and it goes below the PDF for one reason (T-206).
+       *
+       * Both rows are "a picture of your thinking"; they differ in what the
+       * handwriting *is*. A PDF carries it as embedded, selectable,
+       * infinitely-sharp text (D-36); an image carries it as pixels at whatever
+       * size the file came out. So the PDF is the better answer to "send this to
+       * somebody" and the image is the better answer to "put this in something
+       * else" — and the first of those is what a person handing a board over
+       * means more often, which is the same argument that put `.schizo` above
+       * both.
+       *
+       * Worded off the same selection as the row above, and it has to be: the
+       * two rows sit next to each other, and one saying *the board* while its
+       * neighbour said *the selection* would read as a difference in what they
+       * cover rather than in what they write.
+       */
+      label:
+        selected.length > 0
+          ? "Export the selection as an image…"
+          : "Export the board as an image…",
+      run: () => board.image(),
     });
     below.push({
       /**

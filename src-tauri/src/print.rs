@@ -107,7 +107,54 @@ impl PageSpec {
     }
 }
 
-/// Ask the user where the PDF should go, and remember the answer.
+/// What kind of file an export is going to be.
+///
+/// One dialog command for both routes rather than a second near-identical one.
+/// The two differ in three strings and nothing else, and the part that is worth
+/// getting right — the path never crossing the boundary, the last answer
+/// winning, a cancel costing nothing — is the part that would have been
+/// duplicated.
+#[derive(Clone, Copy)]
+pub enum ExportKind {
+    Pdf,
+    Png,
+}
+
+impl ExportKind {
+    /// From the string the webview sends. Unknown kinds are refused rather than
+    /// defaulted: a typo that silently saved a PNG as a PDF would be a file
+    /// nothing can open, named as though it could.
+    fn parse(kind: &str) -> Result<Self, String> {
+        match kind {
+            "pdf" => Ok(Self::Pdf),
+            "png" => Ok(Self::Png),
+            other => Err(format!("unknown export kind: {other}")),
+        }
+    }
+
+    fn extension(self) -> &'static str {
+        match self {
+            Self::Pdf => "pdf",
+            Self::Png => "png",
+        }
+    }
+
+    fn dialog_title(self) -> &'static str {
+        match self {
+            Self::Pdf => "Export board as PDF",
+            Self::Png => "Export board as an image",
+        }
+    }
+
+    fn filter(self) -> &'static str {
+        match self {
+            Self::Pdf => "PDF",
+            Self::Png => "PNG image",
+        }
+    }
+}
+
+/// Ask the user where an export should go, and remember the answer.
 ///
 /// `false` is a cancelled dialog — an ordinary outcome and not a failure, the
 /// same thing `asset_export`'s `false` and `bundle_save_as`'s `null` mean.
@@ -117,8 +164,15 @@ impl PageSpec {
 /// `asset_export`: a caller-supplied string that crosses as a *name*, which is
 /// the difference that makes it safe, and that `safe_stem` reduces to a bare
 /// filename before the dialog ever shows it.
+///
+/// The slot this fills is shared by both writers, and deliberately: a `choose`
+/// for a PNG followed by an `export_pdf_write` would print a PDF into the file
+/// the user named `.png`. That is a caller confusing itself with a file the
+/// user did agree to, in a place they agreed to it — not something this side
+/// can be tricked into, and not worth a second slot to make impossible.
 #[tauri::command]
-pub async fn export_pdf_choose(app: AppHandle, title: String) -> Result<bool, String> {
+pub async fn export_choose(app: AppHandle, title: String, kind: String) -> Result<bool, String> {
+    let kind = ExportKind::parse(&kind)?;
     let stem = crate::assets::safe_stem(&title).unwrap_or_else(|| "board".to_string());
 
     // Off the main thread, or the dialog asks the main thread to open it and
@@ -128,9 +182,9 @@ pub async fn export_pdf_choose(app: AppHandle, title: String) -> Result<bool, St
         handle
             .dialog()
             .file()
-            .set_title("Export board as PDF")
-            .set_file_name(format!("{stem}.pdf"))
-            .add_filter("PDF", &["pdf"])
+            .set_title(kind.dialog_title())
+            .set_file_name(format!("{stem}.{}", kind.extension()))
+            .add_filter(kind.filter(), &[kind.extension()])
             .blocking_save_file()
     })
     .await
@@ -143,6 +197,53 @@ pub async fn export_pdf_choose(app: AppHandle, title: String) -> Result<bool, St
 
     *app.state::<PendingExport>().0.lock().expect("export lock") = Some(dest);
     Ok(true)
+}
+
+/// Write an already-encoded image into the file the user chose.
+///
+/// The counterpart to [`export_pdf_write`], and much the smaller of the two:
+/// the PDF is rendered by Chromium and this is a `write`. The picture was
+/// composited in the renderer (`app/exportImage.ts`) because that is where the
+/// board is — every layer of it is a painter that takes a camera, and none of
+/// them exists on this side.
+///
+/// A raw body rather than an argument, the same shape `asset_ingest_bytes`
+/// takes and for the same reason: a four-megabyte PNG as a JSON array of
+/// numbers is about six times the bytes and a parse stall on every one of them.
+///
+/// Refuses an empty body. `toBlob` resolving to nothing is the shape a canvas
+/// failure takes in the renderer, and a zero-byte `.png` on somebody's desktop
+/// is a worse answer to it than an error they can see.
+#[tauri::command]
+pub async fn export_image_write(
+    app: AppHandle,
+    request: tauri::ipc::Request<'_>,
+) -> Result<String, String> {
+    let tauri::ipc::InvokeBody::Raw(bytes) = request.body() else {
+        return Err("export_image_write expects a raw body".into());
+    };
+    if bytes.is_empty() {
+        return Err("there was nothing to write: the board encoded to no bytes".into());
+    }
+    let bytes = bytes.clone();
+
+    // Taken after the body is checked, so a call this side refuses does not
+    // also throw away a location the user has already agreed to.
+    let dest = app
+        .state::<PendingExport>()
+        .0
+        .lock()
+        .expect("export lock")
+        .take()
+        .ok_or_else(|| "nowhere to write: no export has been chosen".to_string())?;
+
+    let path = dest.clone();
+    tauri::async_runtime::spawn_blocking(move || std::fs::write(&path, &bytes))
+        .await
+        .map_err(|e| e.to_string())?
+        .map_err(|e| format!("could not write {}: {e}", dest.display()))?;
+
+    Ok(dest.to_string_lossy().into_owned())
 }
 
 /// Print the board into the file the user chose, and answer with where it went.
@@ -341,6 +442,15 @@ mod tests {
             assert!(spec(bad, 10.0).checked().is_err(), "{bad} as a width");
             assert!(spec(10.0, bad).checked().is_err(), "{bad} as a height");
         }
+    }
+
+    #[test]
+    fn both_export_kinds_are_understood_and_nothing_else_is() {
+        assert_eq!(ExportKind::parse("pdf").unwrap().extension(), "pdf");
+        assert_eq!(ExportKind::parse("png").unwrap().extension(), "png");
+        assert!(ExportKind::parse("PDF").is_err());
+        assert!(ExportKind::parse("jpeg").is_err());
+        assert!(ExportKind::parse("").is_err());
     }
 
     #[test]

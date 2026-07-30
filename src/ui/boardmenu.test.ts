@@ -687,6 +687,7 @@ describe("the board menu on bare cork", () => {
         export: () => void asked.push("export"),
         open: () => void asked.push("open"),
         pdf: () => void asked.push("pdf"),
+        image: () => void asked.push("image"),
       },
       asked,
     };
@@ -696,6 +697,8 @@ describe("the board menu on bare cork", () => {
   const EXPORT = "Export board…";
   const PDF = "Export the board as PDF…";
   const PDF_SELECTION = "Export the selection as PDF…";
+  const IMAGE = "Export the board as an image…";
+  const IMAGE_SELECTION = "Export the selection as an image…";
   const OPEN = "Open a board…";
 
   it("offers the invite on empty cork, which used to open nothing at all", () => {
@@ -762,7 +765,7 @@ describe("the board menu on bare cork", () => {
       switching(true).ageing,
       exporting().board,
     ) as MenuRow[];
-    expect(rows.map((r) => r.label)).toEqual([AGE_ON, "Copy invite link", EXPORT, PDF, OPEN]);
+    expect(rows.map((r) => r.label)).toEqual([AGE_ON, "Copy invite link", EXPORT, PDF, IMAGE, OPEN]);
   });
 
   it("asks the shell to export, and does not write to the document", () => {
@@ -806,7 +809,7 @@ describe("the board menu on bare cork", () => {
       switching(true).ageing,
       exporting().board,
     ) as MenuRow[];
-    expect(rows.map((r) => r.label)).toEqual([AGE_ON, EXPORT, PDF, OPEN]);
+    expect(rows.map((r) => r.label)).toEqual([AGE_ON, EXPORT, PDF, IMAGE, OPEN]);
   });
 
   /**
@@ -889,6 +892,56 @@ describe("the board menu on bare cork", () => {
     expect(labels(["i1", "i2", "i3"])).toContain(PDF_SELECTION);
     // One row either way — the selection changes what it says, never how many.
     expect(labels(["i1"]).filter((l) => l.endsWith("as PDF…"))).toHaveLength(1);
+  });
+
+  /**
+   * The image row sits directly under the PDF one, and the two have to agree
+   * about what they cover. One saying *the board* while its neighbour said
+   * *the selection* would read as a difference in what goes in the file rather
+   * than in what kind of file it is (T-206).
+   */
+  it("words the image row off the same selection as the PDF row beside it", () => {
+    const { invite } = sharing(null);
+    const labels = (held: readonly string[]): string[] =>
+      (
+        boardMenuRows(
+          scene,
+          write,
+          [],
+          held,
+          invite,
+          switching(true).ageing,
+          exporting().board,
+        ) as MenuRow[]
+      ).map((r) => r.label);
+
+    expect(labels([])).toContain(IMAGE);
+    expect(labels(["i1", "i2", "i3"])).toContain(IMAGE_SELECTION);
+    expect(labels(["i1"]).filter((l) => l.endsWith("as an image…"))).toHaveLength(1);
+    // Neither of them names a count, for Q-127's reason: the file is a region.
+    expect(labels(["i1", "i2", "i3"]).filter((l) => /\d/.test(l))).toEqual([]);
+  });
+
+  /**
+   * The picture is composited and written by the shell, and the document is not
+   * touched — the same standing every other row on this menu is held to.
+   */
+  it("asks the shell for the image, and writes nothing", () => {
+    const { invite } = sharing(null);
+    const shell = exporting();
+    const rows = boardMenuRows(
+      scene,
+      write,
+      [],
+      [],
+      invite,
+      switching(true).ageing,
+      shell.board,
+    ) as MenuRow[];
+
+    rows.find((r) => r.label === IMAGE)!.run();
+    expect(shell.asked).toEqual(["image"]);
+    expect(writes).toEqual([]);
   });
 
   it("does not name a count, because the file is a region and not a cutout", () => {
