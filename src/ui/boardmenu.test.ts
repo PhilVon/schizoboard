@@ -1016,4 +1016,71 @@ describe("the board menu on bare cork", () => {
     expect(labels.indexOf(EXPORT)).toBeLessThan(labels.indexOf(PDF));
     expect(labels.indexOf(PDF)).toBeLessThan(labels.indexOf(OPEN));
   });
+
+  /**
+   * T-210, Q-139. A shell that cannot write a PDF is not a shell that cannot
+   * export: `PrintToPdf` is WebView2's, and everything else here — the bundle,
+   * the image, opening a board — is a save dialog and a `write` that macOS and
+   * Linux have. So this is one row leaving and not the group.
+   */
+  describe("a shell that cannot print a PDF", () => {
+    const withoutPdf = () => {
+      const shell = exporting();
+      return { board: { ...shell.board, pdf: null }, asked: shell.asked };
+    };
+
+    it("drops only the PDF row, and keeps the other three", () => {
+      const { invite } = sharing(null);
+      const labels = (
+        boardMenuRows(
+          scene,
+          write,
+          [],
+          [],
+          invite,
+          switching(true).ageing,
+          withoutPdf().board,
+        ) as MenuRow[]
+      ).map((r) => r.label);
+      expect(labels).not.toContain(PDF);
+      expect(labels).toEqual(expect.arrayContaining([EXPORT, IMAGE, OPEN]));
+    });
+
+    /** The wording is off the selection either way — with the PDF row gone the
+     *  image row has no neighbour to agree with, and still has to be honest
+     *  about what the file will cover (Q-127). */
+    it("still says the image covers the selection when there is one", () => {
+      const { invite } = sharing(null);
+      const labels = (
+        boardMenuRows(
+          scene,
+          write,
+          [],
+          ["i1", "i2"],
+          invite,
+          switching(true).ageing,
+          withoutPdf().board,
+        ) as MenuRow[]
+      ).map((r) => r.label);
+      expect(labels).toContain(IMAGE_SELECTION);
+      expect(labels).not.toContain(PDF_SELECTION);
+    });
+
+    /** The row that is left has to be the one that works. */
+    it("asks the shell for an image and never for a PDF", () => {
+      const { invite } = sharing(null);
+      const shell = withoutPdf();
+      const rows = boardMenuRows(
+        scene,
+        write,
+        [],
+        [],
+        invite,
+        switching(true).ageing,
+        shell.board,
+      ) as MenuRow[];
+      rows.find((r) => r.label === IMAGE)!.run();
+      expect(shell.asked).toEqual(["image"]);
+    });
+  });
 });

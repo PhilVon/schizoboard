@@ -26,7 +26,9 @@ export async function initPlatform(): Promise<Platform> {
   if (instance) return instance;
   if (isTauri()) {
     const { TauriPlatform } = await import("@/platform/tauri");
-    instance = new TauriPlatform();
+    // Awaited rather than constructed, because the shell has to be asked what
+    // it is before the first right-click — see `TauriPlatform.create`.
+    instance = await TauriPlatform.create();
   } else {
     const { MockPlatform } = await import("@/platform/mock");
     instance = new MockPlatform();

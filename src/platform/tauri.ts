@@ -74,6 +74,38 @@ function readFrames(body: ArrayBuffer | Uint8Array): Uint8Array[] {
 export class TauriPlatform implements Platform {
   readonly kind = "tauri" as const;
 
+  readonly canPrintPdf: boolean;
+
+  private constructor(os: string) {
+    this.canPrintPdf = os === "windows";
+  }
+
+  /**
+   * Ask the shell what it is, then build one.
+   *
+   * The one thing this platform has to know before it is used rather than when
+   * it is called: whether a PDF is possible here (T-210). It decides whether a
+   * menu row exists, and the menu is built synchronously on a right-click, so
+   * the answer has to already be in hand.
+   *
+   * `app_info` is Rust's own `std::env::consts::OS`, which is the honest source
+   * — the alternative is reading the user agent, and a shell that knows should
+   * not be guessed at from a string. It had no consumer at all until now.
+   *
+   * A shell that will not answer leaves `canPrintPdf` false, and that is the
+   * safe direction: no row, rather than a row that opens a save dialog and then
+   * fails. Nothing else here depends on it, so a failure costs one menu entry
+   * and not a boot.
+   */
+  static async create(): Promise<TauriPlatform> {
+    try {
+      const info = await invoke<{ os: string }>("app_info");
+      return new TauriPlatform(info.os);
+    } catch {
+      return new TauriPlatform("");
+    }
+  }
+
   // Passing a Uint8Array as the whole payload sends it as a raw request body
   // rather than a JSON array of numbers — a third smaller and no serialisation
   // stall (ARCHITECTURE section 4.4).

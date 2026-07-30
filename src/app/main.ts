@@ -1612,7 +1612,10 @@ async function boot(): Promise<void> {
           ? {
               export: () => void exportBoard(),
               open: () => void openBundle(),
-              pdf: () => void printBoard(),
+              // The one row a platform can take away: `PrintToPdf` is
+              // WebView2's, so macOS and Linux get the image and no PDF row at
+              // all (T-210, Q-139).
+              pdf: native.canPrintPdf ? () => void printBoard() : null,
               image: () => void saveBoardImage(),
             }
           : null,
