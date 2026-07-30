@@ -680,19 +680,26 @@ Input uses coalesced pointer events, which recover every sample the OS delivered
 
 ### 6.6 Zoom and level of detail
 
-Two LOD tiers, both about removing the things that cost most at small scales:
+**One LOD tier**, about removing the things that cost most at small scales:
 
 - **Below 35% zoom** — items become simplified cards: flat paper, baked shadow, and writing laid down as a single text node rather than one transform box per character. Ink renders at quarter resolution.
-- **Below 20% zoom** — string draws as straight one-pixel chords with no sag, pins hide, board ink comes from tile thumbnails. Items are unchanged from the tier above.
 
-The second tier said 15% until the zoom floor was raised to 15% (§3.7, T-204), at which point it could be reached and never passed — a tier that cannot be entered. It is 20% now, which gives it the band from the floor to 20%, and that band is not a leftover: it is precisely where a board is at its heaviest (370 mounted items against 142 at 35%), and it is where its three clauses become defensible, since a rope's sag really is sub-pixel there and a pin really is four pixels across.
+**Detail varies with zoom; structure does not.** That is the rule, and it is why there is one tier here rather than the two this section used to have. What LOD may change is *how much of a thing is drawn*. What it may never change is *what exists, or where it is*. A board zoomed out is the same board: every item, every pin and every string is where you left it, drawn as faithfully as its size on screen can carry, and nothing appears or disappears because you moved the camera.
+
+There was a second tier, at 15% and then briefly at 20%: "items are flat coloured rectangles, string draws as straight one-pixel chords with no sag, pins hide, board ink comes from tile thumbnails". Every clause of it is gone, and by four different routes (Q-121):
+
+- **Flat rectangles** measured *identical* to a flat card, everywhere, once the glyph boxes were gone — and what the clause amounted to in practice, hiding the writing, cost a visible pop as the text came back a frame after the note it belonged to.
+- **Straight chords** and **hidden pins** are refused by the rule above: both are structure, not detail. A string that stops sagging has changed shape, and a pin that hides has stopped existing — and a board where things vanish as you pull away from it is not a simpler board, it is a different one.
+- **Board ink from tile thumbnails** was already true and never was work. Every tile rasters at `devicePixelRatio × zoom` (§6.5), so at the zoom floor a tile's canvas *is* a thumbnail by construction.
+
+An empty tier is a promise the code is not keeping, so it is out of the code as well as out of this section: `render/lod.ts` names two tiers, not three.
 
 The first tier originally said "text swapped for a pre-rasterised snapshot", on the grounds that live text layout is by far the largest cost when many items are visible. **That reason did not survive being measured** (D-33, Q-115). With 500 notes of real prose at 5% zoom the median frame is 194.5 ms — seven frames in a second and a half — and writing the text as one plain node takes that to 7.0 ms. Writing *no text at all* measures the same as writing it plainly, everywhere, within run-to-run noise. So the cost was never the layout; it was the 73,000 `inline-block` glyph boxes the handwriting jitter (§3.6) needs, against 7,100 nodes without them. A raster would have bought nothing over a plain node, at the price of a canvas per texted item, a re-raster on every keystroke, and a reimplementation of word wrapping the browser does for free.
 
 Two things follow, and both are in the tiers above rather than assumed:
 
 - **What costs is paint, not tree size.** Every variant measured had the same node count — `display: none` leaves a node where it is — and they differed by 375 ms against 104. So the flat card is a stylesheet keyed on one attribute, and the item layer's pooling, binding, hit-testing and ink canvases are untouched by LOD entirely. The exception is the handful of properties the view writes *inline* from an item's stock and seed — the silhouette clip path, the ruling, the sheet tint — which a stylesheet cannot reach and which are therefore switched where they are written.
-- **The bottom tier's items are worth nothing on top of the 35% tier's.** A flat rectangle measures the same as a flat card, so the clause that made items "flat coloured rectangles" — in practice, hiding the writing — has been dropped rather than built. It measured at zero and it cost something visible: text that is removed has to come back, and it comes back a frame after the board it belongs to, which reads as writing popping onto notes that are already on screen. The bottom tier's value is entirely in its other three clauses.
+- **A second, coarser tier for items buys nothing.** A flat rectangle measures the same as a flat card. That is what emptied the bottom tier of the one clause the consistency rule above had not already refused.
 
 **Detail arrives during a gesture and only leaves at rest**, and the asymmetry is deliberate (T-203). Changing tier on the frame the camera *stops* meant that zooming in held flat cards through the whole motion and then popped a hundred and forty sheets into full detail at the one moment nothing else on screen was moving — a change of appearance timed as badly as it can be. Detail now arrives while the board is in motion, which is where it cannot be watched arriving, and it arrives at a budget of a few items a frame: a tier rise catches far more items mounted than survive the gesture, and rebinding all of them at once measured at 493 ms against 49 ms for the sweep. Losing detail stays at the settle, where the frame is already repainting the world for the re-raster, and where a board simplifying as you pull away from it is not something anybody minds.
 

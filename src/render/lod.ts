@@ -1,17 +1,12 @@
 /**
  * Level of detail — how much of an item is worth drawing at this zoom.
  *
- * > Two LOD tiers, both about removing the things that cost most at small
- * > scales.
- * >
  * > **Below 35% zoom** — items become simplified cards: flat paper, baked
- * > shadow, and text swapped for a pre-rasterised snapshot. Live text layout is
- * > by far the largest cost when many items are visible. Ink renders at quarter
- * > resolution.
+ * > shadow, and writing laid down as a single text node rather than one
+ * > transform box per character. Ink renders at quarter resolution.
  * >
- * > **Below 15% zoom** — items are flat coloured rectangles, string draws as
- * > straight one-pixel chords with no sag, pins hide, board ink comes from tile
- * > thumbnails. — DESIGN section 6.6
+ * > Detail varies with zoom; structure does not. What exists on the board, and
+ * > where it is, is the same at every zoom. — DESIGN section 6.6
  *
  * This file is the *decision* only: which tier the camera is in, and when that
  * changes. What each tier looks like belongs to the layer that draws it.
@@ -82,33 +77,34 @@
  *   - `full` — everything. Paper grain, wear, tape, curl, per-glyph jitter.
  *   - `card` — a simplified card: flat paper, baked shadow, writing that is no
  *     longer one box per character.
- *   - `flat` — a coloured rectangle. No writing, no pins, no sag in a string.
+ *
+ * ## There were two tiers here and now there is one
+ *
+ * DESIGN 6.6 had a second, at 15% and then briefly at 20%: "items are flat
+ * coloured rectangles, string draws as straight one-pixel chords with no sag,
+ * pins hide, board ink comes from tile thumbnails". Every clause of it is gone,
+ * and by four different routes (Q-121):
+ *
+ *   - **flat rectangles** measured *identical* to a flat card, everywhere, once
+ *     the glyph boxes were gone (D-33 section 5) — and the hiding of the writing
+ *     that it amounted to in practice cost a visible pop as the text came back;
+ *   - **straight chords** and **hidden pins** were refused on principle, and the
+ *     principle is now in DESIGN 6.6: detail varies with zoom, structure does
+ *     not. What exists on the board and where it is does not change because you
+ *     moved the camera;
+ *   - **board ink from tile thumbnails** was already true and never was work.
+ *     `render/ink/board.ts` rasters every tile at `devicePixelRatio * zoom`, so
+ *     at 15% a tile's canvas *is* a thumbnail by construction.
+ *
+ * So the type has two members rather than three, and that is the honest shape: a
+ * third that behaved identically to `card` in every branch of this renderer was a
+ * promise the code was not keeping.
  */
-export type Tier = "full" | "card" | "flat";
+export type Tier = "full" | "card";
 
 /** DESIGN section 6.6 — "below 35% zoom", items become simplified cards. */
 export const CARD_ZOOM = 0.35;
 
-/**
- * The bottom tier's threshold — DESIGN section 6.6, and 20% rather than the 15%
- * the section first named (Q-120, T-204).
- *
- * It moved because `MIN_ZOOM` moved. The camera's floor was raised to 0.15 so the
- * board never mounts five hundred items at once, and 0.15 was also this number —
- * with an exclusive comparison, which meant the camera could reach the bottom
- * tier's threshold and never pass it. The tier was unreachable, and a section of
- * DESIGN that cannot be entered is worse than one that was never written.
- *
- * 20% gives it a real range of 15 to 20, which is not a leftover: it is precisely
- * the band where a board is at its heaviest, 370 mounted items on the bench board
- * against 142 at 35%. And it is where its three clauses become defensible —
- * a rope's sag really is sub-pixel there, and a pin really is four pixels across.
- *
- * The tier's fourth clause, "items are flat coloured rectangles", is not here and
- * was never built: it measured at zero against a flat card (D-33 section 5) and it
- * cost a visible pop, so DESIGN dropped it rather than this file implementing it.
- */
-export const FLAT_ZOOM = 0.2;
 
 /**
  * The far edge of the hysteresis band, as a fraction of the threshold.
@@ -138,7 +134,6 @@ function below(zoom: number, threshold: number, wasBelow: boolean): boolean {
  * (T-194, T-155).
  */
 export function tierAt(zoom: number, previous: Tier): Tier {
-  if (below(zoom, FLAT_ZOOM, previous === "flat")) return "flat";
   if (below(zoom, CARD_ZOOM, previous !== "full")) return "card";
   return "full";
 }
@@ -152,7 +147,7 @@ export function tierAt(zoom: number, previous: Tier): Tier {
  * is being handed: a rise owes every mounted item its detail, a fall owes
  * nothing.
  */
-export const DETAIL: Record<Tier, number> = { full: 2, card: 1, flat: 0 };
+export const DETAIL: Record<Tier, number> = { full: 1, card: 0 };
 
 /** Told when the camera settles into a different tier. Never called on a hold. */
 export type TierListener = (tier: Tier) => void;
@@ -207,9 +202,8 @@ export class Lod {
    * symmetry:
    *
    *   - **Rising is cheap.** It happens at a zoom where the camera is closing in
-   *     and the culler has fewer items mounted, and — since the `flat` and `card`
-   *     tiers became identical for items — the only rise that costs anything at
-   *     all is `card` to `full`.
+   *     and the culler has fewer items mounted, and there is only one rise there
+   *     is to make: `card` to `full`.
    *   - **Falling is expensive.** It happens at a zoom where five hundred items
    *     are mounted, and the settle frame is the one already repainting the whole
    *     world subtree for the demote. There is nothing to gain by moving it, and a
