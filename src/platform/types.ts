@@ -128,8 +128,6 @@ export interface PdfPage {
    *  the format's own 200-inch limit. */
   width: number;
   height: number;
-  /** The board's title, as a suggested filename. Reduced by Rust before use. */
-  title: string;
 }
 
 export type ClipboardKind = "image" | "text" | "html" | "files";
@@ -331,24 +329,35 @@ export interface Platform {
 
   // --- export (T-207) -----------------------------------------------------
   /**
-   * Print the board into a PDF, one page of the given size in inches.
-   *
-   * The *whole* of what crosses is a page and a name, because the drawing is
-   * already done by the time this is called: the shell asks its own webview to
-   * print itself, so what lands in the file is whatever is on screen at that
-   * moment. `app/exportPdf.ts` is what makes that moment the right one — the
-   * camera, the canvases and the detail tier are put where the page needs them
-   * first, and put back after.
+   * Ask the user where a PDF of the board should go. `false` is a cancelled
+   * dialog — an ordinary outcome, and nothing has moved.
    *
    * Takes no destination, on the standing `assetExport` and `bundleSaveAs` both
-   * set out. `title` is a *suggestion* Rust reduces to a filename before the
-   * save dialog shows it.
+   * set out, and does not hand one back either: the path stays in the shell
+   * between this and `exportPdfWrite`. `title` is a *suggestion* Rust reduces
+   * to a filename before the save dialog shows it.
    *
-   * Resolves `null` for a cancelled dialog and the saved path otherwise — a
-   * string to show a person ("saved to …"), not a handle: no command on the
-   * other side takes a path back.
+   * Separate from the write because the board has to be posed for the page
+   * before the print happens, and posing it while somebody is still typing a
+   * filename would mean the window zooms out to answer a question about a file.
    */
-  exportPdf(page: PdfPage): Promise<string | null>;
+  exportPdfChoose(title: string): Promise<boolean>;
+
+  /**
+   * Print the board into the file already chosen, one page of the given size in
+   * inches, and resolve where it went.
+   *
+   * The *whole* of what crosses is a page, because the drawing is already done
+   * by the time this is called: the shell asks its own webview to print itself,
+   * so what lands in the file is whatever is on screen at that moment.
+   * `app/exportPdf.ts` is what makes that moment the right one — the camera,
+   * the canvases and the detail tier are put where the page needs them first,
+   * and put back after.
+   *
+   * The path comes back as a string to show a person ("saved to …") and not as
+   * a handle: no command on the other side takes one.
+   */
+  exportPdfWrite(page: PdfPage): Promise<string>;
 
   // --- clipboard ---------------------------------------------------------
   clipboardReadManifest(): Promise<ClipboardManifest>;

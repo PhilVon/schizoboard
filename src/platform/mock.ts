@@ -218,7 +218,11 @@ export class MockPlatform implements Platform {
    * point of T-205 is that the page is the shape of the board. That is the same
    * reason Q-128 turned the print dialog down as the route.
    */
-  exportPdf(): Promise<string | null> {
+  exportPdfChoose(): Promise<boolean> {
+    return unavailable("Exporting a board as a PDF");
+  }
+
+  exportPdfWrite(): Promise<string> {
     return unavailable("Exporting a board as a PDF");
   }
 

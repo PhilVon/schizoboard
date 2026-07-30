@@ -11,14 +11,14 @@
  *     argument silently undone.
  *
  * So the interesting assertions are not about the return value. They are about
- * what the stage looked like *at the instant `print` was called* — recorded
- * from inside the print — and about what it looks like after every way this can
+ * what the stage looked like *at the instant `write` was called* — recorded
+ * from inside the write — and about what it looks like after every way this can
  * end, including the two that are not success.
  */
 
 import { describe, expect, it, vi } from "vitest";
 
-import { exportPdf, type Stage } from "@/app/exportPdf";
+import { exportPdf, type PdfWriter, type Stage } from "@/app/exportPdf";
 import type { PdfPage } from "@/platform/types";
 import type { Bounds } from "@/state/scene";
 
@@ -69,28 +69,42 @@ function recorder(): Recorder {
   return out;
 }
 
+/** A shell that agrees to the dialog and writes wherever it is told. */
+function writer(write: PdfWriter["write"] = async () => "C:/somewhere/Board.pdf"): PdfWriter {
+  return { choose: async () => true, write };
+}
+
 /** The camera as it stands, for comparing against where it started. */
 const pose = (stage: Stage): Record<string, number> => ({ ...stage.camera });
 
-describe("a board with nothing on it", () => {
-  it("is not an export, and nothing is touched", async () => {
-    const r = recorder();
-    const print = vi.fn();
+/** Untouched: the stage as `recorder` built it, nothing called on it. */
+const untouched = (r: Recorder): void => {
+  expect(pose(r.stage)).toEqual({ x: 100, y: 50, zoom: 1, width: 1440, height: 900, version: 7 });
+  expect(r.holds).toBe(0);
+  expect(r.canvases).toEqual([]);
+  expect(r.settled).toEqual([]);
+  expect(r.redraws).toBe(0);
+};
 
-    const outcome = await exportPdf(r.stage, null, "Board", print);
+describe("a board with nothing on it", () => {
+  it("is not an export, and nobody is asked where to put it", async () => {
+    const r = recorder();
+    const choose = vi.fn(async () => true);
+    const write = vi.fn(async () => "C:/somewhere/Board.pdf");
+
+    const outcome = await exportPdf(r.stage, null, "Board", { choose, write });
 
     expect(outcome).toEqual({ done: "empty" });
-    expect(print).not.toHaveBeenCalled();
-    expect(r.holds).toBe(0);
-    expect(r.canvases).toEqual([]);
-    expect(pose(r.stage)).toEqual({ x: 100, y: 50, zoom: 1, width: 1440, height: 900, version: 7 });
+    expect(choose).not.toHaveBeenCalled();
+    expect(write).not.toHaveBeenCalled();
+    untouched(r);
   });
 });
 
 describe("what the board looks like at the moment it is printed", () => {
   /**
    * The one that matters. A print lays out at the paper width and fires no
-   * resize, so if the pose is not already in place when `print` is called the
+   * resize, so if the pose is not already in place when `write` is called the
    * file is the board as it was — which is exactly how the first PDF came out
    * (D-36).
    */
@@ -100,13 +114,18 @@ describe("what the board looks like at the moment it is printed", () => {
     let heldAtPrint = 0;
     let canvasesAtPrint: Array<[number, number]> = [];
 
-    await exportPdf(r.stage, board(0, 0, 2000, 1000), "Board", async (page): Promise<string> => {
-      atPrint = pose(r.stage);
-      heldAtPrint = r.holds - r.releases;
-      canvasesAtPrint = [...r.canvases];
-      expect(page.width).toBeCloseTo((2000 + 2 * 48) / 96, 5);
-      return "C:/somewhere/Board.pdf";
-    });
+    await exportPdf(
+      r.stage,
+      board(0, 0, 2000, 1000),
+      "Board",
+      writer(async (page): Promise<string> => {
+        atPrint = pose(r.stage);
+        heldAtPrint = r.holds - r.releases;
+        canvasesAtPrint = [...r.canvases];
+        expect(page.width).toBeCloseTo((2000 + 2 * 48) / 96, 5);
+        return "C:/somewhere/Board.pdf";
+      }),
+    );
 
     // 2000 x 1000 of board plus a 48-unit margin either side, at the scale of 1
     // `exportPage` uses — the page is the board and the camera is derived from
@@ -121,11 +140,16 @@ describe("what the board looks like at the moment it is printed", () => {
     let framesAtPrint = 0;
     let redrawsAtPrint = 0;
 
-    await exportPdf(r.stage, board(0, 0, 800, 600), "Board", async () => {
-      framesAtPrint = r.framesAwaited;
-      redrawsAtPrint = r.redraws;
-      return "C:/somewhere/Board.pdf";
-    });
+    await exportPdf(
+      r.stage,
+      board(0, 0, 800, 600),
+      "Board",
+      writer(async () => {
+        framesAtPrint = r.framesAwaited;
+        redrawsAtPrint = r.redraws;
+        return "C:/somewhere/Board.pdf";
+      }),
+    );
 
     expect(framesAtPrint).toBeGreaterThanOrEqual(3);
     expect(redrawsAtPrint).toBe(1);
@@ -142,10 +166,15 @@ describe("what the board looks like at the moment it is printed", () => {
     const r = recorder();
     let versionAtPrint = 0;
 
-    await exportPdf(r.stage, board(0, 0, 800, 600), "Board", async () => {
-      versionAtPrint = r.stage.camera.version;
-      return "C:/somewhere/Board.pdf";
-    });
+    await exportPdf(
+      r.stage,
+      board(0, 0, 800, 600),
+      "Board",
+      writer(async () => {
+        versionAtPrint = r.stage.camera.version;
+        return "C:/somewhere/Board.pdf";
+      }),
+    );
 
     expect(versionAtPrint).toBe(8);
   });
@@ -154,42 +183,51 @@ describe("what the board looks like at the moment it is printed", () => {
     const r = recorder();
     let settledAtPrint: number[] = [];
 
-    await exportPdf(r.stage, board(0, 0, 4000, 4000), "Board", async () => {
-      settledAtPrint = [...r.settled];
-      return "C:/somewhere/Board.pdf";
-    });
+    await exportPdf(
+      r.stage,
+      board(0, 0, 4000, 4000),
+      "Board",
+      writer(async () => {
+        settledAtPrint = [...r.settled];
+        return "C:/somewhere/Board.pdf";
+      }),
+    );
 
     expect(settledAtPrint).toEqual([r.stage.camera.zoom]);
   });
 });
 
 describe("what crosses to the shell", () => {
-  it("is a page in inches and a name, and never a path", async () => {
+  it("is a name first, and then a page in inches — never a path", async () => {
     const r = recorder();
     const seen: PdfPage[] = [];
+    const asked: string[] = [];
 
-    await exportPdf(r.stage, board(0, 0, 1920, 960), "Holiday plans", async (page) => {
-      seen.push(page);
-      return "C:/somewhere/Holiday plans.pdf";
+    await exportPdf(r.stage, board(0, 0, 1920, 960), "Holiday plans", {
+      choose: async (title) => {
+        asked.push(title);
+        return true;
+      },
+      write: async (page) => {
+        seen.push(page);
+        return "C:/somewhere/Holiday plans.pdf";
+      },
     });
 
+    expect(asked).toEqual(["Holiday plans"]);
     expect(seen).toHaveLength(1);
-    expect(seen[0].title).toBe("Holiday plans");
     // 1920 + 96 of margin at 96 CSS pixels to the inch.
     expect(seen[0].width).toBeCloseTo(21, 5);
     expect(seen[0].height).toBeCloseTo(11, 5);
-    expect(Object.keys(seen[0]).sort()).toEqual(["height", "title", "width"]);
+    // The page and nothing else. A path in either direction is the one thing
+    // ARCHITECTURE section 4.4 does not allow across this boundary.
+    expect(Object.keys(seen[0]).sort()).toEqual(["height", "width"]);
   });
 
   it("reports where it went, and how big the page was", async () => {
     const r = recorder();
 
-    const outcome = await exportPdf(
-      r.stage,
-      board(0, 0, 1920, 960),
-      "Board",
-      async () => "C:/somewhere/Board.pdf",
-    );
+    const outcome = await exportPdf(r.stage, board(0, 0, 1920, 960), "Board", writer());
 
     expect(outcome.done).toBe("saved");
     if (outcome.done !== "saved") return;
@@ -206,16 +244,47 @@ describe("what crosses to the shell", () => {
   it("says when a ceiling brought the scale down", async () => {
     const r = recorder();
 
-    const outcome = await exportPdf(
-      r.stage,
-      board(0, 0, 40_000, 20_000),
-      "Board",
-      async () => "C:/somewhere/Board.pdf",
-    );
+    const outcome = await exportPdf(r.stage, board(0, 0, 40_000, 20_000), "Board", writer());
 
     if (outcome.done !== "saved") throw new Error(`expected a saved file, got ${outcome.done}`);
     expect(outcome.view.reduced).toBe(true);
     expect(outcome.view.inches.width).toBeLessThanOrEqual(200);
+  });
+});
+
+describe("a cancelled dialog", () => {
+  /**
+   * Q-132's answer, and the reason the shell's side is two commands. Asking
+   * first means cancelling is free: no pose, no re-pose, and no window zooming
+   * out to its own bounds while somebody is typing a filename.
+   */
+  it("never moves the board at all", async () => {
+    const r = recorder();
+    const write = vi.fn(async () => "C:/somewhere/Board.pdf");
+
+    const outcome = await exportPdf(r.stage, board(0, 0, 2000, 1000), "Board", {
+      choose: async () => false,
+      write,
+    });
+
+    expect(outcome).toEqual({ done: "cancelled" });
+    expect(write).not.toHaveBeenCalled();
+    untouched(r);
+  });
+
+  it("is not confused with a shell that could not open a dialog", async () => {
+    const r = recorder();
+
+    await expect(
+      exportPdf(r.stage, board(0, 0, 2000, 1000), "Board", {
+        choose: async () => {
+          throw new Error("Exporting a board as a PDF needs the native shell");
+        },
+        write: async () => "C:/somewhere/Board.pdf",
+      }),
+    ).rejects.toThrow("needs the native shell");
+
+    untouched(r);
   });
 });
 
@@ -224,29 +293,12 @@ describe("the board afterwards", () => {
     const r = recorder();
     const before = pose(r.stage);
 
-    await exportPdf(
-      r.stage,
-      board(0, 0, 2000, 1000),
-      "Board",
-      async () => "C:/somewhere/Board.pdf",
-    );
+    await exportPdf(r.stage, board(0, 0, 2000, 1000), "Board", writer());
 
     expect(pose(r.stage)).toEqual({ ...before, version: 9 });
     expect(r.canvases.at(-1)).toEqual([1440, 900]);
     expect(r.settled.at(-1)).toBe(1);
     expect(r.holds).toBe(1);
-    expect(r.releases).toBe(1);
-  });
-
-  it("is exactly where it was, after the dialog was cancelled", async () => {
-    const r = recorder();
-    const before = pose(r.stage);
-
-    const outcome = await exportPdf(r.stage, board(0, 0, 2000, 1000), "Board", async () => null);
-
-    expect(outcome).toEqual({ done: "cancelled" });
-    expect(pose(r.stage)).toEqual({ ...before, version: 9 });
-    expect(r.canvases.at(-1)).toEqual([1440, 900]);
     expect(r.releases).toBe(1);
   });
 
@@ -261,9 +313,14 @@ describe("the board afterwards", () => {
     const before = pose(r.stage);
 
     await expect(
-      exportPdf(r.stage, board(0, 0, 2000, 1000), "Board", async () => {
-        throw new Error("this WebView2 runtime cannot print to PDF");
-      }),
+      exportPdf(
+        r.stage,
+        board(0, 0, 2000, 1000),
+        "Board",
+        writer(async () => {
+          throw new Error("this WebView2 runtime cannot print to PDF");
+        }),
+      ),
     ).rejects.toThrow("cannot print to PDF");
 
     expect(pose(r.stage)).toEqual({ ...before, version: 9 });

@@ -38,16 +38,45 @@
 //! that (D-36). The camera, the screen-space canvases and the detail tier are
 //! set by `app/exportPdf.ts` before this is invoked and put back after, because
 //! all three are schema and Rust owns no schema (ARCHITECTURE section 4).
+//!
+//! ## Why this is two commands rather than one
+//!
+//! Because the board has to be posed for the page *before* the print, and the
+//! print happens the instant the dialog closes. One command meant the board was
+//! already zoomed out to its own bounds while the user was still typing a
+//! filename — and a cancelled dialog had cost a full re-pose of the board for
+//! nothing, which is the common case.
+//!
+//! So: [`export_pdf_choose`] asks, and [`export_pdf_write`] prints. The path
+//! lives in [`PendingExport`] between them and **never crosses the boundary**,
+//! which is the whole of ARCHITECTURE section 4.4's rule and the only reason
+//! this is not simply `export_pdf(path, page)`. What the webview can do with
+//! the pair is bounded and dull: `write` without a `choose` finds an empty slot
+//! and fails, a second `write` finds the slot already taken and fails, and a
+//! second `choose` replaces a path nobody used with one the user has just
+//! agreed to. None of those is a file it named.
+
+use std::path::PathBuf;
+use std::sync::Mutex;
 
 use serde::Deserialize;
-use tauri::AppHandle;
+use tauri::{AppHandle, Manager};
 use tauri_plugin_dialog::DialogExt;
+
+/// Where the next export is going, between the dialog and the print.
+///
+/// One slot, and the last answer wins. A `choose` whose `write` never came is
+/// not a leak worth cleaning up after: it is a path, it is overwritten by the
+/// next `choose`, and — unlike the arrangement where the dialog came second —
+/// nothing has been written to it.
+#[derive(Default)]
+pub struct PendingExport(Mutex<Option<PathBuf>>);
 
 /// A PDF page may be 200 inches a side, which is the format's own limit rather
 /// than a policy of ours.
 const MAX_PAGE_INCHES: f64 = 200.0;
 
-/// The page, and a name to suggest for it.
+/// The page.
 ///
 /// Inches because that is what both ends of this speak: `ExportView.inches` is
 /// computed from the board's own units in `app/export.ts`, and
@@ -57,11 +86,6 @@ const MAX_PAGE_INCHES: f64 = 200.0;
 pub struct PageSpec {
     width: f64,
     height: f64,
-    /// The board's title, on exactly the standing `origName` has in
-    /// `asset_export`: a caller-supplied string that crosses as a *name*, which
-    /// is the difference that makes it safe, and that `safe_stem` reduces to a
-    /// bare filename before a dialog ever shows it.
-    title: String,
 }
 
 impl PageSpec {
@@ -83,19 +107,19 @@ impl PageSpec {
     }
 }
 
-/// Export the board as a PDF, and answer with where it went.
+/// Ask the user where the PDF should go, and remember the answer.
 ///
-/// `Ok(None)` is a cancelled dialog — an ordinary outcome and not a failure,
-/// the same shape `bundle_save_as` returns.
+/// `false` is a cancelled dialog — an ordinary outcome and not a failure, the
+/// same thing `asset_export`'s `false` and `bundle_save_as`'s `null` mean.
+/// Nothing is written and nothing on the board need move.
 ///
-/// The path is returned as a *string for a person to read* ("saved to …"), not
-/// as a handle: nothing the frontend can do with it reaches this side again,
-/// because no command here takes a path.
+/// `title` is the board's, on exactly the standing `origName` has in
+/// `asset_export`: a caller-supplied string that crosses as a *name*, which is
+/// the difference that makes it safe, and that `safe_stem` reduces to a bare
+/// filename before the dialog ever shows it.
 #[tauri::command]
-pub async fn export_pdf(app: AppHandle, spec: PageSpec) -> Result<Option<String>, String> {
-    let (width, height) = spec.checked()?;
-
-    let stem = crate::assets::safe_stem(&spec.title).unwrap_or_else(|| "board".to_string());
+pub async fn export_pdf_choose(app: AppHandle, title: String) -> Result<bool, String> {
+    let stem = crate::assets::safe_stem(&title).unwrap_or_else(|| "board".to_string());
 
     // Off the main thread, or the dialog asks the main thread to open it and
     // then waits for it. See `asset_export`.
@@ -113,12 +137,38 @@ pub async fn export_pdf(app: AppHandle, spec: PageSpec) -> Result<Option<String>
     .map_err(|e| e.to_string())?;
 
     let Some(dest) = picked else {
-        return Ok(None);
+        return Ok(false);
     };
     let dest = dest.into_path().map_err(|e| e.to_string())?;
 
+    *app.state::<PendingExport>().0.lock().expect("export lock") = Some(dest);
+    Ok(true)
+}
+
+/// Print the board into the file the user chose, and answer with where it went.
+///
+/// The board must be posed for `page` by the time this is called — see the
+/// module note and `app/exportPdf.ts`.
+///
+/// The path comes back as a *string for a person to read* ("saved to …") and
+/// not as a handle: nothing the frontend can do with it reaches this side
+/// again, because no command here takes one.
+#[tauri::command]
+pub async fn export_pdf_write(app: AppHandle, page: PageSpec) -> Result<String, String> {
+    // Checked before the slot is emptied, so a page this side refuses does not
+    // also throw away a location the user has already agreed to.
+    let (width, height) = page.checked()?;
+
+    let dest = app
+        .state::<PendingExport>()
+        .0
+        .lock()
+        .expect("export lock")
+        .take()
+        .ok_or_else(|| "nowhere to write: no export has been chosen".to_string())?;
+
     print_to_pdf(&app, &dest, width, height).await?;
-    Ok(Some(dest.to_string_lossy().into_owned()))
+    Ok(dest.to_string_lossy().into_owned())
 }
 
 /// Ask the webview to print itself into a file.
@@ -268,7 +318,7 @@ mod tests {
     use super::*;
 
     fn spec(width: f64, height: f64) -> PageSpec {
-        PageSpec { width, height, title: "board".into() }
+        PageSpec { width, height }
     }
 
     #[test]

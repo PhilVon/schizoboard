@@ -1177,7 +1177,10 @@ async function boot(): Promise<void> {
         stage,
         exportBounds(scene, selection.members),
         boardTitle(board),
-        (page) => native.exportPdf(page),
+        {
+          choose: (title) => native.exportPdfChoose(title),
+          write: (page) => native.exportPdfWrite(page),
+        },
       );
       if (outcome.done === "cancelled") return;
       if (outcome.done === "empty") {

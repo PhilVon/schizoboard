@@ -29,18 +29,19 @@
  * `finally` around everything after the first mutation, and it runs whether the
  * print worked, failed, or was cancelled at the dialog.
  *
- * ## Why the board poses before the dialog rather than after
+ * ## Ask first, then pose
  *
- * The save dialog is on the far side of one command — Rust opens it and then
- * prints, because the renderer must never name a file (ARCHITECTURE section
- * 4.4) — so by the time anything on this side could hear that a path was
- * chosen, the print has already happened. The board is therefore already in its
- * export pose while the user is typing a filename.
+ * The save dialog is `choose` and the print is `write`, two commands with the
+ * chosen path held in the shell between them (`src-tauri/src/print.rs`), and
+ * the reason for the pair is this ordering. A single command would have had to
+ * open the dialog and print the instant it closed, which means the board is
+ * already zoomed out to its own bounds while somebody is still typing a
+ * filename — the window answering a question about a file by rearranging
+ * itself. It also made the *common* case the expensive one: a cancelled dialog
+ * had cost a full re-pose of the board and a re-pose back, for nothing.
  *
- * Which reads, deliberately, as a preview: the window shows exactly the framing
- * that is about to be in the file, and cancelling puts it straight back. The
- * alternative is a three-command handshake with a path parked in shell state
- * between two of them, to avoid a second of the board being zoomed out.
+ * So nothing here touches the board until there is a file to write. Cancelling
+ * is now free and invisible, which is what cancelling ought to be.
  */
 
 import type { PdfPage } from "@/platform/types";
@@ -100,7 +101,8 @@ export interface Stage {
 export type PdfOutcome =
   /** Nothing on the board, so nothing to take a picture of. */
   | { readonly done: "empty" }
-  /** The user closed the save dialog. An ordinary outcome, and says nothing. */
+  /** The user closed the save dialog. An ordinary outcome, and the board never
+   *  moved — nothing to say and nothing to put back. */
   | { readonly done: "cancelled" }
   | { readonly done: "saved"; readonly path: string; readonly view: ExportView };
 
@@ -117,6 +119,17 @@ export type PdfOutcome =
 const SETTLING_FRAMES = 3;
 
 /**
+ * The two halves of the shell's side, in the order they happen.
+ *
+ * `choose` resolves false for a cancelled dialog; `write` prints into whatever
+ * `choose` settled on and resolves the path it went to.
+ */
+export interface PdfWriter {
+  choose(title: string): Promise<boolean>;
+  write(page: PdfPage): Promise<string>;
+}
+
+/**
  * Export the board — or the selection, if there is one — as a PDF.
  *
  * `bounds` is `exportBounds(scene, selection)`, taken by the caller because the
@@ -126,10 +139,14 @@ export async function exportPdf(
   stage: Stage,
   bounds: Bounds | null,
   title: string,
-  print: (page: PdfPage) => Promise<string | null>,
+  writer: PdfWriter,
   limits: ExportLimits = {},
 ): Promise<PdfOutcome> {
   if (bounds === null) return { done: "empty" };
+
+  // Before anything moves. Everything below this line has to be undone; nothing
+  // above it does, which is what makes a cancelled export cost nothing.
+  if (!(await writer.choose(title))) return { done: "cancelled" };
 
   const view = exportPage(bounds, limits);
 
@@ -158,12 +175,11 @@ export async function exportPdf(
     stage.redraw();
     await stage.frames(SETTLING_FRAMES);
 
-    const path = await print({
+    const path = await writer.write({
       width: view.inches.width,
       height: view.inches.height,
-      title,
     });
-    return path === null ? { done: "cancelled" } : { done: "saved", path, view };
+    return { done: "saved", path, view };
   } finally {
     release();
     stage.camera.x = before.x;
