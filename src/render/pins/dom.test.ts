@@ -200,3 +200,116 @@ describe("PinLayer.hitTest", () => {
     expect(layer.hitTest(scene, camera, 200, 200)).toBe("p");
   });
 });
+
+/**
+ * T-214. The export was built on "only the items are DOM" — a sentence in D-34,
+ * D-37 and `render/items/raster.ts` — and this layer is DOM too. So an image
+ * export of a corkboard came back with the string running to nothing and not
+ * one pushpin in it, while reporting that every item had been drawn.
+ */
+describe("drawing the pins into an export", () => {
+  /** A sprite that is a bitmap rather than nothing, which happy-dom's canvas
+   *  cannot be. Named so the assertions can say which pin got which. */
+  const sprites = (): ((kind: string, color: string) => { url: string; canvas: unknown }) => {
+    const made = new Map<string, { url: string; canvas: unknown }>();
+    return (kind: string, color: string) => {
+      const key = `${kind}|${color}`;
+      let hit = made.get(key);
+      if (!hit) {
+        hit = { url: `bake:${key}`, canvas: { key } };
+        made.set(key, hit);
+      }
+      return hit;
+    };
+  };
+
+  /** Every `drawImage` the pass made, as the four numbers that matter. */
+  function recorder(): {
+    ctx: { drawImage: (...args: unknown[]) => void };
+    calls: { key: unknown; x: number; y: number; w: number; h: number }[];
+  } {
+    const calls: { key: unknown; x: number; y: number; w: number; h: number }[] = [];
+    return {
+      ctx: {
+        drawImage: (...args: unknown[]) => {
+          const [image, x, y, w, h] = args as [{ key: string }, number, number, number, number];
+          calls.push({ key: image.key, x, y, w, h });
+        },
+      },
+      calls,
+    };
+  }
+
+  const draw = (
+    view: { x: number; y: number; zoom: number },
+    sprite = sprites(),
+  ): ReturnType<typeof recorder> & { drawn: number } => {
+    const rec = recorder();
+    const drawn = layer.drawInto(
+      rec.ctx as never,
+      scene,
+      view,
+      sprite as never,
+    );
+    return { ...rec, drawn };
+  };
+
+  /** The sprite's centre is the pin's board position — `sprite.ts` anchors on
+   *  the head so a string genuinely appears to pass beneath it. */
+  it("centres the sprite on the pin, at the export camera", () => {
+    scene.putPin(pin("p", 300, 200));
+    const { calls, drawn } = draw({ x: 100, y: 100, zoom: 2 });
+
+    expect(drawn).toBe(1);
+    // 30 board units at 2x, and the clamp does not bite there.
+    expect(calls[0]!.w).toBe(60);
+    expect(calls[0]!.h).toBe(60);
+    expect(calls[0]!.x).toBe((300 - 100) * 2 - 30);
+    expect(calls[0]!.y).toBe((200 - 100) * 2 - 30);
+  });
+
+  /**
+   * The whole reason this walks `scene.pins` rather than the mounted views: an
+   * export frames the board and the window was framing something else, so what
+   * is mounted is whatever the user happened to be looking at.
+   */
+  it("draws every pin on the board, not the ones the window had mounted", () => {
+    scene.putPin(pin("here", 10, 10));
+    scene.putPin(pin("far", 90_000, 90_000));
+    sync();
+    expect(layer.mounted).toBe(1);
+
+    expect(draw({ x: 0, y: 0, zoom: 1 }).drawn).toBe(2);
+  });
+
+  /**
+   * The clamp is not decoration in an export either: a board scaled down to fit
+   * the canvas ceiling is exactly the file that would otherwise lose its pins
+   * to a fraction of a pixel.
+   */
+  it("keeps a pin visible on a board scaled right down", () => {
+    scene.putPin(pin("p", 0, 0));
+    expect(draw({ x: 0, y: 0, zoom: 0.02 }).calls[0]!.w).toBe(MIN_PIN_PX);
+    expect(draw({ x: 0, y: 0, zoom: 40 }).calls[0]!.w).toBe(MAX_PIN_PX);
+  });
+
+  it("takes one bake per kind and colour, however many pins wear it", () => {
+    const sprite = sprites();
+    for (let i = 0; i < 5; i++) scene.putPin(pin(`p${i}`, i * 40, 0));
+    const { calls } = draw({ x: 0, y: 0, zoom: 1 }, sprite);
+    expect(calls).toHaveLength(5);
+    expect(new Set(calls.map((c) => c.key)).size).toBe(1);
+  });
+
+  /** No 2D context is a bake of nothing, and drawing nothing is better than
+   *  drawing a black square — the answer `bind` already gives the element. */
+  it("draws nothing for a sprite that could not be baked", () => {
+    scene.putPin(pin("p", 0, 0));
+    const { calls, drawn } = draw({ x: 0, y: 0, zoom: 1 }, (() => ({
+      url: "",
+      canvas: null,
+    })) as never);
+    expect(drawn).toBe(0);
+    expect(calls).toEqual([]);
+  });
+});

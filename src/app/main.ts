@@ -1308,6 +1308,12 @@ async function boot(): Promise<void> {
             { name: "ropes-under", paint: (ctx) => ropesUnder.drawInto(ctx, scene, ropes, camera) },
             { name: "items", paint: (ctx, view) => items.rasterise(scene, ctx, view) },
             { name: "ropes-over", paint: (ctx) => ropesOver.drawInto(ctx, scene, ropes, camera) },
+            // Last, where DESIGN section 6.2 puts this layer: above the items
+            // and above both rope canvases, because a pin is physically on top
+            // of what it holds. It was missing entirely until T-214 — the
+            // export was built on "only the items are DOM", and the pins are
+            // DOM too.
+            { name: "pins", paint: (ctx, view) => pins.drawInto(ctx, scene, view) },
           ],
           now: () => performance.now(),
           /**

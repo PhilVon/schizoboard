@@ -36,7 +36,13 @@
 
 import "@/render/pins/pins.css";
 
-import { HEAD_FRACTION, pinSprite, type PinKind } from "@/render/pins/sprite";
+import type { CameraPose } from "@/render/cork";
+import {
+  HEAD_FRACTION,
+  pinSprite,
+  type PinKind,
+  type PinSprite,
+} from "@/render/pins/sprite";
 import type { Camera } from "@/state/camera";
 import type { DirtySets } from "@/state/dirty";
 import type { Scene } from "@/state/scene";
@@ -94,6 +100,15 @@ export function pinHitRadius(zoom: number): number {
 function round(value: number): number {
   return Math.round(value * 100) / 100;
 }
+
+/**
+ * The part of a canvas context an export's pin pass touches.
+ *
+ * Narrow for the same reason `RasterTarget` is: placement, size and how many
+ * pins reached the file are all readable from the calls made against this, and
+ * none of them needs a real canvas.
+ */
+export type PinTarget = Pick<CanvasRenderingContext2D, "drawImage">;
 
 class PinView {
   readonly el: HTMLDivElement;
@@ -215,6 +230,66 @@ export class PinLayer {
       view.place(sx, sy, size);
       view.hover(id === hovered);
     }
+  }
+
+  /**
+   * EXPORT. Draw every pin into `ctx` at an export camera (T-214).
+   *
+   * The sixth painter, and it exists because "only the items are DOM" — the
+   * sentence D-34, D-37 and `render/items/raster.ts` were all written on — was
+   * not true. This layer is DOM as well, and it had no painter, so an image
+   * export of a corkboard came back with the string running to nothing and not
+   * a pushpin in it. The PDF route never had the fault, because Chromium prints
+   * the live document.
+   *
+   * ## Three things this owes to the layer above rather than to the export
+   *
+   * 1. **It walks the scene, not the mounted views.** A pin outside the
+   *    viewport has no node at all, and an export frames the whole board — so
+   *    drawing what is mounted would draw whatever the window happened to be
+   *    looking at.
+   * 2. **The size is `pinScreenSize` of the export's own zoom.** Not a
+   *    board-unit constant: the clamp is what keeps a pin visible on a board
+   *    scaled down to fit a canvas ceiling, which is exactly the export that
+   *    would otherwise lose them. At the ordinary 2× it does not bite at all,
+   *    and a pin comes out at its true `PIN_BOARD_SIZE`.
+   * 3. **The sprite is the bake, not its data URL.** Same cache the layer
+   *    fills, so a board of one colour bakes once for the screen and the file
+   *    both.
+   *
+   * Last of the six, because that is where DESIGN section 6.2 puts this layer:
+   * above the items and above both rope canvases, since a pin is physically on
+   * top of what it holds. Nothing here interleaves with paint order inside the
+   * item layer, and it must not — pins have no paint order of their own.
+   */
+  drawInto(
+    ctx: PinTarget,
+    scene: Scene,
+    camera: CameraPose,
+    /**
+     * How a kind and a colour become pixels.
+     *
+     * A seam for one reason, and it is not elegance: happy-dom hands back no 2D
+     * context, so every bake there is `{ url: "", canvas: null }` and a test
+     * against the real one would assert that nothing is drawn — while passing.
+     * The bake itself is checked in `sprite.test.ts`; what this needs to prove
+     * is where each pin lands and how big it is.
+     */
+    sprite: (kind: PinKind, color: string) => PinSprite = pinSprite,
+  ): number {
+    const size = pinScreenSize(camera.zoom);
+    let drawn = 0;
+    for (const pin of scene.pins.values()) {
+      const { canvas } = sprite(pin.kind as PinKind, pin.color);
+      // No 2D context to bake with. Draw nothing rather than a black square —
+      // the same answer `bind` gives the element.
+      if (canvas === null) continue;
+      const x = (pin.wx - camera.x) * camera.zoom - size / 2;
+      const y = (pin.wy - camera.y) * camera.zoom - size / 2;
+      ctx.drawImage(canvas, x, y, size, size);
+      drawn += 1;
+    }
+    return drawn;
   }
 
   private unmount(id: string, view: PinView): void {
