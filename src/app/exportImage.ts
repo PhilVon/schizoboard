@@ -28,6 +28,8 @@
  * way; see [`inlineAssets`].
  */
 
+import type { AssetVariant } from "@/platform/types";
+
 /** The face the board writes in, and the one thing an export must not lose. */
 export const BOARD_FONT_URL = "/fonts/patrick-hand.woff2";
 
@@ -163,14 +165,228 @@ export function fontWasInlined(css: string, url = BOARD_FONT_URL): boolean {
  * ever opens it.
  */
 export function fontDataUri(bytes: ArrayBuffer | Uint8Array): string {
+  return dataUri(bytes, "font/woff2");
+}
+
+/**
+ * Any bytes, as something a `data:` SVG can reach.
+ *
+ * Base64 and not `encodeURIComponent` — the opposite of the choice
+ * [`svgDataUri`] makes, and for the opposite reason. That one carries markup,
+ * which is mostly characters URI-encoding leaves alone and which somebody is
+ * going to have to read when an export comes back blank. This carries a JPEG,
+ * where every third byte would become `%xx` and there is nothing to read.
+ */
+export function dataUri(bytes: ArrayBuffer | Uint8Array, mime: string): string {
   const view = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes);
   let binary = "";
   // In chunks, because `String.fromCharCode(...bytes)` on a 24 kB font is a
   // 24,000-argument call and browsers have a limit on that which is nowhere near
-  // as large as people assume.
+  // as large as people assume — and a photograph is not 24 kB, it is 400.
   const CHUNK = 8192;
   for (let at = 0; at < view.length; at += CHUNK) {
     binary += String.fromCharCode(...view.subarray(at, at + CHUNK));
   }
-  return `data:font/woff2;base64,${btoa(binary)}`;
+  return `data:${mime};base64,${btoa(binary)}`;
+}
+
+/**
+ * Which stored variant an export asks for, whatever the screen is showing.
+ *
+ * `display` is capped at 2560 px on its longest edge, which at the default 2×
+ * export scale covers any item up to 1280 board units — every photograph anyone
+ * has put on this board, with room over. `original` is the untouched paste and
+ * is deliberately not used: a 12 MB JPEG base64'd into an SVG *per item* is
+ * precisely the export cost D-34 warned about, bought for resolution the page
+ * has nowhere to put.
+ */
+export const EXPORT_VARIANT: AssetVariant = "display";
+
+/**
+ * The same asset, asked for at the size an export needs.
+ *
+ * The item's `<img>` points at whatever variant its size *on screen* called for
+ * (`variantFor`, `platform/types.ts`) — and during an export the screen is the
+ * whole board at a few per cent, so a polaroid is 53 px across and pointing at
+ * the 256 px thumbnail. Inlining that would put a thumbnail in the file, at
+ * 660 px, and it would look exactly like a photograph nobody had focused.
+ *
+ * Here rather than in `app/main.ts`, on the standing argument beside
+ * `variantFor` itself: the wiring module has no tests, so a decision left there
+ * is a decision nothing checks.
+ *
+ * Only rewrites a URL that already names a variant, so anything that is not an
+ * asset — and there is nothing else on an item today — goes through untouched.
+ */
+export function atVariant(url: string, variant: AssetVariant = EXPORT_VARIANT): string {
+  return url.replace(/([?&]v=)[^&]*/, `$1${variant}`);
+}
+
+/**
+ * The one thing [`inlineAssets`] needs from the world: a URL in, bytes and the
+ * type they are out.
+ *
+ * An injected function rather than `fetch` itself so the failing case is
+ * reachable from a test — a photograph that cannot be read is the case that has
+ * to not take the export with it, and it is not one a real store will produce on
+ * demand.
+ */
+export type ReadBytes = (url: string) => Promise<{ bytes: ArrayBuffer | Uint8Array; mime: string }>;
+
+/** Bytes over the `asset://` scheme, which is CORS-open (`src-tauri/src/protocol.rs`). */
+export const fetchBytes: ReadBytes = async (url) => {
+  const response = await fetch(url);
+  if (!response.ok) throw new Error(`${url} — ${response.status}`);
+  return {
+    bytes: await response.arrayBuffer(),
+    mime: response.headers.get("content-type") ?? "application/octet-stream",
+  };
+};
+
+/** What the photographs cost, and whether any of them went missing. */
+export interface AssetInlining {
+  /** `<img>` given their bytes. */
+  readonly inlined: number;
+  /**
+   * `<img>` that named a photograph this machine could not read, and had their
+   * `src` taken off instead of keeping a URL the export cannot resolve.
+   *
+   * Normally zero, and never a reason to fail: `state/assets.ts` only points an
+   * `<img>` at bytes it has said are on the disk, so this is a file that has
+   * gone between the item binding and the export.
+   */
+  readonly unreadable: number;
+  /**
+   * Data-URI characters carried into this subtree, repeats included.
+   *
+   * Repeats included because that is what the export actually has to *hold* —
+   * two items showing one photograph carry it twice, since each item is its own
+   * SVG. The cache below saves the read and the base64, not the payload.
+   */
+  readonly bytes: number;
+}
+
+/**
+ * Put every photograph's bytes inside the clone, because a `data:` SVG can reach
+ * nothing outside itself.
+ *
+ * The same trap as the font, one step further out and louder about it: an
+ * `asset://` URL is simply not resolvable from inside a `data:` document, so the
+ * first export this project produced had a broken-image box where every
+ * photograph should have been (D-34 §4). On a board of three hundred
+ * photographs this is the expensive part of an export — not the drawing — which
+ * is why the cost comes back in [`AssetInlining`] rather than being something to
+ * find out about later.
+ *
+ * `setAttribute`, not `img.src`: the clone is meant to be inert (see
+ * [`cloneForExport`]) and the property setter is what starts a load. Writing a
+ * 400 kB data URI and having the browser decode it again, per item, for a
+ * picture nothing will ever show, is the whole cost of the export paid twice.
+ *
+ * `cache` is keyed by URL and holds the *promise*, so two items showing one
+ * photograph read it once even when they ask at the same moment. Pass one across
+ * the whole export; the default is there so a single subtree can be inlined on
+ * its own.
+ */
+export async function inlineAssets(
+  root: Element,
+  read: ReadBytes,
+  cache: Map<string, Promise<string | null>> = new Map(),
+): Promise<AssetInlining> {
+  let inlined = 0;
+  let unreadable = 0;
+  let bytes = 0;
+
+  await Promise.all(
+    [...root.querySelectorAll("img")].map(async (img) => {
+      const src = img.getAttribute("src") ?? "";
+      // Already carried in — the grain tiles and the shadow sprite are canvases
+      // the item renders to a data URI, and they cost the export their length.
+      if (src.startsWith("data:")) {
+        bytes += src.length;
+        return;
+      }
+      // An item whose bytes have not arrived is drawn as undeveloped film and
+      // its `<img>` has nothing in it. Leaving `src=""` in the SVG would make
+      // the document ask *itself* for an image; taking it off says the same
+      // thing and asks nothing. Not counted as unreadable — this is an ordinary
+      // board, not a broken one.
+      if (src === "") {
+        img.removeAttribute("src");
+        return;
+      }
+
+      const url = atVariant(src);
+      let pending = cache.get(url);
+      if (pending === undefined) {
+        pending = readDataUri(url, read);
+        cache.set(url, pending);
+      }
+      const uri = await pending;
+      if (uri === null) {
+        img.removeAttribute("src");
+        unreadable += 1;
+        return;
+      }
+      img.setAttribute("src", uri);
+      inlined += 1;
+      bytes += uri.length;
+    }),
+  );
+
+  return { inlined, unreadable, bytes };
+}
+
+/** `null` rather than a throw: one unreadable photograph is a hole in the
+ *  picture, not a failed export. */
+async function readDataUri(url: string, read: ReadBytes): Promise<string | null> {
+  try {
+    const { bytes, mime } = await read(url);
+    return dataUri(bytes, mime);
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * A copy of an item that will not load anything.
+ *
+ * `cloneNode` produces a node in the live document, and a node in the live
+ * document with an `<img src>` starts fetching and decoding it — so cloning
+ * three hundred photographs to export them decodes three hundred photographs
+ * that nothing will ever paint, and then [`inlineAssets`] overwrites every one
+ * of those `src` values anyway. So the copy is made into a document with no
+ * browsing context, which is the platform's own reason `DOMParser` output never
+ * fetches anything, and `importNode` into it is a clone that costs only nodes.
+ *
+ * The pose is stripped here too, and that is the other half of the design D-34
+ * left open: an item is absolutely positioned at the world origin and carries
+ * `transform: translate(x, y) rotate(r)` to reach its place on the board, so a
+ * clone dropped into a box its own size is entirely outside it and draws
+ * *nothing*. The first probe came back with zero opaque pixels for exactly this.
+ * So the SVG is the item's paper, square on, at its own size, and where it goes
+ * and which way up is the export canvas's arithmetic — which is also what keeps
+ * a rotated item from needing an SVG padded out to hold its corners.
+ */
+export function cloneForExport(el: Element, inert = inertDocument()): HTMLElement {
+  const clone = inert.importNode(el, true) as HTMLElement;
+  clone.style.position = "static";
+  clone.style.left = "0px";
+  clone.style.top = "0px";
+  clone.style.margin = "0";
+  clone.style.transform = "none";
+  return clone;
+}
+
+/**
+ * A document with no browsing context: it parses, and it fetches nothing.
+ *
+ * `createHTMLDocument` rather than a `<template>`'s contents, which is the other
+ * way to say this. Both are inert in Chromium; only one of them is inert
+ * *legibly*, and happy-dom hands back the live document for the template form —
+ * so the template trick is a thing the test suite cannot tell apart from having
+ * done nothing at all.
+ */
+export function inertDocument(): Document {
+  return document.implementation.createHTMLDocument("");
 }

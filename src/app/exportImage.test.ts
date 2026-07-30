@@ -12,8 +12,10 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  atVariant,
   BOARD_FONT_URL,
   collectStyles,
+  dataUri,
   fontDataUri,
   fontWasInlined,
   inlineFont,
@@ -120,5 +122,55 @@ describe("the font's bytes", () => {
     const uri = fontDataUri(big);
     expect(uri.startsWith("data:font/woff2;base64,")).toBe(true);
     expect(atob(uri.slice("data:font/woff2;base64,".length)).length).toBe(24_000);
+  });
+
+  /**
+   * The same chunking carries a photograph, which is where the argument limit
+   * stops being theoretical: the font is 24 kB and a display-variant JPEG is
+   * closer to 400.
+   */
+  it("carries a photograph's worth of bytes under whatever type they are", () => {
+    const photo = new Uint8Array(400_000).fill(0xff);
+    const uri = dataUri(photo, "image/jpeg");
+    expect(uri.startsWith("data:image/jpeg;base64,")).toBe(true);
+    expect(atob(uri.slice("data:image/jpeg;base64,".length)).length).toBe(400_000);
+  });
+});
+
+/**
+ * The variant an export asks for, which is not the one the screen is showing.
+ *
+ * During an export the camera frames the whole board, so a polaroid is a few
+ * dozen pixels across and its `<img>` is pointing at the 256 px thumbnail —
+ * while the file it is going into draws that same item at 660. Inlining what the
+ * screen chose puts a thumbnail in the export, and it looks like a photograph
+ * nobody focused.
+ */
+describe("asking for the size an export needs", () => {
+  it("raises the thumbnail the screen settled on to the display variant", () => {
+    expect(atVariant("asset://sha256/abc123?v=thumb")).toBe("asset://sha256/abc123?v=display");
+  });
+
+  it("leaves one that is already right alone", () => {
+    const url = "asset://sha256/abc123?v=display";
+    expect(atVariant(url)).toBe(url);
+  });
+
+  it("rewrites only the variant, whatever else is in the query", () => {
+    expect(atVariant("http://asset.localhost/sha256/abc?v=thumb&t=7")).toBe(
+      "http://asset.localhost/sha256/abc?v=display&t=7",
+    );
+    expect(atVariant("http://asset.localhost/sha256/abc?t=7&v=thumb")).toBe(
+      "http://asset.localhost/sha256/abc?t=7&v=display",
+    );
+  });
+
+  /**
+   * Nothing on an item is served from anywhere but the asset store today. This
+   * is what keeps that from being an assumption baked into a string replace.
+   */
+  it("goes through a URL that never named a variant untouched", () => {
+    expect(atVariant("http://example.test/logo.png")).toBe("http://example.test/logo.png");
+    expect(atVariant("data:image/png;base64,AAAA")).toBe("data:image/png;base64,AAAA");
   });
 });
