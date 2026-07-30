@@ -37,6 +37,7 @@ import { existsSync } from "node:fs";
 import { connect, createServer } from "node:net";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
+import { freshBoardId, planSync } from "@/app/sync";
 import { openBoardDoc, type BoardDoc } from "@/crdt/doc";
 import { createItems } from "@/crdt/ops";
 import { readItem } from "@/crdt/schema";
@@ -209,9 +210,14 @@ describe.each(servers)("against $name", (server) => {
     }
   }
 
-  function board(): { board: BoardDoc; provider: WireProvider } {
+  /**
+   * A client in a room. `room` is a parameter because one test is *about* which
+   * room a window comes back to (T-195) — everything else shares one board, and
+   * counts items on the assumption that it does.
+   */
+  function board(room = "board-interop"): { board: BoardDoc; provider: WireProvider } {
     const made = openBoardDoc();
-    const provider = new WireProvider(made.doc, `ws://127.0.0.1:${port}/board-interop`, {
+    const provider = new WireProvider(made.doc, `ws://127.0.0.1:${port}/${room}`, {
       baseDelayMs: 100,
       maxDelayMs: 500,
       resyncMs: 2_000,
@@ -371,6 +377,61 @@ describe.each(servers)("against $name", (server) => {
 
     // And presence came back without anybody having to move.
     await until(() => named(b.provider, a.board.doc.clientID));
+  }, 60_000);
+
+  /**
+   * A board replaced out of a bundle, with somebody still on the old one
+   * (T-195, Q-114).
+   *
+   * This is the one test here that is about a *product* decision rather than
+   * about the protocol, and it is here because nowhere else can hold it: the
+   * hazard is that **the relay holds a document** (`sync/room.rs`), so a room
+   * outlives the socket that was in it, and a client that comes back is answered
+   * with the difference between its state vector and everything the room knows.
+   * A double would have agreed with whatever I assumed about that.
+   *
+   * Both servers, deliberately. This is not a rule ours invented — it is what a
+   * y-websocket room *is* — so a fix that only worked against ours would be a
+   * fix resting on an accident.
+   */
+  it("does not hand a replaced board back to the window that replaced it", async () => {
+    // The room a window plans on an installation nobody has ever moved — asked
+    // rather than named, so that the two halves of this test are the two answers
+    // `planSync` really gives, and dropping the second argument below is exactly
+    // the code that was there before this task.
+    const OLD = planSync("").config.boardId;
+    const ours = board(OLD);
+    // The peer, who never leaves. Nothing about a replace is their business, and
+    // the room living on inside them is precisely what makes this reachable —
+    // solo, `sync/mod.rs` drops a room the moment it is empty, which is why T-84
+    // never saw this.
+    const peer = board(OLD);
+    await until(() => ours.provider.synced && peer.provider.synced);
+    const discarded = polaroid(ours.board, 10, 20);
+    await until(() => at(peer.board, discarded) !== null);
+
+    // The bundle open. `persistence.replaceWith` writes the bundle's document
+    // over this one's and the window reloads, so what arrives next is a new
+    // document on a new socket — and the room it asks for is whatever `planSync`
+    // names once the shell has been told this installation was moved.
+    ours.provider.destroy();
+    const reloaded = board(planSync("", freshBoardId()).config.boardId);
+    const fromTheBundle = polaroid(reloaded.board, 300, 400);
+
+    // The control, and the reason this cannot pass vacuously: a window that came
+    // back to the *same* room is handed the board it discarded — by this server,
+    // over a socket opened at the same moment as the one above. So "the merge
+    // simply had not happened yet" is not available as an explanation for the
+    // assertions below. Without the fix, `reloaded` *is* this.
+    const control = board(OLD);
+    await until(() => at(control.board, discarded) !== null);
+    await until(() => reloaded.provider.synced);
+
+    expect(at(reloaded.board, discarded)).toBeNull();
+    expect(reloaded.board.items.size).toBe(1);
+    // And the other direction: nobody left on the old board is quietly given a
+    // board they never opened.
+    expect(at(peer.board, fromTheBundle)).toBeNull();
   }, 60_000);
 });
 

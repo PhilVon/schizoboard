@@ -130,16 +130,18 @@ describe("reading an invite", () => {
 
 describe("the plan a window opens with", () => {
   const none = async (): Promise<string | null> => null;
+  /** A shell that has never been moved off the board it started on. */
+  const first = async (): Promise<string | null> => null;
 
   it("takes the query string when no link launched us, which is nearly every launch", async () => {
-    expect(await openingPlan(none, "?board=mine")).toEqual(planSync("?board=mine"));
+    expect(await openingPlan(none, first, "?board=mine")).toEqual(planSync("?board=mine"));
   });
 
   it("is the invite when one launched us, and the address bar is not consulted", async () => {
     // The cold arrival costs no reload: this runs before there is a provider, a
     // mesh or a relay, so the link simply is the plan.
     const link = async (): Promise<string> => `schizo://join?board=theirs&secret=${SECRET}`;
-    expect((await openingPlan(link, "?board=mine")).config).toEqual({
+    expect((await openingPlan(link, first, "?board=mine")).config).toEqual({
       mode: "lan",
       boardId: "theirs",
       secret: SECRET,
@@ -148,7 +150,7 @@ describe("the plan a window opens with", () => {
 
   it("falls back to the query string when what launched us was not an invite", async () => {
     const other = async (): Promise<string> => "https://example.com/";
-    expect(await openingPlan(other, "?board=mine")).toEqual(planSync("?board=mine"));
+    expect(await openingPlan(other, first, "?board=mine")).toEqual(planSync("?board=mine"));
   });
 
   it("opens the board anyway when the shell cannot answer at all", async () => {
@@ -157,7 +159,22 @@ describe("the plan a window opens with", () => {
     const broken = async (): Promise<string | null> => {
       throw new Error("no such command");
     };
-    expect(await openingPlan(broken, "?board=mine")).toEqual(planSync("?board=mine"));
+    expect(await openingPlan(broken, first, "?board=mine")).toEqual(planSync("?board=mine"));
+    expect(await openingPlan(none, broken, "?board=mine")).toEqual(planSync("?board=mine"));
+  });
+
+  it("is the board this installation was moved onto, when nothing else says", async () => {
+    // A bundle was opened here once (T-195), and there is no address bar in a
+    // packaged application to say so on. Every launch from now on is this board.
+    const moved = async (): Promise<string> => "board-abc123";
+    expect((await openingPlan(none, moved, "")).config.boardId).toBe("board-abc123");
+  });
+
+  it("lets a link take you off it, because that is somebody asking now", async () => {
+    const moved = async (): Promise<string> => "board-abc123";
+    const link = async (): Promise<string> => `schizo://join?board=theirs&secret=${SECRET}`;
+    expect((await openingPlan(link, moved, "")).config.boardId).toBe("theirs");
+    expect((await openingPlan(none, moved, "?board=theirs")).config.boardId).toBe("theirs");
   });
 });
 

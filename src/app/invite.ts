@@ -103,9 +103,9 @@ export function formatInvite(invite: Invite): string | null {
  * get into somebody else's board of the same name: their advertisement carries a
  * fingerprint of *their* secret, and `is_joinable` will not match it.
  */
-export function parseInvite(link: string): SyncPlan | null {
+export function parseInvite(link: string, remembered?: string | null): SyncPlan | null {
   const search = inviteSearch(link);
-  return search === null ? null : planSync(search);
+  return search === null ? null : planSync(search, remembered);
 }
 
 /**
@@ -154,9 +154,17 @@ export function inviteSearch(link: string): string | null {
  *
  * A link that is not one of ours, or no link at all, falls through to the query
  * string — which on every ordinary launch is the only thing there is.
+ *
+ * `remembered` is asked of the shell here rather than passed in, so that the two
+ * questions this function exists to ask are asked the same way: both are round
+ * trips, both have an answer that means "nothing special", and neither may be
+ * the reason a board fails to open. An invite that names a board wins over the
+ * remembered one — that is `planSync`'s order, and it is what makes clicking a
+ * link a thing you can do from a board you moved onto out of a bundle.
  */
 export async function openingPlan(
   takeInvite: () => Promise<string | null>,
+  rememberedBoard: () => Promise<string | null>,
   search: string,
 ): Promise<SyncPlan> {
   let link: string | null = null;
@@ -167,5 +175,18 @@ export async function openingPlan(
     // board on the query string is exactly right, and is what happens anyway.
     console.warn("[sync] could not ask for a pending invite", error);
   }
-  return (link === null ? null : parseInvite(link)) ?? planSync(search);
+
+  let remembered: string | null = null;
+  try {
+    remembered = await rememberedBoard();
+  } catch (error) {
+    // The board this installation moved onto cannot be read. Worth saying,
+    // because the fallback is the board every installation starts on — and if
+    // this window did once open a bundle, that is the room the replaced board is
+    // still in (T-195). Loud rather than silent, and still not a reason to
+    // refuse to open.
+    console.warn("[sync] could not ask which board this is", error);
+  }
+
+  return (link === null ? null : parseInvite(link, remembered)) ?? planSync(search, remembered);
 }

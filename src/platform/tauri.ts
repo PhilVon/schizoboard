@@ -215,6 +215,14 @@ export class TauriPlatform implements Platform {
     return invoke<string | null>("sync_take_invite");
   }
 
+  rememberedBoardId(): Promise<string | null> {
+    return invoke<string | null>("board_remembered");
+  }
+
+  rememberBoardId(boardId: string): Promise<void> {
+    return invoke<void>("board_remember", { boardId });
+  }
+
   peerHaveSummary(): Promise<string[]> {
     return invoke<string[]>("peer_have_summary");
   }

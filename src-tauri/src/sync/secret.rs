@@ -107,16 +107,22 @@ fn hex(bytes: &[u8]) -> String {
 /// which is refused today only because you cannot `File::create` a directory —
 /// an accident, and not one to rely on.
 fn board_file(board: &str) -> Option<String> {
-    if board.is_empty() || board.len() > 64 {
-        return None;
-    }
-    if !board
-        .chars()
-        .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
-    {
-        return None;
-    }
-    Some(board.to_string())
+    is_board_name(board).then(|| board.to_string())
+}
+
+/// The rule above, for the one other place a board name is written down.
+///
+/// `board.rs` keeps which board this installation is *on*, and that value's
+/// next stop is this file: it becomes the name under `secrets/` on the launch
+/// after the one that minted it. So it is checked against the strictest of the
+/// three copies of this rule rather than against a fourth of its own — see the
+/// comment above for what each of them can afford.
+pub fn is_board_name(board: &str) -> bool {
+    !board.is_empty()
+        && board.len() <= 64
+        && board
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
 }
 
 /// Where a board's secret is kept between sessions (Q-75).

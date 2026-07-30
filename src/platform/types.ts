@@ -352,6 +352,26 @@ export interface Platform {
    */
   syncTakeInvite(): Promise<string | null>;
 
+  // --- which board this is (T-195) ----------------------------------------
+  //
+  // Not part of sync, though only sync reads it: this is a fact about the
+  // installation, kept beside the document by `src-tauri/src/board.rs`, and it
+  // has to be answerable *before* there is a relay for `syncStatus` to describe.
+
+  /**
+   * The board this installation has been moved onto, or `null` for the one every
+   * installation starts on.
+   *
+   * Only a bundle open ever sets it (Q-114): the document that arrives in a
+   * `.schizo` replaces the one on disk, and the window must not reconnect to the
+   * room the replaced board is in — the relay holds a document, and it would
+   * answer with the whole of what was just discarded.
+   */
+  rememberedBoardId(): Promise<string | null>;
+
+  /** This is the board from now on. See [`rememberedBoardId`]. */
+  rememberBoardId(boardId: string): Promise<void>;
+
   // --- asset transfer: the bytes behind HAVE / WANT / DATA / DONE ----------
   //
   // `crdt/sync/exchange.ts` decides what to ask for and who to ask; these five
