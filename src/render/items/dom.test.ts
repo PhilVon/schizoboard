@@ -743,15 +743,6 @@ describe("ink", () => {
     // bitmap is the whole point — it is what makes the tier free.
     expect(canvas.style.width).toBe(box);
 
-    const quartered = canvas.width;
-    // The bottom tier is not a quarter again: at 15% a quarter-scale canvas for
-    // a 300-unit photograph is already eleven pixels across, and DESIGN gives
-    // the flat tier board-ink thumbnails rather than a smaller item canvas.
-    layer.setTier("flat");
-    dirty.everything();
-    layer.paintInk(scene, dirty);
-    expect(canvas.width).toBe(quartered);
-
     layer.setTier("full");
     dirty.everything();
     layer.paintInk(scene, dirty);
@@ -1480,8 +1471,6 @@ describe("LOD tiers", () => {
       expect((child as HTMLElement).dataset["lod"]).toBeUndefined();
     }
 
-    layer.setTier("flat");
-    expect(host.dataset["lod"]).toBe("flat");
     layer.setTier("full");
     expect(host.dataset["lod"]).toBeUndefined();
   });

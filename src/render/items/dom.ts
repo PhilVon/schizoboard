@@ -1261,10 +1261,9 @@ export class DomItemLayer implements ItemLayer {
    * really is about device pixels — hence a factor on `rasterScale` rather than
    * a second rule of its own.
    *
-   * `flat` is not a quarter again. DESIGN gives the bottom tier "board ink from
-   * tile thumbnails" and says nothing about an item's, and there is nothing left
-   * to win: at 15% a quarter-scale canvas for a 300-unit photograph is already
-   * eleven pixels across.
+   * There is no second reduction below this one, and no second tier to hang one
+   * on (Q-121): at the camera's floor a quarter-scale canvas for a 300-unit
+   * photograph is already eleven pixels across, so there is nothing left to win.
    */
   private get inkScale(): number {
     return this.tier === "full" ? this.rasterScale : this.rasterScale / 4;
