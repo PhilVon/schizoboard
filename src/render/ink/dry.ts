@@ -25,6 +25,41 @@ import type { SceneStroke } from "@/state/scene";
 
 /** A box in an item's local space. Mutable: the callers keep one and refill it,
  *  because this is asked per inked item per re-raster. */
+/**
+ * The sheet's silhouette in item-local coordinates — `x, y` pairs about the
+ * centre, from `render/items/edge.ts` (T-186).
+ *
+ * Null everywhere it is optional, and null means **the rectangle stands**: that
+ * is a photograph, which is machine-cut and has never had an outline. It is an
+ * answer rather than a missing one.
+ */
+export interface SheetOutline {
+  readonly points: Float32Array;
+  readonly n: number;
+}
+
+/**
+ * The paper a mark is allowed to sit on, as a path on `ctx`.
+ *
+ * The rectangle when the item has no outline, and the outline when it has one.
+ * The rectangle is still what sizes the backing store — a bounding box is the
+ * right shape for "how many pixels" and the wrong shape for "where does the
+ * paper end", and T-186 only moved the second of those.
+ */
+function clipToSheet(
+  ctx: CanvasRenderingContext2D,
+  paper: InkBox,
+  edge: SheetOutline | null,
+): void {
+  if (edge === null || edge.n < 3) {
+    ctx.rect(paper.minX, paper.minY, paper.maxX - paper.minX, paper.maxY - paper.minY);
+    return;
+  }
+  ctx.moveTo(edge.points[0]!, edge.points[1]!);
+  for (let i = 1; i < edge.n; i++) ctx.lineTo(edge.points[i * 2]!, edge.points[i * 2 + 1]!);
+  ctx.closePath();
+}
+
 export interface InkBox {
   minX: number;
   minY: number;
@@ -192,11 +227,14 @@ export function regionFor(
  *
  * Returns false when nothing was drawn.
  */
+export { clipToSheet };
+
 export function paintStrokes(
   ctx: CanvasRenderingContext2D,
   strokes: readonly SceneStroke[],
   region: InkRegion,
   paper: InkBox | null,
+  edge: SheetOutline | null = null,
 ): boolean {
   // Identity for the clear, because the transform below is in item-local units
   // and the backing store is in device pixels.
@@ -231,7 +269,7 @@ export function paintStrokes(
   ctx.save();
   if (paper !== null) {
     ctx.beginPath();
-    ctx.rect(paper.minX, paper.minY, paper.maxX - paper.minX, paper.maxY - paper.minY);
+    clipToSheet(ctx, paper, edge);
     ctx.clip();
   }
 

@@ -35,6 +35,10 @@ interface Calls {
   transforms: number[][];
   /** The paper rectangle the painter clipped to, if it did (T-136). */
   clips: Array<[number, number, number, number]>;
+  /** The vertices of a *polygon* clip — a sheet's own outline (T-186). Kept
+   *  apart from `points`, which is the stroke's shape and is what every
+   *  assertion about where the ink went is reading. */
+  clipPoly: Array<[number, number]>;
   /** The composite operator each fill went down with — DESIGN 6.5's `multiply`
    *  for the highlighter, and `source-over` for everything else. */
   composites: string[];
@@ -70,6 +74,13 @@ function stubContext(): CanvasRenderingContext2D {
     rect: (x: number, y: number, w: number, h: number) => {
       calls.clips.push([x, y, w, h]);
     },
+    moveTo: (x: number, y: number) => {
+      calls.clipPoly.push([x, y]);
+    },
+    lineTo: (x: number, y: number) => {
+      calls.clipPoly.push([x, y]);
+    },
+    closePath: () => {},
     clip: () => {},
     fill: () => {
       calls.fills++;
@@ -152,6 +163,7 @@ beforeEach(() => {
     clears: 0,
     transforms: [],
     clips: [],
+    clipPoly: [],
     composites: [],
     forbidden: [],
   };
@@ -447,6 +459,67 @@ describe("the edge of the paper", () => {
 
     // Half-extents about the item's centre, which is where its local origin is.
     expect(calls.clips).toEqual([[-50, -30, 100, 60]]);
+  });
+
+  /**
+   * T-186, AC-543. A sheet is not its rectangle, and committed ink stops at the
+   * paper — the same polygon the pen tested (`state/tools/marker.ts`) and the
+   * wet stroke was clipped to (`render/ink/wet.ts`).
+   *
+   * The rectangle does not stop being useful: it is still what sizes the
+   * backing store, because a bounding box is the right shape for "how many
+   * pixels" and the wrong shape for "where does the paper end". T-186 moved
+   * only the second of those.
+   */
+  it("clips to the sheet's outline when it has one, not to its box", () => {
+    const region = regionFor({ minX: -10, minY: -10, maxX: 80, maxY: 20 }, 1, null);
+    // A 100x60 sheet whose head has been torn away by ten units.
+    const outline = new Float32Array([-50, -20, 50, -20, 50, 30, -50, 30]);
+    paintStrokes(stubContext(), [stroke()], region, paper(100, 60), { points: outline, n: 4 });
+
+    // No rectangle at all: the polygon replaced it rather than joining it. Two
+    // clips would intersect, which happens to give the same picture here and
+    // would not on a sheet whose outline reaches its box on one side.
+    expect(calls.clips).toEqual([]);
+    expect(calls.clipPoly).toEqual([
+      [-50, -20],
+      [50, -20],
+      [50, 30],
+      [-50, 30],
+    ]);
+  });
+
+  it("falls back to the box for an item with no outline, which is a photograph", () => {
+    const region = regionFor({ minX: -10, minY: -10, maxX: 80, maxY: 20 }, 1, null);
+    paintStrokes(stubContext(), [stroke()], region, paper(100, 60), null);
+    expect(calls.clips).toEqual([[-50, -30, 100, 60]]);
+    expect(calls.clipPoly).toEqual([]);
+  });
+
+  it("falls back to the box for an outline too short to be a polygon", () => {
+    // Not a shape the renderer produces, and the guard is cheap: two vertices
+    // clipped as a path is an empty region, and an empty clip is an item whose
+    // ink silently vanishes.
+    const region = regionFor({ minX: -10, minY: -10, maxX: 80, maxY: 20 }, 1, null);
+    paintStrokes(stubContext(), [stroke()], region, paper(100, 60), {
+      points: new Float32Array([0, 0, 1, 1]),
+      n: 2,
+    });
+    expect(calls.clips).toEqual([[-50, -30, 100, 60]]);
+  });
+
+  it("uses every vertex of the outline, not just the first few", () => {
+    const region = regionFor({ minX: -10, minY: -10, maxX: 80, maxY: 20 }, 1, null);
+    const many = new Float32Array(
+      Array.from({ length: 17 }, (_, i) => {
+        const a = (i / 17) * Math.PI * 2;
+        return [Math.cos(a) * 50, Math.sin(a) * 30];
+      }).flat(),
+    );
+    paintStrokes(stubContext(), [stroke()], region, paper(100, 60), { points: many, n: 17 });
+    // Seventeen is a torn edge's sample count. A clip built from four of them
+    // would cut the corners off every sheet on the board.
+    expect(calls.clipPoly).toHaveLength(17);
   });
 
   it("clips once for the item, not once per stroke", () => {

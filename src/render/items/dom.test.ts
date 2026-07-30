@@ -2,9 +2,10 @@
  * @vitest-environment happy-dom
  */
 
-import { beforeEach, describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { CAPTION_BOTTOM, CAPTION_HEIGHT, FRAME_BOTTOM } from "@/lib/polaroid";
+import { ItemInk } from "@/render/ink/canvas";
 import { DomItemLayer, type AssetResolver, type AssetView } from "@/render/items/dom";
 import { tapedCorners } from "@/render/items/tape";
 import { dogEarOf } from "@/render/items/wear";
@@ -564,6 +565,33 @@ describe("hitTest", () => {
       layer.sync(scene, dirty, null);
       expect(layer.inkHitTest(scene, spot!.x, spot!.y)).toBeNull();
       expect(layer.hitTest(scene, spot!.x, spot!.y)).toBe("s");
+    });
+
+    it("hands the outline to the raster, so committed ink stops at the paper too", () => {
+      // The wiring, and it is the half that fails silently: everything below
+      // this line can be perfectly correct while the INK phase quietly passes
+      // null and the pen and the paint disagree about every torn edge. The
+      // mutation that replaces this argument with `null` breaks no other test.
+      torn("s");
+      add("photo", { type: "polaroid" }, { x: 500, y: 0, w: 400, h: 300 });
+      layer.sync(scene, dirty, null);
+
+      const raster = vi.spyOn(ItemInk.prototype, "update").mockImplementation(() => {});
+      try {
+        dirty.ink.add("s");
+        dirty.ink.add("photo");
+        layer.paintInk(scene, dirty);
+        // Two rasters, and exactly one of them carries a polygon: the sheet.
+        // A photograph is machine-cut and gets null, which is the answer.
+        const outlines = raster.mock.calls.map((call) => call[4] ?? null);
+        expect(outlines).toHaveLength(2);
+        expect(outlines.filter((o) => o !== null)).toHaveLength(1);
+        const sheet = outlines.find((o) => o !== null)!;
+        expect(sheet.n).toBeGreaterThan(8);
+        expect(sheet.points.length).toBe(sheet.n * 2);
+      } finally {
+        raster.mockRestore();
+      }
     });
 
     it("re-cuts the silhouette when the sheet is resized", () => {

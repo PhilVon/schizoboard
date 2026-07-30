@@ -245,7 +245,7 @@ function archetypeOf(type: string): Archetype {
  * everything it was resolved *from* — which is what makes the cache honest
  * rather than a guess at when to drop it.
  */
-interface Silhouette {
+export interface Silhouette {
   /** Identity, not a copy: the binding replaces the whole record on a change. */
   readonly cold: ItemCold;
   readonly worn: number;
@@ -1636,7 +1636,16 @@ export class DomItemLayer implements ItemLayer {
       const view = this.views.get(id);
       const slot = scene.slotOf(id);
       if (!view || slot === undefined) continue;
-      view.ink.update(scene.strokesOf(id), this.inkScale, scene.w[slot]!, scene.h[slot]!);
+      // The sheet's outline goes with it: committed ink stops at the paper, not
+      // at the rectangle (T-186), and it is the *same* polygon the pen tested
+      // and the wet stroke was clipped to.
+      view.ink.update(
+        scene.strokesOf(id),
+        this.inkScale,
+        scene.w[slot]!,
+        scene.h[slot]!,
+        this.silhouette(scene, id, slot),
+      );
       budget--;
     }
   }
@@ -2050,6 +2059,11 @@ export class DomItemLayer implements ItemLayer {
    * record, the wear or the sheet's size changes, and that is the whole of the
    * invalidation because those are the only things it depends on.
    */
+  silhouetteOf(scene: Scene, id: string): Silhouette | null {
+    const slot = scene.slotOf(id);
+    return slot === undefined ? null : this.silhouette(scene, id, slot);
+  }
+
   private silhouette(scene: Scene, id: string, slot: number): Silhouette | null {
     const cold = scene.coldAt(slot);
     if (cold === null || archetypeOf(cold.type) !== "paper") return null;

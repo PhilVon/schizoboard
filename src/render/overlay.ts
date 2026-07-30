@@ -28,6 +28,16 @@ import { carryScale } from "@/lib/carry";
 import type { WetStroke } from "@/lib/ink";
 import { rotateOut } from "@/lib/rotate";
 import { type ItemFrame, WetInk } from "@/render/ink/wet";
+
+/**
+ * The silhouette of the sheet an item is, or null when it is its own rectangle.
+ * Shaped as a function so the overlay depends on the question rather than on
+ * the object that answers it.
+ */
+export type PaperResolver = (
+  scene: Scene,
+  itemId: string,
+) => { points: Float32Array; n: number } | null;
 import { PeerPainter } from "@/render/presence/draw";
 import type { PeerSource } from "@/render/presence/peers";
 import { pinHitRadius } from "@/render/pins/dom";
@@ -333,11 +343,28 @@ export class Overlay {
     if (this.ctx) this.clear(this.ctx);
   };
   /** Refilled every frame a glued stroke is drawn — see [`Overlay.inkFrame`]. */
-  private readonly ink: ItemFrame = { cx: 0, cy: 0, cos: 1, sin: 0, hw: 0, hh: 0 };
+  private readonly ink: ItemFrame = { cx: 0, cy: 0, cos: 1, sin: 0, hw: 0, hh: 0, points: null, n: 0 };
+
+  /**
+   * Where a sheet's paper ends, asked of whatever owns that answer — the item
+   * layer, in the running application (T-186).
+   *
+   * Injected rather than imported so this file keeps knowing nothing about
+   * archetypes, stocks, seeds or ageing, and optional so that every overlay
+   * test that is not about ink can go on constructing one with a canvas. Absent
+   * means every item is its own rectangle, which is what this file assumed
+   * before T-186 and is still true of a photograph.
+   */
+  private paperOf: PaperResolver | null = null;
 
   constructor(canvas: HTMLCanvasElement) {
     this.canvas = canvas;
     this.ctx = canvas.getContext("2d");
+  }
+
+  /** Tell the overlay where to ask. See [`paperOf`]. */
+  setPaperResolver(resolve: PaperResolver): void {
+    this.paperOf = resolve;
   }
 
   /**
@@ -775,6 +802,12 @@ export class Overlay {
     // the reason above, so the clip must not have it either.
     this.ink.hw = scene.w[slot]! / 2;
     this.ink.hh = scene.h[slot]! / 2;
+    // And the sheet's outline, when the item has one (T-186) — asked of the
+    // item layer rather than recomputed, because a second answer here would be
+    // a wet stroke stopping somewhere the committed one does not.
+    const paper = this.paperOf?.(scene, itemId) ?? null;
+    this.ink.points = paper?.points ?? null;
+    this.ink.n = paper?.n ?? 0;
     return this.ink;
   }
 
