@@ -86,6 +86,14 @@ function put(id: string, pose: Partial<ItemPose> = {}): void {
   );
 }
 
+/** An item wearing a photograph, which is the only kind that can be saved. */
+function wearing(id: string, assetId: string, pose: Partial<ItemPose> = {}): void {
+  scene.putItem(
+    { id, type: "polaroid", z: "a0", seed: 1, assetId, createdBy: 1, createdAt: 0, text: "" },
+    { x: 0, y: 0, rot: 0, w: 100, h: 100, ...pose },
+  );
+}
+
 /** A pin in an item, or in the bare cork when `parent` is null. */
 function pin(id: string, parent: string | null, lx = 0, ly = 0): void {
   scene.putPin({ id, parent, lx, ly, kind: "pushpin", color: "#c8352c", wx: lx, wy: ly });
@@ -515,6 +523,106 @@ describe("the item context menu", () => {
       put("i");
       pick(itemMenuRows(scene, write, "i", ["i", "vanished"], 0, 0), "Bring");
       expect(writes).toEqual([{ kind: "stack", ids: ["i"], end: "front" }]);
+    });
+  });
+
+  /**
+   * T-101. The one row here that hands back a file rather than making one, and
+   * the only caller `asset_export` has ever had.
+   */
+  describe("save the photograph", () => {
+    const PHOTO = "a".repeat(64);
+    const OTHER = "b".repeat(64);
+    let saved: string[];
+    let unavailable: Set<string>;
+    let shell: { gone(sha256: string): boolean; save(sha256: string): void };
+
+    beforeEach(() => {
+      saved = [];
+      unavailable = new Set();
+      shell = { gone: (sha256) => unavailable.has(sha256), save: (sha256) => saved.push(sha256) };
+    });
+
+    it("hands the shell the hash the clicked item is wearing", () => {
+      wearing("i", PHOTO);
+      pick(itemMenuRows(scene, write, "i", ["i"], 0, 0, undefined, shell), "Save the photograph");
+      expect(saved).toEqual([PHOTO]);
+      // Nothing about it is an edit: the document is untouched.
+      expect(writes).toEqual([]);
+    });
+
+    /**
+     * The clicked one alone, like *Edit text* and *Add pin*, and here the reason
+     * is the dialog: one save is one native dialog, and four selected
+     * photographs would be four of them in a row, each waiting on the last.
+     */
+    it("saves the clicked photograph even when several are selected", () => {
+      wearing("i0", PHOTO);
+      wearing("i1", OTHER, { x: 300 });
+      const rows = itemMenuRows(scene, write, "i1", ["i0", "i1"], 300, 0, undefined, shell);
+      pick(rows, "Save the photograph");
+      expect(saved).toEqual([OTHER]);
+      // And it says nothing about how many are held - a count would promise the
+      // queue of dialogs this row deliberately does not open.
+      const row = verbs(rows).find((r) => r.label.startsWith("Save"))!;
+      expect(row.label).toBe("Save the photograph…");
+    });
+
+    it("is absent on an item wearing no photograph", () => {
+      put("i");
+      const labels = verbs(itemMenuRows(scene, write, "i", ["i"], 0, 0, undefined, shell)).map(
+        (r) => r.label,
+      );
+      expect(labels).not.toContain("Save the photograph…");
+      // The rest of the menu is unaffected by its absence.
+      expect(labels).toContain("Bring to front");
+      expect(labels).toContain("Delete");
+    });
+
+    /** A plain browser: `platform/mock.ts` has no dialog to open and its
+     *  `assetExport` rejects, so there is nothing for the row to reach. */
+    it("is absent when there is no shell to save with", () => {
+      wearing("i", PHOTO);
+      const labels = verbs(itemMenuRows(scene, write, "i", ["i"], 0, 0)).map((r) => r.label);
+      expect(labels).not.toContain("Save the photograph…");
+      expect(labels).toContain("Delete");
+    });
+
+    /**
+     * The one absence that is about the bytes rather than about the row: a
+     * photograph the exchange has given up on would open a save dialog, take a
+     * filename and then fail. The board explains this one on its own - the item
+     * is drawn torn and the notice names who has it (DESIGN 7.5).
+     */
+    it("is absent for a photograph this machine has given up on", () => {
+      wearing("i", PHOTO);
+      unavailable.add(PHOTO);
+      const labels = verbs(itemMenuRows(scene, write, "i", ["i"], 0, 0, undefined, shell)).map(
+        (r) => r.label,
+      );
+      expect(labels).not.toContain("Save the photograph…");
+    });
+
+    /**
+     * And every other phase leaves it up. `unknown` is what a photograph that
+     * has been on this disk since boot reads as until something asks for it, so
+     * hiding on anything short of a real giving-up would take the row off a save
+     * that was going to work.
+     */
+    it("stays for a photograph nothing has asked about yet", () => {
+      wearing("i", PHOTO);
+      unavailable.add(OTHER);
+      pick(itemMenuRows(scene, write, "i", ["i"], 0, 0, undefined, shell), "Save the photograph");
+      expect(saved).toEqual([PHOTO]);
+    });
+
+    it("is set apart from the rows above it", () => {
+      wearing("i", PHOTO);
+      const rows = itemMenuRows(scene, write, "i", ["i"], 0, 0, undefined, shell);
+      const row = verbs(rows).find((r) => r.label.startsWith("Save"))!;
+      expect(row.divided).toBe(true);
+      // Not destructive: it writes a file and changes nothing on the board.
+      expect(row.danger).toBeUndefined();
     });
   });
 

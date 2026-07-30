@@ -160,6 +160,21 @@ export function itemMenuRows(
   boardX: number,
   boardY: number,
   edit?: (itemId: string) => void,
+  /**
+   * The photograph itself, back out onto the disk — absent in a plain browser,
+   * where `platform/mock.ts` has no dialog to open and `assetExport` rejects.
+   *
+   * Two members rather than one because the row has two ways not to belong, and
+   * only one of them is a fact about the scene. Whether the item *wears* a
+   * photograph is read here off `scene.cold`; whether this machine still expects
+   * to have its bytes is `state/assets.ts`, which this file must not import — a
+   * menu is a pure function of ids and a transfer is not.
+   */
+  photo?: {
+    /** This machine has given up on the bytes — DESIGN 7.5's torn photograph. */
+    gone(sha256: string): boolean;
+    save(sha256: string): void;
+  },
 ): MenuEntry[] {
   const live = targets.filter((id) => scene.slotOf(id) !== undefined);
   if (live.length === 0) return [];
@@ -245,6 +260,69 @@ export function itemMenuRows(
       run: () => write.sendToBack(live),
     },
   );
+
+  /**
+   * The photograph back out, under the name it came in with (T-101).
+   *
+   * ## Why this file verb is on an item's menu when the others are not
+   *
+   * `boardMenuRows` below argues that every file verb belongs on the board menu,
+   * and that argument holds for the three rows it was written about: a `.schizo`,
+   * a PDF and an image are all *new files made out of the board*, and which part
+   * of the board they cover is the selection, which the board menu can read
+   * perfectly well without anything under the cursor.
+   *
+   * This is the other kind. It makes nothing: it hands back the bytes that came
+   * in, byte for byte, at the size they were taken at rather than at whatever
+   * scale an export came out — which is the only way to get a photograph off
+   * this board and still have the photograph. And it is about *one* thing, of
+   * which the board menu has none: a right-click on bare cork has no photograph
+   * under it, and a row there would have to invent one out of the selection.
+   *
+   * So the dividing line is not board-verb against item-verb after all. It is
+   * whether the file is a *picture of* the board or a thing already on it.
+   *
+   * ## `clicked` alone, and no count in the label
+   *
+   * Like *Edit text* and *Add pin* above, and here the reason is the dialog: one
+   * save is one native dialog, and four selected photographs would be four of
+   * them in a row, each waiting on the last. That is not a verb anybody meant to
+   * pick — it is a modal queue — and *Save 4 photographs…* is the label that
+   * would promise it.
+   *
+   * ## Absent, not disabled, in three cases
+   *
+   * No `photo` (a plain browser). A `clicked` wearing no photograph, which is
+   * every note. And a photograph this machine has given up on, which is the one
+   * that would otherwise open a save dialog, take a filename, and fail — the
+   * exact shape the standing "null removes the row" rule exists to prevent. That
+   * last absence is also the only one the board explains on its own: an item with
+   * no bytes is drawn torn and the notice names who has them (DESIGN 7.5), so
+   * there is no unanswerable *why not?* left behind.
+   *
+   * An asset still on its way is **not** one of the three. `unknown` is also what
+   * a photograph that has been on this disk since boot reads as until something
+   * asks for it, so hiding on anything short of a real giving-up would take the
+   * row off perfectly good photographs at the least explicable moment.
+   */
+  if (photo !== undefined) {
+    const asset = scene.cold(clicked)?.assetId ?? null;
+    if (asset !== null && !photo.gone(asset)) {
+      rows.push({
+        // The ellipsis says a dialog is next and nothing has happened yet —
+        // *Export board…* below carries one for the same reason, and *Copy
+        // invite link*, which is finished the moment you let go, does not.
+        //
+        // "The photograph" rather than "image": DESIGN calls them photographs
+        // throughout, and the word also separates this row from *Export the
+        // board as an image…* on the other menu, which is the row it could most
+        // easily be mistaken for and writes something else entirely.
+        label: "Save the photograph…",
+        divided: true,
+        run: () => photo.save(asset),
+      });
+    }
+  }
 
   /**
    * > `Delete` | Removes the item **and its pins**; strings through those pins
@@ -341,7 +419,7 @@ export function pinMenuRows(
  * `board` is null in a plain browser, where there is no shell to write a file
  * with — absent on the same terms as the invite, and for the same reason.
  *
- * ## Why every file verb is on this menu and none is on an item's
+ * ## Why every export is on this menu
  *
  * `selected` is the item selection, and it is here only to *word* the PDF row
  * (T-209) — the export itself reads the live selection when it runs.
@@ -352,6 +430,12 @@ export function pinMenuRows(
  * it, raise it, delete it — and an export is a verb about a *file*; and the
  * board menu is already where the other two file rows live, so somebody looking
  * for "make me something to send" has one place to look rather than two.
+ *
+ * That first half read as "and no file verb is anywhere else" until T-101 put
+ * one on the item menu, and the exception is worth stating because it sharpens
+ * the rule rather than bending it. *Save the photograph…* does not make a file
+ * out of the board; it hands back a file that is already on it. `itemMenuRows`
+ * above carries the line that actually divides the two.
  *
  * What that costs is a trap this row has to word its way out of: a right-click
  * on bare cork does not clear the item selection, so with three notes held the
