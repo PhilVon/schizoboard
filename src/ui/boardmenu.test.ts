@@ -683,26 +683,32 @@ describe("the board menu on bare cork", () => {
   const exporting = () => {
     const asked: string[] = [];
     return {
-      board: { export: () => void asked.push("export"), open: () => void asked.push("open") },
+      board: {
+        export: () => void asked.push("export"),
+        open: () => void asked.push("open"),
+        pdf: () => void asked.push("pdf"),
+      },
       asked,
     };
   };
   const AGE_ON = "Stop the board ageing";
   const AGE_OFF = "Let the board age";
   const EXPORT = "Export board…";
+  const PDF = "Export the board as PDF…";
+  const PDF_SELECTION = "Export the selection as PDF…";
   const OPEN = "Open a board…";
 
   it("offers the invite on empty cork, which used to open nothing at all", () => {
     // The whole of Q-76: a right-click here reached for something and found
     // nothing, which made it the one free surface on the board.
     const { invite } = sharing(LINK);
-    const rows = boardMenuRows(scene, write, [], invite, switching(true).ageing, null) as MenuRow[];
+    const rows = boardMenuRows(scene, write, [], [], invite, switching(true).ageing, null) as MenuRow[];
     expect(rows.map((r) => r.label)).toEqual([AGE_ON, "Copy invite link"]);
   });
 
   it("hands over the link the board was opened with", () => {
     const { invite, copied } = sharing(LINK);
-    const rows = boardMenuRows(scene, write, [], invite, switching(true).ageing, null) as MenuRow[];
+    const rows = boardMenuRows(scene, write, [], [], invite, switching(true).ageing, null) as MenuRow[];
     rows.find((r) => r.label === "Copy invite link")!.run();
     expect(copied).toEqual([LINK]);
     // Sharing a board is not an edit to it.
@@ -714,7 +720,7 @@ describe("the board menu on bare cork", () => {
     // than disabled: a row you cannot use is a question nothing on screen can
     // answer.
     const { invite } = sharing(null);
-    const rows = boardMenuRows(scene, write, [], invite, switching(true).ageing, null) as MenuRow[];
+    const rows = boardMenuRows(scene, write, [], [], invite, switching(true).ageing, null) as MenuRow[];
     expect(rows.map((r) => r.label)).toEqual([AGE_ON]);
   });
 
@@ -723,7 +729,7 @@ describe("the board menu on bare cork", () => {
     // selection of strings is the much likelier thing to have meant.
     span("s", 0);
     const { invite } = sharing(LINK);
-    const rows = boardMenuRows(scene, write, ["s"], invite, switching(true).ageing, null);
+    const rows = boardMenuRows(scene, write, ["s"], [], invite, switching(true).ageing, null);
     const labels = rows.map((r) => r.label);
     expect(labels).toEqual([
       ...stringMenuRows(scene, write, ["s"]).map((r) => r.label),
@@ -739,7 +745,7 @@ describe("the board menu on bare cork", () => {
     // The rows are a snapshot and a peer may have deleted the selection since.
     // That empties the string half and must not take the board half with it.
     const { invite } = sharing(LINK);
-    const rows = boardMenuRows(scene, write, ["ghost"], invite, switching(true).ageing, null) as MenuRow[];
+    const rows = boardMenuRows(scene, write, ["ghost"], [], invite, switching(true).ageing, null) as MenuRow[];
     expect(rows.map((r) => r.label)).toEqual([AGE_ON, "Copy invite link"]);
     // Nothing to divide it from, so no rule.
     expect(rows[0]!.divided).toBe(false);
@@ -751,11 +757,12 @@ describe("the board menu on bare cork", () => {
       scene,
       write,
       [],
+      [],
       invite,
       switching(true).ageing,
       exporting().board,
     ) as MenuRow[];
-    expect(rows.map((r) => r.label)).toEqual([AGE_ON, "Copy invite link", EXPORT, OPEN]);
+    expect(rows.map((r) => r.label)).toEqual([AGE_ON, "Copy invite link", EXPORT, PDF, OPEN]);
   });
 
   it("asks the shell to export, and does not write to the document", () => {
@@ -764,6 +771,7 @@ describe("the board menu on bare cork", () => {
     const rows = boardMenuRows(
       scene,
       write,
+      [],
       [],
       invite,
       switching(true).ageing,
@@ -780,7 +788,7 @@ describe("the board menu on bare cork", () => {
     // Removed rather than disabled, on the invite's terms: a row you cannot use
     // is a question nothing on screen can answer.
     const { invite } = sharing(LINK);
-    const rows = boardMenuRows(scene, write, [], invite, switching(true).ageing, null) as MenuRow[];
+    const rows = boardMenuRows(scene, write, [], [], invite, switching(true).ageing, null) as MenuRow[];
     expect(rows.map((r) => r.label)).not.toContain(EXPORT);
     expect(rows.map((r) => r.label)).not.toContain(OPEN);
   });
@@ -793,11 +801,12 @@ describe("the board menu on bare cork", () => {
       scene,
       write,
       [],
+      [],
       invite,
       switching(true).ageing,
       exporting().board,
     ) as MenuRow[];
-    expect(rows.map((r) => r.label)).toEqual([AGE_ON, EXPORT, OPEN]);
+    expect(rows.map((r) => r.label)).toEqual([AGE_ON, EXPORT, PDF, OPEN]);
   });
 
   /**
@@ -810,6 +819,7 @@ describe("the board menu on bare cork", () => {
     const rows = boardMenuRows(
       scene,
       write,
+      [],
       [],
       invite,
       switching(true).ageing,
@@ -829,10 +839,10 @@ describe("the board menu on bare cork", () => {
     const { invite } = sharing(null);
     const running = switching(true);
     const stopped = switching(false);
-    expect((boardMenuRows(scene, write, [], invite, running.ageing, null)[0] as MenuRow).label).toBe(
+    expect((boardMenuRows(scene, write, [], [], invite, running.ageing, null)[0] as MenuRow).label).toBe(
       AGE_ON,
     );
-    expect((boardMenuRows(scene, write, [], invite, stopped.ageing, null)[0] as MenuRow).label).toBe(
+    expect((boardMenuRows(scene, write, [], [], invite, stopped.ageing, null)[0] as MenuRow).label).toBe(
       AGE_OFF,
     );
   });
@@ -840,14 +850,117 @@ describe("the board menu on bare cork", () => {
   it("throws the switch the other way, and does not write to the document", () => {
     const { invite } = sharing(null);
     const running = switching(true);
-    (boardMenuRows(scene, write, [], invite, running.ageing, null)[0] as MenuRow).run();
+    (boardMenuRows(scene, write, [], [], invite, running.ageing, null)[0] as MenuRow).run();
     expect(running.set).toEqual([false]);
 
     const stopped = switching(false);
-    (boardMenuRows(scene, write, [], invite, stopped.ageing, null)[0] as MenuRow).run();
+    (boardMenuRows(scene, write, [], [], invite, stopped.ageing, null)[0] as MenuRow).run();
     expect(stopped.set).toEqual([true]);
 
     // A preference is not an edit. Nothing here has an undo entry.
     expect(writes).toEqual([]);
+  });
+
+  /**
+   * The PDF row (T-209), whose only interesting property is its *label*.
+   *
+   * A right-click on bare cork does not clear the item selection, so this menu
+   * can be open over a board with three notes held — and the export would then
+   * cover those three and their neighbours (Q-127) rather than the wall. A row
+   * that said "the board" while writing a file of three notes would be lying in
+   * exactly the case where nothing else on screen would correct it.
+   */
+  it("says which of the board and the selection the PDF will cover", () => {
+    const { invite } = sharing(null);
+    const labels = (held: readonly string[]): string[] =>
+      (
+        boardMenuRows(
+          scene,
+          write,
+          [],
+          held,
+          invite,
+          switching(true).ageing,
+          exporting().board,
+        ) as MenuRow[]
+      ).map((r) => r.label);
+
+    expect(labels([])).toContain(PDF);
+    expect(labels(["i1", "i2", "i3"])).toContain(PDF_SELECTION);
+    // One row either way — the selection changes what it says, never how many.
+    expect(labels(["i1"]).filter((l) => l.endsWith("as PDF…"))).toHaveLength(1);
+  });
+
+  it("does not name a count, because the file is a region and not a cutout", () => {
+    // Q-127 exports the selection's *bounds*, so the file has whatever else is
+    // inside them. "Export 3 items…" is the one wording that would make the
+    // neighbours in the file look like a bug.
+    const { invite } = sharing(null);
+    const rows = boardMenuRows(
+      scene,
+      write,
+      [],
+      ["i1", "i2", "i3"],
+      invite,
+      switching(true).ageing,
+      exporting().board,
+    ) as MenuRow[];
+    expect(rows.find((r) => r.label === PDF_SELECTION)!.label).not.toMatch(/\d/);
+  });
+
+  it("asks the shell for a PDF, and writes nothing to the document", () => {
+    const { invite } = sharing(null);
+    const shell = exporting();
+    const rows = boardMenuRows(
+      scene,
+      write,
+      [],
+      [],
+      invite,
+      switching(true).ageing,
+      shell.board,
+    ) as MenuRow[];
+    rows.find((r) => r.label === PDF)!.run();
+    expect(shell.asked).toEqual(["pdf"]);
+    expect(writes).toEqual([]);
+  });
+
+  it("drops the PDF row with the other two in a plain browser", () => {
+    // A browser can print, and cannot answer whether a file was saved or shape
+    // the page to the board — the same reason Q-128 turned the print dialog
+    // down as the route. Removed rather than disabled, like the invite.
+    const { invite } = sharing(null);
+    const rows = boardMenuRows(
+      scene,
+      write,
+      [],
+      ["i1"],
+      invite,
+      switching(true).ageing,
+      null,
+    ) as MenuRow[];
+    expect(rows.map((r) => r.label)).toEqual([AGE_ON]);
+  });
+
+  /**
+   * Under *Export board…* because a `.schizo` is the board — everything on it,
+   * reopenable — and a PDF is what it looked like. And above *Open a board…*,
+   * which is the row that destroys one.
+   */
+  it("puts the picture under the board and above the row that replaces it", () => {
+    const { invite } = sharing(null);
+    const labels = (
+      boardMenuRows(
+        scene,
+        write,
+        [],
+        [],
+        invite,
+        switching(true).ageing,
+        exporting().board,
+      ) as MenuRow[]
+    ).map((r) => r.label);
+    expect(labels.indexOf(EXPORT)).toBeLessThan(labels.indexOf(PDF));
+    expect(labels.indexOf(PDF)).toBeLessThan(labels.indexOf(OPEN));
   });
 });

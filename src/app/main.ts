@@ -1400,10 +1400,17 @@ async function boot(): Promise<void> {
         scene,
         writer,
         [...selection.strings],
+        // Only to word the PDF row — the export itself reads the selection when
+        // it runs, which is a beat later and is the one that matters.
+        selection.toArray(),
         { link: invite, copy: copyInvite },
         { on: prefs.ageing(), set: setAgeing },
         native.kind === "tauri"
-          ? { export: () => void exportBoard(), open: () => void openBundle() }
+          ? {
+              export: () => void exportBoard(),
+              open: () => void openBundle(),
+              pdf: () => void printBoard(),
+            }
           : null,
       ),
     );
