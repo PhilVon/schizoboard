@@ -103,6 +103,32 @@ export class InkCanvas {
   }
 
   /**
+   * EXPORT. Where this bitmap sits in its host's own units, or null when there
+   * is no bitmap (T-206).
+   *
+   * The same four numbers `update` writes as the CSS box, handed out rather
+   * than recomputed — an export that derived them again could derive them
+   * differently, and ink half a unit out of place is the sort of thing nobody
+   * sees and everybody feels.
+   *
+   * **In the host's units, not the board's.** The stylesheet decides where a
+   * canvas's origin is — `.board-ink` puts it at the board origin and
+   * `.item-ink` at the item's centre — so turning this into a board coordinate
+   * is the caller's job, and only the caller knows which of the two it is.
+   */
+  get placed(): InkPlacement | null {
+    const region = this.region;
+    if (this.el === null || region === null) return null;
+    return {
+      canvas: this.el,
+      x: region.ox,
+      y: region.oy,
+      w: region.px / region.scale,
+      h: region.py / region.scale,
+    };
+  }
+
+  /**
    * Bring the bitmap in line with the strokes: create it, grow it, repaint it,
    * or drop it.
    *
@@ -296,4 +322,13 @@ export class ItemInk {
   release(): void {
     this.canvas.release();
   }
+}
+
+/** A live ink bitmap and the box it occupies in its host's units. */
+export interface InkPlacement {
+  readonly canvas: HTMLCanvasElement;
+  readonly x: number;
+  readonly y: number;
+  readonly w: number;
+  readonly h: number;
 }

@@ -34,6 +34,7 @@ import {
   type ClipboardManifest,
   type ClipboardPayload,
   type DocState,
+  type ExportKind,
   type Platform,
   type PlatformEvents,
   type SyncConfig,
@@ -210,20 +211,59 @@ export class MockPlatform implements Platform {
   }
 
   /**
-   * A browser can print, and cannot do this.
+   * The name the next image export will be offered under.
    *
-   * `window.print()` opens a dialog and never says what came of it, which loses
-   * the difference between a saved file and a cancelled one — and it hands the
-   * page size to whoever is standing at the printer chooser, where the whole
-   * point of T-205 is that the page is the shape of the board. That is the same
-   * reason Q-128 turned the print dialog down as the route.
+   * A browser has no save dialog to hold a *path* in, so this holds the only
+   * part of the answer a download can use. The native pair keeps the path on
+   * the shell's side for a security reason (ARCHITECTURE section 4.4); here
+   * there is no path at all, which satisfies the same rule for free.
    */
-  exportPdfChoose(): Promise<boolean> {
-    return unavailable("Exporting a board as a PDF");
+  private exportName = "board.png";
+
+  /**
+   * A browser cannot do the PDF, and can do the image.
+   *
+   * The two are not the same question. A PDF here would have to be
+   * `window.print()`, which opens a dialog, never says what came of it — losing
+   * the difference between a saved file and a cancelled one — and hands the page
+   * size to whoever is standing at the printer chooser, where the whole point of
+   * T-205 is that the page is the shape of the board. Q-128 turned that route
+   * down for the shell and it is no better here.
+   *
+   * An image has none of those problems: the picture is composited in the
+   * renderer either way, so a browser needs nothing but somewhere to put the
+   * bytes, and `<a download>` is somewhere.
+   *
+   * True without asking anybody, and that is the one honest difference from the
+   * shell: a browser download has no cancel to report. Nobody is asked where
+   * the file goes, so nobody can decline.
+   */
+  async exportChoose(title: string, kind: ExportKind): Promise<boolean> {
+    if (kind !== "png") return unavailable("Exporting a board as a PDF");
+    const stem = title.replace(/[^\p{L}\p{N} _.-]/gu, "").trim() || "board";
+    this.exportName = `${stem}.png`;
+    return true;
   }
 
   exportPdfWrite(): Promise<string> {
     return unavailable("Exporting a board as a PDF");
+  }
+
+  /**
+   * Hand the bytes to the browser as a download.
+   *
+   * The object URL is revoked on the next turn rather than immediately: a
+   * revoke in the same task can beat the navigation the click starts, and what
+   * that looks like is a download that silently does not happen.
+   */
+  async exportImageWrite(bytes: Uint8Array): Promise<string> {
+    const url = URL.createObjectURL(new Blob([bytes], { type: "image/png" }));
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = this.exportName;
+    link.click();
+    setTimeout(() => URL.revokeObjectURL(url), 0);
+    return this.exportName;
   }
 
   async clipboardReadManifest(): Promise<ClipboardManifest> {

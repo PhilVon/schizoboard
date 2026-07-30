@@ -45,7 +45,16 @@ import { posed, type Stage } from "@/app/exportPdf";
  */
 export interface BoardPainter {
   readonly name: string;
-  paint(ctx: CanvasRenderingContext2D, view: ExportView): void | Promise<void>;
+  /**
+   * `unknown` rather than `void`, and deliberately loose: the layers report
+   * different things — tiles drawn, whether anything was drawn at all, what the
+   * items cost — and none of it is the composite's business. What matters is
+   * that a painter can be handed over *as it is*. Narrowing this to `void` is
+   * how an `await` gets dropped: the call site grows a `void` to make the types
+   * line up, and a dropped await here is a layer landing after the one that
+   * should be on top of it.
+   */
+  paint(ctx: CanvasRenderingContext2D, view: ExportView): unknown;
 }
 
 /** The board's surface, and somewhere to put the file. */

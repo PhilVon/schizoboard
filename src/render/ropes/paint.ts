@@ -348,12 +348,78 @@ export class RopeLayer {
     return true;
   }
 
+  /**
+   * EXPORT. Draw the strings into a canvas *somebody else is also drawing on*
+   * (T-206).
+   *
+   * `draw` clears first, and that is right for the layer it owns: a rope canvas
+   * on the board holds nothing but ropes, and the strings that moved cannot be
+   * repainted over the ones that were there. On an export canvas it is
+   * catastrophic and silent — the cork, the board ink, the items and the
+   * *other* rope layer are all already on it, and clearing takes the lot. The
+   * first export driven with a string on the board came back as one blue curve
+   * on white, which is exactly what "the last painter wiped the canvas" looks
+   * like and nothing like a bug in any of the four layers that vanished.
+   *
+   * So this is `draw` without the clear and without the caching: an export
+   * canvas is drawn once, so there is nothing for a cached path or an `inked`
+   * flag to save, and both of those are about *this* layer's canvas rather than
+   * about the strings.
+   */
+  drawInto(ctx: CanvasRenderingContext2D, scene: Scene, ropes: RopeSet, camera: Camera): number {
+    camera.visibleBounds(CULL_MARGIN, this.view);
+    const visible: string[] = [];
+    ropes.stringsIn(this.view, visible);
+
+    const batches: Batch[] = [];
+    // The batch map is keyed off `this.batches`, so it is emptied and refilled
+    // rather than worked around — the export owns this layer for the duration
+    // and `invalidate` puts it back for the board.
+    this.batches.length = 0;
+    for (const id of visible) {
+      const style = scene.strings.get(id);
+      if (style === undefined || style.layer !== this.layer) continue;
+      const parts = this.pathsFor(id, ropes, camera);
+      if (parts === null) continue;
+      for (const part of parts) {
+        this.batchFor(style.color, style.thickness, style.material, part.rung).path.addPath(
+          part.path,
+        );
+      }
+    }
+    batches.push(...this.batches);
+
+    ctx.save();
+    ctx.lineCap = "round";
+    ctx.lineJoin = "round";
+    for (const batch of batches) this.strokeBatch(ctx, batch);
+    ctx.restore();
+
+    // Everything above was built at the export camera and cached under it, and
+    // the *window* camera is what `cachedZoom` still names — so a later frame
+    // that only dirties one string would keep the export's geometry for all the
+    // others and draw them into the window at the wrong scale.
+    //
+    // `dropPaths` and deliberately not `invalidate`, which would also clear
+    // `inked` — and `inked` is a fact about *this layer's own canvas*, which an
+    // export never touched. Clearing it would tell the layer its canvas is
+    // blank when it is not, and the next frame that finds no strings left would
+    // skip the clear it needs and leave the last ropes on screen for ever.
+    this.dropPaths();
+    return batches.length;
+  }
+
   /** Drop every cached path. For a resize, which invalidates the canvas, and
    *  for teardown. */
   invalidate(): void {
+    this.dropPaths();
+    this.inked = false;
+  }
+
+  /** The cached walks, and the camera they were walked at. */
+  private dropPaths(): void {
     this.paths.clear();
     this.cachedZoom = Number.NaN;
-    this.inked = false;
   }
 
   /**

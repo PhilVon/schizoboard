@@ -122,6 +122,9 @@ export interface BundleOpened {
 }
 
 /** A page for the PDF export (T-207), in the units the print pipeline takes. */
+/** Which file an export is going to be — see `exportChoose`. */
+export type ExportKind = "pdf" | "png";
+
 export interface PdfPage {
   /** Inches, because `ICoreWebView2PrintSettings` and `ExportView.inches` both
    *  speak them. Refused on the other side unless finite, positive and inside
@@ -327,21 +330,26 @@ export interface Platform {
    */
   bundleOpen(): Promise<BundleOpened | null>;
 
-  // --- export (T-207) -----------------------------------------------------
+  // --- export (T-207, T-206) ----------------------------------------------
   /**
-   * Ask the user where a PDF of the board should go. `false` is a cancelled
+   * Ask the user where an export of the board should go. `false` is a cancelled
    * dialog — an ordinary outcome, and nothing has moved.
    *
    * Takes no destination, on the standing `assetExport` and `bundleSaveAs` both
    * set out, and does not hand one back either: the path stays in the shell
-   * between this and `exportPdfWrite`. `title` is a *suggestion* Rust reduces
-   * to a filename before the save dialog shows it.
+   * between this and whichever writer follows. `title` is a *suggestion* Rust
+   * reduces to a filename before the save dialog shows it.
    *
-   * Separate from the write because the board has to be posed for the page
-   * before the print happens, and posing it while somebody is still typing a
-   * filename would mean the window zooms out to answer a question about a file.
+   * Separate from the write because the board has to be posed before the file
+   * is made, and posing it while somebody is still typing a filename would mean
+   * the window zooms out to answer a question about a file. It also makes the
+   * *common* case the cheap one: a cancelled dialog costs no re-pose at all.
+   *
+   * One command for both routes rather than two nearly identical ones — they
+   * differ in three strings, and everything worth getting right about them is
+   * the same.
    */
-  exportPdfChoose(title: string): Promise<boolean>;
+  exportChoose(title: string, kind: ExportKind): Promise<boolean>;
 
   /**
    * Print the board into the file already chosen, one page of the given size in
@@ -358,6 +366,19 @@ export interface Platform {
    * a handle: no command on the other side takes one.
    */
   exportPdfWrite(page: PdfPage): Promise<string>;
+
+  /**
+   * Write an already-encoded image into the file already chosen, and resolve
+   * where it went.
+   *
+   * The mirror image of `exportPdfWrite` in where the work happens. A PDF is
+   * rendered by Chromium from the live document, so nothing of the board
+   * crosses; an image is *composited in the renderer* — cork, board ink, both
+   * rope layers and the items are each painters that take a camera, and none of
+   * them exists on the shell's side — so what crosses is the finished picture
+   * and the shell only writes it.
+   */
+  exportImageWrite(bytes: Uint8Array): Promise<string>;
 
   // --- clipboard ---------------------------------------------------------
   clipboardReadManifest(): Promise<ClipboardManifest>;
