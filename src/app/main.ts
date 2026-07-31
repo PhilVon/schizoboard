@@ -9,6 +9,7 @@
  *     interaction -> crdt/ops -> Y.Doc -> observer -> binding -> Scene -> render
  */
 
+import { ASSET_SWEEP_DELAY_MS, sweepAssets } from "@/app/assetgc";
 import { Binding } from "@/crdt/binding";
 import {
   assetOrigName,
@@ -3146,6 +3147,25 @@ async function boot(): Promise<void> {
   provider?.on("status", (status) => {
     if (status === "synced") void reconcileAssets();
   });
+
+  /**
+   * And the other direction: the photographs on this disk that the board has
+   * stopped referring to (T-219). `reconcileAssets` above fetches what is
+   * missing; this releases what is surplus, and until now nothing did — the
+   * whole collector was built and never called.
+   *
+   * Scheduled rather than awaited, and once. `app/assetgc.ts` holds the policy
+   * and the reasons for it; all that belongs here is that it happens at all.
+   */
+  window.setTimeout(() => {
+    void sweepAssets(native, board, { readOnly: persistence.readOnly }).then((result) => {
+      if (result === null || result.freedBytes === 0) return;
+      console.info(
+        `[assets] reclaimed ${Math.round(result.freedBytes / 1024)} kB; ` +
+          `${result.kept} photographs are still on the board`,
+      );
+    });
+  }, ASSET_SWEEP_DELAY_MS);
 
   const hint = document.createElement("div");
   hint.className = "hint";
