@@ -2709,8 +2709,16 @@ async function boot(): Promise<void> {
       // string tool's own affordance is the run it is building, and mid-gesture
       // the loop being pulled out is the feedback — a highlight tracking the
       // curve as well would be a second cursor.
+      //
+      // The exception is the scissors, which is every tool's (Q-186). While the
+      // pair is held the next press cuts whatever is under it whichever pen is
+      // in hand, so the highlight and the cursor have to say so there too —
+      // an affordance that stopped at the select tool would be promising the
+      // gesture in the one place it was least needed.
+      const asking =
+        tools.current === select || isScissors(tools.modifier("Control"), tools.modifier("Alt"));
       const offer =
-        tools.current === select && !select.gesturing
+        asking && !select.gesturing
           ? stringAt(scene, camera, hitItem, hitPin, hitString, cursor.x, cursor.y)
           : null;
       hoveredString = offer && { x: offer.x, y: offer.y };

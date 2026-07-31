@@ -65,12 +65,12 @@ import { threadFrom } from "@/state/thread";
 import {
   anchorAt,
   anchorParent,
-  isScissors,
   settleOnPin,
   stringAt,
 } from "@/state/tools/frame";
 import { PinDrag } from "@/state/tools/pindrag";
 import { QuickPull } from "@/state/tools/quickpull";
+import { Scissors } from "@/state/tools/scissors";
 import type {
   PointerSample,
   StringHit,
@@ -291,6 +291,8 @@ export class SelectTool implements Tool {
 
   /** `Alt` on a pin, which is nobody's tool — `state/tools/quickpull.ts`. */
   private readonly pull = new QuickPull();
+  /** `Ctrl`+`Alt` on a string: the cut that belongs to no tool either (Q-186). */
+  private readonly scissors = new Scissors();
 
   pullPreview(cursor: { x: number; y: number } | null): readonly { x: number; y: number }[] | null {
     return this.pull.preview(cursor);
@@ -573,6 +575,12 @@ export class SelectTool implements Tool {
   }
 
   handle(input: ToolInput, ctx: ToolContext): void {
+    // The scissors first. Both of these belong to no tool (DESIGN section 3.4);
+    // this one is offered ahead of the pull because it is the more specific
+    // press — `Ctrl`+`Alt` rather than `Alt` — and a pin sitting over the string
+    // being aimed at must not turn a cut into a pin removal.
+    if (this.scissors.handle(input, ctx)) return;
+
     // `Alt` on a pin belongs to no tool — see `state/tools/quickpull.ts`. Offered
     // the input before anything here looks at it, because the press it takes is
     // one this tool would otherwise turn into a marquee.
@@ -740,35 +748,6 @@ export class SelectTool implements Tool {
     const board = ctx.camera.screenToBoard(at.x, at.y, this.board);
     this.downBoardX = board.x;
     this.downBoardY = board.y;
-
-    /**
-     * Scissors, before anything else the press could have meant.
-     *
-     * > | Cut | `Ctrl`+`Alt`+click a string — the scissors — or context menu →
-     * > *Delete* | String removed; its pins stay where they are
-     * > — DESIGN section 3.4
-     *
-     * First because `Ctrl`+`Alt` is not something a hand does on the way to
-     * another gesture — it is two modifiers held on purpose — so once it is
-     * down the press means cut and cannot mean anything else. Ahead of the
-     * chrome handles in particular: a selected item's rotation knob standing in
-     * open cork over a string would otherwise take a press aimed at the string
-     * and start rotating the item instead.
-     *
-     * A miss is swallowed too, and that is deliberate. Falling through would
-     * make a scissors press that landed a few pixels off the curve clear the
-     * selection and start a marquee, which is a worse answer to "I meant to cut
-     * that" than nothing happening. `stringAt` is the same question the hover
-     * highlight asks, so what is cut is exactly what was lit.
-     */
-    if (isScissors(at.ctrl, at.alt)) {
-      this.phase = "idle";
-      const cut = stringAt(ctx.scene, ctx.camera, ctx.hitTest, ctx.hitPin, ctx.hitString, at.x, at.y);
-      // No `keepPins` to pass: a string owns nothing but its nodes, so removing
-      // it leaves every pin it hung from where it is (`crdt/ops/strings.ts`).
-      if (cut !== null) ctx.write.deleteStrings([cut.string]);
-      return;
-    }
 
     /**
      * The chrome gets the press before the board does, and that ordering is the
@@ -1622,6 +1601,7 @@ export class SelectTool implements Tool {
    */
   cancel(ctx: ToolContext): void {
     this.pull.cancel();
+    this.scissors.cancel();
     /**
      * And the same for a loop pulled out of a string:
      *

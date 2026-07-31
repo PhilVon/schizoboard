@@ -127,7 +127,7 @@ export function stringMenuRows(
     },
     {
       /**
-       * > | Cut | `Ctrl`+`Alt`+click a string — the scissors — or context menu
+       * > | Cut | `Ctrl`+`Alt`+click a string, **in any tool** — the scissors — or
        * > → *Delete* | String removed; its pins stay where they are
        * > — DESIGN section 3.4
        *
