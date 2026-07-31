@@ -58,7 +58,7 @@ items: {
 
 | Field | CRDT type | Rationale |
 |---|---|---|
-| `type` | plain string | `'polaroid' \| 'note' \| 'scrap' \| 'card'`. Immutable after creation. |
+| `type` | plain string | `'polaroid' \| 'note' \| 'scrap' \| 'card'`. Immutable after creation. Two of the four are never written: a scrap is a `note` with no text in it, and `card` was struck as an archetype on Q-179. Both stay accepted, because `readItem` drops an item whose type it does not know. |
 | `x`, `y` | plain number | Board coordinates of the item's **centre**. LWW is exactly right — two concurrent drags must resolve to one of them, never a midpoint. |
 | `rot` | plain number | Authored rotation in radians. The physics swing is a **local visual offset** and is never stored here. |
 | `w`, `h` | plain number | Intrinsic size in board units. **Present even when the asset is missing**, so layout never reflows when bytes arrive. |

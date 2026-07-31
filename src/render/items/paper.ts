@@ -134,7 +134,15 @@ export function rulePhase(spacing: number): number {
   return FIRST_BASELINE % spacing;
 }
 
-/** Which stock a sheet gets when nobody has chosen one. */
+/**
+ * Which stock a sheet gets when nobody has chosen one.
+ *
+ * The `card` line is now the only thing in the renderer that reads that type,
+ * and it is kept for the boards that hold one rather than for anything you can
+ * make (Q-179, DESIGN section 2.1). `NOTE_STOCKS` excludes `index` so the seed
+ * never reaches for it — a person asking for index stock does it on the Paper
+ * strip, and that arrives as an override rather than through here.
+ */
 export function defaultStock(type: string, seed: number): PaperStock {
   if (type === "card") return "index";
   const pick = valueAt(seed, "stock");

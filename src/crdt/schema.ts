@@ -40,6 +40,20 @@ import {
 
 export const SCHEMA_VERSION = 1;
 
+/**
+ * Two of these four cannot be created, and both facts are decisions.
+ *
+ * `scrap` is what DESIGN section 2.1 calls a blank sheet, and the note tool
+ * makes one — as a `note` with no text in it, which is what the section says a
+ * scrap is. `card` was struck from that section's archetype table on Q-179: an
+ * index card is a *stock*, and any sheet's Paper strip will give you one.
+ *
+ * Both stay in the union anyway, and that is the point rather than the
+ * leftover. `readItem` returns `undefined` for a type it does not know, so a
+ * board written by anything that ever made one would lose the item rather than
+ * keep a sheet of paper. A type is cheap to keep accepting and expensive to
+ * stop.
+ */
 export type ItemType = "polaroid" | "note" | "scrap" | "card";
 export type PinKind = "pushpin" | "thumbtack" | "nail";
 export type StringLayer = "over" | "under";
