@@ -284,3 +284,84 @@ describe("Search", () => {
     expect(search.run(scene, "hit")).toBe("a");
   });
 });
+
+/**
+ * What the overlay draws its faint borders from — T-236, Q-176.
+ *
+ * The list has been here since T-85 (stepping through matches needs it); what
+ * is new is that something outside now *reads* it every frame, so the answer's
+ * identity has to be as cheap to ask about as its contents are to draw.
+ */
+describe("the matches, for the painter", () => {
+  const board = (): Scene => {
+    const scene = new Scene();
+    add(scene, "a", "buy milk", { x: 0, y: 0 });
+    add(scene, "b", "milkshake", { x: 0, y: 200 });
+    add(scene, "c", "call the plumber", { x: 0, y: 400 });
+    return scene;
+  };
+
+  it("hands over every match in reading order, current one included", () => {
+    const scene = board();
+    const search = new Search();
+    search.run(scene, "milk");
+    expect([...search.ids]).toEqual(["a", "b"]);
+    // Not "the others": the flash lasts 800ms and the search does not, so the
+    // item you are looking at must not be the only unmarked match on the board.
+    expect(search.ids).toContain(search.current);
+  });
+
+  it("bumps its version when the answer changes and not when it does not", () => {
+    const scene = board();
+    const search = new Search();
+
+    const fresh = search.version;
+    search.run(scene, "milk");
+    const two = search.version;
+    expect(two).toBeGreaterThan(fresh);
+
+    // Refining to a query with the same answer is the same picture. Borders
+    // restroked on every keystroke of a word that narrows nothing is the cost
+    // this version exists to avoid.
+    search.run(scene, "mil");
+    expect(search.version).toBe(two);
+
+    search.run(scene, "milks");
+    expect(search.version).toBeGreaterThan(two);
+  });
+
+  it("bumps it on the way down, so the borders come off", () => {
+    const scene = board();
+    const search = new Search();
+    search.run(scene, "milk");
+    const held = search.version;
+
+    search.clear();
+    expect([...search.ids]).toEqual([]);
+    expect(search.version).toBeGreaterThan(held);
+
+    // And not again on a second clear: an empty search that stays empty is the
+    // same picture, and the overlay would restroke for it every frame.
+    const empty = search.version;
+    search.clear();
+    expect(search.version).toBe(empty);
+  });
+
+  /**
+   * The one case where membership is unchanged and the answer is not. Reading
+   * order is a fact about where things are, so moving one match above another
+   * reorders the list — and the `n of m` in the field is an index into it.
+   */
+  it("counts a reorder as a change", () => {
+    const scene = board();
+    const search = new Search();
+    search.run(scene, "milk");
+    const before = search.version;
+
+    scene.setPose("b", { x: 0, y: -400, rot: 0, w: 100, h: 100 });
+    search.run(scene, "milk", true);
+
+    expect([...search.ids]).toEqual(["b", "a"]);
+    expect(search.version).toBeGreaterThan(before);
+  });
+});

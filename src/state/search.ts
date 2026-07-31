@@ -61,17 +61,32 @@ import type { Bounds, Scene } from "@/state/scene";
  */
 export class Search {
   /** Matching ids in reading order. */
-  private ids: string[] = [];
+  private hits: string[] = [];
   /** Index into [`ids`], or -1 when there are none. */
   private at = -1;
   /** What [`ids`] is the answer to, so an unchanged query re-walks nothing. */
   private query = "";
+  /**
+   * Bumped every time [`ids`] becomes a different list.
+   *
+   * For `render/overlay.ts`, which draws a faint border round every match
+   * (T-236) and is asked on every frame whether the picture has changed. The
+   * cheap answer is an integer; the expensive one is comparing two arrays of
+   * ids sixty times a second to discover that somebody is not typing. The same
+   * bargain `Selection.version` makes, and `state/presence.ts` reads it for the
+   * same reason.
+   *
+   * Bumped on the *answer*, not on the query: refining `sha` to `shape` with
+   * the same six items still matching is the same picture, and the borders must
+   * not be restroked for it.
+   */
+  private matchVersion = 0;
 
   /** Reused by the sort; `boundsOf` writes into whatever it is handed. */
   private readonly box: Bounds = { minX: 0, minY: 0, maxX: 0, maxY: 0 };
 
   get count(): number {
-    return this.ids.length;
+    return this.hits.length;
   }
 
   /** Which match is current, counting from 1 — 0 when there are none. */
@@ -80,7 +95,25 @@ export class Search {
   }
 
   get current(): string | null {
-    return this.at < 0 ? null : (this.ids[this.at] ?? null);
+    return this.at < 0 ? null : (this.hits[this.at] ?? null);
+  }
+
+  /**
+   * Every match, in reading order — the `MatchSource` the overlay draws from.
+   *
+   * The live array rather than a copy: it is read once a frame by a painter
+   * that only iterates it, and copying it per frame to protect against a
+   * caller nobody has written would be the allocation this class avoids
+   * everywhere else. It is replaced wholesale by [`run`], never mutated in
+   * place, so a reader holding it across a keystroke holds the old answer
+   * rather than half of a new one.
+   */
+  get ids(): readonly string[] {
+    return this.hits;
+  }
+
+  get version(): number {
+    return this.matchVersion;
   }
 
   /**
@@ -102,22 +135,27 @@ export class Search {
     this.query = needle;
 
     const was = this.current;
-    this.ids = needle === "" ? [] : this.walk(scene, needle);
-    if (this.ids.length === 0) {
+    const before = this.hits;
+    this.hits = needle === "" ? [] : this.walk(scene, needle);
+    // Only when the *answer* moved. Refining a query that keeps the same six
+    // items is the same picture, and bumping here would restroke the overlay's
+    // borders on every keystroke of a word that narrows nothing.
+    if (!same(before, this.hits)) this.matchVersion += 1;
+    if (this.hits.length === 0) {
       this.at = -1;
       return null;
     }
 
     // Still on screen and still a match: stay, and say nothing happened.
     if (was !== null) {
-      const kept = this.ids.indexOf(was);
+      const kept = this.hits.indexOf(was);
       if (kept >= 0) {
         this.at = kept;
         return force ? was : null;
       }
     }
     this.at = 0;
-    return this.ids[0] ?? null;
+    return this.hits[0] ?? null;
   }
 
   /**
@@ -133,11 +171,11 @@ export class Search {
    * answer to "is it still that one".
    */
   step(delta: number): string | null {
-    if (this.ids.length === 0) return null;
-    const n = this.ids.length;
+    if (this.hits.length === 0) return null;
+    const n = this.hits.length;
     const from = this.at < 0 ? (delta >= 0 ? -1 : 0) : this.at;
     this.at = ((((from + delta) % n) + n) % n) | 0;
-    return this.ids[this.at] ?? null;
+    return this.hits[this.at] ?? null;
   }
 
   /**
@@ -148,7 +186,11 @@ export class Search {
    * whatever inherited it.
    */
   clear(): void {
-    this.ids = [];
+    // Before the assignment, and only when there was something to take away:
+    // the frame a search closes is the frame the borders have to come off, and
+    // the overlay learns that from the version rather than from the emptiness.
+    if (this.hits.length > 0) this.matchVersion += 1;
+    this.hits = [];
     this.at = -1;
     this.query = "";
   }
@@ -187,4 +229,18 @@ export class Search {
     });
     return hits;
   }
+}
+
+/**
+ * Whether two answers are the same list in the same order.
+ *
+ * Order matters as much as membership: the borders are drawn from this list and
+ * the `n of m` in the field is an index into it, so two sets with the same
+ * members in a different order are genuinely a different answer. A walk is in
+ * reading order, so that only happens when something moved.
+ */
+function same(a: readonly string[], b: readonly string[]): boolean {
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return false;
+  return true;
 }

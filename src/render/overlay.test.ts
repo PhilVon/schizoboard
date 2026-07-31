@@ -1294,3 +1294,93 @@ describe("Overlay and a peer's wet ink", () => {
     expect(calls.fills).toBe(0);
   });
 });
+
+/**
+ * The faint border on every match of a live search — T-236, Q-176.
+ *
+ * Two properties, and neither is "it draws a box". The first is that it is
+ * *standing*: unlike a flash it does not fade, so its mere presence must not
+ * make the canvas stale, or six borders would restroke a full-viewport canvas
+ * sixty times a second for the same picture. The second is that it comes off —
+ * the frame a search closes is the frame the borders have to go.
+ */
+describe("Overlay, the search borders", () => {
+  function matches(ids: string[], version: number): { ids: string[]; version: number } {
+    return { ids, version };
+  }
+
+  function draw(found: ReturnType<typeof matches>): void {
+    overlay.draw(
+      camera,
+      scene,
+      selection,
+      null,
+      dirty,
+      null,
+      null,
+      null,
+      null,
+      null,
+      undefined,
+      null,
+      null,
+      null,
+      found,
+    );
+  }
+
+  it("draws one box per match, at the drawn angle", () => {
+    add("a", { x: 0, y: 0, rot: 0.3 });
+    add("b", { x: 200, y: 0 });
+    add("c", { x: 400, y: 0 });
+    camera.centreOn(200, 0);
+
+    draw(matches(["a", "b"], 1));
+
+    // Two boxes, each stroked twice — dark under, pale over, the same pairing
+    // every legible mark on this canvas uses.
+    expect(calls.strokeRect).toHaveLength(4);
+    // Float32 in the scene, so the drawn angle comes back a hair off the one
+    // that went in — the assertion is that the box turns with the paper.
+    expect(calls.rotate.some((r) => Math.abs(r - 0.3) < 1e-6)).toBe(true);
+    // And faint: no alpha ramp, the weight is in the colours, so nothing here
+    // touches `globalAlpha` the way a fading flash does.
+    expect(calls.alphas.every((a) => a === 1)).toBe(true);
+  });
+
+  it("skips a match that is off screen", () => {
+    add("a", { x: 0, y: 0 });
+    add("far", { x: 90000, y: 0 });
+    camera.centreOn(0, 0);
+
+    draw(matches(["a", "far"], 1));
+
+    expect(calls.strokeRect).toHaveLength(2);
+  });
+
+  /** A standing mark is not a reason to redraw. */
+  it("costs nothing on a frame where the answer has not changed", () => {
+    add("a");
+    camera.centreOn(0, 0);
+    draw(matches(["a"], 1));
+    const drawn = calls.clearRect;
+    expect(drawn).toBeGreaterThan(0);
+
+    draw(matches(["a"], 1));
+    draw(matches(["a"], 1));
+    expect(calls.clearRect).toBe(drawn);
+  });
+
+  it("takes them off the frame the search closes", () => {
+    add("a");
+    camera.centreOn(0, 0);
+    draw(matches(["a"], 1));
+    const drawn = calls.clearRect;
+    const boxes = calls.strokeRect.length;
+
+    // What `Search.clear` does: a new version, and an empty answer.
+    draw(matches([], 2));
+    expect(calls.clearRect).toBe(drawn + 1);
+    expect(calls.strokeRect).toHaveLength(boxes);
+  });
+});
