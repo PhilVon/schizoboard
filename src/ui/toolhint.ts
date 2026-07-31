@@ -40,9 +40,9 @@ import type { ToolHint, ToolHintRow } from "@/state/tools/tool";
  * suggests it either."
  */
 export const AMBIENT: readonly ToolHintRow[] = Object.freeze([
-  { keys: "Alt+drag a pin", does: "pull a new string out of it", holds: ["Alt"] },
-  { keys: "Alt+click a pin", does: "take it out; the strings through it heal", holds: ["Alt"] },
-  { keys: "Ctrl+Alt+click a string", does: "cut it — its pins stay", holds: ["Control", "Alt"] },
+  { keys: "Alt+drag a pin", does: "pull a new string out", holds: ["Alt"] },
+  { keys: "Alt+click a pin", does: "take it out; strings heal", holds: ["Alt"] },
+  { keys: "Ctrl+Alt+click a string", does: "cut it; its pins stay", holds: ["Control", "Alt"] },
 ]);
 
 /**
@@ -56,8 +56,8 @@ export const BOARD: readonly ToolHintRow[] = Object.freeze([
   { keys: "space+drag", does: "pan" },
   { keys: "wheel", does: "zoom" },
   { keys: "Ctrl+0", does: "fit the board" },
-  { keys: "F", does: "frame what is selected" },
-  { keys: "Ctrl+F", does: "find, and fly you there" },
+  { keys: "F", does: "frame the selection" },
+  { keys: "Ctrl+F", does: "find and fly there" },
   { keys: "Ctrl+Z", does: "undo" },
   { keys: "`", does: "the dev HUD" },
 ]);

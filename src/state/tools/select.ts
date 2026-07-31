@@ -309,17 +309,17 @@ export class SelectTool implements Tool {
   readonly hint: ToolHint = {
     name: "Select",
     key: "V",
-    verb: "drag to move · drag a note's edge to resize · drag the cork to marquee",
+    verb: "drag to move · drag the cork to marquee · a note's edge resizes",
     rows: [
-      { keys: "Shift+click", does: "add something to the selection, or take it out", holds: ["Shift"] },
-      { keys: "Shift+drag", does: "marquee on to what is already selected", holds: ["Shift"] },
-      { keys: "R+drag", does: "rotate without reaching for the handle" },
-      { keys: "Ctrl+drag a pin", does: "keep it in the item it is already in", holds: ["Control"] },
-      { keys: "double-click a pin", does: "select everything its strings reach" },
-      { keys: "wheel", does: "sag one gap of a selected string" },
-      { keys: "Alt+wheel", does: "sag every gap of it at once", holds: ["Alt"] },
-      { keys: "1-9", does: "slack presets, taut to slack, on a selected string" },
-      { keys: "Shift+Delete", does: "remove the evidence and leave its pins in the cork", holds: ["Shift"] },
+      { keys: "Shift+click", does: "add one, or take it out", holds: ["Shift"] },
+      { keys: "Shift+drag", does: "marquee on to the selection", holds: ["Shift"] },
+      { keys: "R+drag", does: "rotate without the handle" },
+      { keys: "Ctrl+drag a pin", does: "keep it in its own item", holds: ["Control"] },
+      { keys: "double-click a pin", does: "follow the whole thread" },
+      { keys: "wheel", does: "sag one gap, selected string" },
+      { keys: "Alt+wheel", does: "sag every gap at once", holds: ["Alt"] },
+      { keys: "1-9", does: "slack presets, taut to slack" },
+      { keys: "Shift+Delete", does: "remove, but leave the pins", holds: ["Shift"] },
     ],
   };
 

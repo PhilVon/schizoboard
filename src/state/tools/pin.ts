@@ -62,7 +62,7 @@ export class PinTool implements Tool {
     name: "Pin",
     key: "P",
     verb: "click to push a pin in — into an item, or into the bare cork",
-    rows: [{ keys: "Esc", does: "give the board back without placing one" }],
+    rows: [{ keys: "Esc", does: "place nothing, give the board back" }],
   };
 
   private readonly options: PinToolOptions;

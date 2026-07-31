@@ -703,7 +703,15 @@ body {
   position: absolute;
   left: 12px;
   bottom: 12px;
-  max-width: 74ch;
+  /*
+   * Two rows to a line, measured rather than chosen: the average row is a key
+   * and a short phrase, and at 74ch — the first number this had — every one of
+   * select's twelve took a line of its own and the bar stood 321px tall, into
+   * the drawer beside it. Wide enough for two, and no wider: past that the eye
+   * has to travel the width of the board to find the end of a line it is only
+   * glancing at.
+   */
+  max-width: 96ch;
   padding: 6px 10px 7px;
   border-radius: 7px;
   background: rgba(16, 12, 9, 0.86);
@@ -715,11 +723,25 @@ body {
   pointer-events: none;
 }
 
+/*
+ * Text flow, not flex, and this is the whole difference between a readout and
+ * the block the hint line was. A flex item is atomic: twelve rows wrapped as
+ * twelve flex children is twelve lines, a third of the viewport tall, standing
+ * over the cork and into the drawer beside it - which is the failure being
+ * fixed, reproduced with better copy in it. Laid out as text they pack several
+ * to a line and select's twelve come down to five.
+ *
+ * `inline-block` on the row rather than plain `inline`, so a line may break
+ * between rows and never inside one: "Ctrl+drag a pin" on one line and "keep it
+ * in the item it is already in" on the next reads as two gestures.
+ */
 .toolinfo-tool,
 .toolinfo-board {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: baseline;
+  display: block;
+}
+
+.toolinfo-row {
+  display: inline-block;
 }
 
 /* The camera, the search and undo: true on every frame of every session, so it
@@ -745,14 +767,13 @@ body {
   color: #ffab84;
 }
 
-.toolinfo-row {
+.toolinfo-row:not(.is-live) {
   opacity: 0.55;
 }
 
 /* Every key this row needs is down right now - D-44's sixth decision, and the
  * whole reason the bar is worth more than a list. */
 .toolinfo-row.is-live {
-  opacity: 1;
   color: #f8ecd2;
 }
 

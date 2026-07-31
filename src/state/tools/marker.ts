@@ -176,14 +176,14 @@ function hintFor(name: string, key: string, verb: string, nib: string): ToolHint
         // while the key is down — which is the moment the reader can still act
         // on it, and the whole of what a live row is for.
         keys: "Ctrl at pen-down",
-        does: "mark the cork rather than the sheet under the pointer",
+        does: "mark the cork, not the sheet",
         holds: ["Control"],
       },
       { keys: "[ and ]", does: `size ${nib}` },
       // Not "finish" — `Escape` here *discards* the run in progress. A stroke is
       // committed on pointer-up and by nothing else, and a readout that said
       // otherwise would cost somebody a line they thought they had kept.
-      { keys: "Esc", does: "throw away the stroke in progress and give the board back" },
+      { keys: "Esc", does: "throw the live stroke away" },
     ],
   };
 }

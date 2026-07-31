@@ -103,14 +103,14 @@ export class StringTool implements Tool {
   readonly hint: ToolHint = {
     name: "String",
     key: "S",
-    verb: "click each stop in turn — a stop on an item pushes a pin into it",
+    verb: "click each stop in turn — a stop on an item pins it",
     rows: [
       {
         keys: "Shift+click the first pin",
-        does: "close the run into a loop",
+        does: "close it into a loop",
         holds: ["Shift"],
       },
-      { keys: "Enter, Esc or double-click", does: "end the run and keep it" },
+      { keys: "Enter, Esc or double-click", does: "end the run, keeping it" },
     ],
   };
 
