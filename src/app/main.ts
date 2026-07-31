@@ -2104,9 +2104,16 @@ async function boot(): Promise<void> {
       const row = RAIL_TOOLS.find((each) => each.id === id);
       if (row) pickTool(row.tool);
     },
-    toggled: (open) => prefs.setToolbar(open),
+    // The handle puts *the chrome* away, not just the rail. The two are one
+    // piece of furniture — which tool you are holding, and what it does — so
+    // hiding one and leaving the other would be hiding half a sentence.
+    toggled: (open) => {
+      prefs.setToolbar(open);
+      toolinfo.setVisible(open);
+    },
   });
   const toolinfo = new ToolInfo(world.layers.ui);
+  toolinfo.setVisible(drawer.open);
   /**
    * What the info bar has to say about the board itself, rather than about the
    * tool — the two sentences that used to be branches of `hintText`.

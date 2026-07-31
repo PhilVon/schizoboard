@@ -106,6 +106,24 @@ export class ToolInfo {
   }
 
   /**
+   * Show or hide the whole bar — the drawer's handle, which hides both panels
+   * together rather than only the rail.
+   *
+   * The two are one piece of furniture: the rail says which tool you are
+   * holding and this says what it does, so a handle that took away the first
+   * and left the second would be hiding half a sentence. One affordance, and
+   * what it means is *put the chrome away*.
+   *
+   * `sync` goes on running while it is hidden. It is two string compares
+   * against what is already written, and the alternative — skipping the work
+   * and rebuilding on the way back — is a second state to keep right for a
+   * saving that does not exist.
+   */
+  setVisible(visible: boolean): void {
+    this.el.hidden = !visible;
+  }
+
+  /**
    * What is in your hand, and what is held.
    *
    * `held` is `ToolMachine.held` — the same set `applyCursor` reads through

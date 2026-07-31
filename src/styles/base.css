@@ -743,6 +743,13 @@ body {
  * between rows and never inside one: "Ctrl+drag a pin" on one line and "keep it
  * in the item it is already in" on the next reads as two gestures.
  */
+/* Put away with the rail, by the same handle - explicit rather than left to the
+ * user agent, because every other panel in this file that hides says so itself
+ * and one that relied on the default would be the odd one to check. */
+.toolinfo[hidden] {
+  display: none;
+}
+
 .toolinfo-tool,
 .toolinfo-held,
 .toolinfo-board {
