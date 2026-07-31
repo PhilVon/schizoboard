@@ -58,28 +58,45 @@ src/
     loop.ts           THE single requestAnimationFrame
     world.ts          camera transform, DOM wrapper, will-change discipline
     cull.ts           viewport culling — uniform spatial grid, hysteresis band
+    lod.ts            the tier the camera is at, and the one place that decides
     items/            one view per archetype, node pooling — behind an interface
     ink/              stroke geometry, per-item canvas, wet overlay, re-raster policy
     ropes/            paint.ts — one screen-space painter, instantiated per canvas
-    pins/             pin DOM nodes
+    pins/             pin DOM nodes — a DOM layer, and an export painter (T-214)
     presence/         remote cursors, drag ghosts, remote wet ink
     cork.ts
 
   platform/
-    tauri.ts          every invoke() in one module — mockable for browser dev
-    clipboard.ts
-    files.ts
+    types.ts          the interface, and the only place a command's shape is stated
+    tauri.ts          every invoke() in one module
+    mock.ts           the same interface for browser dev, so the frontend runs with no shell
+    index.ts · env.ts which of the two is in use, and how that is decided
+
+  lib/                fifteen dependency-free helpers — angle, carry, cellgrid, ids,
+                      ink, inkhit, material, palette, polaroid, pressure, rotate,
+                      seed, slack, strokepack, textdiff. Imports NOTHING; there is
+                      an eslint rule saying so, and it is what stops rule 2 being
+                      laundered through here.
+
+  styles/             base.css — chrome tokens and the print rules. Not the board.
+
+  spike/              the Phase 0 fidelity spike (D-12), kept because its numbers are
+                      still the argument for the DOM renderer
 
   ui/                 toolbars, panels, dialogs — framework components, NOT the board
 
 src-tauri/
   src/
-    assets.rs         content-addressed store, hashing, decode, variants
+    lib.rs            every #[command], and the one generate_handler! that registers them
+    assets.rs         content-addressed store, hashing, decode, variants, 30-day trash
     protocol.rs       the asset:// URI scheme handler
     docstore.rs       append-only update log, snapshots, compaction
     bundle.rs         .schizo zip read/write
+    board.rs          which board this window is on, and the secret it was opened with
+    print.rs          PrintToPdf through with_webview — Windows only (T-207, T-210)
     clipboard.rs      native clipboard and drag-drop
-    sync/             embedded relay, mDNS discovery, asset transfer
+    sync/             embedded relay, mDNS discovery, asset transfer, the connect secret
+    bin/relay.rs      the same relay as a headless binary, for a hosted seed (D-7)
 ```
 
 ### 2.1 The Scene
@@ -93,6 +110,8 @@ This exists so that `sim/` and `render/` can run at 60 fps against tight typed-a
 ### 2.2 Why `platform/tauri.ts` is one module
 
 Every native call goes through one file so the whole frontend can run in a plain browser against mocks. That keeps the fast dev loop fast, makes the renderer testable, and keeps a browser build technically viable if it's ever wanted.
+
+There is no `platform/clipboard.ts` and no `platform/files.ts`, and there was never a moment where splitting them would have helped: the point of this seam is that `grep invoke src/` returns one file, and three files that each hold some of the invokes is the same seam with two more places to look. The clipboard's and the file dialog's *commands* are ordinary members of the one interface in `types.ts`.
 
 ---
 
@@ -131,6 +150,8 @@ The dev HUD reports per-phase milliseconds, so a regression shows up as a number
 
 *(A Rust-side Yjs implementation would let the relay compact headlessly and would be reusable server-side, but it means two implementations must agree on the schema. Start frontend-driven.)*
 
+**There is a Rust-side Yjs now, and the note above still holds** — which is worth saying because the two look like a contradiction. `yrs 0.27` is a dependency, scoped to the relay, because a y-websocket server has to answer a state vector with the difference and §5.1 wants the same binary usable as an always-seeding peer, which cannot seed what it does not hold. What section 4.1 was guarding against is two implementations of the **schema**, and there is still only one: the relay never opens an item, a pin or a string. Headless compaction of *meaning* would cross that line and is still not being done. `Cargo.toml` carries the argument beside the dependency.
+
 **Bundles**, native clipboard and drag-drop, URL fetching (no CORS wall), the embedded relay, and asset transfer.
 
 ### 4.2 The frontend owns meaning
@@ -147,8 +168,12 @@ Base64-ing a 12 MB photograph across the IPC boundary is the obvious first thing
 
 ### 4.4 IPC surface
 
+All thirty, as `generate_handler!` registers them.
+
 ```
 // commands (all async)
+app_info()                 → { version, platform }
+
 asset_ingest_bytes(bytes)  → { sha256, w, h, mime, size }
 asset_ingest_path(path)    → same
 asset_ingest_url(url)      → same
@@ -156,7 +181,7 @@ asset_has(hashes[])        → bool[]
 asset_export(sha256, name?) → saved  // no dest: a native save dialog supplies it
 asset_gc(keepSet[])        → { freedBytes }
 
-doc_append_update(bytes)               // fire-and-forget, coalesced in JS
+doc_append_update(bytes)   → ()         // awaited; a failed write rejects (T-220)
 doc_load()                 → { snapshot, updates[] }
 doc_compact(snapshot)
 
@@ -164,14 +189,21 @@ doc_compact(snapshot)
 bundle_save_as(manifest, snapshot) → { embedded, missing[], bytes } | null
 bundle_open()              → { manifest, snapshot, ingested[], missing[] } | null
 
-// export to PDF, in two halves — see the note under `asset_export` below
-export_pdf_choose(title)   → bool            // a save dialog; the path stays here
-export_pdf_write(page)     → path            // prints the webview into it
+// export, in two halves — see the note under `asset_export` below.
+// One `choose` for both routes: PDF and image are two filters on one dialog,
+// and what comes back is the format the user settled on, or null for cancelled.
+export_choose(title, kind) → "pdf" | "png" | "webp" | null
+export_pdf_write(page)     → path         // prints the webview into it
+export_image_write(bytes)  → path         // writes the composited canvas into it
 
 clipboard_read_manifest()  → { kinds: [...] }
 clipboard_read_item(kind)  → { sha256 } | { text } | { html, srcUrl }
+clipboard_source_url()     → url | null   // the CF_HTML SourceURL line, Win32 direct
 
 sync_start(config) / sync_stop() / sync_status()
+sync_take_invite()         → invite | null    // what a deep link arrived carrying
+board_remembered()         → { boardId, secret } | null
+board_remember(boardId, secret)               // beside the document, per Q-75
 
 peer_have_summary()        → sha256[]     // everything this machine can serve
 asset_size(sha256)         → bytes        // 0 for one it does not hold
@@ -180,10 +212,11 @@ asset_receive(bytes)                      // raw body; hash/index/total on heade
 asset_commit(sha256)       → bool         // verified, or nothing written
 asset_abort(sha256)
 
-// events (Rust → frontend)
-asset:ready · asset:progress · files:dropped · doc:persist-error
-deeplink:open · sync:peer-joined · sync:peer-left
+// events (Rust → frontend). Four, and these four are all of them:
+asset:ready · files:dropped · deeplink:open · sync:peer-found
 ```
+
+**Three events in earlier drafts of this list have no producer and never had one** — `asset:progress`, `sync:peer-joined` and `sync:peer-left`. They are declared in `platform/types.ts` and emitted by nobody, which is a different and worse thing than being unbuilt: a listener for one of them is code that compiles, runs and waits forever. `doc:persist-error` was a fourth until T-220, which found the missing hop was not the event at all — `doc_append_update` awaits the disk and a failure already rejects to a caller, so the surface was wired the wrong way round rather than unwired. The declarations are kept for now because removing an entry from a public-looking interface is its own change; what has been removed is the impression that anything emits them.
 
 Binary payloads use raw request/response bodies, never JSON arrays. `doc_append_update` is coalesced in JS (roughly every 200 ms or 32 KB) before crossing the boundary.
 
@@ -193,7 +226,9 @@ The frontend still has to pass the asset's `origName`, because the document hold
 
 Prefer this shape wherever the boundary is asked for a location: take the *intent* from the webview and let the native side obtain the location.
 
-**The PDF export took it too, and had to be split in two to** (T-207). `export_pdf_choose` opens the save dialog and answers only *whether* the user picked somewhere; `export_pdf_write` prints into it. The path is held in shell state between the two calls and never crosses in either direction, so the pair is the same rule as above rather than an exception to it — what the webview can do with them is bounded and dull: a `write` with no `choose` finds an empty slot and fails, a second `write` finds the slot already taken and fails, and a second `choose` replaces a path nobody used with one the user has just agreed to.
+**Both exports took it too, and had to be split in two to** (T-207). `export_choose` opens the save dialog and answers only *which format* the user settled on — never where; `export_pdf_write` and `export_image_write` write into it. The path is held in shell state between the two calls and never crosses in either direction, so the pair is the same rule as above rather than an exception to it — what the webview can do with them is bounded and dull: a `write` with no `choose` finds an empty slot and fails, a second `write` finds the slot already taken and fails, and a second `choose` replaces a path nobody used with one the user has just agreed to.
+
+One `choose` for both routes rather than one each, because PDF and image are two filters on a single dialog and it is the *dialog* that decides which of the two this is (Q-138, T-212). That is why it returns a format rather than a boolean: the caller asked to export the board and the user answered by naming a file, and the extension they picked is the answer to "as what".
 
 It is two commands rather than one because of *ordering*, not security. The board has to be posed for the page before the print — a print lays out at the paper width and fires no `resize` — and a single command would have printed the instant the dialog closed, so the window was already zoomed out to its own bounds while somebody was still typing a filename. Asking first also makes the common case the cheap one: cancelling now moves nothing at all.
 
@@ -213,7 +248,13 @@ Native is strictly more capable and covers the cases that otherwise silently fai
 
 ### 4.6 Plugins
 
-`fs` (scoped), `dialog`, `clipboard-manager`, `opener`, `store`, `window-state`, `single-instance`, `deep-link` (for `schizo://` invites), `updater`, `log`, `os`, `process`.
+Planned: `fs` (scoped), `dialog`, `clipboard-manager`, `opener`, `store`, `window-state`, `single-instance`, `deep-link` (for `schizo://` invites), `updater`, `log`, `os`, `process`.
+
+**Five are compiled in**: `opener`, `dialog` (which pulls `fs` in with it, for the scope type its own file argument needs), `deep-link`, and `single-instance` with the `deep-link` feature. The rest are not, and the list above should be read as what was planned rather than as what is there.
+
+Two of the missing have deliberate substitutes with the reason written down beside them. `store` is `localStorage`, because a preference that failed to load must not hold up the board and because the frontend has to run in a plain browser, which is where most of this application is developed (`app/prefs.ts`). `clipboard-manager` is a direct Win32 read of `CF_HTML`, because nothing safe wraps that format and the `SourceURL:` line is the whole reason the clipboard is being read at all (`clipboard.rs`, T-97).
+
+The one with a user-visible consequence is `window-state`: the window does not come back where you left it, and nothing else in the repo does that job. It is filed as T-233 rather than left as an unbuilt line here.
 
 A plugin being initialised is not the same as the webview being able to call it. `dialog` is registered for Rust's own use and appears in no capability, so `asset_export` is the only thing in the application that can open a file dialog — a script in the webview cannot open one of its own. Prefer that shape for anything that touches the disk.
 
