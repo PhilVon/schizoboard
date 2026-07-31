@@ -47,7 +47,7 @@
 //! filename — and a cancelled dialog had cost a full re-pose of the board for
 //! nothing, which is the common case.
 //!
-//! So: [`export_pdf_choose`] asks, and [`export_pdf_write`] prints. The path
+//! So: [`export_choose`] asks, and [`export_pdf_write`] prints. The path
 //! lives in [`PendingExport`] between them and **never crosses the boundary**,
 //! which is the whole of ARCHITECTURE section 4.4's rule and the only reason
 //! this is not simply `export_pdf(path, page)`. What the webview can do with

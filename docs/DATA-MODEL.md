@@ -263,15 +263,18 @@ One state object per client, flushed at most every other frame. Never persisted;
   user:      { id, name, color },
   cam:       { x, y, zoom },
   cursor:    { x, y, tool },
-  selection: [itemId, …],
+  selection: { items: [...], strings: [...], pins: [...] },
   grab:      null | { kind, ids, pose, seq, t, phase },
   wet:       null | { id, target, tool, color, size, base, pts: [...] },
-  impulse:   [ { kind, id, wx, wy, ix, iy, t } ],
   locks:     { segments: [...] }
 }
 ```
 
-**`cam` earns its place** — it lets a seeding peer push assets a collaborator is about to look at, before they ask.
+**`selection` is by kind**, where earlier drafts of this section wrote a flat `[itemId, …]`. The document predates pins and strings being selectable at all (T-119, T-121), and a peer drawing what somebody else has selected needs to know *which chrome* to draw — an outline round a photograph, a highlight along a rope and a ring on a pin are three different marks, and a flat list of ids would have the receiver guessing which by looking each one up.
+
+**`impulse` is gone.** This list carried `[ { kind, id, wx, wy, ix, iy, t } ]` for the pluck — a peer's tug on a string, sent so the other end rang too. The pluck was removed under T-148 and D-24 (accepted, Q-53): the exact chain solve made the rope four times stiffer, so the same kick bought a fifth of the swing and turned round inside one frame, which is a shimmer rather than a travelling wave. `verlet.ts`'s `nudge` was the only impulse primitive on the board and the pluck was its only caller, so there is nothing left that would produce this field.
+
+**`cam` earns its place** — it lets a seeding peer push assets a collaborator is about to look at, before they ask. It is published and parsed, and **nothing consumes it yet**: the asset exchange is pull-only by construction, with no unsolicited-DATA path, so the one sentence justifying this field's place on the wire is so far unredeemed. That is T-226 rather than a gap in this document.
 
 ### 9.1 Wet ink over a last-write-wins channel
 

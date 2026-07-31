@@ -546,7 +546,7 @@ Rest length is derived: `restLength = chord × (1 + slack)`.
 Two constraints on slack, both of which produce visible artefacts if violated:
 
 - **It must be greater than zero.** At rest length equal to the chord the solver has no slack to absorb error and the rope jitters visibly. Clamp to a small minimum.
-- **If the user drags pins further apart than the rest length**, don't let the solver fight it. The string goes taut and pulls; if the coupling in §5.7 is on, it tugs at the item.
+- **If the user drags pins further apart than the rest length**, don't let the solver fight it. The string goes taut and stays taut; it does not tug at the item, because §5.7 is one-way and always was.
 
 **Splitting on insertion.** When a pin is inserted at some point along a segment, the two new segments must together sag exactly as the one did. Since slack is a ratio, the split is by arc-length proportion: each child takes the same ratio, adjusted so the sum of the child rest lengths equals the parent's. Do it any other way and the sag changes at the instant of insertion, which every user will read as a bug.
 
@@ -600,13 +600,15 @@ written), and `lib/cellgrid.ts` — the uniform grid the draping pass wanted to
 share with culling — remains a `lib/` primitive.
 
 
-### 5.7 String pulling back on items
+### 5.7 String does not pull back on items
 
-Ships **one-way by default**: items drive string, string doesn't drive items.
+**One-way, and that is final**: items drive string, string does not drive items. There is no flag, and there is nothing behind one.
 
-Behind a flag, and worth pursuing, is the reverse: a taut string exerting a capped, heavily damped torque on a **single-pin** item, so a photo pulled tight by a thread hangs slightly askew toward it. It is the detail that would most make the board feel physically coupled.
+This section used to describe the reverse as worth pursuing behind a flag — a taut string exerting a capped, heavily damped torque on a **single-pin** item, so a photo pulled tight by a thread hangs slightly askew toward it, called here "the detail that would most make the board feel physically coupled". It was scheduled to be prototyped in phase 3 precisely because item → rope → torque → item is a feedback loop and feedback loops oscillate, so it was worth knowing early whether it was viable.
 
-It's flagged rather than default because item → rope → torque → item is a feedback loop, and feedback loops oscillate. Mitigations: cap the torque hard, apply it only to single-pin items, disable it entirely while any endpoint of that string is being dragged by anyone, and keep the global off-switch.
+The prototype never happened. Phase 3 closed without it, nobody recorded a decision either way, and it survived unbuilt and unstruck until two of the six surveyors behind D-41 found it independently. It is struck now, on the judgement that it is **fundamentally redundant** rather than on the oscillation risk — the board already reads as coupled, because an item carries its pins, a pin carries its strings, and a string re-hangs the moment either end moves. What this would have added is a second-order effect on top of a first-order one that is already doing the work.
+
+Worth knowing rather than re-deriving: the risk was never the reason this did not ship, so a future argument for it should be about whether it adds anything visible, not about whether it can be made stable. The four mitigations that were listed here — cap the torque, single-pin items only, disable while either endpoint is held by anyone, and a global off-switch — are a reasonable design if anyone ever revisits it.
 
 ### 5.8 Tuning constants
 
@@ -937,11 +939,11 @@ Phase 3 is the first phase where the app is recognisably the product. Phase 4 is
 
 ### 11.2 Open questions
 
-- **Does the string pulling back on items (§5.7) survive contact with reality?** It's the highest-value fidelity detail and the one most likely to oscillate. Prototype it in phase 3 even though it ships later.
+- ~~**Does the string pulling back on items (§5.7) survive contact with reality?**~~ **Answered by being struck, not by being tried.** The phase 3 prototype this asked for never happened and nobody recorded a decision either way, which is how it survived to be found again by two of D-41's surveyors. Struck on Q-157 as fundamentally redundant — §5.7 now says one-way is final and gives the reasoning.
 - **How much ageing is too much?** Still needs a real board and a week of living with it — but no longer needs a week to be *looked* at. T-79 built the ladder: one seed at five ages, five seeds at one age, and a sheet turned four ways to check the fold against the light. A single value is unjudgeable and the ladder is what showed the first crease was drawn as a scratch.
-- **Is `under` string discoverable?** Tucking a string behind a photo is a lovely detail nobody may ever find. Possibly it should happen automatically when a photo is dropped on top of a string.
-- **What's the right handwriting face?** The jitter half of this is answered (§3.6, T-81): it is expressed in `em`, so it holds up at every size by construction, and below about half zoom the text is illegible with or without it — which is the LOD tiers' problem, not the jitter's. The face is still open.
-- **Should search do anything beyond flying the camera?** Highlighting matches without hiding non-matches might be within the pillar. Filtering is not.
+- ~~**Is `under` string discoverable?**~~ **Answered on T-50: declined**, with the human agreeing in writing. Tucking a string behind a photo is a lovely detail nobody may ever find, and the candidate answer here was to make it happen automatically when a photo is dropped on top of a string. It is addressed instead by the `B` key and the context menu's *Tuck behind* row — discoverable by being in the menu rather than by being automatic, which is also the answer that never surprises anybody.
+- ~~**What's the right handwriting face?**~~ **Answered (Q-101): Patrick Hand**, chosen out of four rendered on the same board rather than from samples. The jitter half was already answered (§3.6, T-81): it is expressed in `em`, so it holds up at every size by construction, and below about half zoom the text is illegible with or without it — which is the LOD tiers' problem, not the jitter's. `public/fonts/README.md` carries what changing the face would cost.
+- **Should search do anything beyond flying the camera?** Highlighting matches without hiding non-matches might be within the pillar. Filtering is not. **Half answered:** T-85 settled the part the pillar cares about — nothing is filtered and nothing is hidden. What is not settled is "matches" *plural*: what lands is a flash on exactly one item, the one the camera arrives at.
 - ~~**Do we need an explicit "board time" for ageing,** or is wall-clock adequate?~~ **Answered (Q-105): wall-clock is adequate**, and per item rather than per board. §4.7 has the reasoning and what it costs.
 
 ---
