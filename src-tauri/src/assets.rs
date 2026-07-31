@@ -65,6 +65,8 @@ use ureq::http::Uri;
 use ureq::unversioned::resolver::{DefaultResolver, ResolvedSocketAddrs, Resolver};
 use ureq::unversioned::transport::{DefaultConnector, NextTimeout};
 
+use crate::media;
+
 /// Longest edge of the display variant, in pixels.
 ///
 /// A 320-unit polaroid at the 400% zoom ceiling on a 2x display is about 2560
@@ -106,13 +108,24 @@ pub const CHUNK_BYTES: u64 = 256 * 1024;
 const MAX_REDIRECTS: u8 = 3;
 
 /// What ingestion returns. Note what is *not* here: the bytes.
-#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+///
+/// No `Eq`, since `duration` arrived: a float has no total ordering, and the
+/// derive would be claiming one. Nothing compares two of these for equality
+/// outside the tests, which want `PartialEq` and are satisfied by it.
+#[derive(Debug, Clone, Serialize, PartialEq)]
 pub struct AssetMeta {
     pub sha256: String,
     pub w: u32,
     pub h: u32,
     pub mime: String,
     pub size: u64,
+    /// Seconds, for a film or a cassette; `None` for everything else and for a
+    /// container this build cannot read (T-300).
+    ///
+    /// It is here rather than in a later probe because a peer writes the spine
+    /// of a cassette it may not hold a single byte of — the record travels
+    /// ahead of the file, so the runtime has to be in it (AC-688).
+    pub duration: Option<f64>,
 }
 
 /// What to put in front of the user when they export an asset.
@@ -907,6 +920,13 @@ impl AssetStore {
         // over a file the user cannot do anything about would break "nothing
         // blocks thinking".
         let (w, h) = probe_dimensions(bytes).unwrap_or((0, 0));
+        // Read here, from the whole file, once — and *before* the write, so a
+        // received asset gets the number by the same path a pasted one does.
+        // `commit_received` routes through this function for exactly that
+        // reason, and a duration probed anywhere else would be the one field
+        // that could differ between the machine that pasted the film and the
+        // machine that was sent it.
+        let duration = media::probe_duration(bytes, &mime);
 
         self.restore_from_trash(&sha256);
         let target = self.original_path(&sha256);
@@ -921,6 +941,7 @@ impl AssetStore {
             h,
             mime,
             size,
+            duration,
         })
     }
 
@@ -1594,6 +1615,85 @@ mod tests {
             assert_eq!(resolved.mime, "video/mp4");
             assert!(resolved.exact, "{variant:?}");
         }
+    }
+
+    /// A `.wav` of a known length, which is the cheapest real container to
+    /// build: a format chunk saying how many bytes a second is, and that many.
+    fn wav(seconds: u32) -> Vec<u8> {
+        const BYTE_RATE: u32 = 176_400;
+        let mut body = b"fmt ".to_vec();
+        body.extend_from_slice(&16u32.to_le_bytes());
+        body.extend_from_slice(&1u16.to_le_bytes());
+        body.extend_from_slice(&2u16.to_le_bytes());
+        body.extend_from_slice(&44_100u32.to_le_bytes());
+        body.extend_from_slice(&BYTE_RATE.to_le_bytes());
+        body.extend_from_slice(&4u16.to_le_bytes());
+        body.extend_from_slice(&16u16.to_le_bytes());
+        body.extend_from_slice(b"data");
+        body.extend_from_slice(&(BYTE_RATE * seconds).to_le_bytes());
+        body.extend_from_slice(&vec![0u8; (BYTE_RATE * seconds) as usize]);
+        let mut out = b"RIFF".to_vec();
+        out.extend_from_slice(&((body.len() + 4) as u32).to_le_bytes());
+        out.extend_from_slice(b"WAVE");
+        out.extend_from_slice(&body);
+        out
+    }
+
+    #[test]
+    fn a_cassette_knows_how_long_it_is_the_moment_it_is_ingested() {
+        // AC-688. The number is in the meta ingestion *returns* — not in a
+        // later probe and not in a variant — because that meta is what the
+        // frontend writes into the document, and the document reaches a peer
+        // long before the file does.
+        let (_dir, store) = store();
+        let meta = store.ingest_bytes(&wav(3), None).unwrap();
+        assert_eq!(meta.mime, "audio/wav");
+        assert_eq!(meta.duration, Some(3.0));
+    }
+
+    #[test]
+    fn a_photograph_has_no_duration_and_neither_does_a_file_nobody_can_read() {
+        // AC-689. Three different reasons to say nothing, and all three say the
+        // same nothing rather than a zero: it is not a recording, it is a
+        // container this build does not read, and it is not a file at all.
+        let (_dir, store) = store();
+        for bytes in [png(4, 4), ogg(b"\x80theora"), b"not a file".to_vec()] {
+            assert_eq!(store.ingest_bytes(&bytes, None).unwrap().duration, None);
+        }
+    }
+
+    #[test]
+    fn what_crosses_to_the_frontend_is_a_number_or_a_null() {
+        // The one thing about this field the unit tests above cannot see: it
+        // has to survive `serde` as `duration: 3` and `duration: null`, because
+        // that is the shape `platform/types.ts` declares and the shape the
+        // frontend distinguishes on. An `Option` serialised as an absent key
+        // would type-check on both sides and read as `undefined` at run time.
+        let (_dir, store) = store();
+        let film = store.ingest_bytes(&wav(3), None).unwrap();
+        let picture = store.ingest_bytes(&png(4, 4), None).unwrap();
+        assert_eq!(
+            serde_json::to_value(&film).unwrap()["duration"],
+            serde_json::json!(3.0)
+        );
+        assert_eq!(
+            serde_json::to_value(&picture).unwrap()["duration"],
+            serde_json::Value::Null
+        );
+    }
+
+    #[test]
+    fn the_duration_is_known_before_a_single_variant_is_built() {
+        // The other half of AC-688. `ingest_bytes` returns the moment the hash
+        // and the box are known and leaves the variants to a background thread
+        // (AC-46) — so a duration read during variant generation would arrive
+        // after the item was already on the board and already replicated. At
+        // the point this assertion is made there is exactly one file on disk:
+        // the original.
+        let (_dir, store) = store();
+        let meta = store.ingest_bytes(&wav(2), None).unwrap();
+        assert_eq!(meta.duration, Some(2.0));
+        assert_eq!(walk_files(store.root.as_path()).unwrap().len(), 1);
     }
 
     #[test]
