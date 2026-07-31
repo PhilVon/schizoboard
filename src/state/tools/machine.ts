@@ -327,7 +327,15 @@ export class ToolMachine {
     );
   }
 
-  private modifier(name: "Shift" | "Control" | "Alt"): boolean {
+  /**
+   * Is a modifier down *right now*, between gestures?
+   *
+   * A level, and the only way to ask one when there is no event to read it off
+   * — which is the case for everything drawn or written before a press: the
+   * wheel's claim above, and the scissors cursor in `app/main.ts`. Both boolean
+   * and side-effect free, so asking once a frame costs nothing.
+   */
+  modifier(name: "Shift" | "Control" | "Alt"): boolean {
     return this.heldKeys.has(`${name}Left`) || this.heldKeys.has(`${name}Right`);
   }
 

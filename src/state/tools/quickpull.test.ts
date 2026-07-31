@@ -233,6 +233,29 @@ describe.each(TOOLS)("%s", (_name, make) => {
     expect(writes.some((w) => w.kind === "unpin" || w.kind === "string")).toBe(false);
     expect(scene.pins.has("elsewhere")).toBe(true);
   });
+
+  /**
+   * `Ctrl`+`Alt` is the scissors (`state/tools/frame.ts`, Q-183), and this is
+   * offered every press before any tool sees it — so a decline here is the only
+   * thing standing between a scissors press that happened to land on a pin and
+   * that pin being removed. Removed, and its strings healed on the way out,
+   * which is the least recoverable thing on the board to do by accident.
+   *
+   * Asserted in every tool rather than only in the select tool, because the
+   * quick pull runs in every tool and so does this hazard — the cut itself is
+   * the select tool's (`select.test.ts`), but the pin surviving is not.
+   */
+  it("declines a Ctrl+Alt press, which is the scissors and not a pull", () => {
+    putPin("p", null, 0, 0);
+    const tool = make();
+    const scissors = { ...at(0, 0, true), ctrl: true };
+
+    tool.handle({ kind: "down", at: scissors }, ctx);
+    tool.handle({ kind: "up", at: scissors }, ctx);
+
+    expect(writes.some((w) => w.kind === "unpin")).toBe(false);
+    expect(scene.pins.has("p")).toBe(true);
+  });
 });
 
 describe("the pen keeps its own gesture", () => {

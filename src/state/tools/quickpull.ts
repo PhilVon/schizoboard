@@ -66,6 +66,14 @@ export class QuickPull {
     switch (input.kind) {
       case "down":
         if (!input.at.alt) return false;
+        // `Ctrl` held with it is the scissors (`state/tools/frame.ts`), and it
+        // has to be declined *here* rather than left to lose a race later: this
+        // is offered the press before any tool sees it, so without this line a
+        // `Ctrl`+`Alt` press that happened to land on a pin would remove the
+        // pin — the one outcome the person holding scissors did not ask for,
+        // and the one that is hardest to undo their way out of, since the
+        // strings through it heal on the way.
+        if (input.at.ctrl) return false;
         {
           const pin = ctx.hitPin(input.at.x, input.at.y);
           if (pin === null) return false;

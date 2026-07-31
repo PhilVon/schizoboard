@@ -34,6 +34,7 @@
  */
 
 import { QuickPull } from "@/state/tools/quickpull";
+import { Scissors } from "@/state/tools/scissors";
 import type { Vec2 } from "@/state/camera";
 import type { PointerSample, Tool, ToolContext, ToolInput } from "@/state/tools/tool";
 
@@ -59,12 +60,20 @@ export class NoteTool implements Tool {
 
   /** `Alt` on a pin: the quick pull that belongs to no tool (DESIGN 3.4). */
   private readonly pull = new QuickPull();
+  /** `Ctrl`+`Alt` on a string: the cut that belongs to no tool either (Q-186). */
+  private readonly scissors = new Scissors();
 
   pullPreview(cursor: { x: number; y: number } | null): readonly { x: number; y: number }[] | null {
     return this.pull.preview(cursor);
   }
 
   handle(input: ToolInput, ctx: ToolContext): void {
+    // The scissors first. Both of these belong to no tool (DESIGN section 3.4);
+    // this one is offered ahead of the pull because it is the more specific
+    // press — `Ctrl`+`Alt` rather than `Alt` — and a pin sitting over the string
+    // being aimed at must not turn a cut into a pin removal.
+    if (this.scissors.handle(input, ctx)) return;
+
     // `Alt` on a pin is nobody's tool — DESIGN section 3.4's quick pull works
     // "in any tool", and this is what that sentence costs each of them
     // (`state/tools/quickpull.ts`, T-229).
@@ -120,6 +129,7 @@ export class NoteTool implements Tool {
     // A pull in flight belongs to this instance, and a tool switch would
     // otherwise leave it holding a gesture whose release goes somewhere else.
     this.pull.cancel();
+    this.scissors.cancel();
     this.downAt = null;
   }
 }

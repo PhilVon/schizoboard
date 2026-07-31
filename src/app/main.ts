@@ -112,7 +112,7 @@ import { EraserTool } from "@/state/tools/eraser";
 import { MarkerTool } from "@/state/tools/marker";
 import { NoteTool } from "@/state/tools/note";
 import { PinTool } from "@/state/tools/pin";
-import { stringAt } from "@/state/tools/frame";
+import { isScissors, stringAt } from "@/state/tools/frame";
 import { SelectTool } from "@/state/tools/select";
 import { StringTool } from "@/state/tools/string";
 import type { BoardWriter, WritePose } from "@/state/tools/tool";
@@ -2710,8 +2710,16 @@ async function boot(): Promise<void> {
       // string tool's own affordance is the run it is building, and mid-gesture
       // the loop being pulled out is the feedback — a highlight tracking the
       // curve as well would be a second cursor.
+      //
+      // The exception is the scissors, which is every tool's (Q-186). While the
+      // pair is held the next press cuts whatever is under it whichever pen is
+      // in hand, so the highlight and the cursor have to say so there too —
+      // an affordance that stopped at the select tool would be promising the
+      // gesture in the one place it was least needed.
+      const asking =
+        tools.current === select || isScissors(tools.modifier("Control"), tools.modifier("Alt"));
       const offer =
-        tools.current === select && !select.gesturing
+        asking && !select.gesturing
           ? stringAt(scene, camera, hitItem, hitPin, hitString, cursor.x, cursor.y)
           : null;
       hoveredString = offer && { x: offer.x, y: offer.y };
@@ -2825,11 +2833,33 @@ async function boot(): Promise<void> {
     // it took hold of, and a cursor that reverted would read as a dropped grab.
     const handle =
       select.activeHandle ?? (frame && hover ? handleAt(frame, hover.x, hover.y) : null);
+    /**
+     * The scissors, which needs this more than either of the other two.
+     *
+     * `Ctrl`+`Alt` was chosen (Q-183) precisely because nothing else can be
+     * pressed by accident — and the cost of that is that nothing suggests it
+     * either. This is the answer: hold the pair over a string and the pointer
+     * says the next press cuts. `crosshair` rather than one of `handleCursor`'s
+     * grabs, because a cut is a point on a curve and not a thing to drag.
+     *
+     * Only when a string is actually under the cursor. `hoveredString` is the
+     * same `stringAt` the press will ask, so the cursor cannot promise a cut
+     * that the press then declines — and holding the pair over open cork says
+     * nothing, which is honest, because there it does nothing.
+     */
+    const scissors =
+      hoveredString !== null && isScissors(tools.modifier("Control"), tools.modifier("Alt"));
     // The handle first, because a handle is something you are already touching
     // and the wheel is something you might do next — and the two overlap the
     // moment a selected string crosses a selected note's edge.
     const want =
-      frame && handle ? handleCursor(handle, frame.angle) : tools.wheelClaimed ? "row-resize" : "";
+      frame && handle
+        ? handleCursor(handle, frame.angle)
+        : scissors
+          ? "crosshair"
+          : tools.wheelClaimed
+            ? "row-resize"
+            : "";
     if (want === writtenCursor) return;
     writtenCursor = want;
     root.style.cursor = want;

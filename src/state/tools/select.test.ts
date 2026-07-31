@@ -3019,3 +3019,141 @@ describe("double-clicking paper to write on it", () => {
     expect(edits).toEqual([]);
   });
 });
+
+/**
+ * The scissors — `Ctrl`+`Alt`+click a string to cut it (DESIGN section 3.4,
+ * Q-183).
+ *
+ * Most of what is worth proving here is about what the gesture *does not* do.
+ * The modifier was chosen because it is the one pair nothing else claims, but
+ * every one of its halves means something on its own within a few pixels of
+ * where a cut happens — `Alt` removes a pin, `Ctrl` keeps one put — so the
+ * cases below are mostly the near misses: the press that lands on a pin, on an
+ * item, on a selected sheet's resize edge, and on nothing at all.
+ */
+describe("the scissors", () => {
+  function putString(id: string, pins: readonly string[]): void {
+    scene.putString({
+      id,
+      nodes: pins.map((pin, i) => ({ nodeId: `${id}-n${i}`, pin, slackAfter: 0.2 })),
+      color: "#a8322c",
+      thickness: 3,
+      material: "string",
+      layer: "over",
+      closed: false,
+    });
+  }
+
+  /** Two pins 200 apart, a string between them, and the midpoint at (100, 0) —
+   *  the same fixture the loop gesture's tests use. */
+  function taut(): void {
+    putPin("p0", null, 0, 0);
+    putPin("p1", null, 200, 0);
+    putString("s", ["p0", "p1"]);
+  }
+
+  const SCISSORS = { ctrl: true, alt: true };
+
+  it("cuts the string under it, and writes nothing else", () => {
+    taut();
+    down(100, 0, SCISSORS);
+    up(100, 0);
+
+    expect(writes).toEqual([{ kind: "deleteStrings", stringIds: ["s"] }]);
+  });
+
+  /** "String removed; its pins stay where they are." The op takes no `keepPins`
+   *  and the tool must not invent one — a cut that took the pins with it would
+   *  also take every other string hanging off them. */
+  it("leaves both pins alone", () => {
+    taut();
+    down(100, 0, SCISSORS);
+    up(100, 0);
+
+    expect(writes.some((w) => w.kind === "unpin")).toBe(false);
+    expect(scene.pins.has("p0")).toBe(true);
+    expect(scene.pins.has("p1")).toBe(true);
+  });
+
+  /**
+   * The near miss, and the reason the press is swallowed rather than passed on.
+   *
+   * Falling through would make a scissors press that landed a few pixels off
+   * the curve clear the selection and drag out a marquee — an answer to "I
+   * meant to cut that" which is worse than nothing happening.
+   */
+  it("cuts nothing on bare cork, and does not clear the selection", () => {
+    taut();
+    put("a", 400, 400);
+    selection.replace(["a"]);
+
+    down(100, 300, SCISSORS);
+    move(300, 500, SCISSORS);
+    up(300, 500);
+
+    expect(writes).toEqual([]);
+    expect(selection.toArray()).toEqual(["a"]);
+  });
+
+  /** An item under the pair is not selected and not dragged. The gesture is
+   *  about strings; over anything else it is deliberately inert. */
+  it("does not take an item", () => {
+    put("a", 0, 0);
+
+    down(0, 0, SCISSORS);
+    move(60, 0, SCISSORS);
+    up(60, 0);
+
+    expect(writes).toEqual([]);
+    expect(selection.isEmpty).toBe(true);
+  });
+
+  /**
+   * A pin on top of the press is what `stringAt` refuses to look past, so
+   * nothing is cut — but the pin must survive too, and that is the part with a
+   * sharp edge on it. `Alt`+click removes a pin, and the quick pull is offered
+   * every press before any tool sees it, so without an explicit decline there
+   * the scissors would remove the pin instead of cutting anything.
+   */
+  it("does not remove the pin it lands on", () => {
+    taut();
+
+    down(0, 0, SCISSORS);
+    up(0, 0);
+
+    expect(writes).toEqual([]);
+  });
+
+  /**
+   * The ordering claim: the pair beats the chrome. A selected sheet's resize
+   * edge is invisible and stands exactly where a string crossing that edge
+   * would be cut, so the handle winning would take a press aimed at the string
+   * and resize the note with it.
+   */
+  it("beats a selected sheet's resize edge", () => {
+    paper("note", 0, 0, 200, 100);
+    selection.replace(["note"]);
+    putPin("q0", null, 100, -200);
+    putPin("q1", null, 100, 200);
+    putString("t", ["q0", "q1"]);
+
+    down(100, 0, SCISSORS);
+    move(140, 0, SCISSORS);
+    up(140, 0);
+
+    expect(writes).toEqual([{ kind: "deleteStrings", stringIds: ["t"] }]);
+  });
+
+  /** Neither half on its own is a cut. `Ctrl` alone over a string is still the
+   *  loop pull it has always been. */
+  it("leaves Ctrl alone over a string as the loop gesture", () => {
+    taut();
+
+    down(100, 0, { ctrl: true });
+    move(100, 40, { ctrl: true });
+    up(100, 40);
+
+    expect(writes.some((w) => w.kind === "deleteStrings")).toBe(false);
+    expect(writes.some((w) => w.kind === "insert")).toBe(true);
+  });
+});

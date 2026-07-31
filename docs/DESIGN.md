@@ -291,7 +291,7 @@ The critical detail: when the string splits at that point, **the slack must spli
 | Toggle taut | Double-click a segment | Snaps between taut and default slack |
 | Tuck behind | Context menu → *Tuck behind* | Flips `layer`; the string now runs behind items instead of over them |
 | Restyle | Context menu | Colour (red is default — also blue, green, yellow, black, white), thickness, material (string / yarn / wire) |
-| Cut | Scissors modifier, or context menu → *Delete* | String removed; its pins stay where they are |
+| Cut | `Ctrl`+`Alt`+click a string, **in any tool** — the scissors — or context menu → *Delete* | String removed; its pins stay where they are |
 
 **There is no pluck.** This table used to carry one — click and release on a
 taut string and a travelling wave ran down it, "purely for joy" — and it was
@@ -389,6 +389,7 @@ Editing         Ctrl+V paste · Ctrl+C copy · Ctrl+X cut · Ctrl+Z undo · Ctrl
 Modifiers       Ctrl+drag keep a pin in its item · Alt+drag pull string · Alt+click remove pin
                 Shift+click extend selection · Ctrl at pen-down force board ink
 Strings         1–9 slack presets · Alt+wheel whole-string slack · Enter/Esc end run
+                Ctrl+Alt+click a string cuts it, in any tool — the scissors; the pointer says so
 Search          Ctrl+F find · Enter next match · Shift+Enter previous · Esc close
 ```
 

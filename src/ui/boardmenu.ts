@@ -127,8 +127,9 @@ export function stringMenuRows(
     },
     {
       /**
-       * > | Cut | Scissors modifier, or context menu → *Delete* | String
-       * > removed; its pins stay where they are — DESIGN section 3.4
+       * > | Cut | `Ctrl`+`Alt`+click a string, **in any tool** — the scissors — or
+       * > → *Delete* | String removed; its pins stay where they are
+       * > — DESIGN section 3.4
        *
        * The pins staying is `crdt/ops/strings.ts`'s doing and not a flag passed
        * from here: deleting a string deletes the string, and a pin has never
