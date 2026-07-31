@@ -137,8 +137,9 @@ function walkNumbers(value: unknown, path: string, out: Violation[]): void {
     value.forEach((inner, i) => walkNumbers(inner, `${path}[${i}]`, out));
     return;
   }
-  // A plain object inside a `Y.Map` — `crop`, and `bbox` when it was written as
-  // one. Anything with a prototype of its own is not ours and is left alone.
+  // A plain object inside a `Y.Map` — `bbox`, when it was written as one, and
+  // whatever a later version stores that way. Anything with a prototype of its
+  // own is not ours and is left alone.
   if (typeof value === "object" && value !== null && Object.getPrototypeOf(value) === Object.prototype) {
     for (const [key, inner] of Object.entries(value)) walkNumbers(inner, `${path}.${key}`, out);
   }

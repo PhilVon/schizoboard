@@ -76,10 +76,14 @@ describe("checkInvariants", () => {
 
   it("1 — finds one nested inside a plain object, and ignores packed ink", () => {
     const { item } = furnish();
-    board.items.get(item)!.set("crop", { sx: 0, sy: 0, sw: Number.NaN, sh: 10 });
+    // A key nobody enumerated, holding a plain object — which is the whole
+    // point of the walk. It was `crop` until T-240 struck that field, and using
+    // a real one was always slightly beside the point: what is under test is
+    // that the walk needs no knowledge of the field it is descending into.
+    board.items.get(item)!.set("somethingNobodyThoughtOf", { a: 0, b: Number.NaN, c: 10 });
     const violations = checkInvariants(board);
     expect(violations.map((v) => v.invariant)).toEqual([1]);
-    expect(violations[0]!.path).toBe(`items/${item}/crop.sw`);
+    expect(violations[0]!.path).toBe(`items/${item}/somethingNobodyThoughtOf.b`);
   });
 
   it("2 — finds a slack that is zero, negative, or not there at all", () => {

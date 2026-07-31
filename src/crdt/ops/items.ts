@@ -122,7 +122,6 @@ export function createItems(
       item.set("z", z);
       item.set("seed", seed);
       item.set("assetId", input.assetId ?? null);
-      item.set("crop", null);
       // Y.Text and Y.Map because two people can type into the same note, and
       // adjust different style properties, without clobbering each other.
       item.set("text", new Y.Text(input.text ?? ""));
