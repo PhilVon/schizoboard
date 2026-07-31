@@ -36,7 +36,13 @@
 import { QuickPull } from "@/state/tools/quickpull";
 import { Scissors } from "@/state/tools/scissors";
 import type { Vec2 } from "@/state/camera";
-import type { PointerSample, Tool, ToolContext, ToolInput } from "@/state/tools/tool";
+import type {
+  PointerSample,
+  Tool,
+  ToolContext,
+  ToolHint,
+  ToolInput,
+} from "@/state/tools/tool";
 
 export interface NoteToolOptions {
   /**
@@ -49,6 +55,15 @@ export interface NoteToolOptions {
 
 export class NoteTool implements Tool {
   readonly id = "note";
+
+  /** See [`ToolHint`]. One row, for the reason `PinTool`'s says: this tool does
+   *  one thing and then stops being the tool. */
+  readonly hint: ToolHint = {
+    name: "Note",
+    key: "N",
+    verb: "click for a blank sheet, and it comes up already selected",
+    rows: [{ keys: "Esc", does: "give the board back without making one" }],
+  };
 
   private readonly options: NoteToolOptions;
   /** Where the press landed, board space, or null when nothing is pressed. */

@@ -555,8 +555,66 @@ export interface ToolContext {
   edit(itemId: string): void;
 }
 
+/**
+ * One line of a tool's help — a gesture, what it does, and what has to be down
+ * for it to mean anything.
+ *
+ * `holds` is what makes the readout teach rather than list: a row whose keys are
+ * *currently* down is drawn live (`ui/toolhint.ts`), so holding `Ctrl` and
+ * watching a row brighten is the gesture demonstrating itself. That matters most
+ * for the ones nothing else suggests — `app/main.ts` says as much about the
+ * scissors: "`Ctrl`+`Alt` was chosen precisely because nothing else can be
+ * pressed by accident — and the cost of that is that nothing suggests it
+ * either."
+ *
+ * The three modifiers and no more. `R`+drag is the one gesture on this board
+ * held on an ordinary letter, and it is deliberately not expressible here: the
+ * held set is `KeyboardEvent.code`s and `"Shift"` already stands for two of them
+ * (`ShiftLeft` and `ShiftRight`), so admitting `"KeyR"` would be mixing the
+ * vocabulary the reader sees with the one the browser uses. The row still
+ * appears; it simply never lights.
+ */
+export interface ToolHintRow {
+  /** As a person would say it — `"Alt+drag"`, `"[ and ]"`, `"1-9"`. */
+  readonly keys: string;
+  /** What it does, lower case, no full stop: `"pull a new string out of a pin"`. */
+  readonly does: string;
+  /** Held for this row to be live. Absent or empty means always available. */
+  readonly holds?: readonly ("Shift" | "Control" | "Alt")[];
+}
+
+/**
+ * What a tool does, in the tool's own words.
+ *
+ * Declared on the tool rather than gathered in the widget that draws it, which
+ * is the whole reason this interface exists: a gesture and the sentence
+ * describing it then live in one file and change together. The alternative was
+ * a table in `ui/`, and a table in `ui/` is a second inventory of `state/` that
+ * goes stale silently — which is exactly what the hint line it replaces did. It
+ * described a board that had changed underneath it for nine phases.
+ *
+ * **Required**, unlike `claimsWheel` and `pullPreview` below. A tool that says
+ * nothing about itself is how the application got back to being undiscoverable.
+ */
+export interface ToolHint {
+  /** `"Select"`, `"Highlighter"` — how the tool is named to a person. */
+  readonly name: string;
+  /** Its row of DESIGN section 3.9's `Tools` line: `"V"`, `"M"`, `"Shift+E"`. */
+  readonly key: string;
+  /**
+   * The plain gesture, with nothing held — what the tool is *for*.
+   *
+   * Separate from the rows because it is the one thing that is true before you
+   * have learned anything: every row below it is a modifier on this.
+   */
+  readonly verb: string;
+  readonly rows: readonly ToolHintRow[];
+}
+
 export interface Tool {
   readonly id: string;
+  /** What this tool does, for the info bar — see [`ToolHint`]. */
+  readonly hint: ToolHint;
   /** One buffered input, in the INPUT phase. */
   handle(input: ToolInput, ctx: ToolContext): void;
   /**

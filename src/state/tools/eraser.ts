@@ -46,7 +46,13 @@ import { Scissors } from "@/state/tools/scissors";
 import type { Point } from "@/lib/rotate";
 import type { SceneStroke } from "@/state/scene";
 import { itemLocal } from "@/state/tools/frame";
-import type { PointerSample, Tool, ToolContext, ToolInput } from "@/state/tools/tool";
+import type {
+  PointerSample,
+  Tool,
+  ToolContext,
+  ToolHint,
+  ToolInput,
+} from "@/state/tools/tool";
 
 /**
  * What a sweep is rubbing.
@@ -68,6 +74,28 @@ export interface EraserToolOptions {
 
 export class EraserTool implements Tool {
   readonly id = "eraser";
+
+  /**
+   * See [`ToolHint`]. The `Ctrl` row is worded as *the press* rather than as a
+   * held modifier because that is what the code does: the surface is fixed once,
+   * at pointer-down, and letting go of `Ctrl` halfway through a sweep changes
+   * nothing. It still declares `holds`, so the row lights while the key is down
+   * — which is the moment before the press, when the reader can still act on it.
+   */
+  readonly hint: ToolHint = {
+    name: "Eraser",
+    key: "E",
+    verb: "sweep over a mark to take the whole stroke away",
+    rows: [
+      {
+        keys: "Ctrl at the press",
+        does: "rub the cork rather than the sheet under the pointer",
+        holds: ["Control"],
+      },
+      { keys: "[ and ]", does: "size the rubber" },
+      { keys: "Esc", does: "give the board back" },
+    ],
+  };
 
   private readonly options: EraserToolOptions;
   /** The rubber's width, in board units. Per tool and not per gesture, like a

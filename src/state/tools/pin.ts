@@ -36,7 +36,13 @@ import { QuickPull } from "@/state/tools/quickpull";
 import { Scissors } from "@/state/tools/scissors";
 import type { Vec2 } from "@/state/camera";
 import { itemLocal, settleOnPin } from "@/state/tools/frame";
-import type { PointerSample, Tool, ToolContext, ToolInput } from "@/state/tools/tool";
+import type {
+  PointerSample,
+  Tool,
+  ToolContext,
+  ToolHint,
+  ToolInput,
+} from "@/state/tools/tool";
 
 export interface PinToolOptions {
   /** A pin was placed, or `Escape` abandoned it. The caller hands the board
@@ -46,6 +52,18 @@ export interface PinToolOptions {
 
 export class PinTool implements Tool {
   readonly id = "pin";
+
+  /**
+   * See [`ToolHint`]. One row, because there is one thing to say about a tool
+   * that places a single object and hands the board straight back — and the row
+   * is `Escape`, which is the only way out that does not leave a pin behind.
+   */
+  readonly hint: ToolHint = {
+    name: "Pin",
+    key: "P",
+    verb: "click to push a pin in — into an item, or into the bare cork",
+    rows: [{ keys: "Esc", does: "give the board back without placing one" }],
+  };
 
   private readonly options: PinToolOptions;
   /** Where the press landed, board space, or null when nothing is pressed. */
