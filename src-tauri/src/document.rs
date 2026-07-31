@@ -18,7 +18,10 @@
 //! One of four things, decided per page:
 //!
 //! - **Text**, as [`TextRun`]s with their boxes. Not one string: the reading
-//!   surface sets the runs onto our own paper, and a quote cites one.
+//!   surface sets the runs onto our own paper, and a quote cites one. A text
+//!   page also carries its [`Figure`]s — the charts, photographs and exhibits
+//!   drawn among the lines (Q-203). Dropping those was the first shape of this
+//!   module, and it handed the reader a caption over a blank space.
 //! - **Image**, when the page is a scan — a page-sized image and no text. The
 //!   bytes come out of here; hashing them into the store is T-299's, which is
 //!   also where two hundred of them stop being free.
@@ -108,6 +111,25 @@ const MAX_FORM_DEPTH: u8 = 4;
 /// sheet and a logo is not, whatever else is on the page.
 const SCAN_COVERAGE: f32 = 0.5;
 
+/// How much of the page an image must cover to be lifted as a *figure* on a
+/// page that also has text — a chart, a photograph, an exhibit.
+///
+/// Q-203 settled that a text page carries its figures rather than dropping
+/// them, and this is the line under that. Carrying every placed image would
+/// lift the letterhead logo on all two hundred pages of a report: two hundred
+/// re-encodes of a thing nobody wants to see twice, and T-299's whole subject
+/// is what that costs. Two percent of a sheet of A4 is about 110 by 90 points
+/// — comfortably above a logo or a rule, comfortably below anything a caption
+/// would ask you to look at.
+///
+/// It is a judgement, and it is deliberately on this side of the line: what is
+/// worth *storing* is a question about bytes. What a figure means is not, and
+/// stays the frontend's.
+const FIGURE_COVERAGE: f32 = 0.02;
+
+/// Figures lifted from one page, ceiling.
+const MAX_FIGURES_PER_PAGE: usize = 64;
+
 /// A glyph width, per mille, for a font that declares none.
 ///
 /// Fonts other than the standard fourteen are required to carry `/Widths`, and
@@ -149,7 +171,12 @@ pub struct Page {
 /// not folded into `Empty`.
 #[derive(Debug, Clone, PartialEq)]
 pub enum PageContent {
-    Text(Vec<TextRun>),
+    /// A page that is meant to be read: its text, and whatever is drawn on it
+    /// that is big enough to be worth looking at (Q-203).
+    Text {
+        runs: Vec<TextRun>,
+        figures: Vec<Figure>,
+    },
     Image(PageImage),
     Empty,
     /// There is something on this page and this build cannot read it. Carries
@@ -175,6 +202,27 @@ pub struct TextRun {
     /// surface reads relative sizes off this to tell a heading from a footnote;
     /// it is not being asked to reproduce the point size.
     pub size: f32,
+}
+
+/// Something drawn on a page that is also text: a chart, a photograph, an
+/// exhibit. Its box is in the same coordinates as a [`TextRun`]'s, so the
+/// reading surface can set it where it belongs among the lines.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Figure {
+    pub x: f32,
+    pub y: f32,
+    pub width: f32,
+    pub height: f32,
+    pub content: FigureContent,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum FigureContent {
+    Image(PageImage),
+    /// This build could not lift it. Reported with its box rather than
+    /// dropped, for the reason `PageContent::Unsupported` exists: a blank
+    /// space is worst on a page whose caption is telling you to look at it.
+    Unsupported(String),
 }
 
 /// A scanned page, lifted.
@@ -324,7 +372,30 @@ fn decide(
     undecodable: bool,
 ) -> PageContent {
     if runs.iter().any(|run| !run.text.trim().is_empty()) {
-        return PageContent::Text(runs);
+        // Q-203: the figures come too. Before this, a report's chart was
+        // dropped and the reader got the caption and a blank space.
+        let figures = images
+            .iter()
+            .filter(|placed| page_area > 0.0 && placed.area() / page_area >= FIGURE_COVERAGE)
+            .take(MAX_FIGURES_PER_PAGE)
+            .map(|placed| Figure {
+                x: placed.x,
+                y: placed.y,
+                width: placed.width,
+                height: placed.height,
+                content: match &placed.source {
+                    Source::Inline => FigureContent::Unsupported(
+                        "the figure is written inline in the page's content stream, which this build does not lift"
+                            .into(),
+                    ),
+                    Source::XObject(stream) => match lift(doc, stream) {
+                        Ok(image) => FigureContent::Image(image),
+                        Err(why) => FigureContent::Unsupported(why),
+                    },
+                },
+            })
+            .collect();
+        return PageContent::Text { runs, figures };
     }
 
     /// What a page with nothing readable on it is, which depends on whether
@@ -344,12 +415,12 @@ fn decide(
     // being the page.
     let biggest = images
         .into_iter()
-        .max_by(|a, b| a.area.total_cmp(&b.area));
+        .max_by(|a, b| a.area().total_cmp(&b.area()));
 
     let Some(candidate) = biggest else {
         return nothing(undecodable);
     };
-    if page_area <= 0.0 || candidate.area / page_area < SCAN_COVERAGE {
+    if page_area <= 0.0 || candidate.area() / page_area < SCAN_COVERAGE {
         // Something is drawn here, but it is not the page — a logo, a rule, a
         // signature block. There is no readable text either, so the page is
         // blank in every sense that matters to a reader.
@@ -818,8 +889,18 @@ fn contains(haystack: &[u8], needle: &[u8]) -> bool {
 /// needs the CTM, and there is only one stack of those.
 struct Placement<'a> {
     source: Source<'a>,
-    /// The area of the page, in square points, the image covers.
-    area: f32,
+    /// Where on the page it lands, in the same coordinates a run's box is in.
+    x: f32,
+    y: f32,
+    width: f32,
+    height: f32,
+}
+
+impl Placement<'_> {
+    /// The area of the page, in square points, this covers.
+    fn area(&self) -> f32 {
+        self.width * self.height
+    }
 }
 
 enum Source<'a> {
@@ -992,10 +1073,10 @@ impl<'a> Walk<'a> {
                         self.draw(resources, &state, name, depth);
                     }
                 }
-                "BI" => self.images.push(Placement {
-                    source: Source::Inline,
-                    area: self.covered(state.ctm),
-                }),
+                "BI" => {
+                    let placement = self.placed(Source::Inline, state.ctm);
+                    self.images.push(placement);
+                }
 
                 _ => {}
             }
@@ -1013,10 +1094,8 @@ impl<'a> Walk<'a> {
         let subtype = stream.dict.get(b"Subtype").and_then(Object::as_name).unwrap_or(b"");
 
         if subtype == b"Image" {
-            self.images.push(Placement {
-                source: Source::XObject(stream),
-                area: self.covered(state.ctm),
-            });
+            let placement = self.placed(Source::XObject(stream), state.ctm);
+            self.images.push(placement);
             return;
         }
         if subtype != b"Form" || depth >= MAX_FORM_DEPTH {
@@ -1041,17 +1120,23 @@ impl<'a> Walk<'a> {
         }
     }
 
-    /// The area of the page covered by the unit square under this matrix, which
-    /// is where every image goes: PDF draws an image into `(0,0)`–`(1,1)` and
-    /// lets the CTM say how big that is.
-    fn covered(&self, ctm: Matrix) -> f32 {
-        let (_, _, w, h) = self.frame.box_of([
+    /// Where the unit square under this matrix lands on the page, which is
+    /// where every image goes: PDF draws an image into `(0,0)`–`(1,1)` and lets
+    /// the CTM say how big that is and where.
+    fn placed<'b>(&self, source: Source<'b>, ctm: Matrix) -> Placement<'b> {
+        let (x, y, width, height) = self.frame.box_of([
             ctm.apply(0.0, 0.0),
             ctm.apply(1.0, 0.0),
             ctm.apply(1.0, 1.0),
             ctm.apply(0.0, 1.0),
         ]);
-        w * h
+        Placement {
+            source,
+            x,
+            y,
+            width,
+            height,
+        }
     }
 
     /// One show-text operation. Produces at most one run, and always advances
@@ -1532,7 +1617,7 @@ mod tests {
         let reading = read_pdf_bytes(bytes).expect("fixture should read");
         assert_eq!(reading.pages.len(), 1);
         match &reading.pages[0].content {
-            PageContent::Text(runs) => runs.clone(),
+            PageContent::Text { runs, .. } => runs.clone(),
             other => panic!("expected text, got {other:?}"),
         }
     }
@@ -1789,7 +1874,7 @@ mod tests {
         near(page.width, 792.0);
         near(page.height, 612.0);
 
-        let PageContent::Text(runs) = &page.content else {
+        let PageContent::Text { runs, .. } = &page.content else {
             panic!("expected text");
         };
         // A quarter turn clockwise turns a wide run into a tall one, and puts
@@ -1829,7 +1914,7 @@ mod tests {
         near(page.width, 468.0);
         near(page.height, 648.0);
 
-        let PageContent::Text(runs) = &page.content else {
+        let PageContent::Text { runs, .. } = &page.content else {
             panic!("expected text");
         };
         near(runs[0].x, 100.0 - 72.0);
@@ -2103,7 +2188,7 @@ mod tests {
 
         let reading = read_pdf_bytes(&builder.finish()).expect("fixture should read");
         match &reading.pages[0].content {
-            PageContent::Text(runs) => assert_eq!(runs[0].text, "IN THE MATTER OF"),
+            PageContent::Text { runs, .. } => assert_eq!(runs[0].text, "IN THE MATTER OF"),
             other => panic!("expected text, got {other:?}"),
         }
     }
@@ -2143,9 +2228,197 @@ mod tests {
             reading.pages.iter().map(|p| p.index).collect::<Vec<_>>(),
             vec![1, 2, 3]
         );
-        assert!(matches!(reading.pages[0].content, PageContent::Text(_)));
+        assert!(matches!(reading.pages[0].content, PageContent::Text { .. }));
         assert!(matches!(reading.pages[1].content, PageContent::Image(_)));
         assert_eq!(reading.pages[2].content, PageContent::Empty);
+    }
+
+    // -- Q-203: a text page keeps what is drawn on it ----------------------
+
+    /// A page of text with one image drawn on it at the given size and place.
+    fn illustrated(mut builder: Builder, image: ObjectId, scale: f32, at: (f32, f32)) -> Vec<u8> {
+        let font = builder.courier();
+        let content = builder.stream(
+            Dictionary::new(),
+            ops(vec![
+                Operation::new("BT", vec![]),
+                Operation::new("Tf", vec!["F1".into(), 12.into()]),
+                Operation::new("Td", vec![72.into(), 720.into()]),
+                tj("see figure 1"),
+                Operation::new("ET", vec![]),
+                Operation::new("q", vec![]),
+                Operation::new(
+                    "cm",
+                    vec![
+                        Object::Real(scale),
+                        0.into(),
+                        0.into(),
+                        Object::Real(scale),
+                        Object::Real(at.0),
+                        Object::Real(at.1),
+                    ],
+                ),
+                Operation::new("Do", vec![Object::Name(b"Im0".to_vec())]),
+                Operation::new("Q", vec![]),
+            ]),
+        );
+        builder.page(dictionary! {
+            "Contents" => content,
+            "Resources" => dictionary! {
+                "Font" => dictionary! { "F1" => font },
+                "XObject" => dictionary! { "Im0" => image },
+            },
+        });
+        builder.finish()
+    }
+
+    fn page_of(bytes: &[u8]) -> PageContent {
+        let reading = read_pdf_bytes(bytes).expect("fixture should read");
+        reading.pages[0].content.clone()
+    }
+
+    #[test]
+    fn a_report_keeps_its_figure_and_says_where_on_the_page_it_sits() {
+        let mut builder = Builder::new();
+        let jpeg = jpeg_bytes();
+        let image = dct_image(&mut builder, jpeg.clone());
+        // 300 points square, low on the page.
+        let content = page_of(&illustrated(builder, image, 300.0, (100.0, 200.0)));
+
+        let PageContent::Text { runs, figures } = content else {
+            panic!("expected a text page, got {content:?}");
+        };
+        assert_eq!(runs[0].text, "see figure 1");
+        assert_eq!(figures.len(), 1, "the caption is pointing at something");
+
+        let figure = &figures[0];
+        near(figure.x, 100.0);
+        near(figure.width, 300.0);
+        near(figure.height, 300.0);
+        // Top-left origin, same as a run's: 792 less the top of the figure.
+        near(figure.y, 792.0 - (200.0 + 300.0));
+        match &figure.content {
+            FigureContent::Image(lifted) => assert_eq!(lifted.bytes, jpeg),
+            other => panic!("this one lifts: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_figure_under_a_skewed_matrix_is_boxed_by_all_four_of_its_corners() {
+        // `Do` draws into the unit square and the CTM says where that lands,
+        // and a CTM is any matrix at all — nothing requires it to be a
+        // rectangle. Every fixture above places images square, and for a
+        // rectangle each extreme is shared by two corners, so a box built from
+        // only three of them comes out identical and the corner walk is never
+        // actually tested. This matrix puts the minimum x on one corner alone.
+        let mut builder = Builder::new();
+        let font = builder.courier();
+        let image = dct_image(&mut builder, jpeg_bytes());
+        let content = builder.stream(
+            Dictionary::new(),
+            ops(vec![
+                Operation::new("BT", vec![]),
+                Operation::new("Tf", vec!["F1".into(), 12.into()]),
+                Operation::new("Td", vec![72.into(), 720.into()]),
+                tj("see figure 1"),
+                Operation::new("ET", vec![]),
+                Operation::new("q", vec![]),
+                Operation::new(
+                    "cm",
+                    vec![
+                        300.into(),
+                        0.into(),
+                        (-200).into(),
+                        400.into(),
+                        250.into(),
+                        50.into(),
+                    ],
+                ),
+                Operation::new("Do", vec![Object::Name(b"Im0".to_vec())]),
+                Operation::new("Q", vec![]),
+            ]),
+        );
+        builder.page(dictionary! {
+            "Contents" => content,
+            "Resources" => dictionary! {
+                "Font" => dictionary! { "F1" => font },
+                "XObject" => dictionary! { "Im0" => image },
+            },
+        });
+
+        let PageContent::Text { figures, .. } = page_of(&builder.finish()) else {
+            panic!("expected a text page");
+        };
+        // The four corners land at (250,50), (550,50), (350,450) and
+        // (50,450). Only the last of those is at x = 50.
+        near(figures[0].x, 50.0);
+        near(figures[0].width, 500.0);
+        near(figures[0].y, 792.0 - 450.0);
+        near(figures[0].height, 400.0);
+    }
+
+    #[test]
+    fn a_letterhead_logo_is_not_a_figure_either() {
+        // The same rule as the page-level one, one threshold down. Lifting
+        // this would re-encode the same logo once per page of a report.
+        let mut builder = Builder::new();
+        let image = dct_image(&mut builder, jpeg_bytes());
+        let content = page_of(&illustrated(builder, image, 40.0, (36.0, 720.0)));
+
+        let PageContent::Text { figures, .. } = content else {
+            panic!("expected a text page");
+        };
+        assert!(figures.is_empty(), "forty points square is a logo: {figures:?}");
+    }
+
+    #[test]
+    fn a_figure_that_cannot_be_lifted_still_says_where_it_was() {
+        let mut builder = Builder::new();
+        let image = builder.stream(
+            dictionary! {
+                "Type" => "XObject",
+                "Subtype" => "Image",
+                "Width" => 8,
+                "Height" => 8,
+                "ColorSpace" => "DeviceGray",
+                "BitsPerComponent" => 1,
+                "Filter" => "JBIG2Decode",
+            },
+            vec![0u8; 8],
+        );
+        let content = page_of(&illustrated(builder, image, 300.0, (100.0, 200.0)));
+
+        let PageContent::Text { figures, .. } = content else {
+            panic!("expected a text page");
+        };
+        assert_eq!(figures.len(), 1, "a blank space is the failure, not the fix");
+        near(figures[0].width, 300.0);
+        match &figures[0].content {
+            FigureContent::Unsupported(why) => {
+                assert!(why.contains("JBIG2"), "the reason should name it: {why}")
+            }
+            other => panic!("this one cannot lift: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_scan_with_a_stamp_across_it_is_a_text_page_that_still_has_the_scan() {
+        // The page-sized image is well over the figure threshold, so the
+        // clerk's stamped text no longer costs the reader the evidence.
+        let mut builder = Builder::new();
+        let jpeg = jpeg_bytes();
+        let image = dct_image(&mut builder, jpeg.clone());
+        let content = page_of(&illustrated(builder, image, 612.0, (0.0, 90.0)));
+
+        let PageContent::Text { runs, figures } = content else {
+            panic!("expected a text page");
+        };
+        assert_eq!(runs.len(), 1);
+        assert_eq!(figures.len(), 1);
+        match &figures[0].content {
+            FigureContent::Image(lifted) => assert_eq!(lifted.bytes, jpeg),
+            other => panic!("expected the scan: {other:?}"),
+        }
     }
 
     // -- composite fonts, which is most of what a modern producer emits ----
