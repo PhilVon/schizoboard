@@ -291,15 +291,21 @@ fn read_page(doc: &Document, index: u32, page_id: ObjectId) -> Page {
         frame,
         runs: Vec::new(),
         images: Vec::new(),
+        undecodable: false,
     };
     walk.run(&content, &resources, Matrix::IDENTITY, 0);
-    let Walk { runs, images, .. } = walk;
+    let Walk {
+        runs,
+        images,
+        undecodable,
+        ..
+    } = walk;
 
     Page {
         index,
         width,
         height,
-        content: decide(doc, runs, images, width * height),
+        content: decide(doc, runs, images, width * height, undecodable),
     }
 }
 
@@ -315,9 +321,23 @@ fn decide(
     runs: Vec<TextRun>,
     images: Vec<Placement<'_>>,
     page_area: f32,
+    undecodable: bool,
 ) -> PageContent {
     if runs.iter().any(|run| !run.text.trim().is_empty()) {
         return PageContent::Text(runs);
+    }
+
+    /// What a page with nothing readable on it is, which depends on whether
+    /// there was nothing or whether we simply could not read it.
+    fn nothing(undecodable: bool) -> PageContent {
+        if undecodable {
+            PageContent::Unsupported(
+                "the page's text is in a font that does not say which characters its codes stand for"
+                    .into(),
+            )
+        } else {
+            PageContent::Empty
+        }
     }
 
     // The largest thing drawn on the page, which is the only candidate for
@@ -327,13 +347,13 @@ fn decide(
         .max_by(|a, b| a.area.total_cmp(&b.area));
 
     let Some(candidate) = biggest else {
-        return PageContent::Empty;
+        return nothing(undecodable);
     };
     if page_area <= 0.0 || candidate.area / page_area < SCAN_COVERAGE {
         // Something is drawn here, but it is not the page — a logo, a rule, a
-        // signature block. There is no text either, so the page is blank in
-        // every sense that matters to a reader.
-        return PageContent::Empty;
+        // signature block. There is no readable text either, so the page is
+        // blank in every sense that matters to a reader.
+        return nothing(undecodable);
     }
 
     match candidate.source {
@@ -573,12 +593,32 @@ struct FontMetrics<'a> {
 
 impl<'a> FontMetrics<'a> {
     fn of(doc: &'a Document, font: &'a Dictionary) -> FontMetrics<'a> {
-        let encoding = font.get_font_encoding_with_limit(doc, MAX_CMAP_BYTES).ok();
         let composite = font
             .get_deref(b"Subtype", doc)
             .and_then(Object::as_name)
             .map(|name| name == b"Type0")
             .unwrap_or(false);
+
+        // A composite font's codes are two bytes and stand for whatever its
+        // CMap says. lopdf can only tell us that for `Identity-H`/`Identity-V`
+        // *with* a `/ToUnicode`; without one it does not fail, it falls back to
+        // a one-byte standard table — and two-byte codes read through a
+        // one-byte table are not text, they are noise.
+        //
+        // Noise is worse than nothing here, and this is the second door into
+        // the same room as the OCR layer above: garbage is non-empty, so the
+        // page would report as text, so a scan under it would never be lifted
+        // and the user would be shown a paraphrase made of nothing.
+        let undecodable_composite = composite
+            && font
+                .get_deref(b"ToUnicode", doc)
+                .and_then(Object::as_stream)
+                .is_err();
+        let encoding = if undecodable_composite {
+            None
+        } else {
+            font.get_font_encoding_with_limit(doc, MAX_CMAP_BYTES).ok()
+        };
 
         if composite {
             FontMetrics::composite(doc, font, encoding)
@@ -826,6 +866,10 @@ struct Walk<'a> {
     frame: PageFrame,
     runs: Vec<TextRun>,
     images: Vec<Placement<'a>>,
+    /// Something was shown and nothing came back out of it. See
+    /// [`FontMetrics::of`] — a page this happened on is not blank, whatever
+    /// else it turns out not to be.
+    undecodable: bool,
 }
 
 impl<'a> Walk<'a> {
@@ -1022,14 +1066,26 @@ impl<'a> Walk<'a> {
         pieces: &[Piece<'_>],
     ) {
         let doc = self.doc;
-        let Some(name) = state.font.clone() else { return };
+        let showed = pieces
+            .iter()
+            .any(|piece| matches!(piece, Piece::Text(bytes) if !bytes.is_empty()));
+
+        let Some(name) = state.font.clone() else {
+            self.undecodable |= showed;
+            return;
+        };
         let metrics = match fonts.entry(name) {
             std::collections::hash_map::Entry::Occupied(entry) => entry.into_mut(),
             std::collections::hash_map::Entry::Vacant(entry) => {
                 let font = resources
                     .find(doc, b"Font", entry.key())
                     .and_then(|object| object.as_dict().ok());
-                let Some(font) = font else { return };
+                let Some(font) = font else {
+                    // Without the font there is no width either, so the matrix
+                    // cannot honestly be advanced. The page still says so.
+                    self.undecodable |= showed;
+                    return;
+                };
                 entry.insert(FontMetrics::of(doc, font))
             }
         };
@@ -1050,6 +1106,10 @@ impl<'a> Walk<'a> {
 
         let start = *tm;
         *tm = Matrix::translate(advance, 0.0).mul(*tm);
+
+        // Bytes in and no characters out. A string of spaces decodes to a
+        // string of spaces, so this is a decoding failure and not a blank line.
+        self.undecodable |= showed && text.is_empty();
 
         // Modes 3 and 7 paint nothing. See the module header: this is where
         // somebody else's OCR layer stops.
@@ -2086,6 +2146,180 @@ mod tests {
         assert!(matches!(reading.pages[0].content, PageContent::Text(_)));
         assert!(matches!(reading.pages[1].content, PageContent::Image(_)));
         assert_eq!(reading.pages[2].content, PageContent::Empty);
+    }
+
+    // -- composite fonts, which is most of what a modern producer emits ----
+
+    /// A `Type0`/`Identity-H` font: two-byte codes, widths in the descendant's
+    /// `/W`, and characters only where a `/ToUnicode` says so. CID 1 is `H` and
+    /// CID 2 is `i`, at 500 and 750 thousandths.
+    fn identity_h(builder: &mut Builder, with_to_unicode: bool) -> ObjectId {
+        let descriptor = builder.doc.add_object(dictionary! {
+            "Type" => "FontDescriptor",
+            "FontName" => "AAAAAA+Test",
+            "Ascent" => 750,
+            "Descent" => -250,
+        });
+        let cid_font = builder.doc.add_object(dictionary! {
+            "Type" => "Font",
+            "Subtype" => "CIDFontType2",
+            "BaseFont" => "AAAAAA+Test",
+            "CIDSystemInfo" => dictionary! {
+                "Registry" => Object::string_literal("Adobe"),
+                "Ordering" => Object::string_literal("Identity"),
+                "Supplement" => 0,
+            },
+            "DW" => 1000,
+            "W" => vec![
+                Object::Integer(1),
+                Object::Array(vec![Object::Integer(500), Object::Integer(750)]),
+            ],
+            "FontDescriptor" => descriptor,
+        });
+
+        let mut font = dictionary! {
+            "Type" => "Font",
+            "Subtype" => "Type0",
+            "BaseFont" => "AAAAAA+Test",
+            "Encoding" => "Identity-H",
+            "DescendantFonts" => vec![cid_font.into()],
+        };
+        if with_to_unicode {
+            // Joined rather than written as one literal so the fixture cannot
+            // pick up this function's indentation. The metadata block is not
+            // decoration: lopdf's CMap parser requires at least one entry
+            // between `begincmap` and the codespace range.
+            let cmap = [
+                "/CIDInit /ProcSet findresource begin",
+                "12 dict begin",
+                "begincmap",
+                "/CIDSystemInfo",
+                "<< /Registry (Adobe) /Ordering (UCS) /Supplement 0 >> def",
+                "/CMapName /Adobe-Identity-UCS def",
+                "/CMapType 2 def",
+                "1 begincodespacerange",
+                "<0000> <FFFF>",
+                "endcodespacerange",
+                "2 beginbfchar",
+                "<0001> <0048>",
+                "<0002> <0069>",
+                "endbfchar",
+                "endcmap",
+                "CMapName currentdict /CMap defineresource pop",
+                "end",
+                "end",
+            ]
+            .join("\n");
+            let stream = builder.stream(Dictionary::new(), cmap.into_bytes());
+            font.set("ToUnicode", stream);
+        }
+        builder.doc.add_object(font)
+    }
+
+    /// `Hi` in `Identity-H`: two bytes a glyph, and the glyphs are CIDs.
+    fn hi() -> Operation {
+        Operation::new(
+            "Tj",
+            vec![Object::String(
+                vec![0x00, 0x01, 0x00, 0x02],
+                lopdf::StringFormat::Hexadecimal,
+            )],
+        )
+    }
+
+    #[test]
+    fn a_composite_font_is_read_two_bytes_at_a_time_and_measured_from_its_descendant() {
+        let mut builder = Builder::new();
+        let font = identity_h(&mut builder, true);
+        let content = builder.stream(
+            Dictionary::new(),
+            ops(vec![
+                Operation::new("BT", vec![]),
+                Operation::new("Tf", vec!["F1".into(), 12.into()]),
+                Operation::new("Td", vec![72.into(), 720.into()]),
+                hi(),
+                Operation::new("ET", vec![]),
+            ]),
+        );
+        builder.page(dictionary! {
+            "Contents" => content,
+            "Resources" => dictionary! { "Font" => dictionary! { "F1" => font } },
+        });
+
+        let runs = runs(&builder.finish());
+        assert_eq!(runs.len(), 1);
+        // Four bytes, two glyphs. Read one byte at a time this is four
+        // characters of nothing at all.
+        assert_eq!(runs[0].text, "Hi");
+        // The two widths out of `/W`, not the `/DW` default and not the
+        // fallback — either of which would come out as 12 or 24 points.
+        near(runs[0].width, (0.5 + 0.75) * 12.0);
+        near(runs[0].height, 12.0 * (0.75 + 0.25));
+    }
+
+    #[test]
+    fn a_font_that_will_not_say_what_its_codes_mean_does_not_bury_the_scan() {
+        // The second door into the same room as the OCR layer. lopdf answers
+        // an `Identity-H` with no `/ToUnicode` by falling back to a one-byte
+        // table rather than by failing, so the temptation is to take what it
+        // gives — and what it gives is noise, which is non-empty, which would
+        // make this page report as text.
+        let mut builder = Builder::new();
+        let font = identity_h(&mut builder, false);
+        let image = dct_image(&mut builder, jpeg_bytes());
+        let mut page = scanned_page(
+            &mut builder,
+            image,
+            vec![
+                Operation::new("BT", vec![]),
+                Operation::new("Tf", vec!["F1".into(), 12.into()]),
+                Operation::new("Td", vec![72.into(), 720.into()]),
+                hi(),
+                Operation::new("ET", vec![]),
+            ],
+        );
+        page.set(
+            "Resources",
+            dictionary! {
+                "XObject" => dictionary! { "Im0" => image },
+                "Font" => dictionary! { "F1" => font },
+            },
+        );
+        builder.page(page);
+
+        let reading = read_pdf_bytes(&builder.finish()).expect("fixture should read");
+        match &reading.pages[0].content {
+            PageContent::Image(_) => {}
+            other => panic!("the scan is what is on this page, not {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_page_of_unreadable_text_and_nothing_else_says_so_rather_than_reading_as_blank() {
+        let mut builder = Builder::new();
+        let font = identity_h(&mut builder, false);
+        let content = builder.stream(
+            Dictionary::new(),
+            ops(vec![
+                Operation::new("BT", vec![]),
+                Operation::new("Tf", vec!["F1".into(), 12.into()]),
+                Operation::new("Td", vec![72.into(), 720.into()]),
+                hi(),
+                Operation::new("ET", vec![]),
+            ]),
+        );
+        builder.page(dictionary! {
+            "Contents" => content,
+            "Resources" => dictionary! { "Font" => dictionary! { "F1" => font } },
+        });
+
+        let reading = read_pdf_bytes(&builder.finish()).expect("fixture should read");
+        match &reading.pages[0].content {
+            PageContent::Unsupported(why) => {
+                assert!(why.contains("font"), "the reason should name it: {why}")
+            }
+            other => panic!("a page with writing on it is not {other:?}"),
+        }
     }
 
     #[test]
