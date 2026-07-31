@@ -12,7 +12,7 @@
 import { beforeEach, describe, expect, it } from "vitest";
 
 import { RopeSet } from "@/sim/ropes";
-import { ROPE_SLEEP_STEPS, SIM_STEP_MS } from "@/sim/tuning";
+import { MAX_AWAKE_PARTICLES, ROPE_SLEEP_STEPS, SIM_STEP_MS } from "@/sim/tuning";
 import { DirtySets } from "@/state/dirty";
 import { Scene, type Bounds, type ItemPose } from "@/state/scene";
 
@@ -183,6 +183,220 @@ describe("a string that has just been made", () => {
     expect(ropes.awake).toBe(0);
     ropes.step(scene, dirty, FRAME);
     expect(dirty.ropes.size).toBe(0);
+  });
+});
+
+/**
+ * The viewport gate and the particle cap — DESIGN section 9.2 (T-223).
+ *
+ * > A rope simulates only if its bounds, expanded by maximum sag, intersect the
+ * > viewport margin; otherwise it force-sleeps at its cached pose. A global cap
+ * > on awake particles, prioritised by on-screen area, means a pathological
+ * > board degrades gracefully instead of dropping frames.
+ *
+ * Every other test in this file passes no view, which is the contract for
+ * "simulate everything" — so the whole of the gate lives in here, and the fact
+ * that the rest of the suite is untouched by it is the point rather than an
+ * omission.
+ */
+describe("the viewport gate", () => {
+  /** A rectangle around the pins the tests start with, and one far away. */
+  const NEAR: Bounds = { minX: -500, minY: -500, maxX: 700, maxY: 500 };
+  const FAR: Bounds = { minX: 40_000, minY: 40_000, maxX: 41_000, maxY: 41_000 };
+
+  function seen(view: Bounds | null, n = 1): void {
+    for (let i = 0; i < n; i++) {
+      ropes.step(scene, dirty, FRAME, view);
+      dirty.clear();
+    }
+  }
+
+  /** Shove a free pin and mark it, which is what wakes the ropes on it. */
+  function shove(id: string, dx: number, dy = 0): void {
+    const p = scene.pins.get(id)!;
+    p.lx += dx;
+    p.ly += dy;
+    dirty.pin(id);
+  }
+
+  it("force-sleeps a rope whose bounds are nowhere near the camera", () => {
+    string("s1");
+    shove("p1", -40);
+    seen(FAR);
+    expect(ropes.awake).toBe(0);
+  });
+
+  it("steps that same rope when the camera can see it", () => {
+    string("s1");
+    shove("p1", -40);
+    seen(NEAR);
+    expect(ropes.awake).toBe(1);
+  });
+
+  it("leaves an off-screen rope's pose exactly where it was", () => {
+    string("s1");
+    const before = points("s1");
+    shove("p1", -40);
+    seen(FAR, 5);
+    expect(points("s1")).toEqual(before);
+  });
+
+  /**
+   * The exposure section 9.2 exists for, and the one the sleep manager cannot
+   * cover: something keeps disturbing an off-screen rope, so it keeps being
+   * woken, so it never gets to sleep on its own. Sixty frames of that must
+   * still cost nothing.
+   */
+  it("costs nothing when something off screen keeps disturbing it", () => {
+    string("s1");
+    for (let i = 0; i < 60; i++) {
+      shove("p1", i % 2 === 0 ? -1 : 1);
+      ropes.step(scene, dirty, FRAME, FAR);
+      expect(ropes.awake).toBe(0);
+      dirty.clear();
+    }
+  });
+
+  /**
+   * The correctness half. A gated rope's pins can move a long way while nobody
+   * is watching, and resuming from the cached pose would haul the particles
+   * after them — a whip, not a string. Coming back it must be at rest under the
+   * pins as they stand *now*.
+   */
+  it("puts a returning rope at rest under the pins it has now", () => {
+    string("s1");
+    // Off screen, and then dragged a thousand units down while off screen.
+    shove("p1", 0, 1000);
+    shove("p2", 0, 1000);
+    seen(FAR, 10);
+    // Still where it was built, because nothing stepped it.
+    expect(lowest("s1")).toBeLessThan(200);
+
+    const back: Bounds = { minX: -500, minY: 500, maxX: 700, maxY: 2000 };
+    seen(back);
+
+    const pts = points("s1");
+    expect(pts[0]).toEqual([0, 1000]);
+    expect(pts[pts.length - 1]).toEqual([200, 1000]);
+    // At rest, not mid-flight: a seeded rope is asleep on the frame it lands.
+    expect(ropes.awake).toBe(0);
+  });
+
+  it("marks a returning rope dirty so the painter re-bakes it", () => {
+    string("s1");
+    shove("p1", 0, 1000);
+    shove("p2", 0, 1000);
+    seen(FAR, 3);
+    ropes.step(scene, dirty, FRAME, { minX: -500, minY: 500, maxX: 700, maxY: 2000 });
+    expect(dirty.ropes.has("s1")).toBe(true);
+  });
+
+  /** A rope that settled on screen and then left it is not re-seeded on the way
+   *  back, because it never went anywhere: the two poses are the same one. */
+  it("brings a rope that was already asleep back unchanged", () => {
+    string("s1");
+    shove("p1", -40);
+    seen(NEAR, 400);
+    expect(ropes.awake).toBe(0);
+    const settled = points("s1");
+    seen(FAR, 5);
+    seen(NEAR, 5);
+    for (const [i, [x, y]] of points("s1").entries()) {
+      expect(x).toBeCloseTo(settled[i]![0]!, 6);
+      expect(y).toBeCloseTo(settled[i]![1]!, 6);
+    }
+  });
+
+  it("gates nothing at all when there is no camera to gate by", () => {
+    string("s1");
+    shove("p1", -40);
+    seen(null);
+    expect(ropes.awake).toBe(1);
+  });
+});
+
+describe("the awake particle cap", () => {
+  /** A rope long enough to be a real fraction of the budget on its own:
+   *  `span` across, so `span * 1.2 / ROPE_SPACING` particles. */
+  function longString(id: string, y: number, span = 6000): void {
+    pin(`${id}-a`, 0, y);
+    pin(`${id}-b`, span, y);
+    ropes.setString(scene, dirty, id, [`${id}-a`, `${id}-b`], [0.2]);
+    const p = scene.pins.get(`${id}-a`)!;
+    p.lx -= 1;
+    dirty.pin(`${id}-a`);
+  }
+
+  function countOf(id: string): number {
+    let n = 0;
+    ropes.visit(id, (_at, count) => (n += count));
+    return n;
+  }
+
+  it("counts particles rather than ropes, which is what the budget is in", () => {
+    string("s1");
+    expect(ropes.awakeParticles).toBe(0);
+    const p1 = scene.pins.get("p1")!;
+    p1.lx = -40;
+    dirty.pin("p1");
+    ropes.step(scene, dirty, FRAME);
+    expect(ropes.awake).toBe(1);
+    expect(ropes.awakeParticles).toBe(countOf("s1"));
+  });
+
+  /**
+   * Four ropes over the budget, and the view clips the last one so it is the
+   * least on screen. Three fit; the fourth is the one that loses.
+   */
+  it("steps the most visible ropes and defers the rest", () => {
+    for (const [i, id] of ["a", "b", "c", "d"].entries()) longString(id, i * 1000);
+    const each = countOf("a");
+    expect(each * 4).toBeGreaterThan(MAX_AWAKE_PARTICLES);
+    expect(each * 3).toBeLessThanOrEqual(MAX_AWAKE_PARTICLES);
+
+    // Wide enough for all four to meet it, high enough that "d" is clipped to
+    // a sliver while the other three sit inside it whole.
+    const view: Bounds = { minX: -1000, minY: -1000, maxX: 7000, maxY: 3100 };
+    const before = new Map(["a", "b", "c", "d"].map((id) => [id, lowest(id)]));
+    ropes.step(scene, dirty, FRAME, view);
+
+    for (const id of ["a", "b", "c"]) {
+      expect(lowest(id)).not.toBe(before.get(id));
+    }
+    expect(lowest("d")).toBe(before.get("d"));
+  });
+
+  /** A deferral, not a decision: the loser keeps its pose and keeps its place
+   *  in the queue, so it is still awake and still owed a step. */
+  it("leaves the deferred rope awake rather than sleeping it", () => {
+    for (const [i, id] of ["a", "b", "c", "d"].entries()) longString(id, i * 1000);
+    ropes.step(scene, dirty, FRAME, { minX: -1000, minY: -1000, maxX: 7000, maxY: 3100 });
+    expect(ropes.awake).toBe(4);
+  });
+
+  /** Move the camera onto the one that lost, and it is the one that wins. */
+  it("re-decides from where the camera is now", () => {
+    for (const [i, id] of ["a", "b", "c", "d"].entries()) longString(id, i * 1000);
+    const before = lowest("a");
+    ropes.step(scene, dirty, FRAME, { minX: -1000, minY: 900, maxX: 7000, maxY: 5000 });
+    expect(lowest("a")).toBe(before);
+  });
+
+  /** One rope bigger than the whole budget still moves. Freezing a string for
+   *  the life of the board is a worse failure than one slow frame. */
+  it("steps a single rope that is larger than the entire budget", () => {
+    longString("huge", 0, MAX_AWAKE_PARTICLES * 12);
+    expect(countOf("huge")).toBeGreaterThan(MAX_AWAKE_PARTICLES);
+    const before = lowest("huge");
+    ropes.step(scene, dirty, FRAME, { minX: -1e6, minY: -1e6, maxX: 1e6, maxY: 1e6 });
+    expect(lowest("huge")).not.toBe(before);
+  });
+
+  it("does not cap when there is no camera to prioritise by", () => {
+    for (const [i, id] of ["a", "b", "c", "d"].entries()) longString(id, i * 1000);
+    const before = lowest("d");
+    ropes.step(scene, dirty, FRAME);
+    expect(lowest("d")).not.toBe(before);
   });
 });
 

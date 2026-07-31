@@ -66,7 +66,7 @@
 import { shortest } from "@/lib/angle";
 import type { Point } from "@/lib/rotate";
 import type { DirtySets } from "@/state/dirty";
-import type { Scene } from "@/state/scene";
+import type { Bounds, Scene } from "@/state/scene";
 import {
   GRAVITY,
   SIM_MAX_SUBSTEPS,
@@ -171,6 +171,9 @@ export class Torsion {
    */
   private readonly seen = new Set<string>();
   private accumulator = 0;
+  /** Scratch for the viewport gate's bounds question, so asking it costs no
+   *  allocation on a frame with a hundred items mid-swing. */
+  private readonly box: Bounds = { minX: 0, minY: 0, maxX: 0, maxY: 0 };
 
   /** How many items are mid-swing. The dev HUD's cheapest assertion that this
    *  module is asleep when it should be. */
@@ -186,6 +189,10 @@ export class Torsion {
    * writing `swing` itself for anything this module owns. `pivots` is the same
    * tool answering the one question about a held item the scene cannot be
    * trusted for; see `applyHeld`.
+   *
+   * `view` is the board-space rectangle worth simulating, and `null` means
+   * simulate everything — the same contract `sim/ropes.ts` takes it under, and
+   * the reason the boot settle below passes nothing.
    */
   step(
     scene: Scene,
@@ -194,6 +201,7 @@ export class Torsion {
     held: ReadonlySet<string> = EMPTY,
     lag = 0,
     pivots: ReadonlyMap<string, { lx: number; ly: number }> = NO_PIVOTS,
+    view: Bounds | null = null,
   ): void {
     this.applyHeld(scene, dirty, held, lag, pivots);
 
@@ -207,7 +215,7 @@ export class Torsion {
       for (const id of dirty.items) this.consider(scene, dirty, id, held);
     }
 
-    this.integrate(scene, dirty, dtMs);
+    this.integrate(scene, dirty, dtMs, view);
   }
 
   /** Everything stops and nothing is left mid-swing. For teardown and for a
@@ -428,6 +436,34 @@ export class Torsion {
     dirty.item(id);
   }
 
+  /**
+   * Whether an item is near enough to the camera to be worth swinging.
+   *
+   * `boundsOf` is the rotation-expanded box, and rotation-expanded is what this
+   * wants: an item mid-swing is at an angle the stored `rot` does not describe,
+   * and the box that reads it through `swing` is the one that knows a tilted
+   * polaroid's corner is still on screen.
+   *
+   * There is no particle cap to go with this, unlike the ropes. A swing is one
+   * degree of freedom and a handful of multiplies per substep, so a thousand of
+   * them cost less than one long rope; the budget in DESIGN section 9.2 is
+   * spent entirely in `sim/verlet.ts` and capping here would be capping the
+   * wrong thing.
+   */
+  private onScreen(scene: Scene, id: string, view: Bounds): boolean {
+    const box = scene.boundsOf(id, 0, this.box);
+    // An item with no slot cannot be measured, and the loop above has already
+    // dropped those. Anything else that cannot answer is not gated: refusing to
+    // simulate on the strength of a question that failed is the wrong default.
+    if (box === null) return true;
+    return (
+      box.maxX >= view.minX &&
+      box.minX <= view.maxX &&
+      box.maxY >= view.minY &&
+      box.minY <= view.maxY
+    );
+  }
+
   /** Two pins or none: no angle, no translation, exactly where it is stored. */
   private rigid(scene: Scene, dirty: DirtySets, id: string, slot: number): void {
     if (scene.swing[slot] === 0 && scene.driftX[slot] === 0 && scene.driftY[slot] === 0) {
@@ -439,7 +475,12 @@ export class Torsion {
     dirty.item(id);
   }
 
-  private integrate(scene: Scene, dirty: DirtySets, dtMs: number): void {
+  private integrate(
+    scene: Scene,
+    dirty: DirtySets,
+    dtMs: number,
+    view: Bounds | null,
+  ): void {
     if (this.swinging.size === 0) {
       this.accumulator = 0;
       return;
@@ -464,6 +505,38 @@ export class Torsion {
       s.omega = rest.omega;
       s.lx = rest.lx;
       s.ly = rest.ly;
+
+      /**
+       * The viewport gate.
+       *
+       * > SIM — step awake ropes and **swings** within the viewport margin
+       * > — DESIGN section 6.3, phase 3
+       *
+       * A swing nobody is watching is over. Its equilibrium is where it was
+       * going to end up, so it is put there now — one write instead of a
+       * second of substeps, and it *ends* rather than deferring, which is what
+       * makes this cheaper than the rope gate and why it needs no flag to
+       * remember anything by. Coming back on screen there is nothing to
+       * resume: the item hangs plumb, which is where you would have found it.
+       *
+       * After the rest refresh, deliberately. `s.eq` is only the right angle to
+       * land on once this frame's pin geometry is in it — a photograph dragged
+       * off the edge has to settle at where it hangs *now*, not where it hung
+       * when it was last on screen.
+       *
+       * `write` touches the scene mirror and nothing else, so an item settling
+       * out of sight writes no document and syncs to nobody. DESIGN section
+       * 5.1: swing is transient and derived.
+       */
+      if (view !== null && !this.onScreen(scene, id, view)) {
+        this.swinging.delete(id);
+        this.write(scene, dirty, id, slot, s.eq, s);
+      }
+    }
+
+    if (this.swinging.size === 0) {
+      this.accumulator = 0;
+      return;
     }
 
     this.accumulator = Math.min(

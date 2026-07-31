@@ -12,7 +12,7 @@ import { beforeEach, describe, expect, it } from "vitest";
 
 import { equilibriumSwing, naturalRate, Torsion } from "@/sim/torsion";
 import { DirtySets } from "@/state/dirty";
-import { Scene, type ItemPose } from "@/state/scene";
+import { Scene, type Bounds, type ItemPose } from "@/state/scene";
 
 let scene: Scene;
 let dirty: DirtySets;
@@ -119,6 +119,95 @@ describe("the natural frequency", () => {
   it("stays inside the range where a swing still reads as a swing", () => {
     expect(naturalRate(0, -0.001, 4, 4)).toBeLessThanOrEqual(14);
     expect(naturalRate(2, 2, 1, 1)).toBeLessThanOrEqual(14);
+  });
+});
+
+/**
+ * The viewport gate — DESIGN section 6.3 phase 3, "step awake ropes and swings
+ * within the viewport margin" (T-223).
+ *
+ * A swing gates differently from a rope and more simply. A rope is deferred and
+ * has to be picked up again; a swing is *finished*, because its equilibrium is
+ * where it was going anyway. So the assertions here are all "it is already at
+ * rest", and there is no returning case to test — there is nothing left to
+ * return to.
+ *
+ * Every other test in this file passes no view, which is the contract for
+ * "simulate everything".
+ */
+describe("the viewport gate", () => {
+  const NEAR: Bounds = { minX: -400, minY: -400, maxX: 400, maxY: 400 };
+  const FAR: Bounds = { minX: 9000, minY: 9000, maxX: 9400, maxY: 9400 };
+
+  function seen(view: Bounds | null, ids: string[] = []): void {
+    for (const id of ids) dirty.item(id);
+    sim.step(scene, dirty, 1000 / 60, new Set(), 0, undefined, view);
+    dirty.clear();
+  }
+
+  /** An item mid-swing: pin off centre so there is an angle at all, arrived so
+   *  the next change is an event rather than first sight. */
+  function swinging(): number {
+    const slot = put("a", { rot: 0.35 });
+    pin("p", "a", 60, -80);
+    arrive("a");
+    scene.rot[slot] = 1.2;
+    frame(["a"]);
+    expect(sim.awake).toBe(1);
+    return slot;
+  }
+
+  it("ends a swing that has left the margin instead of stepping it", () => {
+    swinging();
+    seen(FAR);
+    expect(sim.awake).toBe(0);
+  });
+
+  it("puts it at the equilibrium it was heading for, not where it happened to be", () => {
+    const slot = swinging();
+    const midSwing = scene.swing[slot]!;
+    seen(FAR);
+    expect(scene.swing[slot]).not.toBeCloseTo(midSwing, 4);
+    expect(scene.swing[slot]).toBeCloseTo(equilibriumSwing(60, -80, scene.rot[slot]!), 3);
+  });
+
+  it("keeps swinging one the camera can see", () => {
+    swinging();
+    seen(NEAR);
+    expect(sim.awake).toBe(1);
+  });
+
+  it("gates nothing when there is no camera to gate by", () => {
+    swinging();
+    seen(null);
+    expect(sim.awake).toBe(1);
+  });
+
+  /** The item is where it belongs and still: coming back on screen there is
+   *  nothing to resume and nothing to see happen. */
+  it("leaves nothing to resume when the item comes back", () => {
+    const slot = swinging();
+    seen(FAR);
+    const settled = scene.swing[slot]!;
+    seen(NEAR);
+    seen(NEAR);
+    expect(scene.swing[slot]).toBe(settled);
+    expect(sim.awake).toBe(0);
+  });
+
+  /**
+   * Landing it is a change and the renderer has to be told — and then it must
+   * stop. A gate that wrote the equilibrium every frame instead of ending the
+   * swing would look identical on the first frame and repaint the item sixty
+   * times a second forever, which is the cost this was meant to avoid.
+   */
+  it("dirties the item it settled, once, and then nothing", () => {
+    swinging();
+    sim.step(scene, dirty, 1000 / 60, new Set(), 0, undefined, FAR);
+    expect(dirty.items.has("a")).toBe(true);
+    dirty.clear();
+    sim.step(scene, dirty, 1000 / 60, new Set(), 0, undefined, FAR);
+    expect(dirty.items.size).toBe(0);
   });
 });
 
