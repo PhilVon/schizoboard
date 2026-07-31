@@ -560,6 +560,128 @@ body {
     linear-gradient(#6d6156, #6d6156) 2px 9px / 8px 1.5px no-repeat,
     #ece4d6;
 }
+/* --- the tool drawer, D-44 ------------------------------------------------- */
+
+/*
+ * Dark, translucent, floating — DESIGN section 4.8, which is explicit: "Toolbars
+ * are dark, translucent, and float over the cork without pretending to be
+ * physical objects — a fake wooden toolbar would be skeuomorphism." So this is
+ * the HUD's and the physics panel's idiom rather than the paper slip that
+ * `.notice` and `.flash` are written on. Those two are things somebody left on
+ * the board; this is a piece of the application.
+ *
+ * Vertically centred on the left edge, which is the one free position: the
+ * notice is top left, the dev HUD top right, the info bar bottom left and the
+ * confirmation bottom right. The dev-only `.tuning` panel does cover it, and
+ * knowingly — it is 300px wide at the same edge, it already covers the notice,
+ * it is one Shift+backquote away, and the rail collapses.
+ */
+.toolbar {
+  position: absolute;
+  left: 12px;
+  top: 50%;
+  transform: translateY(-50%);
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 3px;
+  padding: 4px;
+  border-radius: 7px;
+  background: rgba(16, 12, 9, 0.86);
+  backdrop-filter: blur(6px);
+  color: #d9cfc2;
+  font-family: var(--ui-mono);
+}
+
+.toolbar-tools {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+/* Collapsed. `display: none` explicitly, because `hidden` is a `display: none`
+ * the rule above would otherwise beat — and nothing eases, because base.css owns
+ * no motion (ARCHITECTURE section 3). `.hud` and `.tuning` vanish the same
+ * instant way. */
+.toolbar-tools[hidden] {
+  display: none;
+}
+
+.toolbar-btn {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 1px;
+  width: 34px;
+  padding: 4px 0 3px;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+}
+
+.toolbar-btn:hover {
+  background: rgba(255, 255, 255, 0.07);
+}
+
+/* The tool in hand. A lit face rather than an outline: the rail is read at a
+ * glance out of the corner of an eye, and a border reads as a shape while a
+ * change of tone reads as a state. */
+.toolbar-btn.is-on {
+  background: rgba(255, 255, 255, 0.15);
+  color: #f4ece0;
+}
+
+.toolbar-glyph {
+  width: 18px;
+  height: 18px;
+}
+
+/* The key letter, at half opacity — D-44's fifth decision. It is a caption on
+ * the glyph rather than a label competing with it: the rail teaches the keyboard
+ * as you use the mouse, which is the argument for the rail existing at all. */
+.toolbar-key {
+  font-size: 9px;
+  line-height: 1;
+  letter-spacing: 0.04em;
+  opacity: 0.5;
+}
+
+.toolbar-btn.is-on .toolbar-key {
+  opacity: 0.75;
+}
+
+/*
+ * The handle, and the only toggle there is. A tab rather than a labelled button,
+ * because closed it is the entire element standing over the cork and it should
+ * be no bigger than the affordance needs. The two rules are the grip.
+ */
+.toolbar-handle {
+  height: 14px;
+  padding: 0;
+  border: 0;
+  border-radius: 4px;
+  background:
+    linear-gradient(rgba(255, 255, 255, 0.28), rgba(255, 255, 255, 0.28)) 50% calc(50% - 2px) /
+      14px 1px no-repeat,
+    linear-gradient(rgba(255, 255, 255, 0.28), rgba(255, 255, 255, 0.28)) 50% calc(50% + 2px) /
+      14px 1px no-repeat,
+    rgba(255, 255, 255, 0.06);
+  cursor: pointer;
+}
+
+.toolbar-handle:hover {
+  background-color: rgba(255, 255, 255, 0.14);
+}
+
+/* Shut, the rail is the handle — and a 34px-wide grip on nothing looks like a
+ * panel that failed to draw, so it narrows to the tab it is. */
+.toolbar.is-shut .toolbar-handle {
+  width: 22px;
+}
+
 /* --- phase-0 scaffolding, removed once items land (T-24) ------------------- */
 
 .hint {
@@ -767,6 +889,7 @@ body {
   /* Chrome. None of it is the board. */
   .hud,
   .hint,
+  .toolbar,
   .notice,
   .flash,
   /* A search field open when you hit export prints the word you were looking

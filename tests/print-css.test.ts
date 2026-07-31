@@ -56,6 +56,7 @@ describe("the print block", () => {
   it.each([
     [".hud", "the dev HUD — the first thing that ever leaked into a PDF"],
     [".hint", "the keyboard hint line"],
+    [".toolbar", "the tool drawer, down the left of every page it would print on"],
     [".notice", "whose laptop the missing photographs are on"],
     [".flash", "a confirmation that something just happened"],
     [".search", "the query you were looking for, across the top of the board"],
