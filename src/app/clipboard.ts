@@ -40,7 +40,7 @@
  */
 
 import { pasteClip, copySubgraph, type BoardClip, type PastedClip } from "@/crdt/ops";
-import type { BoardDoc } from "@/crdt/doc";
+import { boardSealed, type BoardDoc } from "@/crdt/doc";
 import { newId } from "@/lib/ids";
 import type { Camera } from "@/state/camera";
 import { eraseSelection } from "@/state/erase";
@@ -160,11 +160,24 @@ export class BoardClipboard {
     // the top, which for a page with no selection is nothing at all.
     event.preventDefault();
 
-    if (cut) eraseSelection({ ...this.options });
-    this.options.say?.(said(clip, cut ? "Cut" : "Copied"));
+    /**
+     * On a board this build may not write to (T-224), a cut is a copy.
+     *
+     * The copy half is a read and stays: taking a piece of a board you cannot
+     * edit and putting it somewhere you can is the one thing read-only is for.
+     * Only the delete is refused, and the flash says *Copied* rather than
+     * *Cut*, because a message naming the half that did not happen is worse
+     * than the one that did.
+     */
+    const taken = cut && !boardSealed(this.options.board);
+    if (taken) eraseSelection({ ...this.options });
+    this.options.say?.(said(clip, taken ? "Cut" : "Copied"));
   }
 
   private put(clip: BoardClip, at: { x: number; y: number }): void {
+    // `claim` and `duplicate` are the two ways in, and a sealed board refuses
+    // both — this is the join rather than each of them.
+    if (boardSealed(this.options.board)) return;
     const pasted = pasteClip(this.options.board, clip, at);
     this.options.onPasted?.(pasted);
   }

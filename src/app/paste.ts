@@ -40,7 +40,7 @@
  */
 
 import { createItems, type CreateItemInput } from "@/crdt/ops";
-import type { BoardDoc } from "@/crdt/doc";
+import { boardSealed, type BoardDoc } from "@/crdt/doc";
 import {
   decodeDataUrl,
   isHttpUrl,
@@ -131,6 +131,9 @@ export class Paste {
     // intercepts the drop and hands over paths, which is what lets the bytes go
     // straight into the store without ever touching JavaScript.
     const unlisten = await this.options.native.on("files:dropped", ({ paths, x, y }) => {
+      // The shell has the paths and has not read them yet, so a sealed board
+      // costs nothing here either — see `onPaste`.
+      if (boardSealed(this.options.board)) return;
       // Where it was dropped, read now rather than when the bytes finish
       // arriving — same reason as `onPaste`.
       const at = this.options.camera.screenToBoard(x, y);
@@ -152,6 +155,13 @@ export class Paste {
    */
   private onPaste(event: ClipboardEvent): void {
     if (isTextTarget(event.target)) return;
+    // A board this build may not write to (T-224). Refused here rather than in
+    // `create` so that nothing is fetched or ingested first: a URL paste is up
+    // to thirty seconds of network and a file paste puts bytes in the store,
+    // and both would be work done for an item that is never going to exist.
+    // Not `preventDefault`ed — the board is not a text field, so letting the
+    // event go on its way does nothing at all.
+    if (boardSealed(this.options.board)) return;
     const data = event.clipboardData;
     // Asked before anything is read out of the transfer: a token of ours on the
     // system clipboard means the last copy on this machine was a piece of this

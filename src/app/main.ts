@@ -17,12 +17,15 @@ import {
   boardSeed,
   boardTitle,
   encodedSize,
+  futureSchema,
   initialiseBoard,
   openBoardDoc,
   referencedAssets,
+  sealBoard,
   snapshot,
 } from "@/crdt/doc";
 import * as ops from "@/crdt/ops";
+import { SCHEMA_VERSION } from "@/crdt/schema";
 import {
   bringToFront,
   commitStrokes,
@@ -193,6 +196,57 @@ async function boot(): Promise<void> {
   await persistence.open();
   initialiseBoard(board);
 
+  /**
+   * A document written by a build newer than this one, open to be looked at
+   * and not touched — T-224 and Q-170, which chose this over a dismissible
+   * notice and over saying nothing.
+   *
+   * ## Why the safest answer, when additive migration is the house policy
+   *
+   * DATA-MODEL section 12 prefers additive migrations, so a version-2 board is
+   * *usually* perfectly editable by a version-1 build — which is the argument
+   * against this and the reason the question was asked rather than settled.
+   * What decided it is that the failure is silent in both directions. An item
+   * type this build does not recognise is skipped by the binding, so it is
+   * invisible; edit around it and every write is made against a board you can
+   * only see part of, by someone with no way to know that. There is no version
+   * of that which announces itself.
+   *
+   * ## Read-only is a fact about the *document*, not a mode in this file
+   *
+   * `sealBoard` is what stops the writing, and it stops it at `mutate` — one
+   * line downstream of every op there is. Everything below is the other half:
+   * closing the routes *before* they get there, so that a board you cannot edit
+   * looks like one rather than like one that has stopped responding. The seal
+   * throwing would mean a route was missed.
+   *
+   * ## And it can arrive mid-session
+   *
+   * A peer on a newer build syncing `meta.schemaVersion` upward is the same
+   * situation as opening the file — the document in memory is now one this
+   * build cannot fully read. So it is watched rather than only checked once,
+   * and the sentence at the bottom of the window is rewritten when it lands.
+   */
+  let readOnly = false;
+  /** Set once there is a window to change — see `sayTrouble` for the pattern. */
+  let onSealed: (() => void) | null = null;
+  const sealIfFuture = (): void => {
+    if (readOnly || !futureSchema(board)) return;
+    readOnly = true;
+    sealBoard(board);
+    console.warn(
+      `[schema] this board is version ${boardSchemaVersion(board)} and this build reads ` +
+        `${SCHEMA_VERSION}; it is open read-only so that nothing here writes to a document ` +
+        `it can only partly see`,
+    );
+    onSealed?.();
+  };
+  sealIfFuture();
+  // Cheap: `meta` is five keys and this fires on a write to one of them, which
+  // on a board nobody is migrating is never. Not `observeDeep` — `schemaVersion`
+  // is a number on this map and nothing nested reaches it.
+  board.meta.observe(() => sealIfFuture());
+
   const scene = new Scene();
   const dirty = new DirtySets();
   const binding = new Binding(board, scene, dirty);
@@ -353,6 +407,12 @@ async function boot(): Promise<void> {
      * for a frame would only make the caret and the paper disagree.
      */
     onInput: (id, text) => {
+      // A read-only board has no way *into* an editor — the machine takes no
+      // double-click and the menu row is absent — so this is the backstop for
+      // a caret already in the paper on the frame a peer raises the schema
+      // version. It keeps typing and the paper keeps it until the blur, which
+      // is the least surprising way to end a sentence nobody can save.
+      if (readOnly) return;
       ops.setItemText(board, id, text);
     },
     onClosed: (id) => {
@@ -985,6 +1045,10 @@ async function boot(): Promise<void> {
     if (!(e.ctrlKey || e.metaKey) || e.altKey) return;
     // Inside a text field, Ctrl+Z belongs to the text field.
     if (isTextTarget(e.target)) return;
+    // Undo is the one write that does not pass through `mutate` — `UndoManager`
+    // opens its own transaction — so a sealed board has to refuse it here or
+    // nowhere (T-224). Nothing this session put on the stack anyway.
+    if (readOnly) return;
     const intent =
       e.code === "KeyZ" ? (e.shiftKey ? "redo" : "undo") : e.code === "KeyY" ? "redo" : null;
     if (!intent) return;
@@ -1136,6 +1200,7 @@ async function boot(): Promise<void> {
     edit: startEditing,
     // Space+drag and middle-drag belong to the camera, not to the board.
     suppressed: () => navigation.panReady,
+    readOnly: () => readOnly,
   });
 
   /**
@@ -1681,6 +1746,30 @@ async function boot(): Promise<void> {
     }
     if (opened === null) return;
 
+    /**
+     * A bundle from a newer build, refused at the door (T-224).
+     *
+     * Rust deliberately carries a surprising `schemaVersion` through untouched
+     * — `bundle.rs` has a passing test saying so, on the stated grounds that
+     * migration is this side's job — and until now this side never read the
+     * field at all. So the one route past the read-only mode was to *export* a
+     * future board and open the bundle: `replaceWith` writes it over the log
+     * and the window reloads onto a document it cannot fully read.
+     *
+     * Refused here rather than caught at the reload, because by then the old
+     * board has been overwritten and there is nothing to go back to. The
+     * photographs Rust ingested on the way in are the one thing this cannot
+     * undo; they are content-addressed, so they cost disk and nothing else.
+     */
+    if (opened.manifest.schemaVersion > SCHEMA_VERSION) {
+      console.warn(
+        `[bundle] that board is schema ${opened.manifest.schemaVersion} and this build reads ` +
+          `${SCHEMA_VERSION}; it has not been opened`,
+      );
+      flash.say("That board was made by a newer version — this one has been left alone");
+      return;
+    }
+
     try {
       await persistence.replaceWith(opened.snapshot);
     } catch (error) {
@@ -1769,6 +1858,42 @@ async function boot(): Promise<void> {
      * only thing on the board that says what a verb will hit, would be pointing
      * at it rather than at the string under the cursor.
      */
+    /**
+     * On a read-only board there is one menu and it is the board's (T-224).
+     *
+     * The four below are verbs against a document this build may not write to —
+     * a paper stock, a slack preset, *Add pin*, *Bring to front* — and a menu of
+     * rows that do nothing is the disabled row this file has refused to draw
+     * everywhere else (see `boardmenu.ts` on absent, not disabled). What is left
+     * is the cork's own menu, which is where the things that are still true live:
+     * the exports, the invite link, and whether the board ages. The one row cut
+     * out of *that* is *Open a board…*, which replaces this one.
+     *
+     * The string rows go with `[]`: on this path they are the selection's, and
+     * every one of them writes.
+     */
+    if (readOnly) {
+      open(
+        boardMenuRows(
+          scene,
+          writer,
+          [],
+          selection.toArray(),
+          { link: invite, copy: copyInvite },
+          { on: prefs.ageing(), set: setAgeing },
+          native.kind === "tauri"
+            ? {
+                export: () => void exportBoard(),
+                open: null,
+                pdf: native.canPrintPdf ? () => void printBoard() : null,
+                image: () => void saveBoardImage(),
+              }
+            : null,
+        ),
+      );
+      return;
+    }
+
     /**
      * A pen in hand short-circuits the four hit tests below, because with one
      * held a right-click is not about the paper under the cursor: there is no
@@ -1868,7 +1993,7 @@ async function boot(): Promise<void> {
         native.kind === "tauri"
           ? {
               export: () => void exportBoard(),
-              open: () => void openBundle(),
+              open: readOnly ? null : () => void openBundle(),
               // The one row a platform can take away: `PrintToPdf` is
               // WebView2's, so macOS and Linux get the image and no PDF row at
               // all (T-210, Q-139).
@@ -1982,6 +2107,7 @@ async function boot(): Promise<void> {
   window.addEventListener("keydown", (e) => {
     if (!(e.ctrlKey || e.metaKey) || e.altKey || e.shiftKey) return;
     if (e.code !== "KeyD" || isTextTarget(e.target)) return;
+    if (readOnly) return;
     e.preventDefault();
     // Queued so that it lands *in order* with whatever else this frame is about
     // to write. A duplicate that ran ahead of the pose a release queued moments
@@ -2983,7 +3109,18 @@ async function boot(): Promise<void> {
      * The settle period inside the janitor is the real safety net for both, but
      * these cost nothing and mean it is never even asked.
      */
-    if (provider === null || provider.synced) {
+    /**
+     * And a third, added with the read-only mode (T-224): **not on a document
+     * this build cannot fully read.**
+     *
+     * The janitor's whole job is deciding that a reference is beyond repair, and
+     * it decides that by reading records. A schema this build does not know
+     * reads as nothing, and "nothing" is exactly the answer that makes a string
+     * look dangling — so a version-1 build let loose on a version-2 board would
+     * compact away the parts of it that it cannot see. `mutate` would refuse the
+     * write anyway; this is so it is never even attempted.
+     */
+    if (!readOnly && (provider === null || provider.synced)) {
       swept += janitor.tick(
         frame.now,
         provider === null
@@ -3254,7 +3391,12 @@ async function boot(): Promise<void> {
    * and the reasons for it; all that belongs here is that it happens at all.
    */
   window.setTimeout(() => {
-    void sweepAssets(native, board, { readOnly: persistence.readOnly }).then((result) => {
+    // `readOnly` covers both ways this build stops writing, and the second one
+    // is the whole reason T-224 is filed as a defect rather than as a notice:
+    // `referencedAssets` builds the keep-set through `readItem`, so on a
+    // document from a newer build a future item's photograph is in no keep-set
+    // and this sweep would reclaim bytes that are still on the board.
+    void sweepAssets(native, board, { readOnly: persistence.readOnly || readOnly }).then((result) => {
       if (result === null || result.freedBytes === 0) return;
       console.info(
         `[assets] reclaimed ${Math.round(result.freedBytes / 1024)} kB; ` +
@@ -3265,11 +3407,41 @@ async function boot(): Promise<void> {
 
   const hint = document.createElement("div");
   hint.className = "hint";
-  hint.textContent =
-    (persistence.readOnly
-      ? "THIS BOARD IS NOT BEING SAVED — the document on disk could not be read, " +
-        "and is being left alone rather than written over. See the console. · "
-      : "") +
+  /**
+   * A function rather than a string because there are two boards it can be
+   * describing and the second can arrive after this line has run — a peer
+   * raising `meta.schemaVersion` seals the document mid-session (T-224), and
+   * the standing sentence has to change with it.
+   *
+   * The read-only line **replaces** the gesture list rather than prefixing it,
+   * which is what makes it different from the not-being-saved line above. That
+   * board still takes every gesture in the list and merely fails to keep them.
+   * This one takes none of them, and a help bar reading *drag to move · Delete
+   * removes* on a board that does neither is worse than no help bar: the first
+   * thing somebody does is test one of them, and the board says nothing back.
+   * What is left is every verb that still works — the camera, the search, and
+   * the exports, which are the whole of what you can do with a board you are
+   * only allowed to look at.
+   */
+  const hintText = (): string => {
+    if (readOnly) {
+      return (
+        `THIS BOARD WAS MADE BY A NEWER VERSION — it is schema ${boardSchemaVersion(board)} ` +
+        `and this build reads ${SCHEMA_VERSION}, so it is open to look at and not to change. ` +
+        `Nothing has been altered or thrown away. · ` +
+        `space+drag pans · Ctrl+0 fit · F frame · ` +
+        `Ctrl+F finds and flies you there, Enter for the next · ` +
+        `Ctrl+C copies · right-click the cork to export · \` for the HUD`
+      );
+    }
+    return (
+      (persistence.readOnly
+        ? "THIS BOARD IS NOT BEING SAVED — the document on disk could not be read, " +
+          "and is being left alone rather than written over. See the console. · "
+        : "") + hintKeys()
+    );
+  };
+  const hintKeys = (): string =>
     `platform: ${native.kind} · paste a picture or some text, or drop a file in · ` +
     `N then click for a blank sheet · P then click for a pin · V back to select · ` +
     `drag a pin to move it, onto an item to parent it, Ctrl to keep it put · ` +
@@ -3283,7 +3455,29 @@ async function boot(): Promise<void> {
     `drag the cork to marquee · Delete removes · ` +
     `Ctrl+Z undoes · space+drag pans · Ctrl+0 fit · F frame · ` +
     `Ctrl+F finds and flies you there, Enter for the next · \` for the HUD`;
+  hint.textContent = hintText();
   world.layers.ui.append(hint);
+
+  /**
+   * What a seal that lands *now* has to do, over and above what `sealIfFuture`
+   * has already done to the document.
+   *
+   * Only ever runs for the mid-session case: at boot this is still null when
+   * the check happens, which is exactly right — the hint is built from the
+   * answer a few lines above, and a flash announcing a board you have not seen
+   * yet is news about nothing.
+   */
+  onSealed = () => {
+    hint.textContent = hintText();
+    // A stroke half drawn, a marquee half dragged. Its pen-up will never
+    // arrive, because the machine has stopped taking input.
+    tools.abandon();
+    menu.close();
+    flash.hold(
+      "Somebody on a newer version has this board open — it is read-only here from now on",
+    );
+  };
+
   hud.toggle();
 }
 

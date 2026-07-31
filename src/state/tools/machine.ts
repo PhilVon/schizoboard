@@ -85,6 +85,16 @@ export interface ToolMachineOptions {
   edit?: (itemId: string) => void;
   /** True when navigation owns the pointer — space held, or mid-pan. */
   suppressed?: () => boolean;
+  /**
+   * True when the document must not be edited at all — a board written by a
+   * newer build, open to be looked at and not touched (T-224, Q-170).
+   *
+   * Its own predicate rather than more work for [`suppressed`]: that one is a
+   * statement about who owns the pointer for the next few hundred milliseconds
+   * and is asked at the three points a gesture can begin. This is a standing
+   * fact about the board, and it has to reach the keys as well.
+   */
+  readOnly?: () => boolean;
   /** Wall clock, injected so the double-click window is testable — the same
    *  seam `state/tools/string.ts` has for the same reason. */
   now?: () => number;
@@ -147,6 +157,7 @@ export class ToolMachine {
   private readonly target: HTMLElement;
   private readonly ctx: ToolContext;
   private readonly suppressed: () => boolean;
+  private readonly readOnly: () => boolean;
   private readonly now: () => number;
   private readonly disposers: (() => void)[] = [];
 
@@ -167,6 +178,7 @@ export class ToolMachine {
     this.tool = tool;
     this.target = target;
     this.suppressed = options.suppressed ?? (() => false);
+    this.readOnly = options.readOnly ?? (() => false);
     this.now = options.now ?? (() => Date.now());
     this.ctx = {
       scene: options.scene,
@@ -227,9 +239,22 @@ export class ToolMachine {
 
   setTool(tool: Tool): void {
     if (tool === this.tool) return;
+    this.abandon();
+    this.tool = tool;
+  }
+
+  /**
+   * Drop whatever gesture is in flight, without changing tool.
+   *
+   * What a tool change has always done to the outgoing tool, reached on its own
+   * because a board can stop accepting input without anybody picking up
+   * something else: a peer raising the schema version mid-stroke seals the
+   * document (T-224), and a half-drawn line whose pen-up will never arrive is
+   * a wet overlay that stays on the glass for the rest of the session.
+   */
+  abandon(): void {
     this.tool.cancel(this.ctx);
     this.queue.length = 0;
-    this.tool = tool;
     // Cancelling is ending. A tool change is one of the three explicit undo
     // boundaries, and here it is already the same event as a gesture ending.
     this.pendingEnd = true;
@@ -254,7 +279,10 @@ export class ToolMachine {
    * the pointer belongs to the camera, and so does the wheel.
    */
   claimWheel(e: WheelEvent): boolean {
-    if (this.suppressed() || isChromeTarget(e.target)) return false;
+    // A notch this tool will never act on belongs to the camera, exactly as it
+    // does while the space bar is down. Refusing it at `push` instead would
+    // swallow it: `claimWheel` has already said yes by then.
+    if (this.suppressed() || this.readOnly() || isChromeTarget(e.target)) return false;
     const at = sample(e);
     if (this.tool.claimsWheel?.(at, this.ctx) !== true) return false;
     this.push({ kind: "wheel", at, dy: e.deltaY });
@@ -281,7 +309,7 @@ export class ToolMachine {
    */
   get wheelClaimed(): boolean {
     const at = this.hover;
-    if (at === null || this.suppressed()) return false;
+    if (at === null || this.suppressed() || this.readOnly()) return false;
     return (
       this.tool.claimsWheel?.(
         {
@@ -325,6 +353,21 @@ export class ToolMachine {
    * frame to show up, which makes it the worse of the two.
    */
   private push(input: ToolInput): void {
+    /**
+     * A board this build may not edit takes no tool input at all (T-224).
+     *
+     * Here rather than beside `suppressed` in the three claim points, because
+     * this is the one funnel every input passes through — a press, a move, a
+     * release, a wheel notch and the forwarded keys below all arrive by this
+     * line, and `Delete` is exactly the one that does not go through a claim.
+     *
+     * Distinct from `suppressed`, which means "navigation owns the pointer" and
+     * is about *this gesture*. This one is about the document, is decided long
+     * before any gesture, and the caller cancels whatever was in flight on the
+     * frame it becomes true — otherwise a stroke half drawn when a peer raises
+     * the schema version would be a pen-up looking for a document to commit to.
+     */
+    if (this.readOnly()) return;
     if (input.kind === "up" || input.kind === "cancel") this.pendingEnd = true;
     if (input.kind === "move") {
       const last = this.queue[this.queue.length - 1];
@@ -391,7 +434,12 @@ export class ToolMachine {
     };
 
     add(this.target, "pointerdown", (e: PointerEvent) => {
-      if (e.button !== 0 || this.suppressed() || isChromeTarget(e.target)) return;
+      // `readOnly` here as well as at `push`, and not only there: a press
+      // that got this far would take pointer capture and `preventDefault` for a
+      // gesture the funnel is about to drop, and the machine would go on
+      // believing a finger was down (T-224).
+      if (e.button !== 0 || this.suppressed() || this.readOnly()) return;
+      if (isChromeTarget(e.target)) return;
       /**
        * A press inside a note being written on is text, not board input
        * (T-179).

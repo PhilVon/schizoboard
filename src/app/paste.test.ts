@@ -9,7 +9,7 @@
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { initialiseBoard, openBoardDoc, type BoardDoc } from "@/crdt/doc";
+import { initialiseBoard, openBoardDoc, sealBoard, type BoardDoc } from "@/crdt/doc";
 import { readItem } from "@/crdt/schema";
 import { Paste } from "@/app/paste";
 import type { AssetMeta, ClipboardPayload, Platform, PlatformEvents } from "@/platform/types";
@@ -439,5 +439,38 @@ describe("a handful at once", () => {
     expect(itemsOnBoard()).toHaveLength(50);
     expect(warn).toHaveBeenCalledWith(expect.stringContaining("50 of 80"));
     warn.mockRestore();
+  });
+});
+
+/**
+ * A board written by a newer build — T-224, Q-170's "read-only and say so".
+ *
+ * Refused at the top of the handler rather than at the create, and this is the
+ * test that says which: a URL paste is up to thirty seconds of network and a
+ * file paste puts bytes into the content-addressed store. Both would be work
+ * done for an item that is never going to exist, and the second leaves the
+ * bytes behind on a board whose collector has also been stopped.
+ */
+describe("on a sealed board", () => {
+  it("ingests nothing and creates nothing", async () => {
+    sealBoard(board);
+
+    await firePaste({ files: [imageFile(2048)] });
+    await firePaste({ text: "a sentence" });
+
+    expect(native.calls).toEqual([]);
+    expect(itemsOnBoard()).toEqual([]);
+    expect(created).toEqual([]);
+  });
+
+  /** And the drop route, which never touches the clipboard at all. */
+  it("takes no file dropped in from the shell", async () => {
+    sealBoard(board);
+
+    native.drop(["C:/holiday.png"], 100, 100);
+    await settle();
+
+    expect(native.calls).toEqual([]);
+    expect(itemsOnBoard()).toEqual([]);
   });
 });

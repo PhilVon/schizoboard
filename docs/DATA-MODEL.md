@@ -375,6 +375,20 @@ assets/<sha256>    the bytes
 
 **Prefer additive migrations.** In a CRDT, destructive migrations are genuinely dangerous: an old client that reconnects can resurrect the old shape, and the merge will accept it.
 
+### 12.1 A document from a *higher* version opens read-only
+
+The paragraph above is about a document older than the build reading it. The other direction had no rule at all and needed one, because it fails silently in both halves (T-224, Q-170).
+
+**What a future document does today.** An item whose `type` this build does not know reads as null and is skipped by the binding, so it is *invisible while remaining perfectly intact* — nothing deletes it on read (§8.1) and compaction re-emits it verbatim. That is the tolerant behaviour §8.1 asks for, and on its own it is fine. What is not fine is that `referencedAssets` builds the asset keep-set through the same reader: a future item's photograph is in no keep-set, so the collector (§10) is free to reclaim its bytes. Open a version-2 board on a version-1 build, wait for the sweep, and the pictures can go for good with the items still pointing at them.
+
+**The rule.** When `meta.schemaVersion` is higher than the build's, the document is **sealed**: it opens, it renders, it keeps syncing and it keeps being written to disk, and *this build never writes to it*. The seal is one check in `mutate`, so every op is downstream of it; the routes above — gestures, keys, menus, paste, the clipboard's cut, undo, the janitor and the asset sweep — are closed separately so that a board you may not edit looks like one rather than like one that has stopped responding. Reaching the seal is a bug, so it throws rather than declining quietly.
+
+**A peer can seal a board mid-session**, by raising `meta.schemaVersion` on a document already open here. It is watched, not merely checked at boot.
+
+**Additive migration is still the policy**, which is what makes this the conservative answer rather than the obvious one: a version-2 board is usually perfectly editable by a version-1 build. It is refused anyway because editing around an item you cannot see is a mistake nothing announces — not to the person making it, and not to the person whose item it was.
+
+**A bundle carries the same version and is refused the same way.** Rust deliberately does not judge `manifest.schemaVersion` (`bundle.rs`), on the grounds that migration is the frontend's; the frontend now reads it before `replaceWith`, because past that line the board being replaced is already gone.
+
 ---
 
 ## 13. Invariants
