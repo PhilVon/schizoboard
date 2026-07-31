@@ -49,6 +49,7 @@ import { DEFAULT_STRING_MATERIAL, fibre, sagFor, sagWith } from "@/lib/material"
 import { sampleChain, solveCatenary } from "@/sim/catenary";
 import {
   MATERIAL_EASE,
+  MAX_AWAKE_PARTICLES,
   ROPE_SLEEP_MOVE,
   ROPE_SLEEP_STEPS,
   ROPE_SPACING,
@@ -134,6 +135,16 @@ interface Segment {
   at: number;
   count: number;
   asleep: boolean;
+  /**
+   * Asleep because it is off screen rather than because it stopped moving.
+   *
+   * The distinction is the whole of the viewport gate. A rope that settles
+   * keeps a pose worth resuming from; a rope that was switched off mid-swing
+   * with nobody watching keeps a pose that is merely where it happened to be,
+   * and its pins may have moved a long way since. So this is what `admit`
+   * reads to know the pose is not to be trusted when the rope comes back.
+   */
+  gated: boolean;
   /** Consecutive frames spent under `ROPE_SLEEP_MOVE`. */
   still: number;
   /** Where the two pins were when this last stepped, so a pin that has not
@@ -174,6 +185,10 @@ export class RopeSet {
    */
   private readonly runs = new Map<string, string>();
 
+  /** What `admit` decided to step this frame. A field rather than a local so
+   *  that the one allocation is made once and not sixty times a second. */
+  private readonly running: Segment[] = [];
+
   private pos = new Float64Array(INITIAL_POOL);
   private prev = new Float64Array(INITIAL_POOL);
   private top = 0;
@@ -186,6 +201,21 @@ export class RopeSet {
   get awake(): number {
     let n = 0;
     for (const s of this.segments) if (!s.asleep) n++;
+    return n;
+  }
+
+  /**
+   * How many particles those ropes hold — the number DESIGN section 9.5 asks
+   * the HUD for, and the one `MAX_AWAKE_PARTICLES` is spent in.
+   *
+   * Not the same question as `awake`. The solver's cost is linear in particles
+   * and a rope's particle count is its length over `ROPE_SPACING`, so one long
+   * string across the board can outweigh a dozen short ones and a rope count
+   * would call them equal.
+   */
+  get awakeParticles(): number {
+    let n = 0;
+    for (const s of this.segments) if (!s.asleep) n += s.count;
     return n;
   }
 
@@ -268,6 +298,7 @@ export class RopeSet {
         at: 0,
         count: 0,
         asleep: true,
+        gated: false,
         still: ROPE_SLEEP_STEPS,
         ax: Number.NaN,
         ay: Number.NaN,
@@ -321,8 +352,15 @@ export class RopeSet {
    *
    * Wakes what the frame disturbed, steps what is awake, and sleeps what has
    * stopped. A frame on which nothing moved does none of the three.
+   *
+   * `view` is the board-space rectangle worth simulating — the viewport grown
+   * by `SIM_MARGIN`, computed by the caller so that `sim/` never has to know
+   * what a camera is. Passing `null` says *simulate everything*: there is no
+   * camera to prioritise by, so there is no gate and no cap. That is what the
+   * tests want, and it is the honest answer for any caller stepping the board
+   * for a reason other than showing it to somebody.
    */
-  step(scene: Scene, dirty: DirtySets, dtMs: number): void {
+  step(scene: Scene, dirty: DirtySets, dtMs: number, view: Bounds | null = null): void {
     if (dirty.all) {
       // The mirror was rebuilt from scratch, so the rope set is too: strings
       // that are gone go, and the rest are re-read before anything is seeded.
@@ -347,8 +385,7 @@ export class RopeSet {
     const steps = this.clock.advance(dtMs);
     if (steps === 0) return;
 
-    for (const segment of this.segments) {
-      if (segment.asleep) continue;
+    for (const segment of this.admit(scene, dirty, view)) {
       const a = scene.pins.get(segment.a);
       const b = scene.pins.get(segment.b);
       if (a === undefined || b === undefined) {
@@ -396,6 +433,123 @@ export class RopeSet {
       segment.still = travelled < ROPE_SLEEP_MOVE && !easing ? segment.still + 1 : 0;
       if (segment.still >= ROPE_SLEEP_STEPS) segment.asleep = true;
     }
+  }
+
+  /**
+   * Which segments this frame actually steps: awake, near the camera, and
+   * inside the particle budget.
+   *
+   * > A rope simulates only if its bounds, expanded by maximum sag, intersect
+   * > the viewport margin; otherwise it force-sleeps at its cached pose.
+   * > — DESIGN section 9.2
+   *
+   * "Expanded by maximum sag" is already true of the bounds themselves rather
+   * than something to do here: `bound` walks the particles, so the box is the
+   * shape the rope actually hangs in and not the chord between its pins.
+   *
+   * The gate is the cheap half and the one that matters. Without it, an
+   * off-screen rope that something keeps disturbing — a peer dragging its
+   * photograph, an undo far away — simulates at full cost forever, which is
+   * the exposure DESIGN section 9.2 names and the one the sleep manager cannot
+   * cover, because the whole point of a disturbance is that it wakes things up.
+   * Gated, that rope costs four comparisons a frame.
+   */
+  private admit(scene: Scene, dirty: DirtySets, view: Bounds | null): Segment[] {
+    const running = this.running;
+    running.length = 0;
+    let particles = 0;
+
+    for (const segment of this.segments) {
+      // A segment with no particles has no box to test — its bounds are the
+      // ±Infinity seeds from `bound`. It is also doing nothing, so the ordinary
+      // path below is already the right answer for it.
+      if (view !== null && segment.count > 0) {
+        if (!meets(segment, view)) {
+          // Only a rope switched off *mid-motion* is flagged. One that had
+          // already settled has nothing to resume and nothing to re-seed for:
+          // its pose is the answer, and re-deriving it on the way back would
+          // slide every particle along the curve to no visible end. So gating
+          // an idle rope has to be exactly the no-op that not gating it was.
+          if (!segment.asleep) {
+            segment.asleep = true;
+            segment.gated = true;
+          }
+          continue;
+        }
+        if (segment.gated) {
+          /**
+           * Back on screen, and the cached pose is not to be trusted.
+           *
+           * Whatever happened while it was gated, the honest answer is the
+           * analytic rest pose under the pins as they stand now — because the
+           * rope has *had* that time to settle and would have. Resuming from
+           * the cached pose instead is what looks wrong: the pins can have
+           * moved half a board since, and the solver hauling the particles
+           * after them is a whip, not a string.
+           *
+           * It is also the rule two other places already use. A load and an
+           * undo re-seed every rope (`dirty.all`, above); a swing that leaves
+           * the margin is put straight at its equilibrium (`sim/torsion.ts`).
+           * Same principle in all three: what nobody watched has settled.
+           *
+           * Never seen at the boundary, only at the margin — `SIM_MARGIN` puts
+           * the gate a fifth of a screen outside the glass, so a rope crossing
+           * it under a pan is off screen when this fires. A zoom-out is the one
+           * gesture that un-gates and reveals in the same frame, and re-seeding
+           * is exactly what a board arriving all at once should do anyway.
+           */
+          segment.gated = false;
+          this.seed(scene, segment);
+          dirty.rope(segment.string);
+          continue;
+        }
+      }
+      if (segment.asleep) continue;
+      running.push(segment);
+      particles += segment.count;
+    }
+
+    if (view === null || particles <= MAX_AWAKE_PARTICLES) return running;
+    return this.cap(running, view);
+  }
+
+  /**
+   * Spend the particle budget on what is most on screen.
+   *
+   * > A global cap on awake particles, prioritised by on-screen area, means a
+   * > pathological board degrades gracefully instead of dropping frames.
+   * > — DESIGN section 9.2
+   *
+   * A rope that loses is not slept and not re-seeded: it keeps its pose, keeps
+   * its `still` count, and contends again next frame. So this is a deferral
+   * rather than a decision, and it drains itself — the ropes that do get
+   * stepped settle and drop out of the count, which is what frees the budget
+   * for the ones that did not. Degrading means a few of the least visible
+   * strings hold still for a moment, which is the trade section 9.2 is asking
+   * for.
+   *
+   * The sort only ever runs on the frames the budget is actually exceeded,
+   * which on a board obeying DESIGN section 5.3 is none of them.
+   */
+  private cap(running: Segment[], view: Bounds): Segment[] {
+    running.sort((p, q) => overlap(q, view) - overlap(p, view));
+
+    let particles = 0;
+    let kept = 0;
+    for (const segment of running) {
+      // Stop at the first that does not fit rather than skipping it for a
+      // smaller one behind it. Priority *is* the contract here, and a budget
+      // spent more fully by inverting it would be a rope freezing while a less
+      // visible one moves.
+      if (particles + segment.count > MAX_AWAKE_PARTICLES) break;
+      particles += segment.count;
+      kept++;
+    }
+    // One rope longer than the entire budget still gets stepped. It is the only
+    // way it ever moves again, and a permanently frozen string is a worse
+    // failure than one slow frame.
+    running.length = Math.max(1, kept);
+    return running;
   }
 
   /**
@@ -639,12 +793,7 @@ export class RopeSet {
     for (const [id, owned] of this.byString) {
       for (const segment of owned) {
         if (segment.count === 0) continue;
-        if (
-          segment.maxX >= rect.minX &&
-          segment.minX <= rect.maxX &&
-          segment.maxY >= rect.minY &&
-          segment.minY <= rect.maxY
-        ) {
+        if (meets(segment, rect)) {
           into.push(id);
           break;
         }
@@ -687,18 +836,54 @@ export class RopeSet {
         if (segment.count > 0) dirty.rope(segment.string);
         continue;
       }
-      if (!segment.asleep) continue;
       const moved =
         segment.a === pinId
           ? Math.abs(pin.wx - segment.ax) + Math.abs(pin.wy - segment.ay)
           : Math.abs(pin.wx - segment.bx) + Math.abs(pin.wy - segment.by);
-      if (moved > ANCHOR_EPSILON) this.rouse(segment);
+      if (moved <= ANCHOR_EPSILON) continue;
+      // Before the sleep test, not after it, and that ordering is a bug that
+      // was in here. A segment can end a frame awake — the write landed after
+      // phase 3, or the cap deferred it — and on the next frame this would skip
+      // it entirely as "already awake, it will sort itself out". It does not:
+      // the *box* is what the gate judges, only a step refreshes it, and a
+      // gated rope never takes one. So the pin moved, the box did not hear
+      // about it, the gate re-slept it on the stale box, and the pin was clean
+      // by the following frame — stranding the rope where it used to be for the
+      // life of the session. Found by driving it, not by the tests.
+      this.reach(segment, pin.wx, pin.wy);
+      if (segment.asleep) this.rouse(segment);
     }
   }
 
   private rouse(segment: Segment): void {
     segment.asleep = false;
     segment.still = 0;
+  }
+
+  /**
+   * Stretch a segment's box to reach a pin that has moved out from under it.
+   *
+   * The viewport gate's, and it is not optional. A gated rope is judged by its
+   * *cached* box — the shape it was last stepped into — and its pins can walk
+   * clean off the far side of that. Drag a photograph in from off screen and,
+   * without this, its strings keep being tested against a box on the other side
+   * of the board, keep failing, and never come back: you arrive at the item
+   * with its strings still lying where they used to be.
+   *
+   * Growing rather than recomputing, because the particles have not moved and a
+   * box that no longer contained them would be a lie to `nearest` and to the
+   * painter's culling. Conservative in the only direction that is safe — too
+   * big costs a rope being considered when it needn't be — and `bound` makes it
+   * honest again on the first step it takes.
+   *
+   * Only the pin route needs it. A slack nudge or a `wake` moves no anchor, so
+   * the box it had is still the box it has.
+   */
+  private reach(segment: Segment, wx: number, wy: number): void {
+    if (wx < segment.minX) segment.minX = wx;
+    if (wx > segment.maxX) segment.maxX = wx;
+    if (wy < segment.minY) segment.minY = wy;
+    if (wy > segment.maxY) segment.maxY = wy;
   }
 
   /**
@@ -843,6 +1028,37 @@ export class RopeSet {
     reusable.push(segment.at);
     segment.count = 0;
   }
+}
+
+/** Whether a segment's box touches `rect` at all. Shared by the viewport gate
+ *  and by the painter's culling, so the two can never disagree about what is
+ *  near enough to matter. */
+function meets(segment: Segment, rect: Bounds): boolean {
+  return (
+    segment.maxX >= rect.minX &&
+    segment.minX <= rect.maxX &&
+    segment.maxY >= rect.minY &&
+    segment.minY <= rect.maxY
+  );
+}
+
+/**
+ * How much of a segment is on screen, as an area — what `cap` ranks by.
+ *
+ * Both extents are grown by `ROPE_SPACING` before multiplying, and that is
+ * load-bearing rather than a fudge. A rope with no slack between two pins at
+ * the same height is a horizontal *line*: its box is zero units tall, so a
+ * plain intersection area makes it worth nothing, and every taut string on the
+ * board would tie at zero and lose to any sagging one. A link's length is the
+ * smallest thickness a rope can meaningfully have, and adding it means a long
+ * straight string on screen outranks a short one — which is the right answer,
+ * because it is the one you can see more of.
+ */
+function overlap(segment: Segment, rect: Bounds): number {
+  const w = Math.min(segment.maxX, rect.maxX) - Math.max(segment.minX, rect.minX);
+  const h = Math.min(segment.maxY, rect.maxY) - Math.max(segment.minY, rect.minY);
+  if (w < 0 || h < 0) return 0;
+  return (w + ROPE_SPACING) * (h + ROPE_SPACING);
 }
 
 /**

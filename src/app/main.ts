@@ -84,6 +84,7 @@ import { RopeLayer } from "@/render/ropes/paint";
 import { World } from "@/render/world";
 import { RopeSet, type RopeHit } from "@/sim/ropes";
 import { Torsion } from "@/sim/torsion";
+import { SIM_MARGIN } from "@/sim/tuning";
 import { AssetStates } from "@/state/assets";
 import { MissingAssets } from "@/state/missing";
 import { Camera, type Bounds } from "@/state/camera";
@@ -1944,7 +1945,13 @@ async function boot(): Promise<void> {
       // Everything phase 3 is stepping: items mid-swing plus ropes not yet
       // settled. One number, because it answers one question — is the
       // simulation asleep? — and a board at rest must read zero.
-      awakeParticles: torsion.awake + ropes.awake,
+      // Particles for the ropes rather than a rope count, because that is what
+      // the field is called, what DESIGN section 9.5 asks for, and what
+      // `MAX_AWAKE_PARTICLES` is spent in — a number that has to mean the same
+      // thing as the cap for the HUD to be any use in watching it. A rope
+      // force-slept by the viewport gate leaves this count, which is the
+      // cheapest way to see the gate working at all.
+      awakeParticles: torsion.awake + ropes.awakeParticles,
       docBytes,
       items: scene.size,
       mounted: items.mounted,
@@ -2408,17 +2415,33 @@ async function boot(): Promise<void> {
    * current itself (`scene.layoutPin`), because the sweep that does that for
    * the whole board is phase 4 and runs after this.
    *
-   * Nothing creates a string yet — that is T-41 and the binding — so today
-   * this is an empty set stepping nothing. It is wired now so the ordering
-   * above is settled before there is anything to get it wrong with.
+   * Both are gated to the viewport margin, which is the one thing in this phase
+   * the camera is allowed to decide (DESIGN section 6.3 phase 3, section 9.2).
+   * It is computed here and handed over as a plain board-space rectangle: `sim/`
+   * may not import the camera any more than it may import the document, and a
+   * rectangle is the whole of what it needs to know.
    */
+  const simView: Bounds = { minX: 0, minY: 0, maxX: 0, maxY: 0 };
   loop.on("sim", (frame) => {
-    torsion.step(scene, dirty, frame.dt, select.heldItems, select.carryLag, select.heldPivots);
+    camera.visibleBounds(SIM_MARGIN, simView);
+    torsion.step(
+      scene,
+      dirty,
+      frame.dt,
+      select.heldItems,
+      select.carryLag,
+      select.heldPivots,
+      simView,
+    );
     // After the torsion, never before it: the translation that holds a pin
     // still while its note is laid flat is computed from the settled angle,
     // and the torsion is what settles it.
+    //
+    // Ungated, and it should be: `flatten` only ever has the item you are
+    // typing into, which is by construction the one item on the board you are
+    // certainly looking at.
     flatten.step(scene, dirty, frame.dt);
-    ropes.step(scene, dirty, frame.dt);
+    ropes.step(scene, dirty, frame.dt, simView);
   });
 
   /**

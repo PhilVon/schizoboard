@@ -11,6 +11,8 @@
  * Units are board units, seconds and radians throughout — never screen pixels
  * and never milliseconds, because the simulation must not change with the zoom
  * or with the frame rate.
+ *
+ * `SIM_MARGIN` is the one exception and says so in its own comment.
  */
 
 /**
@@ -211,3 +213,45 @@ export const ROPE_SLEEP_STEPS = 12;
  * sleeping, which is the one thing DESIGN section 5.3 will not have.
  */
 export const MATERIAL_EASE = 1.8;
+
+/**
+ * How far past the edge of the screen the simulation keeps running, as a
+ * fraction of the viewport.
+ *
+ * > SIM — step awake ropes and swings within the viewport margin; sleep checks
+ * > — DESIGN section 6.3, phase 3
+ *
+ * The one dimensionless number in this file, and it is here rather than beside
+ * the camera because it is a *simulation* policy — how much work to do — and
+ * section 5.8 wants every such dial in one place. The rect itself is the
+ * caller's to compute; `sim/` is handed a board-space box and never learns
+ * what a camera is.
+ *
+ * 0.2 is the number `render/cull.ts` already uses for mounting (DESIGN section
+ * 9.1's "viewport expanded by 20%"), and matching it is the point: a rope
+ * cannot be drawn by an item that is not mounted, so simulating out to exactly
+ * the mount margin means nothing visible is ever frozen. It also buys the case
+ * that actually matters — a rope disturbed just off the edge has a fifth of a
+ * screen of panning to settle in before you can see it.
+ */
+export const SIM_MARGIN = 0.2;
+
+/**
+ * The ceiling on rope particles stepped in one frame.
+ *
+ * > A global cap on awake particles, prioritised by on-screen area, means a
+ * > pathological board degrades gracefully instead of dropping frames.
+ * > — DESIGN section 9.2
+ *
+ * Derived rather than chosen: section 9's budget is "60 fps with 300 visible
+ * items and 100 awake ropes", `ROPE_SPACING` puts about twenty particles on a
+ * rope of ordinary length, and `ROPE_SUBSTEPS` above records that hundred
+ * costing 5.8 ms a frame. So this is the budget's own figure, in the unit the
+ * solver's cost is actually linear in — a hundred long ropes and three hundred
+ * short ones are not the same work, and counting ropes would call them equal.
+ *
+ * Nothing normal comes near it. DESIGN section 5.3's "between zero and four
+ * awake at any moment" is under a hundred particles; this is the backstop for
+ * the board that has gone wrong, not a limit anyone should meet.
+ */
+export const MAX_AWAKE_PARTICLES = 2000;
