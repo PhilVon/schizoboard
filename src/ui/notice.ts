@@ -12,9 +12,10 @@
  * ## It is not chrome you can click
  *
  * `pointer-events: none`, without exception. Two pieces of UI on this board have
- * already eaten board presses — the dev HUD and the hint line — and each cost a
+ * eaten board presses — the dev HUD and the old hint line — and each cost a
  * session to find, because a press that lands in an overlay looks exactly like
- * an interaction the application ignored. There is nothing to click here: the
+ * an interaction the application ignored. Both are fixed (T-250); this comment
+ * asserted the HUD was inert for nine phases before it was. There is nothing to click here: the
  * retry DESIGN asks for is automatic (every `synced` re-asks for everything
  * missing), so a button would only be a slower way to do what already happens.
  *

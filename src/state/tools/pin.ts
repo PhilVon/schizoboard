@@ -27,9 +27,11 @@
  *
  * ## One placement, then back to select
  *
- * Same as the note tool, for the same reason — nothing on screen says which
- * tool is active, and a sticky tool with no indicator is a trap. See
- * `state/tools/note.ts`.
+ * Same as the note tool, and the reason is stated there at length: a hand that
+ * has moved on while the board has not. The drawer and the info bar now say
+ * which tool is in hand (DESIGN section 3.10), which makes this a choice about
+ * the gesture rather than a workaround for having no UI — see
+ * `state/tools/note.ts`, which used to argue there should never be one.
  */
 
 import { QuickPull } from "@/state/tools/quickpull";
