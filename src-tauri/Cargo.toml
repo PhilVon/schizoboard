@@ -103,6 +103,26 @@ zip = { version = "8", default-features = false, features = ["deflate-flate2"] }
 # thread — the alternative is a second async HTTP stack in the binary.
 ureq = "3"
 
+# --- reading a document (T-297) ---------------------------------------------
+# Q-201's answer. lopdf is a PDF *object model* — the file's cross-reference
+# table, its page tree, its content streams and its resources — and nothing
+# else. It does not render, and that is the whole reason it was chosen over
+# `pdfium-render`: D-46 section 4 settled that pages are re-typeset onto our
+# own paper rather than drawn, so a 10 MB Google renderer shipped per platform
+# would be paying for the one thing this feature deliberately does not do.
+#
+# The cost is real and was taken with open eyes: text with its *boxes* means
+# walking the content stream ourselves — the text matrix, `Tm`/`Td`/`TD`/`T*`,
+# and `Tj`/`TJ`/`'`/`"` — because the object model hands over operators and not
+# a laid-out line. `pdf-extract` would have done the loose text for nothing and
+# is no use here: a quote has to cite where on the page it came from.
+#
+# `default-features = false` for the reason it matters on `zip` above: the
+# default set is `chrono`, `jiff` and `time` — three separate date libraries,
+# all of them for parsing document metadata this application never reads — plus
+# `rayon` for a parallel load we do not want on the ingest thread.
+lopdf = { version = "0.44", default-features = false }
+
 # --- the embedded relay (T-69) ----------------------------------------------
 # The relay holds a real document, because a y-websocket server has to answer a
 # state vector with the difference — and because ARCHITECTURE section 5.1 wants
