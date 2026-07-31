@@ -30,7 +30,8 @@ import {
   stringMenuRows,
   type Pen,
 } from "@/ui/boardmenu";
-import type { MenuChoice, MenuEntry, MenuRow } from "@/ui/menu";
+import type { MenuChoice, MenuEntry, MenuPage, MenuRow } from "@/ui/menu";
+import type { ItemStyle } from "@/lib/style";
 
 type Settle = [string, WritePose][];
 
@@ -41,7 +42,8 @@ type Write =
   | { kind: "deleteItems"; ids: string[]; keepPins: boolean }
   | { kind: "createPin"; parent: string | null; lx: number; ly: number; settle: Settle }
   | { kind: "deletePins"; ids: string[]; settle: Settle }
-  | { kind: "stack"; ids: string[]; end: "front" | "back" };
+  | { kind: "stack"; ids: string[]; end: "front" | "back" }
+  | { kind: "itemStyle"; ids: string[]; patch: Partial<ItemStyle> };
 
 let scene: Scene;
 let writes: Write[];
@@ -79,9 +81,19 @@ function span(id: string, y: number, layer = "over"): void {
 }
 
 /** An item at a pose. 100x100 at the origin unless told otherwise. */
-function put(id: string, pose: Partial<ItemPose> = {}): void {
+function put(id: string, pose: Partial<ItemPose> = {}, style: ItemStyle = {}): void {
   scene.putItem(
-    { id, type: "polaroid", z: "a0", seed: 1, assetId: null, createdBy: 1, createdAt: 0, text: "" },
+    {
+      id,
+      type: "polaroid",
+      z: "a0",
+      seed: 1,
+      assetId: null,
+      createdBy: 1,
+      createdAt: 0,
+      text: "",
+      style,
+    },
     { x: 0, y: 0, rot: 0, w: 100, h: 100, ...pose },
   );
 }
@@ -120,6 +132,13 @@ function chips(entries: readonly MenuEntry[], label: string): readonly MenuChoic
   return picker.choices;
 }
 
+/** The entries behind a page row, by its label. */
+function page(entries: readonly MenuEntry[], label: string): readonly MenuEntry[] {
+  const row = entries.find((e): e is MenuPage => "page" in e && e.label.startsWith(label));
+  if (row === undefined) throw new Error(`no "${label}" page`);
+  return row.page();
+}
+
 beforeEach(() => {
   scene = new Scene();
   writes = [];
@@ -133,6 +152,7 @@ beforeEach(() => {
     | "deletePins"
     | "bringToFront"
     | "sendToBack"
+    | "setItemStyle"
   > = {
     setStringLayer: (stringIds, layer) =>
       writes.push({ kind: "layer", stringIds: [...stringIds], layer }),
@@ -146,10 +166,133 @@ beforeEach(() => {
       writes.push({ kind: "deletePins", ids: [...ids], settle: [...(settle ?? [])] }),
     bringToFront: (ids) => writes.push({ kind: "stack", ids: [...ids], end: "front" }),
     sendToBack: (ids) => writes.push({ kind: "stack", ids: [...ids], end: "back" }),
+    setItemStyle: (ids, patch) =>
+      writes.push({ kind: "itemStyle", ids: [...ids], patch: { ...patch } }),
   };
   // The rows only ever reach these. Everything else on the interface is a
   // write no menu offers, and stubbing the rest would say otherwise.
   write = partial as BoardWriter;
+});
+
+/**
+ * The Appearance page — DATA-MODEL section 3's style map, reached through one
+ * row rather than five strips (Q-168, T-244).
+ *
+ * The whole of what these assert is the difference between what has been
+ * *chosen* and what is being *shown*. A strip that marked the stock the seed
+ * happened to draw would say you had picked cream when you had picked nothing,
+ * and would leave no way to see or reach the difference.
+ */
+describe("the item's appearance", () => {
+  const style = (over: ItemStyle) => {
+    put("i0", {}, over);
+    return page(itemMenuRows(scene, write, "i0", ["i0"], 0, 0), "Appearance");
+  };
+
+  it("is one row on the menu, not five strips", () => {
+    put("i0");
+    const rows = itemMenuRows(scene, write, "i0", ["i0"], 0, 0);
+    expect(rows.filter((e) => "choices" in e)).toHaveLength(0);
+    expect(verbs(rows).map((r) => r.label)).toContain("Appearance");
+  });
+
+  it("opens onto the five", () => {
+    expect(style({}).map((e) => e.label)).toEqual(["Paper", "Tint", "Writing", "Tape", "Edge"]);
+  });
+
+  it("names the selection it would restyle", () => {
+    put("i0");
+    put("i1");
+    const rows = itemMenuRows(scene, write, "i0", ["i0", "i1"], 0, 0);
+    expect(verbs(rows).map((r) => r.label)).toContain("Appearance of 2");
+  });
+
+  describe("what is marked", () => {
+    it("is 'as it was' on an item nobody has restyled, which is nearly all of them", () => {
+      for (const strip of style({})) {
+        if (!("choices" in strip)) throw new Error(`"${strip.label}" is not a strip`);
+        const on = strip.choices.filter((c) => c.current === true);
+        expect(on.map((c) => c.label)).toEqual(["As it was"]);
+      }
+    });
+
+    it("is the chosen chip once something has been chosen", () => {
+      const entries = style({ paperStock: "graph", fontFamily: "clean", torn: false });
+      expect(chips(entries, "Paper").find((c) => c.current)!.label).toBe("Graph paper");
+      expect(chips(entries, "Writing").find((c) => c.current)!.label).toBe(
+        "A clean face, for reading",
+      );
+      expect(chips(entries, "Edge").find((c) => c.current)!.label).toBe("Cut straight");
+      // And the two nobody touched still say so.
+      expect(chips(entries, "Tint").find((c) => c.current)!.label).toBe("As it was");
+    });
+
+    /** The two that would be wrong under a falsy test, and both are real
+     *  choices rather than absences. */
+    it("does not read a chosen 'no' as nothing chosen", () => {
+      expect(chips(style({ tapeStyle: 0 }), "Tape").find((c) => c.current)!.label).toBe("No tape");
+      expect(chips(style({ torn: false }), "Edge").find((c) => c.current)!.label).toBe(
+        "Cut straight",
+      );
+    });
+
+    it("marks a tint only when it is the one that was picked", () => {
+      const mine = chips(style({ tint: { hue: -14, light: -1 } }), "Tint");
+      expect(mine.find((c) => c.current)!.label).toBe("Warmer");
+      // A tint from somewhere else — a later build, a hand-edited document —
+      // matches no chip, and the strip says "nothing of mine" rather than lying.
+      const theirs = chips(style({ tint: { hue: 3, light: 3 } }), "Tint");
+      expect(theirs.filter((c) => c.current)).toHaveLength(0);
+    });
+  });
+
+  describe("what it writes", () => {
+    const press = (entries: readonly MenuEntry[], strip: string, chip: string) => {
+      const choice = chips(entries, strip).find((c) => c.label === chip);
+      if (choice === undefined) throw new Error(`no "${chip}" chip on "${strip}"`);
+      choice.run();
+    };
+
+    it("sets the property that was picked, and only that one", () => {
+      press(style({}), "Paper", "Legal pad");
+      expect(writes).toEqual([{ kind: "itemStyle", ids: ["i0"], patch: { paperStock: "legal" } }]);
+    });
+
+    /**
+     * The chip the whole design rests on. Clearing has to be a `undefined` in
+     * the patch — which the op turns into a delete — and not a default written
+     * over the top, or an item put back would carry a frozen copy of what its
+     * seed said on the day somebody touched it.
+     */
+    it("clears rather than writing a default", () => {
+      press(style({ paperStock: "graph" }), "Paper", "As it was");
+      expect(writes).toEqual([{ kind: "itemStyle", ids: ["i0"], patch: { paperStock: undefined } }]);
+      expect("paperStock" in (writes[0] as { patch: object }).patch).toBe(true);
+    });
+
+    it("writes to the whole selection", () => {
+      put("i0");
+      put("i1");
+      const entries = page(itemMenuRows(scene, write, "i0", ["i0", "i1"], 0, 0), "Appearance");
+      press(entries, "Writing", "A clean face, for reading");
+      expect(writes).toEqual([
+        { kind: "itemStyle", ids: ["i0", "i1"], patch: { fontFamily: "clean" } },
+      ]);
+    });
+
+    it("puts tape across the top two corners", () => {
+      press(style({}), "Tape", "Taped at two corners");
+      expect(writes).toEqual([{ kind: "itemStyle", ids: ["i0"], patch: { tapeStyle: 0b0011 } }]);
+    });
+  });
+
+  /** A menu is built from a snapshot taken at the press, and a peer can delete
+   *  what it was about before anybody reads it. */
+  it("survives the clicked item going, because the page is a closure", () => {
+    put("i0");
+    const entries = page(itemMenuRows(scene, write, "gone", ["i0"], 0, 0), "Appearance");
+    expect(chips(entries, "Paper").find((c) => c.current)!.label).toBe("As it was");
+  });
 });
 
 describe("the string context menu", () => {
@@ -471,9 +614,13 @@ describe("the item context menu", () => {
       // *Add pin* is the row that goes. It is about a point on the item under
       // the cursor and there is no such item; the verbs that act on the rest of
       // the selection are unaffected by that.
+      // *Appearance* survives too, and should: a style is a verb the selection
+      // takes together, so it has no more need of the clicked item than the
+      // restack pair does.
       expect(verbs(rows).map((r) => r.label)).toEqual([
         "Bring to front",
         "Send to back",
+        "Appearance",
         "Delete",
       ]);
       expect(verbs(rows)[0]!.divided).toBe(false);

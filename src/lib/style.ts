@@ -56,6 +56,64 @@ export const PAPER_STOCKS = ["white", "cream", "legal", "graph", "index"] as con
 export type PaperStock = (typeof PAPER_STOCKS)[number];
 
 /**
+ * The flat colour of each stock — warm, low-chroma, and none of them pure
+ * white, because paper never is.
+ *
+ * Here rather than in `render/items/paper.ts` with the grain and the ruling for
+ * one reason: `ui/` has to draw a swatch of each on a menu chip and may not
+ * import the renderer. `paper.ts` reads these to build its own table, so a chip
+ * and the sheet it stands for cannot come to disagree — which is what a second
+ * copy of five hex values in a menu would eventually do.
+ */
+export const STOCK_BASE: Record<PaperStock, string> = {
+  white: "#f7f4ed",
+  cream: "#f2e9d6",
+  legal: "#f6efb9",
+  graph: "#f4f2e8",
+  index: "#f8f5ef",
+};
+
+/** What each stock is called out loud — a chip has no text of its own. */
+export const STOCK_NAMES: Record<PaperStock, string> = {
+  white: "White",
+  cream: "Cream",
+  legal: "Legal pad",
+  graph: "Graph paper",
+  index: "Index card",
+};
+
+/**
+ * The tints a person can choose, as a small named set.
+ *
+ * A tint is two numbers rather than a member of a set, so it has no natural
+ * chip list — and the obvious one, warmer/cooler/lighter/darker, is a *stepper*
+ * wearing a picker's clothes: pressing warmer twice ought to go further, and a
+ * chip that does nothing the second time is a broken control. These are
+ * absolute instead. Picking `warm` twice is picking `warm`, which is what every
+ * other strip on this menu does.
+ *
+ * The values are about twice what the seed spends and well inside
+ * `TINT_HUE_LIMIT`, because the point is a sheet that reads as deliberately a
+ * bit different rather than as a different colour of paper.
+ *
+ * `swatch` is a *drawing* of the effect rather than the effect itself, on the
+ * argument `MenuChoice.fibre` already makes: the real thing is a filter over a
+ * whole sheet and a chip is a 16-pixel box, so the box exaggerates.
+ */
+export const TINTS: readonly {
+  readonly id: string;
+  readonly label: string;
+  readonly swatch: string;
+  readonly hue: number;
+  readonly light: number;
+}[] = [
+  { id: "warm", label: "Warmer", swatch: "#e8c893", hue: -14, light: -1 },
+  { id: "cool", label: "Cooler", swatch: "#bcd0dc", hue: 14, light: -1 },
+  { id: "light", label: "Lighter", swatch: "#fbf8f2", hue: 0, light: 6 },
+  { id: "dark", label: "Darker", swatch: "#c9c0ac", hue: 0, light: -6 },
+];
+
+/**
  * The face an item's writing is set in.
  *
  * > A clean typeface is available per item for anyone pasting something they

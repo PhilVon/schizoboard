@@ -23,8 +23,16 @@
  */
 
 import { grainOffset, mulberry32, valueAt } from "@/lib/seed";
+import { STOCK_BASE } from "@/lib/style";
 
-export type PaperStock = "white" | "cream" | "legal" | "graph" | "index";
+/**
+ * Re-exported rather than declared, so the document's vocabulary and this
+ * file's table of colours and grains cannot drift apart — `lib/style.ts` owns
+ * the five names because `crdt/` has to validate them and `ui/` has to draw
+ * them, and neither may reach in here.
+ */
+export type { PaperStock } from "@/lib/style";
+import type { PaperStock } from "@/lib/style";
 
 interface Stock {
   /** Base sheet colour. */
@@ -58,20 +66,20 @@ interface Grain {
 
 /** Warm, low-chroma, and none of them pure white — paper never is. */
 const STOCKS: Record<PaperStock, Stock> = {
-  white: { base: "#f7f4ed", grain: { swing: 20, density: 2.4, length: [3, 11], alpha: 0.04 } },
-  cream: { base: "#f2e9d6", grain: { swing: 30, density: 3.8, length: [4, 18], alpha: 0.06 } },
+  white: { base: STOCK_BASE.white, grain: { swing: 20, density: 2.4, length: [3, 11], alpha: 0.04 } },
+  cream: { base: STOCK_BASE.cream, grain: { swing: 30, density: 3.8, length: [4, 18], alpha: 0.06 } },
   legal: {
-    base: "#f6efb9",
+    base: STOCK_BASE.legal,
     rule: { color: "rgba(90,120,160,0.35)", spacing: 22 },
     grain: { swing: 34, density: 4.4, length: [5, 20], alpha: 0.055 },
   },
   graph: {
-    base: "#f4f2e8",
+    base: STOCK_BASE.graph,
     rule: { color: "rgba(120,140,120,0.28)", spacing: 14 },
     grain: { swing: 14, density: 1.3, length: [2, 8], alpha: 0.03 },
   },
   index: {
-    base: "#f8f5ef",
+    base: STOCK_BASE.index,
     rule: { color: "rgba(150,120,120,0.3)", spacing: 20, margin: "rgba(190,110,110,0.5)" },
     grain: { swing: 26, density: 5, length: [2, 9], alpha: 0.05 },
   },
