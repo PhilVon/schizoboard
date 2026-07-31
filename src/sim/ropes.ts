@@ -1096,6 +1096,16 @@ function resolving(scene: Scene, pins: readonly string[]): number[] {
   return out;
 }
 
-/** How long a rope takes to fall asleep once it stops moving, in
- *  milliseconds — for tests and for the dev HUD to label a countdown. */
-export const ROPE_SLEEP_MS = ROPE_SLEEP_STEPS * SIM_STEP_MS;
+/**
+ * How long a rope takes to fall asleep once it stops moving, in milliseconds —
+ * for tests and for the dev HUD to label a countdown.
+ *
+ * A function rather than a constant since T-232, and that is the whole of what
+ * that change cost anywhere outside `tuning.ts`. Both of its terms are dials
+ * the tuning panel can move, and a product taken once at module load is a
+ * number that stops agreeing with its own source the first time somebody turns
+ * one of them — the quietest possible way for a panel to lie.
+ */
+export function ropeSleepMs(): number {
+  return ROPE_SLEEP_STEPS * SIM_STEP_MS;
+}

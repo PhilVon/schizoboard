@@ -131,7 +131,9 @@ export class Hud {
 
     const onKey = (e: KeyboardEvent): void => {
       // Backquote — F12 belongs to devtools and Escape belongs to the tools.
-      if (e.code !== "Backquote" || e.ctrlKey || e.metaKey || e.altKey) return;
+      // The *shifted* one belongs to the physics panel beside this (T-232), so
+      // it is excluded here rather than opening both at once.
+      if (e.code !== "Backquote" || e.shiftKey || e.ctrlKey || e.metaKey || e.altKey) return;
       this.toggle();
       e.preventDefault();
     };
