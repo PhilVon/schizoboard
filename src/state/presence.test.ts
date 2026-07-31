@@ -61,10 +61,12 @@ function setUp(options?: { everyNthFrame?: number; now?: () => number }) {
 
 describe("how often it speaks", () => {
   it("publishes on every other frame, not every frame", () => {
-    const { channel, camera, presence } = setUp();
+    const { channel, presence } = setUp();
 
+    // The hand, not the camera: since T-226 a camera move is not a change, so a
+    // cadence test driven by panning would pass by publishing nothing at all.
     for (let frame = 0; frame < 6; frame += 1) {
-      camera.panByScreen(10, 0);
+      presence.pointerAt(frame * 10, 0, "select");
       presence.flush(frame);
     }
 
@@ -88,10 +90,10 @@ describe("how often it speaks", () => {
   });
 
   it("takes a slower cadence when it is given one", () => {
-    const { channel, camera, presence } = setUp({ everyNthFrame: 6 });
+    const { channel, presence } = setUp({ everyNthFrame: 6 });
 
     for (let frame = 0; frame < 12; frame += 1) {
-      camera.panByScreen(10, 0);
+      presence.pointerAt(frame * 10, 0, "select");
       presence.flush(frame);
     }
 
@@ -108,7 +110,6 @@ describe("what it says", () => {
     // Key-set equality, not a subset check. The point of this test is to fail
     // the day somebody adds a field by handing an object to a setter.
     expect(Object.keys(channel.last).sort()).toEqual([
-      "cam",
       "cursor",
       "grab",
       "locks",
@@ -130,7 +131,7 @@ describe("what it says", () => {
     expect(JSON.parse(JSON.stringify(channel.last))).toEqual(channel.last);
   });
 
-  it("carries the camera, rounded, so a seeding peer knows what to send next", () => {
+  it("does not carry the camera at all (T-226)", () => {
     const { channel, camera, presence } = setUp();
     camera.resize(800, 600);
     camera.zoomTo(1.23456789, 400, 300);
@@ -138,15 +139,29 @@ describe("what it says", () => {
 
     presence.flush(0);
 
-    const cam = channel.last.cam;
-    // Three decimals on a multiplier, whole units on a position. The tail of
-    // `-1234.5678901234` is bytes spent thirty times a second, on every peer,
-    // to place a marker inside the width of its own outline.
-    expect(cam?.zoom).toBe(1.235);
-    expect(Number.isInteger(cam?.x)).toBe(true);
-    expect(Number.isInteger(cam?.y)).toBe(true);
-    expect(Math.abs((cam?.x ?? 0) - camera.x)).toBeLessThanOrEqual(0.5);
-    expect(Math.abs((cam?.y ?? 0) - camera.y)).toBeLessThanOrEqual(0.5);
+    // Not "is null" — the field is not on the object. A `cam: null` published
+    // every other frame is the same claim in a quieter voice, and a receiver
+    // written against it would still be reading a field nobody produces.
+    expect(Object.keys(channel.last)).not.toContain("cam");
+  });
+
+  /**
+   * The consequence of the field going, and the whole of what it bought. With
+   * the camera on the wire, scrolling around a board somebody else was watching
+   * published thirty messages a second to say nothing anyone could see.
+   */
+  it("says nothing when only the camera moves", () => {
+    const { channel, camera, presence } = setUp();
+    camera.resize(800, 600);
+    presence.flush(0);
+    const sent = channel.states.length;
+
+    camera.panByScreen(-400, -220);
+    camera.zoomTo(2, 400, 300);
+    presence.flush(2);
+    presence.flush(4);
+
+    expect(channel.states.length).toBe(sent);
   });
 
   it("carries the selection by kind, as plain strings", () => {

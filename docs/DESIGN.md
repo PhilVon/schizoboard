@@ -757,7 +757,7 @@ Three measures, all necessary:
 
 ### 7.4 Ephemeral state, and why physics isn't synced
 
-Cursors, selections, live drag poses, in-progress strokes and camera positions travel over an ephemeral awareness channel, not the document. They vanish on disconnect, which is correct.
+Cursors, selections, live drag poses and in-progress strokes travel over an ephemeral awareness channel, not the document. They vanish on disconnect, which is correct. Camera positions travelled here too and no longer do (T-226, Q-171) — nothing drew them and the seeder they were published for does not exist.
 
 **Rope state is never synced at all**, and this is the key scaling decision. A segment with fixed endpoints, a fixed rest length, gravity and damping has a unique stable attractor — the catenary. Replicate the *inputs* — pin positions, slack, topology — and every client independently converges to the same visible result within a fraction of a second. Consistency by convergence rather than by replication.
 
@@ -794,7 +794,7 @@ A transport-agnostic provider interface, implementing the y-websocket protocol, 
 
 Multiple providers attach simultaneously — disk, LAN, relay — and deduplicate for free.
 
-Assets move as a side channel on the same connection: peers advertise what they hold, request what they need, and transfer in verified chunks, prioritised by what's near each peer's viewport. Since peers broadcast their camera, a seeder can push what someone is about to look at before they ask.
+Assets move as a side channel on the same connection: peers advertise what they hold, request what they need, and transfer in verified chunks, prioritised by what's near the *asking* peer's own viewport — a request carries its priority, and a holder serves what it is asked for in the order it was asked. Pushing what someone is about to look at before they ask would be a second direction of travel and is not built (T-226, Q-171); the camera that would have driven it is no longer on the wire.
 
 **The tradeoff, stated plainly:** we own uptime, authentication and NAT traversal, and in LAN mode the hosting peer has to stay online. In exchange: no vendor dependency, no per-user cost, genuine offline-first operation, one protocol to debug, and a relay that doubles as the asset seed — which is the part that's actually hard.
 

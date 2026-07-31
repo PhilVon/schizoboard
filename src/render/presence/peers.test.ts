@@ -6,7 +6,6 @@ import { Peers, readPeer, UNKNOWN_COLOR } from "@/render/presence/peers";
 function state(over: Record<string, unknown> = {}): Record<string, unknown> {
   return {
     user: { id: "7", name: "Blue peer", color: "#2c5aa8" },
-    cam: { x: 0, y: 0, zoom: 1 },
     cursor: { x: 100, y: 50, tool: "select" },
     selection: { items: [], strings: [], pins: [] },
     grab: null,
