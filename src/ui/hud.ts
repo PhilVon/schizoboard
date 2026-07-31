@@ -115,14 +115,29 @@ export class Hud {
   private readonly el: HTMLDivElement;
   private readonly loop: FrameLoop;
   private readonly stats: () => HudStats;
+  /**
+   * Which `platform/` implementation is behind the native calls — `tauri` or
+   * `mock`.
+   *
+   * It used to be the first clause of the hint line, which was the wrong place
+   * for it twice over: that line is now a per-tool readout and this is not a
+   * gesture, and it is a diagnostic, which is what this panel is for. Nobody
+   * reading "drag to move" needed to know, and anybody wondering why a file
+   * dialog did nothing needed it here beside the frame timings.
+   *
+   * Constructor-time and never re-read: the shell a window booted into is not
+   * something that changes under it.
+   */
+  private readonly platform: string;
   private readonly smoothed = new Float32Array(PHASES.length);
   private lastPaint = 0;
   private domNodes = 0;
   private readonly disposers: (() => void)[] = [];
 
-  constructor(host: HTMLElement, loop: FrameLoop, stats: () => HudStats) {
+  constructor(host: HTMLElement, loop: FrameLoop, stats: () => HudStats, platform: string) {
     this.loop = loop;
     this.stats = stats;
+    this.platform = platform;
 
     this.el = document.createElement("div");
     this.el.className = "hud";
@@ -175,7 +190,8 @@ export class Hud {
 
     const rows: string[] = [];
     rows.push(
-      `<div class="hud-head"><b>${frameMs.toFixed(2)}</b> ms &nbsp;<span>${fps.toFixed(0)} fps</span></div>`,
+      `<div class="hud-head"><b>${frameMs.toFixed(2)}</b> ms &nbsp;` +
+        `<span>${fps.toFixed(0)} fps</span> &nbsp;<span>${this.platform}</span></div>`,
     );
     for (let i = 0; i < PHASES.length; i++) {
       const ms = this.smoothed[i]!;

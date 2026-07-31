@@ -115,9 +115,12 @@ import { PinTool } from "@/state/tools/pin";
 import { isScissors, stringAt } from "@/state/tools/frame";
 import { SelectTool } from "@/state/tools/select";
 import { StringTool } from "@/state/tools/string";
-import type { BoardWriter, WritePose } from "@/state/tools/tool";
+import type { BoardWriter, Tool, WritePose } from "@/state/tools/tool";
 import { boardMenuRows, itemMenuRows, penMenuRows, pinMenuRows, stringMenuRows } from "@/ui/boardmenu";
 import { Hud, type HudStats } from "@/ui/hud";
+import { RAIL, Toolbar } from "@/ui/toolbar";
+import type { BoardStatus } from "@/ui/toolhint";
+import { ToolInfo } from "@/ui/toolinfo";
 import { Flash } from "@/ui/flash";
 import { Notice } from "@/ui/notice";
 import { SearchField } from "@/ui/search";
@@ -1209,6 +1212,48 @@ async function boot(): Promise<void> {
   });
 
   /**
+   * The seven tools of the drawer, paired with the instances they name.
+   *
+   * One list, two readers: the keydown listener below looks up by `Key${key}`,
+   * and `ui/toolbar.ts` draws the same seven in the same order from its own
+   * `RAIL`, which is where the letters and the glyphs live. Before this there
+   * were two places a tool's letter was written down and nothing stopping them
+   * disagreeing — which is a bug that would show as the rail lighting the wrong
+   * button, and would survive every test in the project.
+   *
+   * The `Shift+E` smudge is deliberately not in here. It is not one of the
+   * seven (D-44), it has no button, and its key is the only one carrying a
+   * modifier — so it stays a branch of the listener rather than a row that
+   * would have to be filtered out of the drawer.
+   */
+  const BY_ID: Readonly<Record<string, Tool>> = {
+    [select.id]: select,
+    [pinTool.id]: pinTool,
+    [stringTool.id]: stringTool,
+    [note.id]: note,
+    [marker.id]: marker,
+    [highlighter.id]: highlighter,
+    [eraser.id]: eraser,
+  };
+  const RAIL_TOOLS = RAIL.map(({ id, key }) => {
+    const tool = BY_ID[id];
+    // A rail id with no tool behind it is a wiring mistake, and a silent one:
+    // the button would draw, take a click and do nothing at all. Keyed off the
+    // tools' own `id` fields above rather than off string literals, so this can
+    // only fire if `ui/toolbar.ts` names a tool that does not exist.
+    if (!tool) throw new Error(`[tools] the rail names "${id}", which is not a tool`);
+    return { id, key, tool };
+  });
+
+  /** What a click on the rail, or a press of a tool letter, ends up doing. */
+  const pickTool = (tool: Tool): void => {
+    // Queued for the same reason `onDone` is: switching cancels the outgoing
+    // tool's gesture, which touches the scene — and a DOM event listener is the
+    // one place that must not happen.
+    queued.push(() => tools.setTool(tool));
+  };
+
+  /**
    * Picking a tool (DESIGN section 3.9).
    *
    * All eight of DESIGN section 3.5's rows, `E` and `Shift+E` included.
@@ -1219,33 +1264,16 @@ async function boot(): Promise<void> {
   window.addEventListener("keydown", (e) => {
     if (e.ctrlKey || e.metaKey || e.altKey || e.repeat) return;
     if (isTextTarget(e.target)) return;
+    // The one key with a modifier on it. `E` takes whole records away and
+    // `Shift+E` rubs part of one out — two different tools, and DESIGN section
+    // 3.5 lists them as two rows of the same table.
     const next =
-      e.code === "KeyV"
-        ? select
-        : e.code === "KeyN"
-          ? note
-          : e.code === "KeyP"
-            ? pinTool
-            : e.code === "KeyS"
-              ? stringTool
-              : e.code === "KeyM"
-                ? marker
-                : e.code === "KeyH"
-                  ? highlighter
-                  : e.code === "KeyE"
-                    ? // The one key with a modifier on it. `E` takes whole
-                      // records away and `Shift+E` rubs part of one out — two
-                      // different tools, and DESIGN section 3.5 lists them as
-                      // two rows of the same table.
-                      e.shiftKey
-                      ? smudge
-                      : eraser
-                    : null;
+      e.code === "KeyE" && e.shiftKey
+        ? smudge
+        : (RAIL_TOOLS.find((row) => e.code === `Key${row.key}`)?.tool ?? null);
     if (!next) return;
     e.preventDefault();
-    // Queued for the same reason `onDone` is: switching cancels the outgoing
-    // tool's gesture, which touches the scene.
-    queued.push(() => tools.setTool(next));
+    pickTool(next);
   });
 
   /**
@@ -2040,7 +2068,7 @@ async function boot(): Promise<void> {
   });
   await paste.attach();
 
-  const hud = new Hud(world.layers.ui, loop, () => stats());
+  const hud = new Hud(world.layers.ui, loop, () => stats(), native.kind);
   /**
    * The board-level half of DESIGN 7.5 — how many photographs nobody here has,
    * and whose they are. Silent, and touching no DOM at all, until there is one.
@@ -2053,6 +2081,51 @@ async function boot(): Promise<void> {
    * the board, so it is the first that needs telling.
    */
   const flash = new Flash(world.layers.ui);
+  /**
+   * The tool drawer and the tool info bar — Phase 10, D-43.
+   *
+   * Until these, every tool on this board was reachable only from the keyboard
+   * and nothing on screen said which one you were holding. That held while the
+   * board was being built by the person who wrote the key map, and stops holding
+   * the moment somebody else has to find their way in.
+   *
+   * The drawer reports and does not decide: a click arrives here as an id and
+   * goes through `pickTool`, which is the same queue a keystroke uses, because
+   * `setTool` cancels the outgoing gesture and touches the scene.
+   *
+   * Whether it is open is a fact about this *machine* rather than about the
+   * board (`app/prefs.ts`), so it is read at construction and written back on
+   * the handle — the panel itself never touches storage, since `ui/` imports
+   * nothing from `app/`.
+   */
+  const drawer = new Toolbar(world.layers.ui, {
+    open: prefs.toolbar(),
+    pick: (id) => {
+      const row = RAIL_TOOLS.find((each) => each.id === id);
+      if (row) pickTool(row.tool);
+    },
+    toggled: (open) => prefs.setToolbar(open),
+  });
+  const toolinfo = new ToolInfo(world.layers.ui);
+  /**
+   * What the info bar has to say about the board itself, rather than about the
+   * tool — the two sentences that used to be branches of `hintText`.
+   *
+   * Rebuilt on the two occasions it can change rather than on every frame: it
+   * is an object, `sync` runs sixty times a second, and a fresh one per frame
+   * would be an allocation for a value that is the same for whole sessions.
+   * `readOnly` is a `let` because a peer can seal this board mid-session
+   * (T-224), which is the one thing that moves it after boot.
+   */
+  let boardStatus: BoardStatus = {};
+  const restateBoard = (): void => {
+    boardStatus = readOnly
+      ? { sealed: { boardVersion: boardSchemaVersion(board), buildVersion: SCHEMA_VERSION } }
+      : persistence.readOnly
+        ? { unsaved: true }
+        : {};
+  };
+  restateBoard();
   /**
    * And now the store has somewhere to complain to — see `trouble` at the top
    * of `boot`.
@@ -3088,6 +3161,22 @@ async function boot(): Promise<void> {
       search,
     );
     hud.update(frame.now);
+    /**
+     * The drawer and the bar, in the phase the rest of the chrome repaints in.
+     *
+     * Both are asked every frame and both write DOM only when their answer has
+     * changed — the drawer when the tool does, the bar when the tool or the set
+     * of held keys does. That is what lets the tool be read here rather than
+     * pushed from `setTool`: a tool picked by keystroke, by rail click, or by a
+     * one-shot tool handing the board back all arrive the same way, and none of
+     * them has to remember to tell the chrome.
+     *
+     * `tools.held` is the same set `applyCursor` reads through `modifier()` for
+     * the scissors cursor, so the pointer and the bar cannot disagree about
+     * whether `Ctrl`+`Alt` is down.
+     */
+    drawer.sync(tools.current.id);
+    toolinfo.sync(tools.current.hint, tools.held, boardStatus);
     if (missing.count > 0 && frame.now - noticeSweptAt > NOTICE_SWEEP_MS) {
       noticeSweptAt = frame.now;
       // An item wearing a missing photograph can just be deleted, and nothing
@@ -3497,70 +3586,20 @@ async function boot(): Promise<void> {
     });
   }, ASSET_SWEEP_DELAY_MS);
 
-  const hint = document.createElement("div");
-  hint.className = "hint";
-  /**
-   * A function rather than a string because there are two boards it can be
-   * describing and the second can arrive after this line has run — a peer
-   * raising `meta.schemaVersion` seals the document mid-session (T-224), and
-   * the standing sentence has to change with it.
-   *
-   * The read-only line **replaces** the gesture list rather than prefixing it,
-   * which is what makes it different from the not-being-saved line above. That
-   * board still takes every gesture in the list and merely fails to keep them.
-   * This one takes none of them, and a help bar reading *drag to move · Delete
-   * removes* on a board that does neither is worse than no help bar: the first
-   * thing somebody does is test one of them, and the board says nothing back.
-   * What is left is every verb that still works — the camera, the search, and
-   * the exports, which are the whole of what you can do with a board you are
-   * only allowed to look at.
-   */
-  const hintText = (): string => {
-    if (readOnly) {
-      return (
-        `THIS BOARD WAS MADE BY A NEWER VERSION — it is schema ${boardSchemaVersion(board)} ` +
-        `and this build reads ${SCHEMA_VERSION}, so it is open to look at and not to change. ` +
-        `Nothing has been altered or thrown away. · ` +
-        `space+drag pans · Ctrl+0 fit · F frame · ` +
-        `Ctrl+F finds and flies you there, Enter for the next · ` +
-        `Ctrl+C copies · right-click the cork to export · \` for the HUD`
-      );
-    }
-    return (
-      (persistence.readOnly
-        ? "THIS BOARD IS NOT BEING SAVED — the document on disk could not be read, " +
-          "and is being left alone rather than written over. See the console. · "
-        : "") + hintKeys()
-    );
-  };
-  const hintKeys = (): string =>
-    `platform: ${native.kind} · paste a picture or some text, or drop a file in · ` +
-    `N then click for a blank sheet · P then click for a pin · V back to select · ` +
-    `drag a pin to move it, onto an item to parent it, Ctrl to keep it put · ` +
-    `Alt+click a pin removes it · Alt+drag pulls a new string out of one · ` +
-    `drag the middle of a string to pull a new pin out of it, click it to select · ` +
-    `right-click a string for its menu · M or H to draw, right-click for ink · ` +
-    (invite === null ? "" : `right-click the cork to copy an invite link · `) +
-    `E rubs a whole stroke out and Shift+E smudges part of one away · ` +
-    `[ and ] size the nib, Ctrl at pen-down means the cork · ` +
-    `drag to move · drag the handle or R+drag to rotate · drag a note's edge to resize · ` +
-    `drag the cork to marquee · Delete removes · ` +
-    `Ctrl+Z undoes · space+drag pans · Ctrl+0 fit · F frame · ` +
-    `Ctrl+F finds and flies you there, Enter for the next · \` for the HUD`;
-  hint.textContent = hintText();
-  world.layers.ui.append(hint);
 
   /**
    * What a seal that lands *now* has to do, over and above what `sealIfFuture`
    * has already done to the document.
    *
    * Only ever runs for the mid-session case: at boot this is still null when
-   * the check happens, which is exactly right — the hint is built from the
-   * answer a few lines above, and a flash announcing a board you have not seen
-   * yet is news about nothing.
+   * the check happens, which is exactly right — `restateBoard` has already read
+   * the answer, and a flash announcing a board you have not seen yet is news
+   * about nothing.
    */
   onSealed = () => {
-    hint.textContent = hintText();
+    // The info bar reads this object once a frame, so restating it is the whole
+    // of what the bar needs — there is no sentence here to rewrite any more.
+    restateBoard();
     // A stroke half drawn, a marquee half dragged. Its pen-up will never
     // arrive, because the machine has stopped taking input.
     tools.abandon();

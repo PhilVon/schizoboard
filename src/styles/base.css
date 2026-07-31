@@ -183,10 +183,18 @@ body {
 
 /* --- dev HUD, docs/DESIGN.md section 9.5 ---------------------------------- */
 
+/*
+ * `pointer-events: none` is a repair, not tidiness (T-250). `notice.ts`,
+ * `flash.ts` and `boardmenu.ts` each already say in prose that the dev HUD is
+ * inert and cites it as the reason they are - and it never has been. It is a
+ * 232px readout in the corner a right-click on a photograph lands in, and a
+ * press that lands in it looks exactly like the application ignoring you.
+ */
 .hud {
   position: absolute;
   top: 12px;
   right: 12px;
+  pointer-events: none;
   min-width: 232px;
   padding: 9px 11px 10px;
   border-radius: 7px;
@@ -272,7 +280,7 @@ body {
   display: flex;
   flex-direction: column;
   width: 300px;
-  /* Clear of the help bar, which runs the full width of the bottom. */
+  /* Clear of the info bar in the corner below it. */
   max-height: calc(100vh - 96px);
   padding: 9px 11px 10px;
   border-radius: 7px;
@@ -818,24 +826,11 @@ body {
   opacity: 1;
 }
 
-/* --- phase-0 scaffolding, removed once items land (T-24) ------------------- */
-
-.hint {
-  position: absolute;
-  left: 14px;
-  bottom: 12px;
-  font-family: var(--ui-mono);
-  font-size: 11px;
-  color: rgba(232, 222, 210, 0.5);
-  text-shadow: 0 1px 2px rgba(var(--shadow-warm), 0.6);
-}
-
-
 /* --- the missing-photograph notice, DESIGN 7.5 ----------------------------- */
 
 /*
  * Top left, which is the one corner of this board nothing else uses: the dev
- * HUD is top right and the hint line is bottom left.
+ * HUD is top right and the tool info bar is bottom left.
  *
  * `pointer-events: none` is load-bearing rather than tidy. Two overlays on this
  * board have already swallowed board presses, and each read as the application
@@ -887,7 +882,7 @@ body {
 
 /*
  * Bottom right, the one corner nothing else uses: the notice is top left, the
- * dev HUD top right, the hint line bottom left.
+ * dev HUD top right, the tool info bar bottom left.
  *
  * The same slip of paper as the notice, because it is the same board and the
  * same argument - written on something rather than floating over the cork. It
@@ -925,8 +920,8 @@ body {
 /* --- the search field, DESIGN 3.7 ----------------------------------------- */
 
 /*
- * Top centre, the last free position: notice top left, HUD top right, hint line
- * bottom left, confirmation bottom right. Centre rather than a fifth corner
+ * Top centre, the last free position: notice top left, HUD top right, the tool
+ * info bar bottom left, confirmation bottom right. Centre rather than a fifth corner
  * because this is the only one of the five you asked for and the only one
  * looking back at you.
  *
@@ -1010,11 +1005,12 @@ body {
  * document exactly as it stands - so everything on screen that is not the board
  * ends up in the file. That is not a hypothesis: the first PDF this project
  * produced had the dev HUD in it, fps counter and doc size, and the whole hint
- * line across the bottom.
+ * line across the bottom - the line the tool info bar has since replaced, and
+ * which took its place in this list.
  *
  * A stylesheet rather than a JavaScript toggle, and the reason is failure rather
  * than tidiness. A toggle has to be undone, and a print that throws between the
- * two leaves the user looking at a board with no HUD, no hint line and no way to
+ * two leaves the user looking at a board with no HUD, no drawer and no way to
  * know why. `@media print` cannot be left half-applied.
  *
  * `!important` because two of these carry inline styles - the menu is positioned
@@ -1024,7 +1020,6 @@ body {
 @media print {
   /* Chrome. None of it is the board. */
   .hud,
-  .hint,
   .toolbar,
   .toolinfo,
   .notice,
