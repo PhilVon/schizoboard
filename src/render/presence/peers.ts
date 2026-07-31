@@ -1,8 +1,8 @@
 /**
  * Everybody else, as far as this board is concerned.
  *
- * > Cursors, selections, live drag poses, in-progress strokes and camera
- * > positions travel over an ephemeral awareness channel, not the document.
+ * > Cursors, selections, live drag poses and in-progress strokes travel over an
+ * > ephemeral awareness channel, not the document.
  * > — docs/DESIGN.md section 7
  *
  * `state/presence.ts` is the publishing half of that sentence and this is the
@@ -24,10 +24,13 @@
  *
  * ## What is deliberately not read
  *
- * `cam` and `cursor.tool` are both published and neither is drawn. `cam` is for
- * the asset seeder (DATA-MODEL section 9) and belongs to whichever task builds
- * one; a tool badge on a remote cursor is a design decision nobody has made. A
- * reader that parsed them anyway would be claiming they are used.
+ * `cursor.tool` is published and never drawn: a tool badge on a remote cursor is
+ * a design decision nobody has made, and a reader that parsed it anyway would be
+ * claiming it is used. `cam` used to be the other name on this list — three
+ * consumers read remote state and not one touched it — and it is no longer
+ * published at all (T-226, Q-171). It was on the wire for an asset seeder that
+ * would have to be built before the field could be read, so the field went and
+ * the sentence justifying it went with it.
  *
  * ## The cursor is smoothed, and the item poses are not smoothed *here*
  *

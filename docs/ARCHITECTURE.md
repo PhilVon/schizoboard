@@ -301,7 +301,7 @@ Rust does chunking, verification and the store commit. The frontend only orchest
 
 **The relay routes these; it does not answer them.** Peers trade with each other over the same connection, addressed by Yjs client id, and the relay substitutes the sender's id so it cannot be forged. An always-seeding peer is the identical binary running the *application*, with the asset store it already has — not the relay, which holds no bytes and would have to do file I/O under the lock every other peer's frames queue behind. D-28 has the argument; `peer_want` is gone with it, because the queue cannot live in Rust when the socket belongs to the webview.
 
-**Fetch policy is lazy and prioritised.** An asset whose item is in or near the viewport is high priority; everything else backfills at low priority with bounded concurrency. Since peers broadcast their camera over awareness, a seeder can push what someone is about to look at.
+**Fetch policy is lazy and prioritised.** An asset whose item is in or near the viewport is high priority; everything else backfills at low priority with bounded concurrency. The viewport in that sentence is always the *asking* peer's own: priority is set locally, travels on the `WANT`, and the exchange has no way to push — unsolicited `DATA` is dropped, so a holder only ever answers. A seeder that pushes what someone is about to look at would need that guard relaxed and an offer path built, and the camera field that would have driven it came off awareness under T-226 (Q-171).
 
 **Missing is a render state, not an error** — `unknown → requesting → transferring → ready | unavailable` — and the item stays fully usable throughout (§7.5 of `DESIGN.md`).
 

@@ -31,6 +31,15 @@
  * `impulse` from section 9 is absent because the work that produces it has not
  * happened. It adds its own field and its own test — `locks` did in T-130, and
  * `wet` in T-168.
+ *
+ * `cam` was here and is gone (T-226, Q-171). It was published every other frame
+ * and read by nobody: the one sentence justifying its place on the wire was that
+ * a seeding peer could push assets a collaborator is about to look at, and no
+ * such path exists — `crdt/sync/exchange.ts` is pull-only by construction and
+ * drops unsolicited `DATA` outright, so the offer would have to be built before
+ * the field could be consumed. Three numbers every other frame were never the
+ * cost; a stated justification that is not true was. Putting it back is this
+ * comment in reverse, and belongs to whichever task builds the offer path.
  */
 
 import type { WetStroke } from "@/lib/ink";
@@ -44,18 +53,6 @@ export interface PresenceUser {
   name: string;
   /** CSS colour. One per peer, so cursors and chrome can be told apart. */
   color: string;
-}
-
-/**
- * Where they are looking.
- *
- * > `cam` earns its place — it lets a seeding peer push assets a collaborator
- * > is about to look at, before they ask. — section 9
- */
-export interface PresenceCam {
-  x: number;
-  y: number;
-  zoom: number;
 }
 
 export interface PresenceCursor {
@@ -175,7 +172,6 @@ export interface PresenceLock {
 
 export interface PresenceState {
   user: PresenceUser;
-  cam: PresenceCam | null;
   cursor: PresenceCursor | null;
   selection: PresenceSelection;
   grab: PresenceGrab | null;
@@ -241,11 +237,6 @@ function round(value: number): number {
   return Math.round(value);
 }
 
-/** Zoom is a multiplier, so it needs its own precision. */
-function roundZoom(value: number): number {
-  return Math.round(value * 1000) / 1000;
-}
-
 /**
  * Radians. A ten-thousandth is a third of an arcminute, which across a
  * three-hundred-unit photograph is a twentieth of a board unit at the corner —
@@ -292,7 +283,6 @@ export class Presence {
   private readonly everyNthFrame: number;
 
   /** Last published, so an unchanged frame costs a comparison and no message. */
-  private cam: PresenceCam | null = null;
   private cursor: PresenceCursor | null = null;
   private selected: PresenceSelection = { items: [], strings: [], pins: [] };
   /**
@@ -496,11 +486,9 @@ export class Presence {
     if (this.stopped) return;
     if (frameIndex % this.everyNthFrame !== 0) return;
 
-    const cam = this.readCamera();
     const cursor = this.pointer;
-    if (this.published && !this.changed(cam, cursor)) return;
+    if (this.published && !this.changed(cursor)) return;
 
-    this.cam = cam;
     this.cursor = cursor;
     this.selected = this.selection.snapshot();
     this.selectionVersion = this.selection.version;
@@ -558,7 +546,6 @@ export class Presence {
   private publish(): void {
     const state: PresenceState = {
       user: { id: this.user.id, name: this.user.name, color: this.user.color },
-      cam: this.cam === null ? null : { x: this.cam.x, y: this.cam.y, zoom: this.cam.zoom },
       cursor:
         this.cursor === null
           ? null
@@ -594,21 +581,23 @@ export class Presence {
     this.channel.setLocalState(state as unknown as Record<string, unknown>);
   }
 
-  private readCamera(): PresenceCam {
-    return {
-      x: round(this.camera.x),
-      y: round(this.camera.y),
-      zoom: roundZoom(this.camera.zoom),
-    };
-  }
-
-  private changed(cam: PresenceCam, cursor: PresenceCursor | null): boolean {
-    if (this.cam === null) return true;
+  /**
+   * Called only when something has already been published, which is what the
+   * first line used to be: `cam` was set on every flush, so `cam === null` was
+   * how a first publish announced itself. `published` in [`flush`] says the same
+   * thing and says it about the message rather than about one field of it.
+   *
+   * **Panning and zooming are no longer changes.** With `cam` off the wire
+   * (T-226) there is nothing in this payload a camera move alters: `cursor` is
+   * in board coordinates, so a pan under a still hand moves the screen and not
+   * the position anybody draws. An idle peer scrolling around a board now says
+   * nothing at all, which is the whole of what removing the field bought.
+   */
+  private changed(cursor: PresenceCursor | null): boolean {
     // A release says nothing new about position and still has to go out.
     if (this.releasing) return true;
     if ((this.grab === null) !== (this.sent === null)) return true;
     if (this.grab !== null && this.sent !== null && grabMoved(this.grab, this.sent)) return true;
-    if (cam.x !== this.cam.x || cam.y !== this.cam.y || cam.zoom !== this.cam.zoom) return true;
     // Taking a segment and letting go of one are both changes, and neither
     // moves the cursor by a whole board unit on the frame it happens.
     if (!sameLock(this.lock, this.sentLock)) return true;

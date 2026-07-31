@@ -261,7 +261,6 @@ One state object per client, flushed at most every other frame. Never persisted;
 ```js
 {
   user:      { id, name, color },
-  cam:       { x, y, zoom },
   cursor:    { x, y, tool },
   selection: { items: [...], strings: [...], pins: [...] },
   grab:      null | { kind, ids, pose, seq, t, phase },
@@ -274,7 +273,9 @@ One state object per client, flushed at most every other frame. Never persisted;
 
 **`impulse` is gone.** This list carried `[ { kind, id, wx, wy, ix, iy, t } ]` for the pluck — a peer's tug on a string, sent so the other end rang too. The pluck was removed under T-148 and D-24 (accepted, Q-53): the exact chain solve made the rope four times stiffer, so the same kick bought a fifth of the swing and turned round inside one frame, which is a shimmer rather than a travelling wave. `verlet.ts`'s `nudge` was the only impulse primitive on the board and the pluck was its only caller, so there is nothing left that would produce this field.
 
-**`cam` earns its place** — it lets a seeding peer push assets a collaborator is about to look at, before they ask. It is published and parsed, and **nothing consumes it yet**: the asset exchange is pull-only by construction, with no unsolicited-DATA path, so the one sentence justifying this field's place on the wire is so far unredeemed. That is T-226 rather than a gap in this document.
+**`cam` is gone** (T-226, Q-171). It carried `{ x, y, zoom }` every other frame on one sentence: that it lets a seeding peer push assets a collaborator is about to look at, before they ask. Nothing ever consumed it. The asset exchange is *pull-only by construction* — `exchange.ts` drops unsolicited `DATA` outright, because a peer being helpful is a peer interleaving two streams into one file — so the push path is not a reader bolted onto this field but a new direction of travel plus a relaxed receive guard on the one boundary that guard exists for. Three numbers every other frame were never the cost; a stated justification that is not true was. Putting the field back is four lines, and belongs to whatever builds the offer path.
+
+**Panning is not a change.** With `cam` off it, nothing in this object moves when the camera does — `cursor` is in board coordinates — so a peer scrolling around a board with a still hand now publishes nothing at all.
 
 ### 9.1 Wet ink over a last-write-wins channel
 

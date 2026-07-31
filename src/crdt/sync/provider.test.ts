@@ -586,7 +586,10 @@ describe("presence", () => {
     const b = client(relay);
     await settle();
 
-    a.provider.awareness.setLocalState({ user: { name: "Phil" }, cam: { x: 0, y: 0, zoom: 1 } });
+    a.provider.awareness.setLocalState({
+      user: { name: "Phil" },
+      cursor: { x: 0, y: 0, tool: "select" },
+    });
     await settle();
 
     expect(b.provider.awareness.getStates().get(a.board.doc.clientID)).toMatchObject({
