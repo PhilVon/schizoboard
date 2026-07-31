@@ -2151,8 +2151,16 @@ mod tests {
     // -- composite fonts, which is most of what a modern producer emits ----
 
     /// A `Type0`/`Identity-H` font: two-byte codes, widths in the descendant's
-    /// `/W`, and characters only where a `/ToUnicode` says so. CID 1 is `H` and
-    /// CID 2 is `i`, at 500 and 750 thousandths.
+    /// `/W`, and characters only where a `/ToUnicode` says so. CID 65 is `Z`
+    /// and CID 66 is `Y`, at 500 and 750 thousandths.
+    ///
+    /// Those numbers are chosen, not arbitrary. Read correctly — two bytes at
+    /// a time, through the CMap — `<0041><0042>` is `ZY`. Read the way lopdf
+    /// falls back to when there is no `/ToUnicode`, one byte at a time through
+    /// a standard table, the same bytes come out as `AB`: wrong, and *not
+    /// empty*, which is the whole danger. A fixture whose CIDs were 1 and 2
+    /// would decode to nothing under either reading and would quietly test
+    /// neither.
     fn identity_h(builder: &mut Builder, with_to_unicode: bool) -> ObjectId {
         let descriptor = builder.doc.add_object(dictionary! {
             "Type" => "FontDescriptor",
@@ -2171,7 +2179,7 @@ mod tests {
             },
             "DW" => 1000,
             "W" => vec![
-                Object::Integer(1),
+                Object::Integer(0x41),
                 Object::Array(vec![Object::Integer(500), Object::Integer(750)]),
             ],
             "FontDescriptor" => descriptor,
@@ -2201,8 +2209,8 @@ mod tests {
                 "<0000> <FFFF>",
                 "endcodespacerange",
                 "2 beginbfchar",
-                "<0001> <0048>",
-                "<0002> <0069>",
+                "<0041> <005A>",
+                "<0042> <0059>",
                 "endbfchar",
                 "endcmap",
                 "CMapName currentdict /CMap defineresource pop",
@@ -2216,12 +2224,13 @@ mod tests {
         builder.doc.add_object(font)
     }
 
-    /// `Hi` in `Identity-H`: two bytes a glyph, and the glyphs are CIDs.
-    fn hi() -> Operation {
+    /// `ZY` in `Identity-H`: two bytes a glyph, and the glyphs are CIDs. Read
+    /// one byte at a time these same bytes say `AB`.
+    fn zy() -> Operation {
         Operation::new(
             "Tj",
             vec![Object::String(
-                vec![0x00, 0x01, 0x00, 0x02],
+                vec![0x00, 0x41, 0x00, 0x42],
                 lopdf::StringFormat::Hexadecimal,
             )],
         )
@@ -2237,7 +2246,7 @@ mod tests {
                 Operation::new("BT", vec![]),
                 Operation::new("Tf", vec!["F1".into(), 12.into()]),
                 Operation::new("Td", vec![72.into(), 720.into()]),
-                hi(),
+                zy(),
                 Operation::new("ET", vec![]),
             ]),
         );
@@ -2248,9 +2257,9 @@ mod tests {
 
         let runs = runs(&builder.finish());
         assert_eq!(runs.len(), 1);
-        // Four bytes, two glyphs. Read one byte at a time this is four
-        // characters of nothing at all.
-        assert_eq!(runs[0].text, "Hi");
+        // Four bytes, two glyphs, and the glyphs are not their own bytes.
+        // Read one byte at a time this would be `AB`.
+        assert_eq!(runs[0].text, "ZY");
         // The two widths out of `/W`, not the `/DW` default and not the
         // fallback — either of which would come out as 12 or 24 points.
         near(runs[0].width, (0.5 + 0.75) * 12.0);
@@ -2274,7 +2283,7 @@ mod tests {
                 Operation::new("BT", vec![]),
                 Operation::new("Tf", vec!["F1".into(), 12.into()]),
                 Operation::new("Td", vec![72.into(), 720.into()]),
-                hi(),
+                zy(),
                 Operation::new("ET", vec![]),
             ],
         );
@@ -2304,7 +2313,7 @@ mod tests {
                 Operation::new("BT", vec![]),
                 Operation::new("Tf", vec!["F1".into(), 12.into()]),
                 Operation::new("Td", vec![72.into(), 720.into()]),
-                hi(),
+                zy(),
                 Operation::new("ET", vec![]),
             ]),
         );
