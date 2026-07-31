@@ -97,16 +97,19 @@ Board
 
 ### 2.1 Items
 
-An item is a physical object lying on the board. Four archetypes, sharing one structure:
+An item is a physical object lying on the board. Three archetypes, sharing one structure:
 
 | Archetype | Created by | Looks like |
 |---|---|---|
 | **Polaroid** | Pasting or dropping an image | White frame, thick bottom border, handwritten caption area |
 | **Note** | Pasting text | Lined or plain paper, handwritten face, ragged or torn edge |
 | **Scrap** | The note tool with no text | Blank paper. Exists purely to be drawn on |
-| **Card** | Explicit creation | Index card, ruled, slightly stiffer paper |
 
 They differ only in styling and defaults. Every archetype can hold text, can hold ink, can hold an image, and can be pinned. A scrap is not a special type in the code — it's a note that happens to have no text yet, which is exactly what a blank piece of paper is.
+
+**There was a fourth row here, and it was struck on Q-179.** *Card — explicit creation — index card, ruled, slightly stiffer paper.* An index card is a **stock**, not an archetype: everything you can see about one comes from `paperStock: "index"` — the 20px ruling, the red margin, the die-cut edge at a third of a unit of rag, the colour — and every sheet on this board already offers that stock on the Paper strip of its right-click menu. What the `card` *type* bought on top of that was one line of code choosing that stock by default, which is not an archetype's worth of difference. It followed the scrap the paragraph above describes, and for the same reason.
+
+`card` stays in the schema's type union, and that is not an oversight. `readItem` rejects a type it does not know, so striking it would make a board that holds one lose the item rather than keep a sheet of paper — and a board somewhere does hold one. It renders as index stock, it cannot be made, and nothing in this document promises it.
 
 Items have a position, a rotation, an intrinsic size, and a z-order. They do **not** have a parent, a group, or a container. There is no nesting. Things are next to each other or they aren't.
 
@@ -217,7 +220,7 @@ Everything created this way gets **one pin**, placed at the top centre, and a sm
 
 ### 3.2 Moving things
 
-Drag an item to move it. Drag its rotation handle, or hold `R` and drag, to rotate. There is no resize handle on a polaroid — a photograph is the size it is — but notes, cards and scraps resize from their edges.
+Drag an item to move it. Drag its rotation handle, or hold `R` and drag, to rotate. There is no resize handle on a polaroid — a photograph is the size it is — but every sheet of paper resizes from its edges.
 
 Nothing snaps to anything. There is no grid, no alignment guide, no distribution tool. This is deliberate and it is not a missing feature.
 
@@ -425,9 +428,9 @@ Two strips go on as a pair, across the top or diagonally opposite, because two a
 
 **"Its own small shadow" is not a cast one.** Every other shadow in this application is an offset copy of a silhouette, and that is the shadow of something held *above* a surface — tape is the one object here stuck flat to one, and drawn that way it read as a plank lying across the corner. What tape has is a cross-section: a shine along the edge nearer the light and a hairline of its own thickness along the edge away from it, with nothing in between, because the middle is in contact. The light decides only which way up that profile is drawn.
 
-### 4.4 Notes, cards and scraps
+### 4.4 Notes and scraps
 
-Paper stock varies: white, cream, yellow legal, graph, index card. Each has its own grain texture at low opacity, its own edge treatment, and its own slight colour variation across the sheet.
+Paper stock varies: white, cream, yellow legal, graph, index card. The index card is a stock here and nothing more — §2.1 records why it stopped being an archetype. Each has its own grain texture at low opacity, its own edge treatment, and its own slight colour variation across the sheet.
 
 Edges are the tell. A machine-cut rectangle reads as a UI element; a torn or slightly irregular edge reads as paper. Notes get a subtly ragged edge by default, generated from the item seed, and a "torn" style with a proper rough tear on one side.
 
