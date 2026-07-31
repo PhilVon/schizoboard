@@ -52,6 +52,7 @@
  * run of fewer than two stops has nothing to make and simply goes.
  */
 
+import { QuickPull } from "@/state/tools/quickpull";
 import type { Vec2 } from "@/state/camera";
 // The window and the slop are shared with `state/tools/machine.ts`, which flags
 // the second *press* of a double for the select tool — two answers to "was that
@@ -120,7 +121,18 @@ export class StringTool implements Tool {
     return points;
   }
 
+  /** `Alt` on a pin: the quick pull that belongs to no tool (DESIGN 3.4). */
+  private readonly pull = new QuickPull();
+
+  pullPreview(cursor: { x: number; y: number } | null): readonly { x: number; y: number }[] | null {
+    return this.pull.preview(cursor);
+  }
+
   handle(input: ToolInput, ctx: ToolContext): void {
+    // `Alt` on a pin is nobody's tool — DESIGN section 3.4's quick pull works
+    // "in any tool", and this is what that sentence costs each of them
+    // (`state/tools/quickpull.ts`, T-229).
+    if (this.pull.handle(input, ctx)) return;
     switch (input.kind) {
       case "up":
         this.onClick(input.at, ctx);
@@ -141,6 +153,9 @@ export class StringTool implements Tool {
   }
 
   cancel(ctx: ToolContext): void {
+    // A pull in flight belongs to this instance, and a tool switch would
+    // otherwise leave it holding a gesture whose release goes somewhere else.
+    this.pull.cancel();
     this.stops.length = 0;
     ctx.dirty.camera = true;
   }

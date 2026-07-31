@@ -585,4 +585,14 @@ export interface Tool {
   /** Abandon any gesture in progress and put the board back. Called when the
    *  tool is switched away from, and when the window loses focus. */
   cancel(ctx: ToolContext): void;
+  /**
+   * The string being pulled out of a pin right now, for the overlay to draw —
+   * `state/tools/quickpull.ts`.
+   *
+   * On the interface rather than on the select tool because the gesture is on
+   * every tool: "`Alt`+drag from a pin, **in any tool**" (DESIGN section 3.4).
+   * Optional only so that a tool written later is not obliged to hold one, and
+   * every tool that exists does.
+   */
+  pullPreview?(cursor: Vec2 | null): readonly Vec2[] | null;
 }

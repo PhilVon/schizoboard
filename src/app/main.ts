@@ -2782,7 +2782,9 @@ async function boot(): Promise<void> {
     }
     const loop = select.loopPreview(cursor);
     if (loop) return { points: loop, dashed: "all" };
-    const pull = select.pullPreview(cursor);
+    // Asked of whichever tool is active rather than of `select`, because the
+    // quick pull is every tool's — "Alt+drag from a pin, in any tool" (T-229).
+    const pull = tools.current.pullPreview?.(cursor);
     return pull ? { points: pull, dashed: "tail" } : null;
   };
 
