@@ -42,7 +42,15 @@ import {
   FRAME_BOTTOM,
   FRAME_SIDE,
 } from "@/lib/polaroid";
+import {
+  caseNumber,
+  pagesLabel,
+  runtimeLabel,
+  titleWorthWriting,
+  type AssetKind,
+} from "@/lib/objects";
 import { rotateIn, type Point } from "@/lib/rotate";
+import { valueAt } from "@/lib/seed";
 import { grainPosition, paperGrainUrl, stockBase, stockRuling } from "@/render/items/paper";
 import {
   faceOf,
@@ -197,7 +205,65 @@ export type AssetResolver = (sha256: string, screenPx: number) => AssetView;
  */
 export type FirstSight = (itemId: string) => boolean;
 
-type Archetype = "polaroid" | "paper";
+/**
+ * What the document says a file is — as distinct from [`AssetView`], which is
+ * what this machine can currently *show* of it.
+ *
+ * Two resolvers rather than one, and the split is not tidiness. Asking for a
+ * URL has a side effect: it is what tells the exchange an asset is wanted now
+ * (`app/main.ts`), so a second call to choose an archetype would be a second
+ * WANT for every object on the board. This one is a pure read of the asset
+ * record, which is also what lets it be asked *before* a view exists — the face
+ * is chosen from the mime (D-46 section 2), and the mime is in here.
+ *
+ * Every field is a fact a peer holding no bytes at all still has, with one
+ * deliberate exception. `title` is derived locally (Q-211): it is `""` on a
+ * machine that does not hold the file, and `""` until the answer comes back on
+ * one that does, which are the same state to a label and are both ordinary.
+ */
+export interface AssetFacts {
+  readonly kind: AssetKind;
+  /** The name the file arrived under, or `""` — the record's `origName`. */
+  readonly name: string;
+  /** What the file says it is called, once somebody has read it off the disk. */
+  readonly title: string;
+  /** Seconds, for a film or a recording. */
+  readonly duration: number | null;
+  /** Pages, for a document. */
+  readonly pages: number | null;
+}
+
+/** An item naming no asset, and a hash no record was ever written for. */
+export const NO_FACTS: AssetFacts = {
+  kind: "unknown",
+  name: "",
+  title: "",
+  duration: null,
+  pages: null,
+};
+
+/** What the document says about an asset. Pure — see [`AssetFacts`]. */
+export type AssetLookup = (sha256: string) => AssetFacts;
+
+/**
+ * The five faces.
+ *
+ * Three of them arrived together (T-267) and share one class, for the reason
+ * five paper stocks share `PaperView`: what differs between a folder, a tape and
+ * a cassette is furniture and colour, and what is the same is everything that
+ * makes them items — the shadow, the tape, the ink, the transform, the labels
+ * and the pooling. They are separate *archetypes* rather than one, so the pool
+ * hands a recycled node back to its own kind and a cassette never has to be
+ * dressed out of a folder's subtree.
+ */
+type Archetype = "polaroid" | "paper" | "folder" | "vhs" | "cassette";
+
+/** The three of them, as the one type that means "an object with a file in it". */
+type CaseArchetype = "folder" | "vhs" | "cassette";
+
+function isCase(archetype: Archetype): archetype is CaseArchetype {
+  return archetype === "folder" || archetype === "vhs" || archetype === "cassette";
+}
 
 /**
  * How many ink canvases may be re-rastered in one frame — see
@@ -210,8 +276,35 @@ type Archetype = "polaroid" | "paper";
  */
 const MAX_RASTERS_PER_FRAME = 3;
 
-function archetypeOf(type: string): Archetype {
-  return type === "polaroid" ? "polaroid" : "paper";
+/**
+ * Which face an item wears.
+ *
+ * > No new item types. The face is chosen from the asset's mime.
+ * > — D-46 section 2
+ *
+ * So this takes two arguments and not one, and the second is the whole of that
+ * sentence: the *type* separates a sheet of paper from a thing with a file
+ * behind it, and the file's *kind* separates the four things that can be. An
+ * item of type `polaroid` whose asset is a PDF is a manilla folder, and nothing
+ * in the document says "folder" anywhere.
+ *
+ * A photograph is the fallback rather than a case, which covers three states
+ * that are one state here: an item with no asset at all, an asset whose record
+ * has not arrived, and a mime this build has never heard of. All three are a
+ * frame around nothing, which is what a photograph with no bytes already is.
+ */
+function archetypeOf(type: string, kind: AssetKind): Archetype {
+  if (type !== "polaroid") return "paper";
+  switch (kind) {
+    case "document":
+      return "folder";
+    case "video":
+      return "vhs";
+    case "audio":
+      return "cassette";
+    default:
+      return "polaroid";
+  }
 }
 
 /**
@@ -267,7 +360,14 @@ interface View {
    * A boolean rather than the `Tier` itself because both views would otherwise
    * write the same `tier !== "full"` and there would be two places to be wrong.
    */
-  bind(cold: ItemCold, assetUrl: AssetResolver, screenPx: number, wear: number, plain: boolean): void;
+  bind(
+    cold: ItemCold,
+    facts: AssetFacts,
+    assetUrl: AssetResolver,
+    screenPx: number,
+    wear: number,
+    plain: boolean,
+  ): void;
   /** `lift` is the scene's carry transient, 0 at rest and 1 while carried. */
   transform(x: number, y: number, rot: number, w: number, h: number, lift: number): void;
   /**
@@ -477,6 +577,40 @@ const CORNER_ANCHOR: readonly (readonly [string, string])[] = [
   ["var(--edge-bl-x, 0px)", "calc(100% - var(--edge-bl-y, 0px))"],
 ];
 
+/**
+ * Take this frame's curl — shared by every view whose material bends.
+ *
+ * Quantised to twentieths, and that is the same decision `--develop` took for
+ * the same reason: this is offered on every frame anything on the board moves,
+ * and a raw float would rewrite four custom properties per sheet per frame of
+ * every drag and every swing. A twentieth of the way through a shading this
+ * subtle is well under what the eye resolves.
+ *
+ * `written` is the caller's own record of what it last wrote, eight slots long —
+ * four curls and four faces. It is passed in rather than kept here because the
+ * whole point is that it is *per view*, and it is the reason this is a function
+ * and not eight property writes a frame.
+ */
+function writeCurl(
+  el: HTMLDivElement,
+  corners: Float32Array,
+  faces: Float32Array,
+  written: Float32Array,
+): void {
+  const n = CURL_PROPS.length;
+  for (let c = 0; c < n; c++) {
+    const curl = Math.round((corners[c] ?? 0) * 20) / 20;
+    if (curl !== written[c]) {
+      written[c] = curl;
+      el.style.setProperty(CURL_PROPS[c]!, curl.toFixed(2));
+    }
+    const face = Math.round((faces[c] ?? 0) * 20) / 20;
+    if (face === written[n + c]) continue;
+    written[n + c] = face;
+    el.style.setProperty(FACE_PROPS[c]!, face.toFixed(2));
+  }
+}
+
 /** Shared by both views: position, rotation, size, and the carry. */
 function writeTransform(
   el: HTMLDivElement,
@@ -631,7 +765,14 @@ class PolaroidView implements View {
     this.el.append(this.shadow.el, this.frame, ...this.tape.nodes);
   }
 
-  bind(cold: ItemCold, assetUrl: AssetResolver, screenPx: number, wear: number, plain: boolean): void {
+  bind(
+    cold: ItemCold,
+    _facts: AssetFacts,
+    assetUrl: AssetResolver,
+    screenPx: number,
+    wear: number,
+    plain: boolean,
+  ): void {
     // Two inputs, so two guards. The binding mints a fresh cold record every
     // time the *document* changes and `setPose` leaves it alone, so identity
     // covers everything the document can say — that is what lets a drag skip
@@ -1108,7 +1249,14 @@ class PaperView implements View {
     this.el.append(this.shadow.el, this.surface, ...this.tape.nodes);
   }
 
-  bind(cold: ItemCold, _assetUrl: AssetResolver, _screenPx: number, wear: number, plain: boolean): void {
+  bind(
+    cold: ItemCold,
+    _facts: AssetFacts,
+    _assetUrl: AssetResolver,
+    _screenPx: number,
+    wear: number,
+    plain: boolean,
+  ): void {
     // Quantised to hundredths, so the clock ticking is a rewrite of six custom
     // properties on the sheets whose wear actually moved rather than on every
     // sheet on the board.
@@ -1225,28 +1373,8 @@ class PaperView implements View {
     }
   }
 
-  /**
-   * Take this frame's curl.
-   *
-   * Quantised to twentieths, and that is the same decision `--develop` took for
-   * the same reason: this is offered on every frame anything on the board moves,
-   * and a raw float would rewrite four custom properties per sheet per frame of
-   * every drag and every swing. A twentieth of the way through a shading this
-   * subtle is well under what the eye resolves.
-   */
   setCurl(corners: Float32Array, faces: Float32Array): void {
-    const n = CURL_PROPS.length;
-    for (let c = 0; c < n; c++) {
-      const curl = Math.round((corners[c] ?? 0) * 20) / 20;
-      if (curl !== this.written[c]) {
-        this.written[c] = curl;
-        this.el.style.setProperty(CURL_PROPS[c]!, curl.toFixed(2));
-      }
-      const face = Math.round((faces[c] ?? 0) * 20) / 20;
-      if (face === this.written[n + c]) continue;
-      this.written[n + c] = face;
-      this.el.style.setProperty(FACE_PROPS[c]!, face.toFixed(2));
-    }
+    writeCurl(this.el, corners, faces, this.written);
   }
 
   /**
@@ -1369,11 +1497,329 @@ class PaperView implements View {
   }
 }
 
+/**
+ * A manilla folder, a VHS cassette and a compact cassette — the three objects a
+ * file that is not a photograph becomes (D-46 section 1, T-267).
+ *
+ * ## One class, because they are not three problems
+ *
+ * > Each of them is an **item**, not a widget. [...] If any of the three needs a
+ * > special case in the renderer, the model is wrong. — D-46 section 1
+ *
+ * What actually differs between them is furniture: a tab, a pair of spool
+ * windows, a J-card. What does not differ is everything that makes an object an
+ * item — the shadow, the strips of tape, the ink canvas, the transform, the
+ * pooling, the caret, the labels and the ageing — and all of that is written
+ * once below. The furniture is built in the constructor, per kind, and never
+ * branched on again, so a bind and a transform run the same code for all three.
+ *
+ * The archetype is decided from the mime by [`archetypeOf`] and each kind has
+ * its own pool, so a recycled node is always a node of the right kind. That is
+ * what lets the constructor branch: after it, `data-kind` on the root is the
+ * only thing that varies, and `items.css` does the rest — the identical bargain
+ * `PaperView` takes with five paper stocks.
+ *
+ * ## What each material does, which is not the same thing
+ *
+ * A folder is paper: it curls at a lifted corner and it yellows all over. A
+ * cassette is polystyrene: it does neither, and its *label* is the part that
+ * ages (T-272 goes further with that). Refusing curl on the two plastic ones is
+ * a statement about the object rather than a gap, and it is the same statement
+ * `PolaroidView.setCurl` already makes about a print in a frame — the mechanism
+ * is offered to every view identically and each one answers for its material.
+ *
+ * ## What is written on them, and where it comes from
+ *
+ * Four lines, of which the document owns one:
+ *
+ *   - the **case number**, typed, from the file's own name (or its hash, for a
+ *     file that never had one) — `caseNumber`
+ *   - the **runtime** or the **page count**, typed, off the asset record, and so
+ *     legible on a machine that will never hold a byte of the file (AC-668)
+ *   - the **title**, in the board's hand, when the file says what it is called
+ *     and that is worth writing — `titleWorthWriting`, and D-47 for why that is
+ *     a real question
+ *   - the **caption**, in the same hand, which is the item's own text and the
+ *     only one of the four anybody can edit. People write on tapes.
+ */
+class CaseView implements View {
+  readonly archetype: CaseArchetype;
+  readonly el: HTMLDivElement;
+  readonly ink: ItemInk;
+  /**
+   * Never, for all three. A folder could be dog-eared and is not: the fold is a
+   * sheet's, and `sheetEdgeOf` cuts it out of a *silhouette* these objects do
+   * not have. Nothing here has a torn edge to fold back.
+   */
+  readonly folded = -1;
+
+  private readonly shadow = new ShadowNode();
+  private readonly tape = new TapeSet();
+  /** The object itself. The shadow is outside it; everything else is inside. */
+  private readonly body: HTMLDivElement;
+  /** The one part of a tape or a cassette that is paper, and so the one that
+   *  ages. On a folder this is the folder. */
+  private readonly ages: HTMLDivElement;
+  private readonly number: HTMLDivElement;
+  private readonly meta: HTMLDivElement;
+  private readonly title: HTMLDivElement;
+  private readonly caption: HTMLDivElement;
+  /** The bend at a lifted corner — a folder's only, and null on the plastic. */
+  private readonly bend: HTMLDivElement | null;
+  /** The fibre in the card, likewise: a cassette label is coated and smooth. */
+  private readonly grain: HTMLDivElement | null;
+
+  private boundCold: ItemCold | null = null;
+  /**
+   * Everything off the asset record that reaches a label, as one string.
+   *
+   * A digest rather than five compared fields, because the guard runs on every
+   * bind and the record changes about as often as never. `""` is the sentinel
+   * and cannot collide: a digest is five values joined by spaces, so the
+   * shortest one this can ever hold is four spaces.
+   */
+  private boundFacts = "";
+  private boundWear = -1;
+  private boundPlain = false;
+  /** The width the per-item type sizes were written for. */
+  private sizedFor = -1;
+  private field: HTMLTextAreaElement | null = null;
+  private readonly written = new Float32Array(CURL_PROPS.length + FACE_PROPS.length).fill(-9);
+
+  constructor(archetype: CaseArchetype) {
+    this.archetype = archetype;
+    this.el = document.createElement("div");
+    this.el.className = "item item-case";
+    this.el.dataset["kind"] = archetype;
+    this.ink = new ItemInk(this.el);
+
+    this.body = div("case-body");
+    this.number = div("case-number");
+    this.meta = div("case-meta");
+    this.title = div("case-title");
+    this.caption = div("case-caption");
+
+    // The four text nodes are the same four on every kind; where they sit is
+    // not. A folder's case number is typed on the tab and a cassette's is on
+    // the label, which is a difference in what the object *is* rather than in
+    // what is being said, so it is a difference in parents and nothing else.
+    if (archetype === "folder") {
+      // The back panel's top edge, cut away except where the tab is. Its
+      // horizontal position is seeded in `bind`, because real folders come in
+      // left, centre and right cuts and a drawer of them is all three.
+      const tab = div("folder-tab");
+      tab.append(this.number);
+      // A sliver of what is inside, showing above the front panel. Two lines
+      // rather than one: a folder with a single sheet in it is a folder nobody
+      // has put anything in.
+      const sheets = div("folder-sheets");
+      const front = div("folder-front");
+      this.ages = front;
+      this.bend = div("paper-bend");
+      this.grain = div("case-grain");
+      // One shared tile for every folder on the board, generated once and
+      // memoised by stock. `cream` is the fibre nearest to buff card, and the
+      // per-item offset in `bind` is what stops a filing cabinet's worth of
+      // them being one texture repeated.
+      this.grain.style.backgroundImage = `url(${paperGrainUrl("cream")})`;
+      front.append(this.grain, this.meta, this.title, this.caption, this.bend);
+      this.body.append(sheets, tab, front);
+    } else {
+      // Both cassettes are a shell with a window into the transport and a paper
+      // label stuck on the front. The reels do not turn yet — that is T-268,
+      // which is about the transport being the position readout rather than
+      // about the object being drawn — so they are furniture here.
+      const shell = div("case-shell");
+      const window_ = div("case-window");
+      window_.append(div("case-reel is-left"), div("case-tape"), div("case-reel is-right"));
+      const label = div("case-label");
+      this.ages = label;
+      this.bend = null;
+      this.grain = null;
+      label.append(this.number, this.meta, this.title, this.caption);
+      this.body.append(shell, window_, label);
+    }
+
+    // Tape last, over the front of the object, exactly as on the other two.
+    this.el.append(this.shadow.el, this.body, ...this.tape.nodes);
+  }
+
+  bind(
+    cold: ItemCold,
+    facts: AssetFacts,
+    _assetUrl: AssetResolver,
+    _screenPx: number,
+    wear: number,
+    plain: boolean,
+  ): void {
+    const worn = Math.round(wear * 100);
+    if (worn !== this.boundWear) {
+      this.boundWear = worn;
+      this.paintAge(worn / 100);
+    }
+    // The asset record is the fourth input and it is the one that is *not* the
+    // cold item: a page count arrives when a peer writes the record, and the
+    // title arrives later still and from this machine's own disk (Q-211), and
+    // neither of those is a write to the item. Guarding on the cold identity
+    // alone would leave a folder saying nothing for the rest of the session.
+    const digest = `${facts.kind} ${facts.name} ${facts.title} ${facts.duration} ${facts.pages}`;
+    if (this.boundCold === cold && digest === this.boundFacts && plain === this.boundPlain) {
+      return;
+    }
+    this.boundCold = cold;
+    this.boundFacts = digest;
+    this.boundPlain = plain;
+
+    // Typed, and never in the hand: this is the name on the file, which is a
+    // thing that was printed rather than written. `caseNumber` says why the
+    // extension comes off and what a file with no name gets instead.
+    this.number.textContent = caseNumber(facts.name || null, cold.assetId ?? "");
+    this.meta.textContent =
+      this.archetype === "folder" ? pagesLabel(facts.pages) : runtimeLabel(facts.duration);
+    // In the hand, because the two hand-written lines are the two that came from
+    // a person: one of them from whoever made the document, one from whoever is
+    // looking at it. `titleWorthWriting` is what keeps the first from being the
+    // name of the design file this was printed out of (D-47).
+    writeHand(this.title, titleWorthWriting(facts.title, facts.name), cold.seed, plain);
+    writeHand(this.caption, cold.text, cold.seed, plain);
+    this.caption.classList.toggle("is-empty", cold.text.length === 0);
+
+    // Which of the three tab cuts this folder came out of the box as. A number
+    // rather than a class so the stylesheet can place it with one `calc`, and
+    // seeded so a drawer of case files is not a row of aligned tabs.
+    if (this.archetype === "folder") {
+      this.el.style.setProperty("--tab", String(valueAt(cold.seed, "tab", 0) < 0.34 ? 0 : valueAt(cold.seed, "tab", 0) < 0.67 ? 1 : 2));
+    }
+    // The grain's offset, so a wall of folders is not one texture repeated —
+    // the same trick, and the same function, as a sheet of paper's fibres.
+    if (this.grain) this.grain.style.backgroundPosition = grainPosition(cold.seed);
+  }
+
+  /**
+   * What the years have taken off it — and off *what* is the whole content of
+   * this method.
+   *
+   * A folder is paper all the way through, so the filter goes on the folder. A
+   * VHS is a polystyrene shell with a paper label stuck to it, and polystyrene
+   * does not go brown: the filter goes on the label alone, so a fifteen-year-old
+   * tape is a black tape with a yellowed label, which is what a fifteen-year-old
+   * tape is. `this.ages` is whichever of the two this kind decided in its
+   * constructor, so there is no branch here.
+   */
+  private paintAge(wear: number): void {
+    this.el.classList.toggle(IS_AGED, wear > 0);
+    if (wear > 0) this.el.style.setProperty("--age", wear.toFixed(2));
+    else this.el.style.removeProperty("--age");
+    this.ages.style.filter = wearFilter(wear);
+  }
+
+  transform(x: number, y: number, rot: number, w: number, h: number, lift: number): void {
+    if (w !== this.sizedFor) {
+      this.sizedFor = w;
+      // Every line of type on these objects is sized off the item's width, for
+      // the reason a polaroid's caption is: the object has one real-world size
+      // and the label on it is a fixed fraction of that, so a folder scaled up
+      // is a bigger folder rather than a folder with bigger writing on it.
+      this.number.style.fontSize = `${Math.max(6, w * NUMBER_SIZE).toFixed(1)}px`;
+      const body = `${Math.max(6, w * CASE_TEXT_SIZE).toFixed(1)}px`;
+      this.meta.style.fontSize = body;
+      this.title.style.fontSize = body;
+      this.caption.style.fontSize = body;
+      if (this.field) this.field.style.fontSize = body;
+    }
+    writeTransform(this.el, x, y, rot, w, h, lift);
+    setCarried(this.el, this.shadow, lift);
+    this.shadow.update(rot);
+    this.tape.update(rot);
+  }
+
+  /**
+   * A folder curls and the two cassettes do not.
+   *
+   * Not a special case — it is the same shape as `PolaroidView.setCurl`, which
+   * refuses for a print in a frame. A mechanism the layer offers every view
+   * identically, answered by each view for its own material: card bends,
+   * polystyrene does not.
+   */
+  setCurl(corners: Float32Array, faces: Float32Array): void {
+    if (this.bend === null) return;
+    writeCurl(this.el, corners, faces, this.written);
+  }
+
+  setTape(seed: number, corners: number): void {
+    this.tape.bind(seed, corners);
+  }
+
+  adopt(field: HTMLTextAreaElement | null): void {
+    if (field === null) {
+      this.el.classList.remove("is-editing");
+      this.field?.remove();
+      this.field = null;
+      return;
+    }
+    this.el.classList.add("is-editing");
+    // Idempotent — re-appending a focused node blurs it, and that blur is what
+    // closes the editor. Same three lines, same reason, as both other views.
+    if (this.field === field && field.parentNode === this.caption.parentNode) return;
+    this.field = field;
+    field.className = "item-field case-caption";
+    field.style.fontSize = this.caption.style.fontSize;
+    this.caption.parentNode?.appendChild(field);
+  }
+
+  release(): void {
+    clearHand(this.title);
+    clearHand(this.caption);
+    this.adopt(null);
+    this.boundCold = null;
+    // Belt and braces with the line above, and said plainly because a mutant
+    // that removed it survived: `boundCold = null` is already enough to force
+    // the next bind to paint, since the binding mints a fresh cold record for
+    // every item. This is here so that the *guard* and the *reset* name the same
+    // set of inputs — a later input added to one and forgotten in the other is
+    // how a pooled node comes back wearing the last object's case number.
+    this.boundFacts = "";
+    this.boundWear = -1;
+    this.written.fill(-9);
+    this.number.textContent = "";
+    this.meta.textContent = "";
+    this.el.classList.remove("is-lifted", IS_AGED);
+    this.el.style.removeProperty("--age");
+    this.el.style.removeProperty("--tab");
+    this.ages.style.removeProperty("filter");
+    for (const prop of [...CURL_PROPS, ...FACE_PROPS]) this.el.style.removeProperty(prop);
+    this.tape.release();
+    this.shadow.reset();
+    this.ink.release();
+  }
+}
+
+/** A `div` with a class on it, which is most of what a constructor here does. */
+function div(className: string): HTMLDivElement {
+  const el = document.createElement("div");
+  el.className = className;
+  return el;
+}
+
+/** The case number's size, as a fraction of the object's width. */
+const NUMBER_SIZE = 0.055;
+/** And every other line's, which is a little smaller than the number. */
+const CASE_TEXT_SIZE = 0.048;
+
 export class DomItemLayer implements ItemLayer {
   private readonly host: HTMLElement;
   private readonly assetUrl: AssetResolver;
+  /** What the document says an asset is — see [`AssetFacts`] for why this is a
+   *  second resolver rather than more fields on the first. */
+  private readonly assetFacts: AssetLookup;
   private readonly views = new Map<string, View>();
-  private readonly pool: Record<Archetype, View[]> = { polaroid: [], paper: [] };
+  private readonly pool: Record<Archetype, View[]> = {
+    polaroid: [],
+    paper: [],
+    folder: [],
+    vhs: [],
+    cassette: [],
+  };
 
   /**
    * The caret, when there is one (T-179). Null when the layer was built with no
@@ -1515,9 +1961,22 @@ export class DomItemLayer implements ItemLayer {
     return true;
   };
 
-  constructor(host: HTMLElement, assetUrl: AssetResolver, editor?: ItemEditorHooks) {
+  /**
+   * `assetFacts` defaults to answering [`NO_FACTS`], which draws every item with
+   * an asset as a photograph. That is the right answer for a caller with no
+   * document behind it — the spike rig, and most of the tests in this
+   * directory — and it fails loudly rather than quietly for one that needs it:
+   * an object that should be a folder comes up as a frame around nothing.
+   */
+  constructor(
+    host: HTMLElement,
+    assetUrl: AssetResolver,
+    assetFacts: AssetLookup = () => NO_FACTS,
+    editor?: ItemEditorHooks,
+  ) {
     this.host = host;
     this.assetUrl = assetUrl;
+    this.assetFacts = assetFacts;
     this.editor = editor ? new TextEditor(editor) : null;
   }
 
@@ -1831,11 +2290,21 @@ export class DomItemLayer implements ItemLayer {
 
     let view = this.views.get(id);
     const isNew = view === undefined;
-    const archetype = archetypeOf(cold.type);
+    // Asked once, here, and carried into the bind — because the two questions
+    // it answers are on either side of the mount. Which face this item wears is
+    // a fact about the *mime*, so the archetype cannot be chosen without it; and
+    // what is written on that face is a fact about the rest of the record, which
+    // is the same lookup and would otherwise be a second one.
+    const facts = cold.assetId ? this.assetFacts(cold.assetId) : NO_FACTS;
+    const archetype = archetypeOf(cold.type, facts.kind);
 
     if (view && view.archetype !== archetype) {
-      // Type is immutable after creation, so this only happens if a peer
-      // wrote something strange. Swap rather than render the wrong thing.
+      // A type is immutable after creation, so this used to mean a peer had
+      // written something strange. It has an ordinary cause now as well: the
+      // face comes off the asset record, and on a peer merging a board the
+      // record can land a beat after the item that names it — so an object
+      // arrives as a photograph of nothing and becomes a folder when its record
+      // does. Swapping is exactly the right response to both.
       view.release();
       view.el.remove();
       this.pool[view.archetype].push(view);
@@ -1879,6 +2348,7 @@ export class DomItemLayer implements ItemLayer {
       const screenPx = Math.max(scene.w[slot]!, scene.h[slot]!) * this.rasterScale;
       view.bind(
         cold,
+        facts,
         this.assetUrl,
         screenPx,
         wearOf(cold.seed, this.ageDays(cold)),
@@ -2073,7 +2543,12 @@ export class DomItemLayer implements ItemLayer {
 
   private silhouette(scene: Scene, id: string, slot: number): Silhouette | null {
     const cold = scene.coldAt(slot);
-    if (cold === null || archetypeOf(cold.type) !== "paper") return null;
+    // A sheet of paper is the only thing on this board with a silhouette. The
+    // question is the *type* on its own and never the asset, which is why this
+    // is the one caller that does not need a lookup: nothing with a file behind
+    // it is cut to a ragged edge, and `archetypeOf` maps every non-`polaroid`
+    // type to paper whatever kind is passed.
+    if (cold === null || archetypeOf(cold.type, "unknown") !== "paper") return null;
     const worn = Math.round(wearOf(cold.seed, this.ageDays(cold)) * 100) / 100;
     const w = scene.w[slot]!;
     const h = scene.h[slot]!;
@@ -2231,6 +2706,7 @@ export class DomItemLayer implements ItemLayer {
       // its own guard, so a board zoomed out pays nothing here.
       view.bind(
         cold,
+        cold.assetId ? this.assetFacts(cold.assetId) : NO_FACTS,
         this.assetUrl,
         screenPx,
         wearOf(cold.seed, this.ageDays(cold)),
@@ -2244,6 +2720,7 @@ export class DomItemLayer implements ItemLayer {
   }
 
   private create(archetype: Archetype): View {
+    if (isCase(archetype)) return new CaseView(archetype);
     return archetype === "polaroid" ? new PolaroidView(this.firstSight) : new PaperView();
   }
 

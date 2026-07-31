@@ -6,7 +6,14 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { CAPTION_BOTTOM, CAPTION_HEIGHT, FRAME_BOTTOM } from "@/lib/polaroid";
 import { ItemInk } from "@/render/ink/canvas";
-import { DomItemLayer, type AssetResolver, type AssetView } from "@/render/items/dom";
+import {
+  DomItemLayer,
+  NO_FACTS,
+  type AssetFacts,
+  type AssetLookup,
+  type AssetResolver,
+  type AssetView,
+} from "@/render/items/dom";
 import { tapedCorners } from "@/render/items/tape";
 import { dogEarOf } from "@/render/items/wear";
 import { DirtySets } from "@/state/dirty";
@@ -2257,5 +2264,306 @@ describe("where a polaroid's caption sits", () => {
     const [a, b] = [...host.querySelectorAll(".pol-caption")] as HTMLElement[];
     expect(a!.style.bottom).toBe(b!.style.bottom);
     expect(a!.style.height).toBe(b!.style.height);
+  });
+});
+
+/**
+ * The three objects a file that is not a photograph becomes — T-267, D-46
+ * section 1.
+ *
+ * Everything here goes through the real layer rather than through `CaseView`,
+ * which is not exported and should not be: the claim under test is that the
+ * *renderer* has no special case for these three, and a test that reached past
+ * the layer to build one would be exempting itself from exactly that.
+ */
+describe("a folder, a tape and a cassette", () => {
+  const HASH = "4f2a9c1b".padEnd(64, "0");
+
+  /** What the document says about an asset — the reader in `app/main.ts`, faked. */
+  function facts(over: Partial<AssetFacts> = {}): AssetLookup {
+    return () => ({ ...NO_FACTS, ...over });
+  }
+
+  function layerWith(lookup: AssetLookup): DomItemLayer {
+    return new DomItemLayer(host, (sha) => ready(`asset://sha256/${sha}`), lookup);
+  }
+
+  /** A clean host, scene and dirty set — the `beforeEach`, mid-test. */
+  function again(): void {
+    document.body.innerHTML = "";
+    host = document.createElement("div");
+    document.body.append(host);
+    scene = new Scene();
+    dirty = new DirtySets();
+  }
+
+  /** Mount one asset item and hand back its element. */
+  function mount(lookup: AssetLookup, cold: Partial<ItemCold> = {}): HTMLElement {
+    const layer = layerWith(lookup);
+    add("a", { assetId: HASH, ...cold });
+    layer.sync(scene, dirty, null);
+    return host.firstElementChild as HTMLElement;
+  }
+
+  // --- AC-665: the face is chosen from the mime -----------------------------
+
+  it("chooses the face from the asset's kind and never from the item's type", () => {
+    // Every one of these items is a `polaroid` in the document. Nothing in the
+    // schema says folder, tape or cassette anywhere, which is the whole of the
+    // data-loss argument in D-46 section 2 — an older build meeting a type it
+    // had never heard of would render nothing and collect the bytes.
+    for (const [kind, className] of [
+      ["document", "item-case"],
+      ["video", "item-case"],
+      ["audio", "item-case"],
+      ["image", "item-polaroid"],
+    ] as const) {
+      again();
+      expect(mount(facts({ kind })).className).toContain(className);
+    }
+  });
+
+  it("gives each kind its own face", () => {
+    for (const [kind, face] of [
+      ["document", "folder"],
+      ["video", "vhs"],
+      ["audio", "cassette"],
+    ] as const) {
+      again();
+      expect(mount(facts({ kind })).dataset["kind"]).toBe(face);
+    }
+  });
+
+  it("draws a mime it does not understand as a photograph rather than as nothing", () => {
+    // Three states that are one state here: no asset, a record that has not
+    // arrived, and a mime a later build knows about and this one does not. All
+    // three are a frame around nothing, which an item with no bytes already is.
+    expect(mount(facts({ kind: "unknown" })).className).toContain("item-polaroid");
+  });
+
+  it("becomes a folder when the record lands after the item does", () => {
+    // Ordinary on a peer merging a board: the record and the item are one
+    // transaction here and need not be one *arrival* there. So the object comes
+    // up as a photograph of nothing and changes face when its record turns up.
+    let kind: AssetFacts["kind"] = "unknown";
+    const layer = layerWith(() => ({ ...NO_FACTS, kind }));
+    add("a", { assetId: HASH });
+    layer.sync(scene, dirty, null);
+    expect((host.firstElementChild as HTMLElement).className).toContain("item-polaroid");
+
+    kind = "document";
+    dirty.item("a");
+    layer.sync(scene, dirty, null);
+    expect(host.children.length).toBe(1);
+    expect((host.firstElementChild as HTMLElement).dataset["kind"]).toBe("folder");
+  });
+
+  // --- AC-666: they are items, with no special case in the renderer ---------
+
+  it("takes ink, tape, a shadow and the seeded rotation like anything else", () => {
+    for (const kind of ["document", "video", "audio"] as const) {
+      again();
+      const layer = layerWith(facts({ kind }));
+      add("a", { assetId: HASH, seed: 7 }, { rot: 0.42, w: 200, h: 140 });
+      scene.putStrokes("a", [
+        {
+          id: "a-s",
+          tool: "marker",
+          color: "#1f1b17",
+          size: 6,
+          opacity: 1,
+          seed: 1,
+          z: "a0",
+          bbox: [-20, 0, 20, 0],
+          samples: [
+            { x: -20, y: 0, pressure: 0.5 },
+            { x: 20, y: 0, pressure: 0.5 },
+          ],
+        },
+      ]);
+      dirty.inkFor("a");
+      layer.sync(scene, dirty, null);
+      const el = host.firstElementChild as HTMLElement;
+
+      // The rotation, through the same `writeTransform` every item uses.
+      expect(el.style.transform).toContain("rotate(0.42rad)");
+      // A shadow, off the same baked nine-slice.
+      expect(el.querySelector(".item-shadow")).not.toBeNull();
+      // Both tape strips in the tree, shown or hidden by the same mask.
+      expect(el.querySelectorAll(".item-tape").length).toBe(2);
+      // And an ink canvas inside the rotated node, so marks follow a move.
+      layer.paintInk(scene, dirty);
+      expect(el.querySelector("canvas.item-ink")).not.toBeNull();
+    }
+  });
+
+  it("tapes a corner of an unpinned object, on the same mask as a sheet", () => {
+    // `tapedCorners` is the seed's answer and nothing here overrides it. What is
+    // under test is that the layer offers the mask to these views on the same
+    // pass it offers it to every other one.
+    const seed = [...Array(64).keys()].find((s) => tapedCorners(s, 0) !== 0)!;
+    const el = mount(facts({ kind: "video" }), { seed });
+    const shown = [...el.querySelectorAll<HTMLElement>(".item-tape")].filter(
+      (strip) => strip.style.display === "block",
+    );
+    expect(shown.length).toBeGreaterThan(0);
+  });
+
+  it("curls a folder's corner and refuses to bend a cassette", () => {
+    // Not a special case — the layer offers the curl to all three identically
+    // and each answers for its material. Card bends; polystyrene does not, and
+    // `PolaroidView` already refuses on the same grounds for a print in a frame.
+    expect(mount(facts({ kind: "document" })).querySelector(".paper-bend")).not.toBeNull();
+    again();
+    const cassette = mount(facts({ kind: "audio" }));
+    expect(cassette.querySelector(".paper-bend")).toBeNull();
+    expect(cassette.style.getPropertyValue("--curl-tl")).toBe("");
+  });
+
+  it("ages the paper and leaves the plastic alone", () => {
+    // A fifteen-year-old tape is a black tape with a yellowed label, because
+    // polystyrene does not go brown. So the wear filter lands on the label of a
+    // cassette and on the whole panel of a folder.
+    const old = (): number => 4000;
+
+    const folders = layerWith(facts({ kind: "document" }));
+    folders.setAgeClock(old);
+    add("a", { assetId: HASH });
+    folders.sync(scene, dirty, null);
+    expect(host.querySelector<HTMLElement>(".folder-front")!.style.filter).not.toBe("");
+
+    again();
+    const tapes = layerWith(facts({ kind: "video" }));
+    tapes.setAgeClock(old);
+    add("a", { assetId: HASH });
+    tapes.sync(scene, dirty, null);
+    expect(host.querySelector<HTMLElement>(".case-label")!.style.filter).not.toBe("");
+    expect(host.querySelector<HTMLElement>(".case-shell")!.style.filter).toBe("");
+  });
+
+  it("hands a recycled node back to its own kind", () => {
+    // Three pools, not one. A cassette dressed out of a folder's subtree would
+    // be a tab and no window, because the constructor is the only place the
+    // furniture is decided.
+    const layer = layerWith(facts({ kind: "audio" }));
+    add("a", { assetId: HASH });
+    layer.sync(scene, dirty, null);
+    scene.removeItem("a");
+    dirty.item("a");
+    layer.sync(scene, dirty, null);
+
+    add("b", { assetId: HASH });
+    layer.sync(scene, dirty, null);
+    const el = host.firstElementChild as HTMLElement;
+    expect(el.dataset["kind"]).toBe("cassette");
+    expect(el.querySelector(".case-window")).not.toBeNull();
+  });
+
+  // --- AC-667 and AC-668: what is written on them ---------------------------
+
+  it("types the filename on the tab as the case number", () => {
+    const el = mount(facts({ kind: "document", name: "22718 N Sign.pdf" }));
+    expect(el.querySelector(".folder-tab .case-number")!.textContent).toBe("22718 N Sign");
+  });
+
+  it("writes the extracted title under it, in the hand the notes use", () => {
+    const el = mount(
+      facts({ kind: "document", name: "configure-vhosts.pdf", title: "Configure Virtual Hosts" }),
+    );
+    const title = el.querySelector<HTMLElement>(".case-title")!;
+    // `writeHand` lays it down a word at a time, so this is the text reassembled
+    // out of the glyph boxes rather than read off one node.
+    expect(title.textContent).toBe("Configure Virtual Hosts");
+    expect(title.querySelector(".hand-word")).not.toBeNull();
+  });
+
+  it("leaves the title line off when the file says nothing worth writing", () => {
+    // The ordinary case. D-47 measured a title on about a third of real
+    // documents, and `titleWorthWriting` refuses half of those again.
+    for (const title of ["", "MPI Log book.cdr", "Untitled-1"]) {
+      again();
+      const el = mount(facts({ kind: "document", name: "MPI Log book.pdf", title }));
+      expect(el.querySelector(".case-title")!.textContent).toBe("");
+    }
+  });
+
+  it("says the runtime and the page count before a byte of the file has arrived", () => {
+    // AC-668, and the point of it: every number on these labels comes off the
+    // *record*. The resolver below hands back no URL at all and never will.
+    const nothing: AssetResolver = () => waiting();
+
+    const folder = new DomItemLayer(host, nothing, facts({ kind: "document", pages: 142 }));
+    add("a", { assetId: HASH });
+    folder.sync(scene, dirty, null);
+    expect(host.querySelector(".case-meta")!.textContent).toBe("142 pp.");
+
+    again();
+    const tape = new DomItemLayer(host, nothing, facts({ kind: "video", duration: 3785 }));
+    add("a", { assetId: HASH });
+    tape.sync(scene, dirty, null);
+    expect(host.querySelector(".case-meta")!.textContent).toBe("1:03:05");
+  });
+
+  it("gives a file that never had a name a case number off its hash", () => {
+    const el = mount(facts({ kind: "audio", name: "" }));
+    expect(el.querySelector(".case-number")!.textContent).toBe("4F2A9C1B");
+  });
+
+  it("rewrites the label when the title arrives, which is after the bind", () => {
+    // The title is derived locally and asked for asynchronously (Q-211), so it
+    // lands on a later frame than the item did. A guard on the cold record alone
+    // would leave the folder saying nothing for the rest of the session.
+    let title = "";
+    const layer = layerWith(() => ({ ...NO_FACTS, kind: "document", name: "f.pdf", title }));
+    add("a", { assetId: HASH });
+    layer.sync(scene, dirty, null);
+    expect(host.querySelector(".case-title")!.textContent).toBe("");
+
+    title = "Grand jury exhibit B";
+    dirty.item("a");
+    layer.sync(scene, dirty, null);
+    expect(host.querySelector(".case-title")!.textContent).toBe("Grand jury exhibit B");
+  });
+
+  it("does not keep the last object's label when its node is recycled", () => {
+    // The failure `release` exists to stop, and the one a pool makes easy: two
+    // case files in a row through one node, the second wearing the first's name.
+    let name = "first.pdf";
+    const layer = layerWith(() => ({ ...NO_FACTS, kind: "document", name }));
+    add("a", { assetId: HASH });
+    layer.sync(scene, dirty, null);
+    scene.removeItem("a");
+    dirty.item("a");
+    layer.sync(scene, dirty, null);
+
+    name = "second.pdf";
+    add("b", { assetId: HASH });
+    layer.sync(scene, dirty, null);
+    expect(host.querySelector(".case-number")!.textContent).toBe("second");
+  });
+
+  it("comes back with its label when it is culled away and back again", () => {
+    // The case a pool makes easy to get wrong and a mutation test found: the
+    // *same* item, released and remounted, with a cold record that did not
+    // change while it was gone. Every guard in `bind` says nothing has moved,
+    // so a view that had not forgotten what it wrote would come back blank.
+    const layer = layerWith(facts({ kind: "document", name: "filing.pdf", pages: 9 }));
+    add("a", { assetId: HASH });
+    layer.sync(scene, dirty, new Set(["a"]));
+    expect(host.querySelector(".case-number")!.textContent).toBe("filing");
+
+    // Panned off the screen, and back.
+    layer.sync(scene, dirty, new Set());
+    expect(layer.mounted).toBe(0);
+    layer.sync(scene, dirty, new Set(["a"]));
+    expect(host.querySelector(".case-number")!.textContent).toBe("filing");
+    expect(host.querySelector(".case-meta")!.textContent).toBe("9 pp.");
+  });
+
+  it("carries the item's own text as a caption anybody can write on", () => {
+    const el = mount(facts({ kind: "audio" }), { text: "call 3 - the second one" });
+    const caption = el.querySelector(".case-caption")!;
+    expect(caption.textContent).toBe("call 3 - the second one");
+    expect(caption.classList.contains("is-empty")).toBe(false);
   });
 });

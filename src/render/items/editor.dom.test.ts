@@ -30,7 +30,7 @@ beforeEach(() => {
   dirty = new DirtySets();
   inputs = [];
   closed = [];
-  layer = new DomItemLayer(host, (sha) => ready(`asset://sha256/${sha}`), {
+  layer = new DomItemLayer(host, (sha) => ready(`asset://sha256/${sha}`), undefined, {
     onInput: (id, text) => inputs.push({ id, text }),
     onClosed: (id) => closed.push(id),
   });

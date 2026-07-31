@@ -1359,6 +1359,353 @@ textarea.item-field::-webkit-scrollbar {
   );
 }
 
+/* --- the three objects. D-46 section 1, and CaseView in dom.ts ------------ */
+
+/*
+ * A manilla folder, a VHS cassette and a compact cassette.
+ *
+ * One archetype and three kinds, with `data-kind` on the root the only thing
+ * that tells them apart in here - the same bargain the five paper stocks take
+ * with `data-stock`. What differs is furniture and colour; everything that makes
+ * them items is above this block and shared with every other thing on the wall.
+ *
+ * ## Lengths are board units, as everywhere else in this file
+ *
+ * So a percentage is a percentage of the object, and each object's size is a
+ * physical fact settled once at ingest (`lib/objects.ts`): a folder is 380 by
+ * 465 units, a VHS 290 by 160, a cassette 155 by 99, all three at 1.55 units to
+ * the millimetre. Which means every proportion below can be checked against a
+ * real one, and several of them were.
+ *
+ * ## Why nothing here shows what is inside
+ *
+ * A folder that showed its first page would be a viewer, and D-46 section 4 puts
+ * reading behind an *open* gesture and on our own paper. A tape that showed a
+ * frame is T-270's poster, which is a real asset with a hash. The object on the
+ * wall is the object, and it is fully legible before a byte of the file has
+ * arrived - which is the whole of AC-668 and the reason none of this waits on
+ * anything.
+ */
+
+.case-body {
+  position: absolute;
+  inset: 0;
+}
+
+/*
+ * The four lines, wherever they land.
+ *
+ * A two-column grid, because two of them share a row: the case number is a name
+ * and the runtime or page count is a number, and on every real object of this
+ * kind they sit at opposite ends of the same line. The other two span both
+ * columns and stack under it.
+ *
+ * The folder puts its case number on the tab instead, so its first row is the
+ * page count alone at the right - which is where a page count is stamped
+ * anyway.
+ */
+.folder-front,
+.case-label {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  align-content: start;
+  gap: 0.15em 0.6em;
+  overflow: hidden;
+}
+
+/*
+ * Typed, not written. This is the name that was printed on the file rather than
+ * something a person put on the object with a pen, and the distinction is the
+ * whole reason there are two faces on these labels.
+ *
+ * Uppercase and letterspaced is what makes the clean face read as a typed label
+ * rather than as body text. There is no typewriter face on this board - DESIGN
+ * 3.6 has exactly two, and adding a third is a font decision rather than a
+ * styling one (Q-166 settled the last one by rendering three on the board).
+ */
+.case-number {
+  grid-row: 1;
+  grid-column: 1;
+  font-family: "Source Sans 3", ui-sans-serif, system-ui, sans-serif;
+  text-transform: uppercase;
+  letter-spacing: 0.07em;
+  line-height: 1.2;
+  color: #3b3226;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/*
+ * The runtime or the page count. Typed as well, and for the same reason - it is
+ * a measurement off the file, not a remark about it.
+ *
+ * Not uppercased: `142 PP.` is shouting an abbreviation, and a runtime has no
+ * case to change. Tabular figures so a shelf of tapes lines up.
+ */
+.case-meta {
+  grid-row: 1;
+  grid-column: 2;
+  justify-self: end;
+  font-family: "Source Sans 3", ui-sans-serif, system-ui, sans-serif;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.02em;
+  line-height: 1.2;
+  color: #6a5c46;
+  white-space: nowrap;
+}
+
+/*
+ * What the document says it is called, in the board's own hand.
+ *
+ * Written rather than typed because it is the one line on the object that
+ * somebody decided - and because writing it is what says the board has read the
+ * file, where typing it would say the file came that way.
+ *
+ * `:empty` collapses it, which is the ordinary case: D-47 measured that about a
+ * third of real documents declare a title and that `titleWorthWriting` refuses
+ * a good half of those as the design file they were printed out of.
+ */
+.case-title {
+  grid-row: 2;
+  grid-column: 1 / -1;
+  font-family: "Patrick Hand", "Segoe Script", "Bradley Hand", cursive;
+  line-height: 1.15;
+  color: #2f2820;
+  white-space: pre-wrap;
+  overflow: hidden;
+}
+
+/* Whatever the person looking at it wrote on the object. People write on
+   tapes; this is the only one of the four a caret can reach. */
+.case-caption {
+  grid-row: 3;
+  grid-column: 1 / -1;
+  font-family: "Patrick Hand", "Segoe Script", "Bradley Hand", cursive;
+  line-height: 1.15;
+  color: #3f3428;
+  white-space: pre-wrap;
+  overflow: hidden;
+}
+
+.case-title:empty,
+.case-caption.is-empty {
+  display: none;
+}
+
+/* The caret takes the caption's row, so nothing moves when one opens. */
+.item-field.case-caption {
+  display: block;
+  grid-row: 3;
+  grid-column: 1 / -1;
+}
+
+/* --- the manilla folder --------------------------------------------------- */
+
+/*
+ * A letter-size folder seen face on: a third-cut tab along the top, a front
+ * panel a little shorter than the back so the contents show above it, and the
+ * fold along the bottom edge.
+ *
+ * The tab is inside the item's box rather than sticking out of it. That is
+ * physically right - a folder's height is measured over the tab - and it is the
+ * only arrangement in which the pins, the ink, the hit test and the baked shadow
+ * all agree about where the object is. The cost is that the top eighth of the
+ * box is transparent either side of the tab, so the shadow runs along an edge
+ * that is only there for a third of its width. A torn sheet's shadow has been a
+ * rectangle for the same reason since T-183.
+ */
+.folder-tab {
+  position: absolute;
+  top: 0;
+  height: 8.5%;
+  width: 33%;
+  /*
+   * Left, centre or right cut, seeded per folder by the view. Real folders come
+   * out of the box in threes so that a drawer of them can be read end on, and a
+   * wall of them all cut the same way is the one thing that would say these were
+   * drawn rather than filed.
+   */
+  left: calc(3.5% + var(--tab, 0) * 30%);
+  border-radius: 5px 5px 0 0;
+  background: linear-gradient(to bottom, #e0cb96 0%, #d9c48d 100%);
+  display: grid;
+  place-items: center;
+  padding: 0 5%;
+  overflow: hidden;
+}
+
+/*
+ * What is inside, showing above the front panel. Two edges rather than one,
+ * because a folder holding a single sheet is a folder nobody has put anything
+ * in - and offset from each other, because a stack somebody squared up is a
+ * stack nobody has read.
+ */
+.folder-sheets {
+  position: absolute;
+  top: 4.4%;
+  left: 6%;
+  right: 4.5%;
+  height: 4.4%;
+  border-radius: 1px 1px 0 0;
+  background:
+    linear-gradient(to bottom, #fbf7ec 0%, #f2ecdc 55%, #d9d0ba 100%);
+  box-shadow: none;
+}
+
+.folder-sheets::before {
+  content: "";
+  position: absolute;
+  inset: 22% -1.5% 0 3%;
+  border-radius: 1px 1px 0 0;
+  background: linear-gradient(to bottom, #f6f1e3 0%, #e8e0cc 100%);
+}
+
+.folder-front {
+  position: absolute;
+  inset: 8.5% 0 0 0;
+  border-radius: 3px 3px 4px 4px;
+  padding: 5.5% 6% 4%;
+  /*
+   * Manilla: an unbleached buff that goes warmer and darker down the sheet,
+   * because the bottom of the panel is where the fold is and a fold takes less
+   * of the light than the face above it. The lightest line is right at the top,
+   * which is the cut edge catching it.
+   */
+  background:
+    linear-gradient(to bottom, #f0e0b4 0%, #dcc68f 1.4%, #d5bd80 46%, #c9b073 100%);
+}
+
+/* The fibre. One shared tile, offset per folder by the view, so a filing
+   cabinet's worth of them is not one texture repeated. */
+.case-grain {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background-repeat: repeat;
+  mix-blend-mode: multiply;
+  opacity: 0.26;
+  border-radius: inherit;
+}
+
+/* --- the two cassettes ---------------------------------------------------- */
+
+/*
+ * Both are the same object at two sizes: a moulded shell, a window into the
+ * transport, and a paper label stuck on the front. So they share every rule
+ * here and differ only in the four numbers below, which is the strongest
+ * evidence available that one class was the right call for the three of them.
+ */
+.case-shell {
+  position: absolute;
+  inset: 0;
+  border-radius: 4px;
+  /*
+   * Polystyrene, lit from the same top left the whole board is lit from
+   * (DESIGN 4.1). The near-black is not black: a plastic that reaches #000 has
+   * no form at all, and the two stops either side of the middle are what make
+   * this read as a moulding rather than as a hole in the cork.
+   */
+  background: linear-gradient(158deg, #3a3531 0%, #262220 38%, #1b1816 72%, #141110 100%);
+}
+
+/* The front edge, which on both of these is a flap over the tape path and sits
+   a shade proud of the face above it. */
+.case-shell::after {
+  content: "";
+  position: absolute;
+  inset: auto 0 0 0;
+  height: 7%;
+  border-radius: 0 0 4px 4px;
+  background: linear-gradient(to bottom, #14110f 0%, #2a2624 60%, #1d1a18 100%);
+}
+
+.case-window {
+  position: absolute;
+  border-radius: 2px;
+  background: #0b0a09;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 6%;
+  overflow: hidden;
+}
+
+/*
+ * A reel, seen through the window: a hub with the tape wound onto it. The pale
+ * ring is the flange catching the light; the dark disc inside it is the pack.
+ */
+.case-reel {
+  position: relative;
+  aspect-ratio: 1;
+  height: 74%;
+  border-radius: 50%;
+  background:
+    radial-gradient(circle at 38% 33%, #6b6058 0%, #37312c 38%, #241f1c 62%, #191614 100%);
+}
+
+/*
+ * The tape between them. A brown so dark it is nearly the window, because
+ * oxide tape is - the only thing that says it is there is that it is warmer
+ * than the shell around it.
+ */
+.case-tape {
+  flex: 1;
+  height: 46%;
+  margin: 0 -3%;
+  background: linear-gradient(to bottom, #2a1c14 0%, #3a2718 45%, #241811 100%);
+}
+
+/*
+ * The label. Paper, on plastic, and the one part of either cassette that ages
+ * (T-272 goes further with that): `CaseView.paintAge` puts the wear filter on
+ * this node and not on the shell, because polystyrene does not go brown.
+ */
+.case-label {
+  position: absolute;
+  background: linear-gradient(to bottom, #f4eddc 0%, #ece3ce 100%);
+  border-radius: 1px;
+  padding: 6% 6% 5%;
+}
+
+/* A printed rule across the top of the label, which is what a blank cassette
+   label has on it and what everybody writes above and below. */
+.case-label::before {
+  content: "";
+  position: absolute;
+  left: 6%;
+  right: 6%;
+  top: 30%;
+  height: 1px;
+  background: rgba(120, 96, 56, 0.35);
+}
+
+/* A VHS: 187 by 103 mm, and the label covers the top two thirds of the face
+   with the window across the bottom. */
+.item-case[data-kind="vhs"] .case-label {
+  inset: 6% 6% 34% 6%;
+}
+
+.item-case[data-kind="vhs"] .case-window {
+  left: 15%;
+  right: 15%;
+  bottom: 9.5%;
+  height: 19%;
+}
+
+/* A compact cassette: 100 by 64 mm. Proportionally more window and less label,
+   which is what the object is - the transport is most of a cassette. */
+.item-case[data-kind="cassette"] .case-label {
+  inset: 8% 8% 38% 8%;
+}
+
+.item-case[data-kind="cassette"] .case-window {
+  left: 19%;
+  right: 19%;
+  bottom: 13%;
+  height: 21%;
+}
+
 /* --- LOD: the flat card, DESIGN 6.6 --------------------------------------- */
 
 /*
@@ -1430,6 +1777,10 @@ textarea.item-field::-webkit-scrollbar {
     .paper-ear,
     .pol-gloss,
     .pol-age,
+    .case-grain,
+    .case-reel,
+    .case-tape,
+    .folder-sheets,
     .item-tape
   ) {
   display: none;

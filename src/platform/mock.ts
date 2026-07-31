@@ -180,6 +180,14 @@ export class MockPlatform implements Platform {
     // never arrives under a test DOM, so the mock would either hang or invent a
     // timeout. `null` is the honest answer for a platform that did not measure
     // it, and it is the same `null` a container the shell cannot read produces.
+    //
+    // And no page count, which is the same answer for a harder reason: counting
+    // a PDF's pages means parsing its cross-reference table, and the shapes that
+    // could be faked without one — a `/Count` scraped out of the bytes, a tally
+    // of `/Type /Page` — are both defeated by object streams, which is most
+    // files. A folder in the browser showing no thickness is a platform that did
+    // not measure it; a folder showing `0 pp.` would be one that measured wrong,
+    // and this record is the thing that reaches a peer.
     const meta: AssetMeta = {
       sha256,
       w,
@@ -187,6 +195,7 @@ export class MockPlatform implements Platform {
       mime: type,
       size: bytes.byteLength,
       duration: null,
+      pages: null,
     };
     this.assets.set(sha256, { meta, url: URL.createObjectURL(blob), bytes });
     // Natively this arrives once the variants are generated; here the bytes
@@ -237,6 +246,21 @@ export class MockPlatform implements Platform {
     // One blob per asset — the mock has no variants, and a display-size
     // downscale would only hide how expensive the real thing is.
     return this.assets.get(sha256)?.url ?? "";
+  }
+
+  /**
+   * Nothing, for the reason the page count above is nothing: reading `/Info`
+   * `/Title` means walking a cross-reference table, and there is no PDF parser
+   * on this side of the line.
+   *
+   * `null` is a state the folder already draws — it is the same `null` a machine
+   * that does not hold the bytes gets, which under Q-211's answer is an ordinary
+   * and expected condition rather than a fault. So the browser dev loop shows a
+   * folder with its case number and no title, which is a real state of the real
+   * application and not a mock-shaped hole.
+   */
+  async documentTitle(_sha256: string): Promise<string | null> {
+    return null;
   }
 
   async docAppendUpdate(bytes: Uint8Array): Promise<void> {
