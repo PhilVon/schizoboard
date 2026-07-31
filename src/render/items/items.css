@@ -1577,7 +1577,9 @@ textarea.item-field::-webkit-scrollbar {
  */
 .folder-back {
   position: absolute;
-  inset: 0;
+  /* Down a little, so the paper has the top of the item to itself and can break
+     the board's edge without leaving the item's box. */
+  inset: 3.5% 0 0 0;
   border-radius: 3px 4px 5px 4px;
   /* The back panel, seen only along the top and down the right where the front
      does not cover it. Darker than the face, because it is behind it. */
@@ -1585,65 +1587,102 @@ textarea.item-field::-webkit-scrollbar {
 }
 
 /*
- * The contents, above the front panel's edge.
+ * The contents — and the thing the reference photograph is really about.
  *
- * Two sheets at their own angles and their own heights, nudged by `--spill`,
- * which the view seeds per folder — what varies between two folders on a real
- * desk is not a manufacturing option, it is that nobody squares up what they
- * put in one. Weighted to the right, as the photograph is.
+ * Not sheets of paper laid inside a box. It is **one curved ribbon of paper**
+ * that comes out from behind the front panel about two fifths along, sweeps up,
+ * thickens to a mass of several sheet edges on the right, and **breaks the top
+ * of the folder** on its way. That last part is most of why the photograph
+ * looks alive and why two rounded rectangles sitting politely inside the box
+ * did not: the paper is the only thing on the object that is not a rectangle,
+ * and it is the only thing that is not contained.
+ *
+ * So the kraft starts a little way down and the paper has the top of the item
+ * to itself. Nothing is drawn outside the item's own box - the pins, the ink,
+ * the hit test and the baked shadow all still agree about where the object is -
+ * but the paper does break the *board's* silhouette, which is the bit that
+ * reads.
  */
 .folder-sheets {
   position: absolute;
-  left: 30%;
-  right: 3%;
-  top: 0.5%;
-  height: 9%;
-}
-
-.folder-sheets::before,
-.folder-sheets::after {
-  content: "";
-  position: absolute;
-  bottom: 0;
+  left: 38%;
+  right: 2%;
+  top: 0;
+  height: 15%;
   /*
-   * The top corners are rounded on a long horizontal radius and a short
-   * vertical one, which is what a sheet that has been in and out of a folder
-   * looks like along its head — it lifts and rolls rather than ending in a
-   * corner. Square-topped rectangles read as two white bars laid across the
-   * folder, which is what the first version of this was.
+   * A long sweep on the left where the ribbon comes out from behind the panel,
+   * and almost square on the right where it is a stack seen end on. Horizontal
+   * and vertical radii given separately, which is what makes it a sweep rather
+   * than a corner.
    */
-  border-radius: 46% 38% 0 0 / 34% 26% 0 0;
-  background: linear-gradient(to bottom, #fdfcf8 0%, #f4f1e8 46%, #e6e1d3 82%, #d3cdbc 100%);
+  border-radius: 38% 10% 3% 2% / 62% 44% 10% 10%;
+  transform: rotate(calc(var(--spill, 0) * 0.6deg));
+  background:
+    /*
+     * The edges of the sheets underneath, which is what says this is a handful
+     * and not one page. Two fine lines, low and to the right, fading out before
+     * the left end where the ribbon is thin.
+     */
+    linear-gradient(
+      95deg,
+      rgba(0, 0, 0, 0) 22%,
+      rgba(122, 112, 92, 0.16) 46%,
+      rgba(122, 112, 92, 0.2) 100%
+    )
+      0 62% / 100% 0.9% no-repeat,
+    linear-gradient(
+      95deg,
+      rgba(0, 0, 0, 0) 44%,
+      rgba(122, 112, 92, 0.14) 66%,
+      rgba(122, 112, 92, 0.17) 100%
+    )
+      0 78% / 100% 0.9% no-repeat,
+    /* The crease running through it, which every sheet that has been in and out
+       of a folder has. */
+    linear-gradient(
+      101deg,
+      rgba(0, 0, 0, 0) 36%,
+      rgba(255, 255, 255, 0.55) 41%,
+      rgba(148, 140, 122, 0.16) 47%,
+      rgba(0, 0, 0, 0) 54%
+    ),
+    /* Real shading, not flat white. Paper in shadow under a panel is a long way
+       from #fff by the time it meets the kraft, and a band with no tone in it
+       reads as a cut-out. */
+    linear-gradient(to bottom, #fcfcf8 0%, #f4f1e8 34%, #e6e1d3 68%, #cdc7b5 100%);
 }
 
 /*
- * Two sheets, and they have to be told apart or the pair reads as one white
- * bar laid across the top of the folder — which is what the first version was.
- * So: different widths, different heights, opposite lean, and a shaded right
- * edge on the upper one so the lower one is visibly *behind* it.
+ * A second crest, over the right two thirds of the same ribbon.
+ *
+ * Two overlapping arcs rather than a rectangle sitting on the end - which is
+ * what this was, and it read as a patch: a vertical seam where it began and a
+ * step where it stopped. Overlapping the arcs makes the head *undulate*, which
+ * is what a stack of paper that has been handled does and what the reference
+ * has. One is enough; a third only muddies the line.
  */
-.folder-sheets::before {
-  width: 58%;
-  left: 0;
-  top: 8%;
-  transform: translate(calc(var(--spill, 0) * 4%), 0) rotate(calc(var(--spill, 0) * 0.6deg - 0.4deg));
-  border-right: 1px solid rgba(120, 104, 74, 0.22);
-}
-
 .folder-sheets::after {
-  width: 44%;
-  left: auto;
-  right: 0;
-  top: 26%;
-  transform: translate(calc(var(--spill2, 0) * 3%), 0) rotate(calc(var(--spill2, 0) * -0.8deg + 0.5deg));
-  background: linear-gradient(to bottom, #f3efe4 0%, #e3ddcd 100%);
+  content: "";
+  position: absolute;
+  inset: -2% -0.5% 6% 24%;
+  border-radius: 30% 14% 3% 2% / 66% 48% 10% 10%;
+  transform: rotate(calc(var(--spill2, 0) * 0.8deg - 0.45deg));
+  background:
+    linear-gradient(
+      98deg,
+      rgba(0, 0, 0, 0) 30%,
+      rgba(132, 122, 100, 0.13) 58%,
+      rgba(132, 122, 100, 0.17) 100%
+    )
+      0 74% / 100% 1.1% no-repeat,
+    linear-gradient(to bottom, #ffffff 0%, #f8f5ed 40%, #ece7da 76%, #dad4c4 100%);
 }
 
 .folder-front {
   position: absolute;
-  inset: 8% 0 0 0;
+  inset: 11% 0 0 0;
   border-radius: 2px 2px 5px 4px;
-  padding: 4% 5% 8%;
+  padding: 3.5% 5% 8%;
   /*
    * Kraft: a warm mid-brown that darkens down the panel, because the bottom of
    * it is the fold and a fold takes less of the light than the face above it.
