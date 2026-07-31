@@ -2,9 +2,16 @@
  * What a sheet is *made of* — the per-item half of DATA-MODEL section 3's
  * `style` map.
  *
- * > | `style` | Y.Map | paperStock, tint, tapeStyle, fontFamily, fontSize,
- * > torn, agingEnabled. A Y.Map so two people adjusting different properties
- * > don't clobber each other. — DATA-MODEL section 3
+ * > | `style` | Y.Map | paperStock, tint, tapeStyle, fontFamily, torn — the
+ * > five `lib/style.ts` defines and `setItemStyle` can write. A Y.Map so two
+ * > people adjusting different properties don't clobber each other.
+ * > — DATA-MODEL section 3
+ *
+ * That row used to name seven, and this comment quoted all seven back at it for
+ * a while — which is how a doc claim survives a re-survey that greps for
+ * corroboration. `fontSize` and `agingEnabled` never had a reader, a writer or
+ * a sentence in DESIGN asking for them, and were struck from DATA-MODEL rather
+ * than left standing as a promise.
  *
  * ## Every field is an override, and absent is the answer
  *

@@ -95,7 +95,7 @@ export interface PresenceGrabPose {
  *
  * ## Absolute poses, not a delta
  *
- * `poses` is the schema's `pose`, one per entry in `ids`, and each is the item's
+ * `poses` is one per entry in `ids`, and each is the item's
  * whole position rather than an offset from where the gesture started. A delta
  * would be one triple regardless of how many items are held, which is tempting
  * for a fifty-item marquee — and wrong here, because awareness is
@@ -188,11 +188,12 @@ export interface PresenceState {
    * The stroke under this client's pen right now, windowed — DATA-MODEL section
    * 9.1, and `state/wetwire.ts` for how.
    *
-   * A list where section 9 writes `null | {…}`, because one gesture is several
-   * marks once it crosses an edge (T-137, Q-81), and empty where the schema
-   * writes null, for the same reason `locks.segments` is: an absent array and an
-   * empty one are the same statement, and a reader that has to handle both is a
-   * reader with a branch that can be got wrong.
+   * A list rather than one run, because one gesture is several marks once it
+   * crosses an edge (T-137, Q-81), and empty rather than null when there is
+   * nothing in hand, for the same reason `locks.segments` is: an absent array
+   * and an empty one are the same statement, and a reader that has to handle
+   * both is a reader with a branch that can be got wrong. Section 9 described
+   * this as `null | {…}` until a re-survey caught up with it.
    */
   wet: readonly PresenceWetRun[];
 }
