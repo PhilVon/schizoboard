@@ -1046,9 +1046,8 @@ async function boot(): Promise<void> {
    * shares with the pens is the gesture — a held pointer, the coalesced trail,
    * and a surface fixed at the press — and that is a shape, not a class.
    *
-   * The `Shift+E` smudge is a mark and *is* the marker again; it is not built
-   * (T-62's second half) and is not bound, because a key that silently does
-   * nothing is worse than one that is not bound.
+   * The `Shift+E` smudge is a mark and *is* the marker again — built fifteen
+   * lines below and bound with the rest of the tool keys.
    */
   const eraser = new EraserTool({ onDone: () => queued.push(() => tools.setTool(select)) });
   /**
@@ -1455,7 +1454,7 @@ async function boot(): Promise<void> {
   /**
    * The board as a picture of itself (T-206).
    *
-   * The five painters, in `render/world.ts`'s own stack order, which is the one
+   * The six painters, in `render/world.ts`'s own stack order, which is the one
    * thing about this list that is not free to change: a string that passes
    * behind a photograph on screen and in front of it in the file is wrongness
    * nobody can prove without the two side by side.

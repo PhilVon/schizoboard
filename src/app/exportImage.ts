@@ -1,5 +1,5 @@
 /**
- * The board as one picture, composited from the five painters (T-206).
+ * The board as one picture, composited from the six painters (T-206, T-214).
  *
  * The PDF route next door hands the live document to Chromium and gets vector
  * text back (D-36); this one draws. That difference is the whole reason both

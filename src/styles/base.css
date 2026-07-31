@@ -612,7 +612,7 @@ body {
   .flash,
   /* A search field open when you hit export prints the word you were looking
    * for across the top of the board. The image route never sees this element -
-   * it composites the five painters and layer-ui is not one of them - so this
+   * it composites the six painters and layer-ui is not one of them - so this
    * line is the whole of what keeps it out of a file. */
   .search,
   .menu {

@@ -106,7 +106,7 @@ export interface ExportView {
 export type ExportPhase =
   /** Moving the camera to the whole board and letting it settle. Both routes. */
   | { readonly at: "framing" }
-  /** The five painters, start to finish. Image only. */
+  /** The six painters, start to finish. Image only. */
   | { readonly at: "drawing" }
   /** Turning the canvas into a file. The long one, image only. */
   | { readonly at: "encoding"; readonly format: ImageFormat }
