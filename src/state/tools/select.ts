@@ -66,7 +66,6 @@ import {
   anchorAt,
   anchorParent,
   settleOnPin,
-  settleOnUnpin,
   stringAt,
 } from "@/state/tools/frame";
 import { PinDrag } from "@/state/tools/pindrag";
