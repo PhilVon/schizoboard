@@ -106,6 +106,7 @@ import {
 } from "@/lib/ink";
 import { newId } from "@/lib/ids";
 import { reportsRealPressure, VelocityPressure } from "@/lib/pressure";
+import { QuickPull } from "@/state/tools/quickpull";
 import type { Point } from "@/lib/rotate";
 import { itemLocal } from "@/state/tools/frame";
 import type { PointerSample, Tool, ToolContext, ToolInput } from "@/state/tools/tool";
@@ -307,7 +308,18 @@ export class MarkerTool implements Tool {
     this.nib = INK_SIZES[next]!;
   }
 
+  /** `Alt` on a pin: the quick pull that belongs to no tool (DESIGN 3.4). */
+  private readonly pull = new QuickPull();
+
+  pullPreview(cursor: { x: number; y: number } | null): readonly { x: number; y: number }[] | null {
+    return this.pull.preview(cursor);
+  }
+
   handle(input: ToolInput, ctx: ToolContext): void {
+    // `Alt` on a pin is nobody's tool — DESIGN section 3.4's quick pull works
+    // "in any tool", and this is what that sentence costs each of them
+    // (`state/tools/quickpull.ts`, T-229).
+    if (this.pull.handle(input, ctx)) return;
     switch (input.kind) {
       case "down":
         // A fresh array rather than `length = 0`, because the renderer was
@@ -598,6 +610,9 @@ export class MarkerTool implements Tool {
    * before its ink appears.
    */
   cancel(_ctx: ToolContext): void {
+    // A pull in flight belongs to this instance, and a tool switch would
+    // otherwise leave it holding a gesture whose release goes somewhere else.
+    this.pull.cancel();
     this.reset();
   }
 

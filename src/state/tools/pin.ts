@@ -32,6 +32,7 @@
  * `state/tools/note.ts`.
  */
 
+import { QuickPull } from "@/state/tools/quickpull";
 import type { Vec2 } from "@/state/camera";
 import { itemLocal, settleOnPin } from "@/state/tools/frame";
 import type { PointerSample, Tool, ToolContext, ToolInput } from "@/state/tools/tool";
@@ -53,7 +54,18 @@ export class PinTool implements Tool {
     this.options = options;
   }
 
+  /** `Alt` on a pin: the quick pull that belongs to no tool (DESIGN 3.4). */
+  private readonly pull = new QuickPull();
+
+  pullPreview(cursor: { x: number; y: number } | null): readonly { x: number; y: number }[] | null {
+    return this.pull.preview(cursor);
+  }
+
   handle(input: ToolInput, ctx: ToolContext): void {
+    // `Alt` on a pin is nobody's tool — DESIGN section 3.4's quick pull works
+    // "in any tool", and this is what that sentence costs each of them
+    // (`state/tools/quickpull.ts`, T-229).
+    if (this.pull.handle(input, ctx)) return;
     switch (input.kind) {
       case "down":
         this.onDown(input.at, ctx);
@@ -113,6 +125,9 @@ export class PinTool implements Tool {
    *  not fire, as in the note tool: a window that lost focus mid-click has not
    *  finished with the tool. */
   cancel(_ctx: ToolContext): void {
+    // A pull in flight belongs to this instance, and a tool switch would
+    // otherwise leave it holding a gesture whose release goes somewhere else.
+    this.pull.cancel();
     this.downAt = null;
   }
 }

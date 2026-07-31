@@ -70,6 +70,7 @@ import {
   stringAt,
 } from "@/state/tools/frame";
 import { PinDrag } from "@/state/tools/pindrag";
+import { QuickPull } from "@/state/tools/quickpull";
 import type {
   PointerSample,
   StringHit,
@@ -191,8 +192,6 @@ export const MIN_RESIZE = 24;
 type GesturePhase =
   | "idle"
   | "pending"
-  /** `Alt`+drag from a pin: a new string being pulled out (DESIGN 3.4). */
-  | "pulling"
   /** Drag from the middle of a string: a loop of it being pulled out to a new
    *  pin — the headline gesture (DESIGN 3.4). */
   | "looping"
@@ -290,26 +289,11 @@ export class SelectTool implements Tool {
 
   private phase: GesturePhase = "idle";
 
-  /**
-   * The pin an `Alt` press landed on, while it is still undecided whether the
-   * gesture is a removal or a pull.
-   */
-  private pullFrom: string | null = null;
-  /** Where that pin is, in board space, so the pull can be drawn. */
-  private pullX = 0;
-  private pullY = 0;
+  /** `Alt` on a pin, which is nobody's tool — `state/tools/quickpull.ts`. */
+  private readonly pull = new QuickPull();
 
-  /**
-   * The string being pulled out, for `render/overlay.ts` — the pin it started
-   * on, and the cursor.
-   *
-   * The same shape the string tool's `preview` returns, and drawn by the same
-   * code, because they are the same thing arrived at two ways: a run that has
-   * not been written down yet.
-   */
   pullPreview(cursor: { x: number; y: number } | null): readonly { x: number; y: number }[] | null {
-    if (this.phase !== "pulling" || !cursor) return null;
-    return [{ x: this.pullX, y: this.pullY }, cursor];
+    return this.pull.preview(cursor);
   }
 
   /**
@@ -589,6 +573,10 @@ export class SelectTool implements Tool {
   }
 
   handle(input: ToolInput, ctx: ToolContext): void {
+    // `Alt` on a pin belongs to no tool — see `state/tools/quickpull.ts`. Offered
+    // the input before anything here looks at it, because the press it takes is
+    // one this tool would otherwise turn into a marquee.
+    if (this.pull.handle(input, ctx)) return;
     switch (input.kind) {
       case "down":
         this.onDown(input.at, ctx, input.double === true);
@@ -754,26 +742,6 @@ export class SelectTool implements Tool {
     this.downBoardY = board.y;
 
     /**
-     * `Alt` on a pin means two different things and the pointer decides which:
-     *
-     * > | Remove | `Alt`+click, or context menu | Strings through it heal
-     * > | Quick pull | `Alt`+drag from a pin, in any tool | Pulls a new string
-     * >   out without switching tools — DESIGN sections 3.3 and 3.4
-     *
-     * So neither can happen here. Removing the pin on the press, which is what
-     * this used to do, makes the drag unreachable — the pin is gone before the
-     * pointer has had a chance to move. The press only records which pin was
-     * under it; `begin` turns that into a pull once the pointer has travelled,
-     * and `onUp` removes it if it never did.
-     */
-    const pin = ctx.hitPin(at.x, at.y);
-    if (pin !== null && at.alt) {
-      this.pullFrom = pin;
-      this.phase = "pending";
-      return;
-    }
-
-    /**
      * The chrome gets the press before the board does, and that ordering is the
      * whole reason the handle works at all: the rotation knob stands off the top
      * edge in open cork, so a press that reached it would otherwise fall through
@@ -797,7 +765,11 @@ export class SelectTool implements Tool {
      * top of it — and nothing about the selection changes, for the same reason
      * pressing a handle does not: taking hold of a pin is not a statement about
      * which photographs are selected.
+     *
+     * The `Alt` press on a pin never reaches here: it is a quick pull or a
+     * removal, and `state/tools/quickpull.ts` has already taken it.
      */
+    const pin = ctx.hitPin(at.x, at.y);
     if (pin !== null) {
       this.pendingPin = pin;
       this.phase = "pending";
@@ -894,40 +866,6 @@ export class SelectTool implements Tool {
   }
 
   private onUp(at: PointerSample, ctx: ToolContext): void {
-    /**
-     * The two ends of the `Alt` gesture. A pull that got as far as moving
-     * writes a string from the pin it started on to whatever the release
-     * landed on — pin, item or bare cork, by the same rule the string tool
-     * uses. One that never moved was a click, and a click removes the pin.
-     */
-    if (this.pullFrom !== null) {
-      const from = this.pullFrom;
-      this.pullFrom = null;
-      if (this.phase === "pulling") {
-        const to = anchorAt(ctx.scene, ctx.camera, ctx.hitTest, ctx.hitPin, at.x, at.y);
-        // A pull that ended back on its own pin is a string of one node, which
-        // is not a string. Nothing written, nothing removed — it was a drag,
-        // so it was not a click either.
-        const onItself = "pin" in to.anchor && to.anchor.pin === from;
-        // The far end may be an item that hangs, and this is the pin that stops
-        // it — `settleOnPin`. The near end is a pin that already exists and
-        // changes nobody's count.
-        if (!onItself) {
-          ctx.write.createString(
-            [{ pin: from }, to.anchor],
-            false,
-            settleOnPin(ctx.scene, [anchorParent(to.anchor)]),
-          );
-        }
-      } else {
-        // "Strings through it heal", which the op does in the same transaction.
-        ctx.write.deletePins([from], settleOnUnpin(ctx.scene, [from]));
-      }
-      this.phase = "idle";
-      ctx.dirty.camera = true;
-      return;
-    }
-
     /**
      * The two ends of the string gesture, and the same shape as the `Alt` one
      * above. A loop that got as far as moving writes the new pin and the node
@@ -1053,21 +991,6 @@ export class SelectTool implements Tool {
    * Returns false if there turned out to be nothing to pick up.
    */
   private begin(ctx: ToolContext): boolean {
-    // The pointer moved with `Alt` held on a pin, so this is a quick pull and
-    // not a removal. Nothing is written until the release says where to.
-    if (this.pullFrom !== null) {
-      const pin = ctx.scene.pins.get(this.pullFrom);
-      if (!pin) {
-        this.pullFrom = null;
-        this.phase = "idle";
-        return false;
-      }
-      this.pullX = pin.wx;
-      this.pullY = pin.wy;
-      this.phase = "pulling";
-      return true;
-    }
-
     // The press landed on a string and the pointer has moved, so a loop is
     // being pulled out of it. Like the pull above, nothing is written until the
     // release says where the new pin goes.
@@ -1669,9 +1592,7 @@ export class SelectTool implements Tool {
    * had just cancelled out of.
    */
   cancel(ctx: ToolContext): void {
-    // A pull that was taken away wrote nothing and removed nothing, which is
-    // the right revert for both halves of the `Alt` gesture at once.
-    this.pullFrom = null;
+    this.pull.cancel();
     /**
      * And the same for a loop pulled out of a string:
      *

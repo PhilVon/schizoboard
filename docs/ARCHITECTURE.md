@@ -47,6 +47,7 @@ src/
     selection.ts
     erase.ts          what Delete removes, shared with Ctrl+X
     tools/            machine.ts + select · pin · string · marker · highlighter · eraser
+                      quickpull.ts is the one gesture no tool owns — every tool holds one
 
   sim/
     verlet.ts         constraint solver, fixed-timestep accumulator
