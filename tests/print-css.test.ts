@@ -1,5 +1,6 @@
 /**
- * What must not be in an export — T-208, D-36, and now the search field (T-85).
+ * What must not be in an export — T-208, D-36, the search field (T-85), and the
+ * drawer and info bar that replaced the hint line (T-250).
  *
  * There is no test between this stylesheet and a file handed to another person.
  * The PDF route is Chromium's own print pipeline, so it renders the document
@@ -55,7 +56,6 @@ function hiddenInPrint(): Set<string> {
 describe("the print block", () => {
   it.each([
     [".hud", "the dev HUD — the first thing that ever leaked into a PDF"],
-    [".hint", "the keyboard hint line"],
     [".toolbar", "the tool drawer, down the left of every page it would print on"],
     [".toolinfo", "what your tool does — the hint line's successor, and its old mistake"],
     [".notice", "whose laptop the missing photographs are on"],
