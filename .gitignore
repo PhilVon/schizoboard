@@ -20,3 +20,6 @@ dist-ssr
 # Fidelity-spike photo corpus (T-16) — never commit hundreds of MB of photos.
 # Fetch it with `npm run spike:fetch`.
 /public/spike/
+
+# The video spike rig writes its numbers here (T-293, D-48).
+/spike-video.json

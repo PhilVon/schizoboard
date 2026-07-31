@@ -127,6 +127,8 @@ export default tseslint.config(
         fetch: "readonly",
         process: "readonly",
         setTimeout: "readonly",
+        // Node 22's own, so the CDP rig in `spike-video.mjs` needs no `ws`.
+        WebSocket: "readonly",
       },
     },
   },
