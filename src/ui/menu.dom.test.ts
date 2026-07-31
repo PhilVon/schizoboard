@@ -47,21 +47,6 @@ function press(target: EventTarget): void {
   target.dispatchEvent(new Event("pointerdown", { bubbles: true, cancelable: true }));
 }
 
-/** Click the row or chip with this label, the way a pointer does. */
-function click(label: string): void {
-  const item = [...host.querySelectorAll<HTMLElement>(".menu-item")].find(
-    (el) => (el.textContent ?? "").trim() === label || el.getAttribute("aria-label") === label,
-  );
-  if (item === undefined) {
-    throw new Error(
-      `no "${label}" among ${[...host.querySelectorAll(".menu-item")]
-        .map((el) => el.textContent)
-        .join(", ")}`,
-    );
-  }
-  item.dispatchEvent(new MouseEvent("click", { bubbles: true }));
-}
-
 beforeEach(() => {
   host = document.createElement("div");
   document.body.append(host);
@@ -79,88 +64,6 @@ afterEach(() => {
 function onKey(e: KeyboardEvent): void {
   heard.push(e.code);
 }
-
-/**
- * A page is a different list in the same box (T-244, Q-168).
- *
- * The one thing it must not share with every other press in this widget: a page
- * turn does not close the menu. Everything else about it — where it sits, which
- * keys it owns, what dismisses it — is the same widget and is covered above.
- */
-describe("turning a page", () => {
-  const appearance = (): MenuEntry => ({
-    label: "Appearance",
-    page: () => [picker(), { label: "Something", run: () => {} } as MenuRow],
-  });
-
-  it("shows the page in the same box, with a way back", () => {
-    menu.openAt(10, 10, rows("Edit text", appearance()));
-    click("Appearance");
-    expect(host.querySelectorAll(".menu")).toHaveLength(1);
-    expect(labels()).toEqual(["Back", "Something"]);
-    expect(host.querySelectorAll(".menu-pick")).toHaveLength(1);
-  });
-
-  /** The whole reason page turns are kept out of `actions`. A row that closed
-   *  the menu on the way in would be a submenu nobody could reach. */
-  it("stays open", () => {
-    menu.openAt(10, 10, rows("Edit text", appearance()));
-    click("Appearance");
-    expect(menu.isOpen).toBe(true);
-  });
-
-  it("comes back to the page it came from", () => {
-    menu.openAt(10, 10, rows("Edit text", appearance()));
-    click("Appearance");
-    click("Back");
-    expect(labels()).toEqual(["Edit text", "Appearance"]);
-    expect(menu.isOpen).toBe(true);
-  });
-
-  /** A page that could be entered and not left would be a trap, so `Back` is
-   *  the widget's and never the caller's — and it must not turn up on the page
-   *  it returns to. */
-  it("puts no Back on the page it returns to", () => {
-    menu.openAt(10, 10, rows("Edit text", appearance()));
-    click("Appearance");
-    click("Back");
-    click("Appearance");
-    expect(labels().filter((l) => l === "Back")).toHaveLength(1);
-  });
-
-  it("asks for the page each time it is opened, not once", () => {
-    let asked = 0;
-    menu.openAt(10, 10, [
-      { label: "Appearance", page: () => (asked++, [{ label: "x", run: () => {} }]) },
-    ]);
-    click("Appearance");
-    click("Back");
-    click("Appearance");
-    expect(asked).toBe(2);
-  });
-
-  /** A verb inside a page is still a verb: it closes first, like every other. */
-  it("closes when a row inside the page is run", () => {
-    const ran: boolean[] = [];
-    menu.openAt(10, 10, [
-      {
-        label: "Appearance",
-        page: () => [{ label: "Do it", run: () => ran.push(menu.isOpen) }],
-      },
-    ]);
-    click("Appearance");
-    click("Do it");
-    expect(ran).toEqual([false]);
-    expect(menu.isOpen).toBe(false);
-  });
-
-  it("takes a dismissing press like any other page", () => {
-    menu.openAt(10, 10, rows("Edit text", appearance()));
-    click("Appearance");
-    press(document.body);
-    expect(menu.isOpen).toBe(false);
-  });
-});
 
 describe("the context menu", () => {
   it("shows its rows, and a rule above a divided one", () => {

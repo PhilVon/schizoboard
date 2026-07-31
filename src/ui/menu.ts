@@ -96,47 +96,11 @@ export interface MenuChoice {
   readonly run: () => void;
 }
 
-/**
- * A row that shows a different set of entries in the same box, with a way back.
- *
- * **Not a submenu**, and the difference is the whole reason this is allowed
- * where nesting was not. A submenu is a second box that opens beside the first,
- * and everything expensive about it is the relationship between the two —
- * hover intent, open delay, which one closes when the pointer cuts a corner
- * diagonally across a gap. There is one box here. It is showing a different
- * page, the way the same list would if you had scrolled it.
- *
- * It exists because the item menu grew a set of choices that are real but
- * rarely wanted (T-225, Q-168). Five picker strips flat would roughly double a
- * six-row menu with styling that the whole premise of seed-derived appearance
- * says you should never need — a menu whose choices outnumber its verbs has
- * quietly changed what it is for. One row that opens the rest keeps the verbs
- * where they were and puts the styling one press further away, which is the
- * right distance for something you use once on one note.
- *
- * `page` is a function rather than a list because the chips have to say what is
- * *currently* in force, and that is only knowable at the moment it is opened.
- */
-export interface MenuPage {
-  readonly label: string;
-  readonly page: () => readonly MenuEntry[];
-  readonly divided?: boolean;
-}
-
-export type MenuEntry = MenuRow | MenuPicker | MenuPage;
+export type MenuEntry = MenuRow | MenuPicker;
 
 function isPicker(entry: MenuEntry): entry is MenuPicker {
   return "choices" in entry;
 }
-
-function isPage(entry: MenuEntry): entry is MenuPage {
-  return "page" in entry;
-}
-
-/** What every page but the first carries at its top. Built here rather than by
- *  the caller: a page that could be entered and not left would be a trap, and
- *  it should not be possible to author one. */
-const BACK = "Back";
 
 /**
  * How close to the viewport edge the menu may sit, in CSS pixels.
@@ -159,20 +123,7 @@ export class ContextMenu {
    * a plain verb row are the same answer to it. `data-run` indexes into here.
    */
   private actions: (() => void)[] = [];
-  /**
-   * Page turns, kept apart from `actions` for one reason: [`activate`] closes
-   * the menu before it runs anything, and turning a page must not close it.
-   * Two lists rather than a flag on one, so that "does this close the menu"
-   * is answered by which attribute the button carries and never by a branch
-   * somebody can forget.
-   */
-  private pages: (() => void)[] = [];
   private readonly disposers: (() => void)[] = [];
-  /** Where the menu was opened, so a page turn lands in the same place. */
-  private anchorX = 0;
-  private anchorY = 0;
-  /** The first page, so `Back` has somewhere to go. */
-  private root: readonly MenuEntry[] | null = null;
 
   constructor(host: HTMLElement) {
     this.host = host;
@@ -193,31 +144,11 @@ export class ContextMenu {
   openAt(screenX: number, screenY: number, entries: readonly MenuEntry[]): void {
     this.close();
     if (entries.length === 0) return;
-    this.anchorX = screenX;
-    this.anchorY = screenY;
-    this.root = entries;
-    this.paint(entries);
-  }
-
-  /**
-   * Draw one page of the menu, at the anchor the menu was opened on.
-   *
-   * Re-placed each time rather than left where it was, because a page is a
-   * different height and a menu that fitted going in can run off the bottom of
-   * the window coming back — and `place` flips rather than clamps, so a taller
-   * page near the bottom edge lands above the cursor instead of under the
-   * taskbar.
-   */
-  private paint(entries: readonly MenuEntry[], sub = false): void {
-    this.tearDown();
 
     const el = document.createElement("div");
-    el.className = sub ? "menu menu-sub" : "menu";
+    el.className = "menu";
     el.setAttribute("role", "menu");
     this.actions = [];
-    this.pages = [];
-
-    if (sub) el.append(this.buildBack());
 
     for (let i = 0; i < entries.length; i++) {
       const entry = entries[i]!;
@@ -226,14 +157,12 @@ export class ContextMenu {
         rule.className = "menu-rule";
         el.append(rule);
       }
-      if (isPicker(entry)) el.append(this.buildPicker(entry));
-      else if (isPage(entry)) el.append(this.buildPage(entry));
-      else el.append(this.buildRow(entry));
+      el.append(isPicker(entry) ? this.buildPicker(entry) : this.buildRow(entry));
     }
 
     this.host.append(el);
     this.el = el;
-    this.place(el, this.anchorX, this.anchorY);
+    this.place(el, screenX, screenY);
     this.listen(el);
 
     // Focused so the arrows and `Enter` have somewhere to start. A `<button>`
@@ -242,23 +171,14 @@ export class ContextMenu {
     el.querySelector<HTMLButtonElement>(".menu-item")?.focus();
   }
 
-  /** The box and its listeners, without forgetting where the menu is or what
-   *  its first page was — which is what a page turn needs and a close does not. */
-  private tearDown(): void {
+  close(): void {
     const el = this.el;
     if (el === null) return;
     this.el = null;
     this.actions = [];
-    this.pages = [];
     for (const dispose of this.disposers) dispose();
     this.disposers.length = 0;
     el.remove();
-  }
-
-  close(): void {
-    if (this.el === null) return;
-    this.tearDown();
-    this.root = null;
   }
 
   destroy(): void {
@@ -279,39 +199,6 @@ export class ContextMenu {
     button.setAttribute("role", "menuitem");
     button.dataset.run = String(this.actions.push(row.run) - 1);
     button.textContent = row.label;
-    return button;
-  }
-
-  /**
-   * A row that turns the page, and the `Back` row that turns it home.
-   *
-   * `data-page` rather than `data-run`, which is what keeps the menu open —
-   * see [`pages`]. The chevron is a `::after` in the stylesheet rather than a
-   * character here, so the row's `textContent` stays the label a test asserts
-   * on and a screen reader reads.
-   */
-  private buildPage(entry: MenuPage): HTMLElement {
-    const button = document.createElement("button");
-    button.type = "button";
-    button.className = "menu-line menu-item menu-row menu-into";
-    button.setAttribute("role", "menuitem");
-    button.setAttribute("aria-haspopup", "menu");
-    button.textContent = entry.label;
-    // Asked for on the press rather than when the menu opened, so the chips can
-    // say what is in force at the moment somebody looks at them.
-    button.dataset.page = String(this.pages.push(() => this.paint(entry.page(), true)) - 1);
-    return button;
-  }
-
-  /** The way out of a page. Its own builder rather than a `MenuPage` with the
-   *  root as its `page`, because that would put a second `Back` on the root. */
-  private buildBack(): HTMLElement {
-    const button = document.createElement("button");
-    button.type = "button";
-    button.className = "menu-line menu-item menu-row menu-back";
-    button.setAttribute("role", "menuitem");
-    button.textContent = BACK;
-    button.dataset.page = String(this.pages.push(() => this.paint(this.root ?? [])) - 1);
     return button;
   }
 
@@ -410,14 +297,7 @@ export class ContextMenu {
 
     add(el, "click", (e: MouseEvent) => {
       const item = (e.target as HTMLElement | null)?.closest<HTMLElement>(".menu-item");
-      if (item === null || item === undefined) return;
-      // A page turn first, and it is not an `activate`: the menu stays open.
-      const page = item.dataset.page;
-      if (page !== undefined) {
-        this.pages[Number(page)]?.();
-        return;
-      }
-      const at = item.dataset.run;
+      const at = item?.dataset.run;
       if (at === undefined) return;
       this.activate(Number(at));
     });

@@ -31,14 +31,7 @@
 import { inkColors, INK_SIZES, type InkTool } from "@/lib/ink";
 import { STRING_MATERIALS } from "@/lib/material";
 import { STRING_COLORS, STRING_THICKNESSES } from "@/lib/palette";
-import {
-  PAPER_STOCKS,
-  STOCK_BASE,
-  STOCK_NAMES,
-  TAPE_NONE,
-  TINTS,
-  type ItemStyle,
-} from "@/lib/style";
+import { PAPER_STOCKS, STOCK_BASE, STOCK_NAMES, type ItemStyle } from "@/lib/style";
 import type { Scene } from "@/state/scene";
 import { itemLocal, settleOnPin, settleOnUnpin } from "@/state/tools/frame";
 import type { BoardWriter } from "@/state/tools/tool";
@@ -161,7 +154,19 @@ export function stringMenuRows(
  * at the press, and a peer may have deleted any of it since.
  */
 /**
- * The *Appearance* page — DATA-MODEL section 3's style map, as five strips.
+ * The two style overrides an item's menu offers - DATA-MODEL section 3's style
+ * map, as the same restyle chrome a string already has.
+ *
+ * ## Two of the five, and the other three deliberately
+ *
+ * The map holds five properties and `render/items/style.ts` honours all five.
+ * This offers **paper** and **the writing face**, because those are the two a
+ * person has a reason to reach for: a note whose stock says what kind of note it
+ * is, and DESIGN section 3.6's clean face for "something you actually need to
+ * read". Tint, tape and the torn edge are the seed's job and it does them well -
+ * the whole premise of seed-derived appearance is that nobody should have to
+ * choose - and putting a control on each of them cost more menu than the choices
+ * were worth. See the note above `itemMenuRows`.
  *
  * ## What the chips say, and what they deliberately do not
  *
@@ -170,40 +175,32 @@ export function stringMenuRows(
  * right question. The map holds overrides, "as it was" is the state of nearly
  * every item on the board, and a strip that lit the stock the *seed* happened to
  * draw would be telling you that you had picked cream when you had picked
- * nothing — and would leave no way to see, or to reach, the difference.
+ * nothing - and would leave no way to see, or to reach, the difference.
  *
- * So every strip leads with **as it was**, marked when nothing is overridden,
- * and picking it clears rather than writing a default (`crdt/ops/items.ts`).
- * Without that chip an item could be styled and never put back.
- *
- * ## Two of the five are booleans wearing a strip
- *
- * `torn` and the tape are yes/no where the other three are sets, and a row
- * would ordinarily be the better control for a boolean. They are strips here
- * because they are not two-state: **as it was, yes, no** — and a row pair that
- * had to offer "back to whatever this sheet was" as a third line would be three
- * rows saying what three chips say in one.
+ * So each strip leads with **as it was**, marked when nothing is overridden, and
+ * picking it clears rather than writing a default (`crdt/ops/items.ts`). Without
+ * that chip an item could be styled and never put back.
  *
  * ## The whole selection, like the restack rows
  *
- * A style is a verb a selection can take together — restyling four notes to the
- * same paper is the point of having selected four notes. Nothing here is about
- * a place or a caret, so nothing here uses `clicked`.
+ * A style is a verb a selection can take together - restyling four notes to the
+ * same paper is the point of having selected four notes. Nothing here is about a
+ * place or a caret, so nothing here uses `clicked` except to read what to mark.
  */
-function appearancePage(
+function appearanceRows(
   scene: Scene,
   write: BoardWriter,
   live: readonly string[],
   clicked: string,
 ): MenuEntry[] {
   // The clicked item's own overrides decide what is marked. A mixed selection
-  // has no single answer and inventing one — "marked when they all agree" —
+  // has no single answer and inventing one - "marked when they all agree" -
   // would make the strip go blank the moment two notes differed, which reads as
   // broken rather than as informative.
   const style: ItemStyle = scene.cold(clicked)?.style ?? {};
   const set = (patch: Partial<ItemStyle>) => () => write.setItemStyle(live, patch);
 
-  /** The chip every strip leads with. `swatch` of `transparent` paints an empty
+  /** The chip each strip leads with. A `transparent` swatch paints an empty
    *  box, which is what "nothing chosen" looks like. */
   const asItWas = (chosen: boolean, patch: Partial<ItemStyle>): MenuChoice => ({
     label: "As it was",
@@ -215,6 +212,7 @@ function appearancePage(
   return [
     {
       label: "Paper",
+      divided: true,
       choices: [
         asItWas(style.paperStock !== undefined, { paperStock: undefined }),
         ...PAPER_STOCKS.map(
@@ -223,20 +221,6 @@ function appearancePage(
             swatch: STOCK_BASE[stock],
             current: style.paperStock === stock,
             run: set({ paperStock: stock }),
-          }),
-        ),
-      ],
-    },
-    {
-      label: "Tint",
-      choices: [
-        asItWas(style.tint !== undefined, { tint: undefined }),
-        ...TINTS.map(
-          (tint): MenuChoice => ({
-            label: tint.label,
-            swatch: tint.swatch,
-            current: style.tint?.hue === tint.hue && style.tint.light === tint.light,
-            run: set({ tint: { hue: tint.hue, light: tint.light } }),
           }),
         ),
       ],
@@ -259,47 +243,8 @@ function appearancePage(
         },
       ],
     },
-    {
-      label: "Tape",
-      choices: [
-        asItWas(style.tapeStyle !== undefined, { tapeStyle: undefined }),
-        {
-          label: "Taped at two corners",
-          fibre: "taped",
-          current: style.tapeStyle !== undefined && style.tapeStyle !== TAPE_NONE,
-          // Across the top, which is the pair a hand reaches for first and one
-          // of the three the seed itself draws (`render/items/tape.ts`).
-          run: set({ tapeStyle: 0b0011 }),
-        },
-        {
-          label: "No tape",
-          fibre: "untaped",
-          current: style.tapeStyle === TAPE_NONE,
-          run: set({ tapeStyle: TAPE_NONE }),
-        },
-      ],
-    },
-    {
-      label: "Edge",
-      choices: [
-        asItWas(style.torn !== undefined, { torn: undefined }),
-        {
-          label: "Torn off a pad",
-          fibre: "torn",
-          current: style.torn === true,
-          run: set({ torn: true }),
-        },
-        {
-          label: "Cut straight",
-          fibre: "cut",
-          current: style.torn === false,
-          run: set({ torn: false }),
-        },
-      ],
-    },
   ];
 }
-
 export function itemMenuRows(
   scene: Scene,
   write: BoardWriter,
@@ -410,26 +355,26 @@ export function itemMenuRows(
   );
 
   /**
-   * One row for the five style overrides, rather than five strips out here
-   * (Q-168).
+   * The restyle strips, here on the menu rather than behind a row that opens
+   * them.
    *
-   * The item menu has six verbs. Five picker strips flat would roughly double
-   * it with choices the whole premise of seed-derived appearance says nobody
-   * should need — and a menu whose choices outnumber its verbs has quietly
-   * stopped being a list of things to do to the thing under the cursor.
+   * This started as five strips, then as one *Appearance* row that opened all
+   * five, and it is two strips because the problem was never where to put them:
+   * it was how many there were. Five controls is more menu than a six-verb menu
+   * can carry, and hiding five behind a row makes the menu shorter without
+   * making the choice smaller — you still have to know the row is there and
+   * still have to read five captions when you arrive. Cutting to the two a
+   * person has a reason to reach for solves the size and the depth at once, and
+   * leaves an item's menu speaking the same language a string's already does:
+   * a caption and a strip of chips, sitting where you can see them.
    *
-   * The page is a closure rather than a list, so the chips are marked from the
-   * scene at the moment the row is pressed rather than from a snapshot taken
-   * when the menu opened. Picking a chip closes the menu, like every other
-   * choice on this board — so what this buys is not a live strip, it is that a
-   * peer restyling the same note while the menu sits open cannot leave the page
-   * describing a sheet nobody has.
+   * The other three properties are not lost — the map holds them, the renderer
+   * honours them, and a peer or a later build can write them. They have no
+   * control on this build because a control is a claim that the choice is worth
+   * making, and for tint, tape and the torn edge the seed's answer is the one
+   * anybody would have picked.
    */
-  rows.push({
-    label: live.length > 1 ? `Appearance of ${live.length}` : "Appearance",
-    divided: true,
-    page: () => appearancePage(scene, write, live, clicked),
-  });
+  rows.push(...appearanceRows(scene, write, live, clicked));
 
   /**
    * The photograph back out, under the name it came in with (T-101).

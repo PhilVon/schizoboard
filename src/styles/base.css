@@ -283,31 +283,6 @@ body {
   color: #f0a08a;
 }
 
-/*
- * A row that turns the page, and the row that turns it back (T-244).
- *
- * Chevrons in the stylesheet rather than in the label, so the row's
- * `textContent` stays the word a test asserts on and a screen reader reads —
- * `aria-haspopup` is what says the rest. Pointing the way the page moves: right
- * to go in, left to come out.
- */
-.menu-into::after {
-  content: "›";
-  float: right;
-  color: rgba(232, 222, 210, 0.5);
-}
-
-.menu-back::before {
-  content: "‹ ";
-  color: rgba(232, 222, 210, 0.5);
-}
-
-/* A page is a different list in the same box, so it says so once at the top
- * rather than by looking like a different widget. */
-.menu-back {
-  color: rgba(232, 222, 210, 0.72);
-}
-
 .menu-rule {
   height: 1px;
   margin: 4px 6px;
@@ -427,19 +402,16 @@ body {
 }
 
 /*
- * The Appearance page's six non-colour chips (T-244).
+ * The two chips on the item menu's Writing strip (T-244).
  *
  * Same idea as the three fibres above: a drawing of the thing rather than the
- * thing, because the real one is a whole sheet and this is a 16-pixel box. Each
- * is a small piece of paper with the property exaggerated onto it, so the strip
- * reads as five sheets rather than as five icons.
+ * thing, because the real one is a whole note and this is a 15-pixel box. Two
+ * ruled lines, leaning for the board's hand and level for the clean face - the
+ * lean is the only thing about the two you can see at this size. A difference
+ * of letterform is invisible in fifteen pixels; a difference of posture is not.
  */
 .menu-fibre-hand,
-.menu-fibre-clean,
-.menu-fibre-taped,
-.menu-fibre-untaped,
-.menu-fibre-torn,
-.menu-fibre-cut {
+.menu-fibre-clean {
   width: 15px;
   height: 15px;
   border-radius: 1px;
@@ -447,10 +419,6 @@ body {
   box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.45);
 }
 
-/* Two ruled lines, leaning for the hand and level for the clean face. The lean
- * is the one thing about the two you can see at this size — a difference of
- * letterform is invisible in fifteen pixels, and a difference of posture is
- * not. */
 .menu-fibre-hand {
   background:
     linear-gradient(100deg, transparent 42%, #6d6156 42%, #6d6156 52%, transparent 52%),
@@ -464,25 +432,6 @@ body {
     linear-gradient(#6d6156, #6d6156) 2px 9px / 8px 1.5px no-repeat,
     #ece4d6;
 }
-
-/* A strip across the top two corners, and the same sheet without one. */
-.menu-fibre-taped {
-  background:
-    linear-gradient(rgba(226, 216, 190, 0.95), rgba(226, 216, 190, 0.95)) -2px 0 / 8px 4px no-repeat,
-    linear-gradient(rgba(226, 216, 190, 0.95), rgba(226, 216, 190, 0.95)) 9px 0 / 8px 4px no-repeat,
-    #ece4d6;
-}
-
-/* A ragged top against a straight one. Two stops of a repeating gradient is as
- * close to a tear as fifteen pixels gets, and it is enough: what the eye is
- * comparing is "even edge" against "uneven edge". */
-.menu-fibre-torn {
-  background:
-    repeating-linear-gradient(90deg, #ece4d6 0 2px, transparent 2px 3px) 0 0 / 15px 3px no-repeat,
-    linear-gradient(#ece4d6, #ece4d6) 0 3px / 15px 12px no-repeat;
-  box-shadow: none;
-}
-
 /* --- phase-0 scaffolding, removed once items land (T-24) ------------------- */
 
 .hint {

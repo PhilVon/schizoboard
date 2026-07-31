@@ -83,37 +83,6 @@ export const STOCK_NAMES: Record<PaperStock, string> = {
 };
 
 /**
- * The tints a person can choose, as a small named set.
- *
- * A tint is two numbers rather than a member of a set, so it has no natural
- * chip list — and the obvious one, warmer/cooler/lighter/darker, is a *stepper*
- * wearing a picker's clothes: pressing warmer twice ought to go further, and a
- * chip that does nothing the second time is a broken control. These are
- * absolute instead. Picking `warm` twice is picking `warm`, which is what every
- * other strip on this menu does.
- *
- * The values are about twice what the seed spends and well inside
- * `TINT_HUE_LIMIT`, because the point is a sheet that reads as deliberately a
- * bit different rather than as a different colour of paper.
- *
- * `swatch` is a *drawing* of the effect rather than the effect itself, on the
- * argument `MenuChoice.fibre` already makes: the real thing is a filter over a
- * whole sheet and a chip is a 16-pixel box, so the box exaggerates.
- */
-export const TINTS: readonly {
-  readonly id: string;
-  readonly label: string;
-  readonly swatch: string;
-  readonly hue: number;
-  readonly light: number;
-}[] = [
-  { id: "warm", label: "Warmer", swatch: "#e8c893", hue: -14, light: -1 },
-  { id: "cool", label: "Cooler", swatch: "#bcd0dc", hue: 14, light: -1 },
-  { id: "light", label: "Lighter", swatch: "#fbf8f2", hue: 0, light: 6 },
-  { id: "dark", label: "Darker", swatch: "#c9c0ac", hue: 0, light: -6 },
-];
-
-/**
  * The face an item's writing is set in.
  *
  * > A clean typeface is available per item for anyone pasting something they
