@@ -292,6 +292,33 @@ describe("the tool info bar", () => {
     expect(host.querySelectorAll("button, input, a")).toHaveLength(0);
   });
 
+  /**
+   * The drawer's handle hides both panels. The rail and the bar are one piece
+   * of furniture — which tool you are holding, and what it does — so a handle
+   * that took away the first and left the second would hide half a sentence.
+   */
+  describe("put away with the rail", () => {
+    it("hides and comes back", () => {
+      const el = host.querySelector(".toolinfo") as HTMLElement;
+      expect(el.hidden).toBe(false);
+      bar.setVisible(false);
+      expect(el.hidden).toBe(true);
+      bar.setVisible(true);
+      expect(el.hidden).toBe(false);
+    });
+
+    /** It keeps up while it is away, so it is right the instant it returns
+     *  rather than showing the tool you were holding when you put it away. */
+    it("is current the moment it comes back", () => {
+      bar.sync(SELECT, held());
+      bar.setVisible(false);
+      bar.sync(MARKER, held("ControlLeft"));
+      bar.setVisible(true);
+      expect(lead()).toBe(`Marker (M) — draw`);
+      expect(liveKeys()).toEqual(["Ctrl at pen-down"]);
+    });
+  });
+
   it("goes away completely", () => {
     bar.sync(SELECT, held());
     bar.destroy();
