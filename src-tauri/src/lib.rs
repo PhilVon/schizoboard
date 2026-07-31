@@ -35,6 +35,7 @@ use serde::Serialize;
 use tauri::ipc::InvokeBody;
 use tauri::{AppHandle, Emitter, Manager};
 use tauri_plugin_dialog::DialogExt;
+use tauri_plugin_window_state::StateFlags;
 
 use assets::{AssetMeta, AssetStore};
 use docstore::DocStore;
@@ -239,11 +240,12 @@ fn data_root(default: PathBuf) -> PathBuf {
 
 /// Where this process was told to keep its board, if it was told.
 ///
-/// Two callers now, and they must agree: `data_root` puts the board there, and
-/// `run` reads the *presence* of an override as "this process is deliberately a
-/// separate peer" and skips the single-instance plugin for it. If those two ever
-/// disagreed about what counts as being set, an instance would get its own board
-/// and then be killed for having one.
+/// Three callers now, and they must agree: `data_root` puts the board there,
+/// and `run` reads the *presence* of an override as "this process is
+/// deliberately a separate peer" twice over — skipping the single-instance
+/// plugin for it, and skipping `window-state` (T-233). If they ever disagreed
+/// about what counts as being set, an instance would get its own board and then
+/// be killed for having one.
 ///
 /// An empty value is somebody exporting the variable without setting it, which
 /// is much more likely to be a script bug than a request to keep the board in
@@ -1079,6 +1081,50 @@ pub fn run() {
                 let _ = window.set_focus();
             }
         }));
+    }
+
+    // T-233, and skipped on the same condition as the plugin above for a reason
+    // of the same shape. The saved geometry does **not** live in the data
+    // directory, and on Windows it looks as though it does: the plugin keeps
+    // `.window-state.json` in `app_config_dir()`, which resolves to the same
+    // `%APPDATA%\com.philw.schizoboard` that `app_data_dir()` does, so the file
+    // lands next to `doc/` and `assets/` while going nowhere near
+    // `data_root`. Every instance on this machine shares it whatever
+    // `SCHIZOBOARD_DATA_DIR` says — the same fact `DATA_DIR_ENV`'s own comment
+    // records about `APPDATA`, arrived at from the other direction.
+    //
+    // So a scratch peer registering this would write the *installed*
+    // application's window position on its way out. Open two peers to watch a
+    // board sync, shove them either side of the screen, and Schizoboard opens
+    // half-width in a corner tomorrow with no way to tell why. A development
+    // affordance may not redecorate the real application, and this is the
+    // second time that sentence has had to be written in this function.
+    //
+    // ## Three flags, not six
+    //
+    // `StateFlags::all()` is the default, and two of the three it adds are
+    // traps rather than features:
+    //
+    // `VISIBLE` saves `is_visible()` at teardown and then *refuses to show the
+    // window* on the next launch if it reads false. A board that starts
+    // invisible has nothing that could bring it back — `single-instance` would
+    // hand a clicked invite to a window nobody can see, and the fix would be to
+    // find and delete a JSON file. Restoring where a window was is worth a
+    // little; restoring whether it existed is worth nothing at all.
+    //
+    // `DECORATIONS` is the same trade with less on the other side: nothing in
+    // this application ever undecorates a window, so the field can only ever
+    // agree with the default or be wrong. `FULLSCREEN` is simply unreachable —
+    // there is no way into it from here, so it would record `false` forever.
+    //
+    // Which leaves exactly what the task asks for: where it was, how big it
+    // was, and whether it was maximised.
+    if data_dir_override().is_none() {
+        builder = builder.plugin(
+            tauri_plugin_window_state::Builder::new()
+                .with_state_flags(StateFlags::SIZE | StateFlags::POSITION | StateFlags::MAXIMIZED)
+                .build(),
+        );
     }
 
     builder
