@@ -246,9 +246,10 @@ describe("layout", () => {
     const [tape] = layout([file("video/mp4")], { x: 0, y: 0 });
     const [cassette] = layout([file("audio/mpeg")], { x: 0, y: 0 });
 
-    // Portrait, landscape and landscape — and in the proportions the real
-    // objects are, which is what `lib/objects.ts` asserts in detail.
-    expect(folder!.h).toBeGreaterThan(folder!.w);
+    // All three landscape, which the folder was not until Phil's reference
+    // photograph showed one lying the way somebody actually puts it down. The
+    // proportions themselves are `lib/objects.ts`'s to assert in detail.
+    expect(folder!.w).toBeGreaterThan(folder!.h);
     expect(tape!.w).toBeGreaterThan(tape!.h);
     expect(cassette!.w).toBeGreaterThan(cassette!.h);
     // And in the order they are in life: a case file is the biggest thing on the

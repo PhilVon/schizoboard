@@ -14,6 +14,7 @@ import {
   type AssetResolver,
   type AssetView,
 } from "@/render/items/dom";
+import { objectSizeFor } from "@/lib/objects";
 import { tapedCorners } from "@/render/items/tape";
 import { dogEarOf } from "@/render/items/wear";
 import { DirtySets } from "@/state/dirty";
@@ -2461,9 +2462,23 @@ describe("a folder, a tape and a cassette", () => {
 
   // --- AC-667 and AC-668: what is written on them ---------------------------
 
-  it("types the filename on the tab as the case number", () => {
+  it("types the filename on the gummed label as the case number", () => {
+    // On a stuck-on filing label rather than on a tab: Phil's reference folder
+    // is a landscape kraft one with the back panel proud along the top and no
+    // tab to write on, so the label is where a real one of those wears it.
     const el = mount(facts({ kind: "document", name: "22718 N Sign.pdf" }));
-    expect(el.querySelector(".folder-tab .case-number")!.textContent).toBe("22718 N Sign");
+    expect(el.querySelector(".folder-label .case-number")!.textContent).toBe("22718 N Sign");
+  });
+
+  it("is a landscape folder with paper spilling out of it", () => {
+    // Both off the reference, and both were wrong before it: the object was
+    // portrait, and what showed above the front panel was two neat strips
+    // rather than a handful of paper nobody squared up.
+    const el = mount(facts({ kind: "document" }));
+    expect(el.querySelector(".folder-back")).not.toBeNull();
+    expect(el.querySelector(".folder-sheets")).not.toBeNull();
+    const size = objectSizeFor("document")!;
+    expect(size.w).toBeGreaterThan(size.h);
   });
 
   it("writes the extracted title under it, in the hand the notes use", () => {

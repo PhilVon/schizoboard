@@ -38,7 +38,8 @@ describe("how big each object is", () => {
     // what is asserted rather than either number.
     expect(vhs.w / vhs.h).toBeCloseTo(187 / 103, 2);
     expect(cassette.w / cassette.h).toBeCloseTo(100 / 64, 2);
-    expect(folder.w / folder.h).toBeCloseTo(245 / 300, 2);
+    // Landscape, off the reference photograph — see `FOLDER_MM`.
+    expect(folder.w / folder.h).toBeCloseTo(300 / 247, 2);
     expect(vhs.w / cassette.w).toBeCloseTo(187 / 100, 2);
   });
 
@@ -146,7 +147,7 @@ describe("the title line is earned", () => {
   });
 });
 
-describe("the case number on the tab", () => {
+describe("the case number on the label", () => {
   const hash = "4f2a9c1b".padEnd(64, "0");
 
   it("is the filename with the extension taken off", () => {

@@ -1605,26 +1605,32 @@ class CaseView implements View {
     // the label, which is a difference in what the object *is* rather than in
     // what is being said, so it is a difference in parents and nothing else.
     if (archetype === "folder") {
-      // The back panel's top edge, cut away except where the tab is. Its
-      // horizontal position is seeded in `bind`, because real folders come in
-      // left, centre and right cuts and a drawer of them is all three.
-      const tab = div("folder-tab");
-      tab.append(this.number);
-      // A sliver of what is inside, showing above the front panel. Two lines
-      // rather than one: a folder with a single sheet in it is a folder nobody
-      // has put anything in.
+      // Drawn from Phil's reference: a used kraft folder, landscape, with the
+      // back panel standing proud along the top and a handful of paper spilling
+      // out of it. The back is the whole box; the front panel starts a little
+      // below it, and the gap between the two is where the contents show.
+      const back = div("folder-back");
+      // What is inside, and the most alive thing in the photograph — sheets at
+      // their own angles, above the front panel and mostly to the right. Two
+      // rather than one: a folder holding a single sheet is a folder nobody has
+      // put anything in.
       const sheets = div("folder-sheets");
       const front = div("folder-front");
       this.ages = front;
       this.bend = div("paper-bend");
       this.grain = div("case-grain");
       // One shared tile for every folder on the board, generated once and
-      // memoised by stock. `cream` is the fibre nearest to buff card, and the
+      // memoised by stock. `cream` is the fibre nearest to kraft card, and the
       // per-item offset in `bind` is what stops a filing cabinet's worth of
       // them being one texture repeated.
       this.grain.style.backgroundImage = `url(${paperGrainUrl("cream")})`;
-      front.append(this.grain, this.meta, this.title, this.caption, this.bend);
-      this.body.append(sheets, tab, front);
+      // The reference has no label at all, so where one goes was mine to
+      // choose: a gummed filing label stuck on the face, which is what these
+      // folders actually wear and which leaves the spilling paper alone.
+      const label = div("folder-label");
+      label.append(this.number);
+      front.append(this.grain, label, this.meta, this.title, this.caption, this.bend);
+      this.body.append(back, sheets, front);
     } else if (archetype === "vhs") {
       // A VHS is read from Phil's reference: a ribbed shell, a white label in
       // the MIDDLE of the face, and a window either side of it showing one reel
@@ -1705,11 +1711,12 @@ class CaseView implements View {
     writeHand(this.caption, cold.text, cold.seed, plain);
     this.caption.classList.toggle("is-empty", cold.text.length === 0);
 
-    // Which of the three tab cuts this folder came out of the box as. A number
-    // rather than a class so the stylesheet can place it with one `calc`, and
-    // seeded so a drawer of case files is not a row of aligned tabs.
+    // How the paper inside this one is sitting. A signed nudge rather than three
+    // cuts, because what varies between two folders on a real desk is not a
+    // manufacturing option — it is that nobody squares up what they put in.
     if (this.archetype === "folder") {
-      this.el.style.setProperty("--tab", String(valueAt(cold.seed, "tab", 0) < 0.34 ? 0 : valueAt(cold.seed, "tab", 0) < 0.67 ? 1 : 2));
+      this.el.style.setProperty("--spill", (valueAt(cold.seed, "tab", 0) * 2 - 1).toFixed(2));
+      this.el.style.setProperty("--spill2", (valueAt(cold.seed, "tab", 1) * 2 - 1).toFixed(2));
     }
     // The name has just changed, and the size it is written at is a function of
     // it — see `sizeLabels`. `sizedFor` is the width and has not moved.
@@ -1734,14 +1741,15 @@ class CaseView implements View {
    * name changes when a record lands.
    */
   private sizeLabels(w: number): void {
-    // Only a folder's tab, and that is the point of the method rather than a
-    // limitation of it. A tab is one line on a strip a third of the object wide,
-    // so a long name has to be written smaller; a cassette label has ruled lines
-    // and the name carries onto the next one, which `items.css` lets it do.
+    // Only a folder's gummed label, and that is the point of the method rather
+    // than a limitation of it. A stuck-on label is one line on a strip of a
+    // fixed size, so a long name has to be written smaller; a cassette label
+    // has ruled lines and the name carries onto the next one, which `items.css`
+    // lets it do.
     const base = w * NUMBER_SIZE;
     const size =
       this.archetype === "folder"
-        ? fitLabel(this.number.textContent ?? "", w * TAB_WIDTH * 0.86, base)
+        ? fitLabel(this.number.textContent ?? "", w * LABEL_WIDTH, base)
         : base;
     this.number.style.fontSize = `${Math.max(5, size).toFixed(1)}px`;
   }
@@ -1859,9 +1867,10 @@ const NUMBER_SIZE = 0.055;
 const TITLE_SIZE = 0.058;
 /** And the rest, which is the runtime, the page count and the caption. */
 const CASE_TEXT_SIZE = 0.048;
-/** How much of a folder's width the tab takes — a third cut, and the number
- *  `items.css` writes. Here as well because `fitLabel` needs the box. */
-const TAB_WIDTH = 0.33;
+/** How much of a folder's width the gummed label may take, inside its own
+ *  padding — the number `items.css` writes, here as well because `fitLabel`
+ *  needs the box the name has to fit in. */
+const LABEL_WIDTH = 0.4;
 
 export class DomItemLayer implements ItemLayer {
   private readonly host: HTMLElement;

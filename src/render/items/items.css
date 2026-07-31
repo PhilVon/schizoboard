@@ -1557,92 +1557,126 @@ textarea.item-field::-webkit-scrollbar {
 /* --- the manilla folder --------------------------------------------------- */
 
 /*
- * A letter-size folder seen face on: a third-cut tab along the top, a front
- * panel a little shorter than the back so the contents show above it, and the
- * fold along the bottom edge.
+ * A used kraft folder, landscape, drawn from Phil's reference photograph.
  *
- * The tab is inside the item's box rather than sticking out of it. That is
- * physically right - a folder's height is measured over the tab - and it is the
- * only arrangement in which the pins, the ink, the hit test and the baked shadow
- * all agree about where the object is. The cost is that the top eighth of the
- * box is transparent either side of the tab, so the shadow runs along an edge
- * that is only there for a third of its width. A torn sheet's shadow has been a
- * rectangle for the same reason since T-183.
+ * The first version was a clean buff folder standing portrait with a crisp
+ * third-cut tab, and it was wrong in every one of those words. What the
+ * photograph has is a *worn* object: warm mid-brown board rather than yellow
+ * card, lying the long way, soft-cornered, creased all over from being handled,
+ * with the back panel standing proud along the top and a handful of paper
+ * spilling out of it at its own angles.
+ *
+ * The one thing the reference does not have is a label, so where the case
+ * number goes was a choice: a gummed filing label stuck on the face, which is
+ * what these folders actually wear and which leaves the spilling paper alone.
+ *
+ * Everything below is a percentage of the object, and the object is 465 by 383
+ * units — a 300 by 247 mm folder at the family's 1.55 units to the millimetre.
+ * The proportions come off the photograph: the front panel's top edge at 8%,
+ * the fold's crease at 91%, the darkened lip in the last 3%.
  */
-.folder-tab {
+.folder-back {
   position: absolute;
-  top: 0;
-  height: 8.5%;
-  width: 33%;
-  /*
-   * Left, centre or right cut, seeded per folder by the view. Real folders come
-   * out of the box in threes so that a drawer of them can be read end on, and a
-   * wall of them all cut the same way is the one thing that would say these were
-   * drawn rather than filed.
-   */
-  left: calc(3.5% + var(--tab, 0) * 30%);
-  border-radius: 5px 5px 0 0;
-  background: linear-gradient(to bottom, #e0cb96 0%, #d9c48d 100%);
-  display: grid;
-  align-items: center;
-  /* `justify-items` stays `stretch`, which is what makes the ellipsis possible:
-     a centred child is as wide as its text and overflows the tab at BOTH ends,
-     so a long name showed its middle - `FIGURE-VHO` for `configure-vhosts` -
-     and no ellipsis anywhere, because there was no truncation to mark. */
-  text-align: center;
-  /*
-   * No padding here, and that is not an omission. A percentage padding resolves
-   * against the *containing block's* inline size, and this tab is absolutely
-   * positioned inside the item — so `0 6%` was 6% of the whole 380-unit folder,
-   * 23 units a side, which ate 45 of the tab's 125 and truncated a name that
-   * fitted. The margin belongs to the type instead, in `em`, below.
-   */
-  overflow: hidden;
-}
-
-.folder-tab > .case-number {
-  padding: 0 0.45em;
+  inset: 0;
+  border-radius: 3px 4px 5px 4px;
+  /* The back panel, seen only along the top and down the right where the front
+     does not cover it. Darker than the face, because it is behind it. */
+  background: linear-gradient(168deg, #c3a077 0%, #b08a62 62%, #9d7852 100%);
 }
 
 /*
- * What is inside, showing above the front panel. Two edges rather than one,
- * because a folder holding a single sheet is a folder nobody has put anything
- * in - and offset from each other, because a stack somebody squared up is a
- * stack nobody has read.
+ * The contents, above the front panel's edge.
+ *
+ * Two sheets at their own angles and their own heights, nudged by `--spill`,
+ * which the view seeds per folder — what varies between two folders on a real
+ * desk is not a manufacturing option, it is that nobody squares up what they
+ * put in one. Weighted to the right, as the photograph is.
  */
 .folder-sheets {
   position: absolute;
-  top: 4.4%;
-  left: 6%;
-  right: 4.5%;
-  height: 4.4%;
-  border-radius: 1px 1px 0 0;
-  background:
-    linear-gradient(to bottom, #fbf7ec 0%, #f2ecdc 55%, #d9d0ba 100%);
-  box-shadow: none;
+  left: 30%;
+  right: 3%;
+  top: 0.5%;
+  height: 9%;
 }
 
-.folder-sheets::before {
+.folder-sheets::before,
+.folder-sheets::after {
   content: "";
   position: absolute;
-  inset: 22% -1.5% 0 3%;
-  border-radius: 1px 1px 0 0;
-  background: linear-gradient(to bottom, #f6f1e3 0%, #e8e0cc 100%);
+  bottom: 0;
+  /*
+   * The top corners are rounded on a long horizontal radius and a short
+   * vertical one, which is what a sheet that has been in and out of a folder
+   * looks like along its head — it lifts and rolls rather than ending in a
+   * corner. Square-topped rectangles read as two white bars laid across the
+   * folder, which is what the first version of this was.
+   */
+  border-radius: 46% 38% 0 0 / 34% 26% 0 0;
+  background: linear-gradient(to bottom, #fdfcf8 0%, #f4f1e8 46%, #e6e1d3 82%, #d3cdbc 100%);
+}
+
+/*
+ * Two sheets, and they have to be told apart or the pair reads as one white
+ * bar laid across the top of the folder — which is what the first version was.
+ * So: different widths, different heights, opposite lean, and a shaded right
+ * edge on the upper one so the lower one is visibly *behind* it.
+ */
+.folder-sheets::before {
+  width: 58%;
+  left: 0;
+  top: 8%;
+  transform: translate(calc(var(--spill, 0) * 4%), 0) rotate(calc(var(--spill, 0) * 0.6deg - 0.4deg));
+  border-right: 1px solid rgba(120, 104, 74, 0.22);
+}
+
+.folder-sheets::after {
+  width: 44%;
+  left: auto;
+  right: 0;
+  top: 26%;
+  transform: translate(calc(var(--spill2, 0) * 3%), 0) rotate(calc(var(--spill2, 0) * -0.8deg + 0.5deg));
+  background: linear-gradient(to bottom, #f3efe4 0%, #e3ddcd 100%);
 }
 
 .folder-front {
   position: absolute;
-  inset: 8.5% 0 0 0;
-  border-radius: 3px 3px 4px 4px;
-  padding: 5.5% 6% 4%;
+  inset: 8% 0 0 0;
+  border-radius: 2px 2px 5px 4px;
+  padding: 4% 5% 8%;
   /*
-   * Manilla: an unbleached buff that goes warmer and darker down the sheet,
-   * because the bottom of the panel is where the fold is and a fold takes less
-   * of the light than the face above it. The lightest line is right at the top,
-   * which is the cut edge catching it.
+   * Kraft: a warm mid-brown that darkens down the panel, because the bottom of
+   * it is the fold and a fold takes less of the light than the face above it.
+   * Sampled off the reference — the face is #c4a27d and the folded edge #9b8264,
+   * neither of them the yellow this used to be.
+   *
+   * Four layers, outermost first:
+   *   1  the cut edge along the top, catching the light
+   *   2  the crease where the fold begins, and the shaded lip under it
+   *   3  the handling creases, three soft diagonals at low contrast
+   *   4  the board itself
    */
+  /* The front panel stands in front of the contents, so its cut edge throws a
+     line onto them. Small, and the only thing that says which is in front. */
+  box-shadow: 0 -1.5px 2.5px rgba(74, 54, 32, 0.3);
   background:
-    linear-gradient(to bottom, #f0e0b4 0%, #dcc68f 1.4%, #d5bd80 46%, #c9b073 100%);
+    linear-gradient(
+      to bottom,
+      rgba(255, 244, 224, 0.55) 0 0.5%,
+      rgba(0, 0, 0, 0) 0.5% 90.4%,
+      rgba(96, 70, 40, 0.28) 90.4% 91%,
+      rgba(0, 0, 0, 0) 91% 96.5%,
+      rgba(72, 52, 30, 0.22) 96.5% 100%
+    ),
+    linear-gradient(101deg, rgba(255, 246, 228, 0) 24%, rgba(255, 246, 228, 0.22) 30%, rgba(120, 92, 56, 0.09) 35%, rgba(0, 0, 0, 0) 42%),
+    linear-gradient(152deg, rgba(255, 246, 228, 0) 62%, rgba(255, 246, 228, 0.16) 68%, rgba(110, 84, 50, 0.08) 73%, rgba(0, 0, 0, 0) 80%),
+    /*
+     * Measured rather than eyeballed. The reference's face reads a mean of 204
+     * in red with a standard deviation of 6.7 — the creases are *quiet*, and the
+     * first version of this looked shouty only because the board under them was
+     * 165 and far too dark. Same spread, forty levels lighter.
+     */
+    linear-gradient(166deg, #eccea6 0%, #e0bf94 34%, #d5b285 68%, #c49f71 100%);
 }
 
 /* The fibre. One shared tile, offset per folder by the view, so a filing
@@ -1653,8 +1687,26 @@ textarea.item-field::-webkit-scrollbar {
   pointer-events: none;
   background-repeat: repeat;
   mix-blend-mode: multiply;
-  opacity: 0.26;
+  /* Low, because it multiplies: at 0.3 the tile alone took the face from 192 to
+     165 and turned kraft into wet cardboard. */
+  opacity: 0.13;
   border-radius: inherit;
+}
+
+/*
+ * The gummed label, stuck on the face at the top left — pale paper on brown
+ * board, which is the one high-contrast thing on the object and so the thing
+ * the eye goes to. Sized to its own text rather than to the column, because a
+ * label is a physical strip and not a table cell.
+ */
+.folder-label {
+  grid-row: 1;
+  grid-column: 1;
+  justify-self: start;
+  max-width: 62%;
+  padding: 0.28em 0.7em 0.34em;
+  border-radius: 1px;
+  background: linear-gradient(to bottom, #f6f1e2 0%, #ebe4d0 100%);
 }
 
 /* --- the two cassettes ---------------------------------------------------- */

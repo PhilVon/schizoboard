@@ -72,8 +72,17 @@ export function assetKind(mime: string): AssetKind {
  */
 const UNITS_PER_MM = 1.55;
 
-/** A US letter folder, closed. */
-const FOLDER_MM = { w: 245, h: 300 } as const;
+/**
+ * A letter folder, closed, lying the way Phil's reference photograph has it —
+ * **landscape**, with the fold along the bottom and the back panel standing
+ * proud on the right.
+ *
+ * It was portrait, on the reasoning that a folder holds portrait paper. The
+ * reference says otherwise and the reference wins: this is the object as it
+ * looks when somebody puts it down, which is the only way it is ever seen on a
+ * wall. The area is unchanged, so a case file is exactly as big as it was.
+ */
+const FOLDER_MM = { w: 300, h: 247 } as const;
 /** A VHS cassette: 187 x 103 x 25 mm, seen face on. */
 const VHS_MM = { w: 187, h: 103 } as const;
 /** A compact cassette: 100 x 64 x 12 mm. */
