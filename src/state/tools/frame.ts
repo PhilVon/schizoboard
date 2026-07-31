@@ -256,6 +256,29 @@ export function anchorAt(
 export const STRING_GRAB_PX = 8;
 
 /**
+ * The scissors modifier — `Ctrl`+`Alt` (Q-183).
+ *
+ * > | Cut | `Ctrl`+`Alt`+click a string, or context menu → *Delete* | String
+ * > removed; its pins stay where they are | — DESIGN section 3.4
+ *
+ * DESIGN named a "scissors modifier" for six phases without saying which one,
+ * and that omission is the whole of why the gesture went unbuilt: every
+ * ordinary modifier already means something within a few pixels of where a cut
+ * would happen. `Alt` on its own removes a pin and drags a new string out of
+ * one, `Ctrl` keeps a pin put mid-drag and at pen-down forces ink onto the
+ * cork, `Shift` extends a selection. Giving any of the three a fourth meaning
+ * over a string is how a board starts cutting things people meant to drag; the
+ * unused *pair* cannot be pressed by accident.
+ *
+ * A function rather than the expression written twice, because two places have
+ * to agree about it or the board lies: the press in `state/tools/select.ts`
+ * that does the cutting, and the cursor in `app/main.ts` that promises it.
+ */
+export function isScissors(ctrl: boolean, alt: boolean): boolean {
+  return ctrl && alt;
+}
+
+/**
  * The string under a screen point, or null.
  *
  * > Hover a string. The nearest point on the rope highlights, tracking your

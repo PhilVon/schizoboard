@@ -65,6 +65,7 @@ import { threadFrom } from "@/state/thread";
 import {
   anchorAt,
   anchorParent,
+  isScissors,
   settleOnPin,
   stringAt,
 } from "@/state/tools/frame";
@@ -739,6 +740,35 @@ export class SelectTool implements Tool {
     const board = ctx.camera.screenToBoard(at.x, at.y, this.board);
     this.downBoardX = board.x;
     this.downBoardY = board.y;
+
+    /**
+     * Scissors, before anything else the press could have meant.
+     *
+     * > | Cut | `Ctrl`+`Alt`+click a string — the scissors — or context menu →
+     * > *Delete* | String removed; its pins stay where they are
+     * > — DESIGN section 3.4
+     *
+     * First because `Ctrl`+`Alt` is not something a hand does on the way to
+     * another gesture — it is two modifiers held on purpose — so once it is
+     * down the press means cut and cannot mean anything else. Ahead of the
+     * chrome handles in particular: a selected item's rotation knob standing in
+     * open cork over a string would otherwise take a press aimed at the string
+     * and start rotating the item instead.
+     *
+     * A miss is swallowed too, and that is deliberate. Falling through would
+     * make a scissors press that landed a few pixels off the curve clear the
+     * selection and start a marquee, which is a worse answer to "I meant to cut
+     * that" than nothing happening. `stringAt` is the same question the hover
+     * highlight asks, so what is cut is exactly what was lit.
+     */
+    if (isScissors(at.ctrl, at.alt)) {
+      this.phase = "idle";
+      const cut = stringAt(ctx.scene, ctx.camera, ctx.hitTest, ctx.hitPin, ctx.hitString, at.x, at.y);
+      // No `keepPins` to pass: a string owns nothing but its nodes, so removing
+      // it leaves every pin it hung from where it is (`crdt/ops/strings.ts`).
+      if (cut !== null) ctx.write.deleteStrings([cut.string]);
+      return;
+    }
 
     /**
      * The chrome gets the press before the board does, and that ordering is the

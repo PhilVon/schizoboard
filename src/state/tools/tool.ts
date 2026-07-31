@@ -362,8 +362,9 @@ export interface BoardWriter {
    */
   setStringStyle(stringIds: readonly string[], style: StringStyle): void;
   /**
-   * > | Cut | Scissors modifier, or context menu → *Delete* | String removed;
-   * > its pins stay where they are — DESIGN section 3.4
+   * > | Cut | `Ctrl`+`Alt`+click a string — the scissors — or context menu →
+   * > *Delete* | String removed; its pins stay where they are
+   * > — DESIGN section 3.4
    *
    * Its own write rather than a branch of `deleteItems`, because a string and
    * an item are deleted by different rules and only one of them cascades: an
