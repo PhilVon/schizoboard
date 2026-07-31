@@ -307,6 +307,32 @@ describe("the viewport gate", () => {
     }
   });
 
+  /**
+   * The one the unit tests missed and driving the app found.
+   *
+   * A segment can end a frame awake and have its pin move on the next one — a
+   * write landing after phase 3 is enough, and that is the ordinary case for
+   * anything arriving over sync. `rousePin` used to skip an already-awake
+   * segment on the grounds that it was going to step anyway. It is not: if the
+   * camera has moved too, the gate re-sleeps it on a box that never heard where
+   * the pin went, and by the next frame the pin is clean again. Nothing dirties
+   * it after that, so it strands there for the session.
+   */
+  it("does not strand a rope whose pin moved on a frame it was already awake", () => {
+    string("s1");
+    shove("p1", -40);
+    seen(NEAR);
+    expect(ropes.awake).toBe(1);
+
+    const p = scene.pins.get("p1")!;
+    p.lx = 0;
+    p.ly = 30_000;
+    dirty.pin("p1");
+    seen({ minX: -500, minY: 29_000, maxX: 700, maxY: 31_000 }, 60);
+
+    expect(lowest("s1")).toBeGreaterThan(10_000);
+  });
+
   it("gates nothing at all when there is no camera to gate by", () => {
     string("s1");
     shove("p1", -40);

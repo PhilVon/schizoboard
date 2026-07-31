@@ -836,14 +836,22 @@ export class RopeSet {
         if (segment.count > 0) dirty.rope(segment.string);
         continue;
       }
-      if (!segment.asleep) continue;
       const moved =
         segment.a === pinId
           ? Math.abs(pin.wx - segment.ax) + Math.abs(pin.wy - segment.ay)
           : Math.abs(pin.wx - segment.bx) + Math.abs(pin.wy - segment.by);
       if (moved <= ANCHOR_EPSILON) continue;
-      this.rouse(segment);
+      // Before the sleep test, not after it, and that ordering is a bug that
+      // was in here. A segment can end a frame awake — the write landed after
+      // phase 3, or the cap deferred it — and on the next frame this would skip
+      // it entirely as "already awake, it will sort itself out". It does not:
+      // the *box* is what the gate judges, only a step refreshes it, and a
+      // gated rope never takes one. So the pin moved, the box did not hear
+      // about it, the gate re-slept it on the stale box, and the pin was clean
+      // by the following frame — stranding the rope where it used to be for the
+      // life of the session. Found by driving it, not by the tests.
       this.reach(segment, pin.wx, pin.wy);
+      if (segment.asleep) this.rouse(segment);
     }
   }
 
