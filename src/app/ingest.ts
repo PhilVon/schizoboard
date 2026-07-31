@@ -25,9 +25,16 @@ import type { AssetInput, CreateItemInput } from "@/crdt/ops";
 import { polaroidFor } from "@/lib/polaroid";
 import { newSeed, valueAt } from "@/lib/seed";
 
-/** A clipboard payload whose bytes, if it had any, are already in the store. */
+/**
+ * A clipboard payload whose bytes, if it had any, are already in the store.
+ *
+ * `asset` rather than `image` since T-260: what comes through here is a file the
+ * board can hold, and a photograph is one of four things that can be (D-46
+ * section 1). The variant is named for what it *is* — bytes in the store and a
+ * record describing them — rather than for the one kind it used to be.
+ */
 export type Ingested =
-  | { kind: "image"; sha256: string; asset: AssetInput }
+  | { kind: "asset"; sha256: string; asset: AssetInput }
   | { kind: "text"; text: string };
 
 export interface BoardPoint {
@@ -246,8 +253,14 @@ export function layout(payloads: readonly Ingested[], at: BoardPoint): CreateIte
 
   return payloads.map((payload, i) => {
     const seed = newSeed();
+    // `polaroidFor` on something with no pixel box gives a square, which is
+    // what it already did for a photograph whose dimensions had not arrived —
+    // so a cassette and a case file get a sheet-sized placeholder here. The
+    // shapes those objects are actually meant to be, and the faces on them,
+    // are T-267; this is the gate, and inventing them here would be deciding
+    // that task's question in passing.
     const size =
-      payload.kind === "image"
+      payload.kind === "asset"
         ? polaroidFor(payload.asset.w, payload.asset.h)
         : noteSizeFor(payload.text);
 
@@ -260,7 +273,13 @@ export function layout(payloads: readonly Ingested[], at: BoardPoint): CreateIte
     const jitterY = (valueAt(seed, "fan", 1) * 2 - 1) * FAN_JITTER;
 
     return {
-      type: payload.kind === "image" ? "polaroid" : "note",
+      // No new item types, and this is the line that would grow one. The face
+      // is chosen from the asset's mime at render time (D-46 section 2), and
+      // the reason is a data-loss argument rather than a taste one: `readItem`
+      // returns null for a type an older build has never heard of, so such an
+      // item is both invisible *and* absent from the keep set — an older build
+      // would collect the bytes of a document it cannot see.
+      type: payload.kind === "asset" ? "polaroid" : "note",
       x: at.x + t * step + jitterX,
       // A shallow sag, so a row of photographs reads as dropped rather than
       // set out. Zero for a single item, which is the common case.
@@ -268,8 +287,8 @@ export function layout(payloads: readonly Ingested[], at: BoardPoint): CreateIte
       w: size.w,
       h: size.h,
       seed,
-      assetId: payload.kind === "image" ? payload.sha256 : null,
-      ...(payload.kind === "image" ? { asset: payload.asset } : {}),
+      assetId: payload.kind === "asset" ? payload.sha256 : null,
+      ...(payload.kind === "asset" ? { asset: payload.asset } : {}),
       text: payload.kind === "text" ? payload.text : "",
     };
   });

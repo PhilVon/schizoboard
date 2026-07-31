@@ -10,7 +10,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { initialiseBoard, openBoardDoc, sealBoard, type BoardDoc } from "@/crdt/doc";
-import { readItem } from "@/crdt/schema";
+import { readAsset, readItem } from "@/crdt/schema";
 import { Paste } from "@/app/paste";
 import type { AssetMeta, ClipboardPayload, Platform, PlatformEvents } from "@/platform/types";
 import { Camera } from "@/state/camera";
@@ -103,6 +103,8 @@ let transactions: number;
  * (`app/clipboard.ts`).
  */
 let claim: ((data: DataTransfer | null, at: { x: number; y: number }) => boolean) | null;
+/** Every line the paste said out loud — `ui/flash.ts` in the application. */
+let said: string[];
 
 /** A `DataTransfer` is only valid during its event, so the real one is a
  *  one-shot too — this stands in for exactly the surface paste reads. */
@@ -176,6 +178,7 @@ beforeEach(async () => {
   cursor = null;
   created = [];
   claim = null;
+  said = [];
   paste = new Paste({
     native: native as unknown as Platform,
     board,
@@ -183,6 +186,7 @@ beforeEach(async () => {
     claim: (data, at) => claim?.(data, at) === true,
     cursor: () => cursor,
     onCreated: (ids) => created.push(...ids),
+    say: (message) => said.push(message),
   });
   await paste.attach();
 });
@@ -316,7 +320,7 @@ describe("what wins", () => {
     native.decodes = false;
     await firePaste({ html: '<img src="data:image/png;base64,aGVsbG8=">' });
     expect(itemsOnBoard()).toEqual([]);
-    expect(warn).toHaveBeenCalledWith(expect.stringContaining("not a picture"));
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining("will not open as one"));
     warn.mockRestore();
   });
 
@@ -473,5 +477,163 @@ describe("on a sealed board", () => {
 
     expect(native.calls).toEqual([]);
     expect(itemsOnBoard()).toEqual([]);
+  });
+});
+
+/**
+ * T-260. The whole image-only gate was one branch in `accept`, and every route
+ * on to the board funnels through it — the clipboard, the native clipboard, a
+ * data URL, a remote fetch and an OS drop. So this is the door, and what it is
+ * asked is what the board can hold.
+ */
+describe("what the board will take", () => {
+  const named = (name: string, type: string, bytes = 2048): unknown => ({
+    name,
+    type,
+    size: bytes,
+    arrayBuffer: async () => new ArrayBuffer(bytes),
+  });
+
+  /** AC-649. Three files that used to be a `console.warn` and nothing else. */
+  it("takes a case file, a film and a recording, not only a photograph", async () => {
+    // Three different byte lengths, because the fake store hashes by length —
+    // three files of one size would be one asset with three items on it, which
+    // is correct content-addressing and would make this assert nothing.
+    await firePaste({
+      files: [
+        named("filing.pdf", "application/pdf", 2048),
+        named("interview.mp4", "video/mp4", 4096),
+        named("tape.mp3", "audio/mpeg", 8192),
+      ],
+    });
+
+    const items = itemsOnBoard();
+    expect(items).toHaveLength(3);
+    // No new item types, whatever the file was: the face is chosen from the
+    // asset's mime at render time (D-46 section 2), and a type an older build
+    // has never heard of would be invisible *and* uncollectable-from.
+    expect(items.map((item) => item.type)).toEqual(["polaroid", "polaroid", "polaroid"]);
+    expect(items.every((item) => item.assetId !== null)).toBe(true);
+
+    // And the record says what each one is, which is what the face will read.
+    const mimes = [...board.assets.values()].map((asset) => asset.get("mime"));
+    expect(mimes.sort()).toEqual(["application/pdf", "audio/mpeg", "video/mp4"]);
+  });
+
+  it("puts a case file on the board even though it has no pixel box", async () => {
+    // The half that only works because of T-261. `readAsset` used to refuse any
+    // record with no dimensions, so opening this gate before that landed would
+    // have produced an item with an assetId pointing at a record that read as
+    // absent — and absent from `readAsset` is absent from the keep set.
+    await firePaste({ files: [named("filing.pdf", "application/pdf")] });
+    const [item] = itemsOnBoard();
+    expect(item?.assetId).not.toBeNull();
+    expect(readAsset(item!.assetId!, board.assets.get(item!.assetId!)!)).not.toBeNull();
+  });
+
+  /**
+   * AC-650. The gate reads the shell's answer, which is a sniff of the magic
+   * numbers, and never the name. Both halves are asserted, because a gate that
+   * happened to agree with the extension every time would pass either way.
+   */
+  it("decides from what the bytes turned out to be, not from what they are called", async () => {
+    // Named as a picture, sniffed as a document: it is a document.
+    native.mimeFor.set("C:/decoy.jpg", "application/pdf");
+    // Named as nothing in particular, sniffed as a film: it is a film.
+    native.mimeFor.set("C:/BLOB", "video/webm");
+    native.drop(["C:/decoy.jpg", "C:/BLOB"], 0, 0);
+    await settle();
+
+    const mimes = [...board.assets.values()].map((asset) => asset.get("mime"));
+    expect(mimes.sort()).toEqual(["application/pdf", "video/webm"]);
+  });
+
+  it("refuses a file whose bytes are nothing it knows, whatever it is called", async () => {
+    native.mimeFor.set("C:/holiday.jpg", "application/x-msdownload");
+    native.drop(["C:/holiday.jpg"], 0, 0);
+    await settle();
+    expect(itemsOnBoard()).toEqual([]);
+  });
+
+  /** AC-651. A file that lands nowhere and says nothing is the failure. */
+  it("says so on the cork when it will not take something", async () => {
+    native.mimeFor.set("C:/model.blend", "application/octet-stream");
+    native.drop(["C:/model.blend"], 0, 0);
+    await settle();
+
+    expect(itemsOnBoard()).toEqual([]);
+    // The whole sentence, not a fragment of it: "1 of those" is a real thing a
+    // plural-only version would say, and it reads as a machine counting rather
+    // than as somebody telling you what happened.
+    expect(said).toEqual(["Nothing here can hold C:/model.blend"]);
+  });
+
+  it("says it once for a folder of them rather than once each", async () => {
+    // Dragging a folder in is one gesture. Four lines about four files is four
+    // times the punishment for it.
+    for (const path of ["C:/a.blend", "C:/b.blend", "C:/c.blend"]) {
+      native.mimeFor.set(path, "application/octet-stream");
+    }
+    native.drop(["C:/a.blend", "C:/b.blend", "C:/c.blend"], 0, 0);
+    await settle();
+
+    expect(said).toHaveLength(1);
+    expect(said[0]).toContain("3 of those");
+  });
+
+  it("says nothing at all when everything was taken", async () => {
+    await firePaste({ files: [named("filing.pdf", "application/pdf")] });
+    expect(itemsOnBoard()).toHaveLength(1);
+    expect(said).toEqual([]);
+  });
+
+  it("puts down what it can and mentions only what it could not", async () => {
+    native.mimeFor.set("C:/good.pdf", "application/pdf");
+    native.mimeFor.set("C:/bad.blend", "application/octet-stream");
+    native.drop(["C:/good.pdf", "C:/bad.blend"], 0, 0);
+    await settle();
+
+    expect(itemsOnBoard()).toHaveLength(1);
+    expect(said).toHaveLength(1);
+    expect(said[0]).toContain("bad.blend");
+    expect(said[0]).not.toContain("good.pdf");
+  });
+
+  it("does not carry a refusal over into the next paste", async () => {
+    native.mimeFor.set("C:/bad.blend", "application/octet-stream");
+    native.drop(["C:/bad.blend"], 0, 0);
+    await settle();
+    expect(said).toHaveLength(1);
+
+    await firePaste({ files: [named("filing.pdf", "application/pdf")] });
+    expect(said).toHaveLength(1);
+  });
+
+  /**
+   * AC-652. The point of the gate being one function is that no route can grow
+   * its own idea of what is allowed. These are the four ways bytes reach it.
+   */
+  it("is the same gate on every route in", async () => {
+    // 1. The web clipboard's files.
+    await firePaste({ files: [named("one.pdf", "application/pdf")] });
+    // 2. The native clipboard, which is what an Explorer copy comes back as.
+    native.nativeFiles = ["C:/two.mp3"];
+    native.mimeFor.set("C:/two.mp3", "audio/mpeg");
+    await firePaste({});
+    native.nativeFiles = [];
+    // 3. A data URL in a copied fragment.
+    await firePaste({ html: '<img src="data:image/png;base64,aGVsbG8=">' });
+    // 4. An OS drop.
+    native.mimeFor.set("C:/four.mkv", "video/x-matroska");
+    native.drop(["C:/four.mkv"], 0, 0);
+    await settle();
+
+    const mimes = [...board.assets.values()].map((asset) => asset.get("mime"));
+    expect(mimes.sort()).toEqual([
+      "application/pdf",
+      "audio/mpeg",
+      "image/png",
+      "video/x-matroska",
+    ]);
   });
 });

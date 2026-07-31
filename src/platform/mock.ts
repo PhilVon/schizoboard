@@ -57,12 +57,53 @@ function unavailable(what: string): Promise<never> {
 }
 
 /** Magic-number sniff. Enough for the formats a board can hold. */
+/**
+ * The magic numbers, as far as the browser dev loop needs them.
+ *
+ * **`assets.rs` is the real one** and this is deliberately the smaller list: it
+ * exists so that the dev loop can put the four objects of D-46 on a board, not
+ * so that two implementations of a sniffer have to agree. Anything that turns
+ * on *which* film or *which* recording is Rust's, and is tested there.
+ *
+ * It grew past pictures with T-260. Before that a PDF read as
+ * `application/octet-stream` here, which the ingest gate now refuses — so the
+ * one feature this list is for would have been untestable in a browser without
+ * it, and would have looked like a broken gate rather than a short sniffer.
+ */
 function sniffMime(bytes: Uint8Array): string {
   if (bytes[0] === 0xff && bytes[1] === 0xd8) return "image/jpeg";
   if (bytes[0] === 0x89 && bytes[1] === 0x50) return "image/png";
   if (bytes[0] === 0x47 && bytes[1] === 0x49) return "image/gif";
-  if (bytes[8] === 0x57 && bytes[9] === 0x45) return "image/webp";
+  if (starts(bytes, "RIFF")) {
+    if (at(bytes, 8, "WEBP")) return "image/webp";
+    if (at(bytes, 8, "WAVE")) return "audio/wav";
+    if (at(bytes, 8, "AVI ")) return "video/x-msvideo";
+    return "application/octet-stream";
+  }
+  if (starts(bytes, "%PDF-")) return "application/pdf";
+  // The `ftyp` box is second, not first, and the brand after it is what says
+  // whether the identical container is a film or a song.
+  if (at(bytes, 4, "ftyp")) {
+    return at(bytes, 8, "M4A ") || at(bytes, 8, "M4B ") ? "audio/mp4" : "video/mp4";
+  }
+  if (bytes[0] === 0x1a && bytes[1] === 0x45 && bytes[2] === 0xdf && bytes[3] === 0xa3) {
+    return "video/webm";
+  }
+  if (starts(bytes, "OggS")) return "audio/ogg";
+  if (starts(bytes, "fLaC")) return "audio/flac";
+  if (starts(bytes, "ID3") || (bytes[0] === 0xff && (bytes[1] ?? 0) >= 0xe0)) return "audio/mpeg";
   return "application/octet-stream";
+}
+
+function at(bytes: Uint8Array, offset: number, ascii: string): boolean {
+  for (let i = 0; i < ascii.length; i++) {
+    if (bytes[offset + i] !== ascii.charCodeAt(i)) return false;
+  }
+  return true;
+}
+
+function starts(bytes: Uint8Array, ascii: string): boolean {
+  return at(bytes, 0, ascii);
 }
 
 async function sha256Hex(bytes: Uint8Array): Promise<string> {
