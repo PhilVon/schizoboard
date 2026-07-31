@@ -24,7 +24,7 @@ import {
 } from "@/crdt/doc";
 import { applyPersisted } from "@/crdt/ops/load";
 import { createItems, deleteItems } from "@/crdt/ops/items";
-import { SCHEMA_VERSION } from "@/crdt/schema";
+import { assetKind, readAsset, SCHEMA_VERSION } from "@/crdt/schema";
 
 const PHOTO = "a".repeat(64);
 const OTHER = "b".repeat(64);
@@ -270,5 +270,268 @@ describe("a board written by a newer build", () => {
     expect(boardSealed(other)).toBe(false);
     createItems(other, [polaroid(null)]);
     expect(other.items.size).toBe(1);
+  });
+});
+
+/**
+ * T-261. The asset record is the only thing about a file that reaches a peer
+ * ahead of the file, so what it can and cannot say is what decides whether an
+ * item arrives at all.
+ *
+ * The stake is `readAsset` answering null. Absent from there is absent from
+ * `referencedAssets`, which is absent from the keep set, which is bytes the
+ * boot sweep is free to collect — so a record that reads as missing is not a
+ * cosmetic problem, it is the file going away thirty days later.
+ */
+describe("an asset that is not a photograph", () => {
+  const record = (doc: ReturnType<typeof board>, sha256: string, fields: Record<string, unknown>) => {
+    const map = new Y.Map<unknown>();
+    for (const [key, value] of Object.entries(fields)) map.set(key, value);
+    doc.assets.set(sha256, map);
+    return map;
+  };
+
+  /** AC-653. A cassette has no pixel box, and never will have one. */
+  it("round-trips through the document with no pixel box at all", () => {
+    const doc = board();
+    record(doc, PHOTO, { w: 0, h: 0, mime: "audio/mpeg", size: 4_000_000, duration: 1606.139 });
+
+    const asset = readAsset(PHOTO, doc.assets.get(PHOTO)!);
+    expect(asset).not.toBeNull();
+    expect(asset!.kind).toBe("audio");
+    expect(asset!.w).toBe(0);
+    expect(asset!.duration).toBeCloseTo(1606.139, 3);
+  });
+
+  /**
+   * A film has a frame size, but the object hanging on the wall is a VHS
+   * cassette and its shape is the cassette's — so nothing measures the frame
+   * and the record has no box either.
+   */
+  it("is a cassette and a case file too, not only a sound recording", () => {
+    const doc = board();
+    record(doc, PHOTO, { w: 0, h: 0, mime: "video/mp4", size: 9, duration: 12 });
+    record(doc, OTHER, { w: 0, h: 0, mime: "application/pdf", size: 9, pages: 200 });
+
+    expect(readAsset(PHOTO, doc.assets.get(PHOTO)!)!.kind).toBe("video");
+    expect(readAsset(OTHER, doc.assets.get(OTHER)!)!.kind).toBe("document");
+    expect(readAsset(OTHER, doc.assets.get(OTHER)!)!.pages).toBe(200);
+  });
+
+  /**
+   * AC-656. The guard that made this safe for photographs is still doing its
+   * job, and this is the fixture that separates the two readings: same absent
+   * box, opposite answers, decided by the one thing the record still says.
+   */
+  it("still reads as absent when nothing about it is usable", () => {
+    const doc = board();
+    record(doc, PHOTO, { w: 0, h: 0, mime: "image/png", size: 9 });
+    record(doc, OTHER, { w: 0, h: 0, size: 9 });
+
+    expect(readAsset(PHOTO, doc.assets.get(PHOTO)!)).toBeNull();
+    expect(readAsset(OTHER, doc.assets.get(OTHER)!)).toBeNull();
+  });
+
+  it("reads as absent when a photograph has half a box", () => {
+    const doc = board();
+    record(doc, PHOTO, { w: 100, h: 0, mime: "image/jpeg", size: 9 });
+    expect(readAsset(PHOTO, doc.assets.get(PHOTO)!)).toBeNull();
+  });
+
+  /**
+   * The reason this matters at all, in one assertion: a cassette that read as
+   * absent would be in no keep set, and the sweep would take the interview.
+   */
+  it("is in the keep set, where a record that will not read is not", () => {
+    const doc = board();
+    createItems(doc, [
+      {
+        type: "polaroid" as const,
+        x: 0,
+        y: 0,
+        w: 100,
+        h: 100,
+        assetId: PHOTO,
+        asset: { w: 0, h: 0, mime: "audio/mpeg", size: 9, duration: 30 },
+      },
+    ]);
+    expect(referencedAssets(doc)).toEqual([PHOTO]);
+  });
+});
+
+describe("what a mime says a file is", () => {
+  it("puts every face on the wall that D-46 names, and refuses to guess at the rest", () => {
+    expect(assetKind("image/jpeg")).toBe("image");
+    expect(assetKind("video/x-matroska")).toBe("video");
+    expect(assetKind("audio/flac")).toBe("audio");
+    expect(assetKind("application/pdf")).toBe("document");
+    expect(assetKind("application/octet-stream")).toBe("unknown");
+    expect(assetKind("")).toBe("unknown");
+  });
+});
+
+describe("a duration in the document", () => {
+  const withDuration = (value: unknown) => {
+    const doc = board();
+    const map = new Y.Map<unknown>();
+    map.set("w", 0);
+    map.set("h", 0);
+    map.set("mime", "audio/mpeg");
+    map.set("duration", value);
+    doc.assets.set(PHOTO, map);
+    return readAsset(PHOTO, doc.assets.get(PHOTO)!)!;
+  };
+
+  /**
+   * The whole argument of T-300 arriving in the schema. A J-card with nothing
+   * written on it is a tape nobody measured; one reading 0:00 is a tape with
+   * nothing on it, and the file behind it is a 400 MB interview.
+   */
+  it("is null rather than zero when nobody measured it", () => {
+    const doc = board();
+    const map = new Y.Map<unknown>();
+    map.set("w", 0);
+    map.set("h", 0);
+    map.set("mime", "audio/mpeg");
+    doc.assets.set(PHOTO, map);
+    expect(readAsset(PHOTO, doc.assets.get(PHOTO)!)!.duration).toBeNull();
+  });
+
+  it("refuses the values a hostile or older peer can put in a map", () => {
+    for (const value of [0, -1, Number.NaN, Number.POSITIVE_INFINITY, "12", null, {}]) {
+      expect(withDuration(value).duration).toBeNull();
+    }
+    expect(withDuration(12.5).duration).toBe(12.5);
+  });
+
+  /** AC-654. It is written by whoever ingested, and it is on the record. */
+  it("is on the record the moment the item is created", () => {
+    const doc = board();
+    createItems(doc, [
+      {
+        type: "polaroid" as const,
+        x: 0,
+        y: 0,
+        w: 100,
+        h: 100,
+        assetId: PHOTO,
+        asset: { w: 0, h: 0, mime: "video/mp4", size: 9, duration: 42.5, pages: null },
+      },
+    ]);
+    const asset = readAsset(PHOTO, doc.assets.get(PHOTO)!)!;
+    expect(asset.duration).toBe(42.5);
+    expect(asset.pages).toBeNull();
+    // And nothing was written for the thing nobody measured, rather than a
+    // null being spent on the wire to say so.
+    expect(doc.assets.get(PHOTO)!.has("pages")).toBe(false);
+  });
+
+  it("counts a case file's pages by the same rule", () => {
+    const doc = board();
+    createItems(doc, [
+      {
+        type: "polaroid" as const,
+        x: 0,
+        y: 0,
+        w: 100,
+        h: 100,
+        assetId: OTHER,
+        asset: { w: 0, h: 0, mime: "application/pdf", size: 9, pages: 200 },
+      },
+    ]);
+    const asset = readAsset(OTHER, doc.assets.get(OTHER)!)!;
+    expect(asset.pages).toBe(200);
+    expect(asset.duration).toBeNull();
+    expect(doc.assets.get(OTHER)!.has("duration")).toBe(false);
+  });
+
+  /**
+   * Two people pasting the same photograph produce the same hash, so the second
+   * write would be byte-identical to the first — churn on the wire for no
+   * change. It is not only churn: `addedBy` and `addedAt` say who first brought
+   * the file to the board, and rewriting them would make the newest paste look
+   * like the original.
+   */
+  it("is written once, and a second paste of the same hash does not rewrite it", () => {
+    const doc = board();
+    const item = (origName: string) => ({
+      type: "polaroid" as const,
+      x: 0,
+      y: 0,
+      w: 100,
+      h: 100,
+      assetId: PHOTO,
+      asset: { w: 10, h: 10, mime: "image/png", size: 100, origName },
+    });
+    createItems(doc, [item("first.png")]);
+    const addedAt = doc.assets.get(PHOTO)!.get("addedAt");
+    createItems(doc, [item("second.png")]);
+
+    const asset = readAsset(PHOTO, doc.assets.get(PHOTO)!)!;
+    expect(asset.origName).toBe("first.png");
+    expect(doc.assets.get(PHOTO)!.get("addedAt")).toBe(addedAt);
+  });
+});
+
+/**
+ * AC-655. `Y.Map` is per-property last-write-wins, which is the argument
+ * `readStyle` already makes for the style map — a build that has never heard of
+ * a key reads the ones it knows and ignores the rest.
+ */
+describe("a record written by a build that knows more than this one", () => {
+  it("is read for what this build understands and is not refused for the rest", () => {
+    const doc = board();
+    const map = new Y.Map<unknown>();
+    map.set("w", 800);
+    map.set("h", 600);
+    map.set("mime", "image/png");
+    map.set("size", 1234);
+    map.set("origName", "holiday.png");
+    // Four keys from a build that measures more than this one does.
+    map.set("poster", "c".repeat(64));
+    map.set("chapters", 12);
+    map.set("transcript", "d".repeat(64));
+    map.set("kind", "photograph-of-a-kind-we-do-not-have");
+    doc.assets.set(PHOTO, map);
+
+    const asset = readAsset(PHOTO, doc.assets.get(PHOTO)!);
+    expect(asset).not.toBeNull();
+    expect(asset!.w).toBe(800);
+    expect(asset!.origName).toBe("holiday.png");
+    // And the kind is still the one the mime says, not the one the newer build
+    // wrote down — which is what "derived rather than stored" means when the
+    // two would disagree.
+    expect(asset!.kind).toBe("image");
+  });
+
+  /**
+   * The other direction, and the one that actually happens: this build reading
+   * every record written before any of these keys existed.
+   */
+  it("reads a record from before any of this as the photograph it is", () => {
+    const doc = board();
+    const map = new Y.Map<unknown>();
+    map.set("w", 800);
+    map.set("h", 600);
+    map.set("mime", "image/jpeg");
+    map.set("size", 1234);
+    map.set("origName", "holiday.jpg");
+    map.set("addedBy", 7);
+    map.set("addedAt", 1234);
+    doc.assets.set(PHOTO, map);
+
+    expect(readAsset(PHOTO, doc.assets.get(PHOTO)!)).toEqual({
+      sha256: PHOTO,
+      w: 800,
+      h: 600,
+      mime: "image/jpeg",
+      size: 1234,
+      origName: "holiday.jpg",
+      addedBy: 7,
+      addedAt: 1234,
+      kind: "image",
+      duration: null,
+      pages: null,
+    });
   });
 });

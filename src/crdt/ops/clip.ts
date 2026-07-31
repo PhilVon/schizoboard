@@ -62,7 +62,7 @@ import * as Y from "yjs";
 import { freshId, mutate, type BoardDoc } from "@/crdt/doc";
 import { Origin } from "@/crdt/origins";
 import { pinsOfItems } from "@/crdt/ops/cascade";
-import type { AssetInput } from "@/crdt/ops/items";
+import { registerAsset, type AssetInput } from "@/crdt/ops/items";
 import { buildPin } from "@/crdt/ops/pins";
 import { buildString } from "@/crdt/ops/strings";
 import { highestZ } from "@/crdt/ops/z";
@@ -350,16 +350,10 @@ export function pasteClip(
         strokes.set(freshId(strokes), stroke as YMap);
       }
 
-      if (clipped.assetId && clipped.asset && !board.assets.has(clipped.assetId)) {
-        const asset = new Y.Map<unknown>();
-        asset.set("w", clipped.asset.w);
-        asset.set("h", clipped.asset.h);
-        asset.set("mime", clipped.asset.mime);
-        asset.set("size", clipped.asset.size);
-        asset.set("origName", clipped.asset.origName ?? null);
-        asset.set("addedBy", board.doc.clientID);
-        asset.set("addedAt", now);
-        board.assets.set(clipped.assetId, asset);
+      // `registerAsset` rather than a second copy of it. This was that second
+      // copy, and it had already fallen a field behind (T-261).
+      if (clipped.assetId && clipped.asset) {
+        registerAsset(board, clipped.assetId, clipped.asset, now);
       }
 
       itemIds.push(id);
@@ -486,5 +480,10 @@ function assetInput(board: BoardDoc, sha256: string): AssetInput | null {
     mime: asset.mime,
     size: asset.size,
     ...(asset.origName ? { origName: asset.origName } : {}),
+    // Carried, because a copied cassette is the same recording: re-deriving
+    // this on the far side would mean holding the bytes, and the whole point
+    // of the record is that it travels ahead of them.
+    ...(asset.duration !== null ? { duration: asset.duration } : {}),
+    ...(asset.pages !== null ? { pages: asset.pages } : {}),
   };
 }
