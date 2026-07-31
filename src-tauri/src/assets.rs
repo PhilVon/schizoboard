@@ -375,8 +375,31 @@ fn check_fetchable(url: &str) -> Result<()> {
     Ok(())
 }
 
+/// How much of a file the sniffer below can want to look at.
+///
+/// Twelve bytes covered the four image formats and nothing else: a Matroska
+/// file says whether it is `webm` in a DocType element a few dozen bytes in,
+/// and an Ogg stream names its codec at offset 28. Both of those distinctions
+/// are the difference between `video/` and `audio/`, which is the whole reason
+/// this function exists.
+pub const SNIFF_BYTES: usize = 64;
+
 /// Magic numbers, not the caller's word for it. A browser's idea of a
-/// clipboard item's type is a hint; the first eight bytes are evidence.
+/// clipboard item's type is a hint; the first bytes are evidence.
+///
+/// ## Why a media type has to be sniffed at all
+///
+/// Serving these as `application/octet-stream` is not merely untidy — no
+/// `<video>` or `<audio>` element will touch one. The element looks at the
+/// `Content-Type` before it looks at the bytes, so a correct file behind a
+/// wrong type fails to play with no error worth reading. That is the whole of
+/// T-262, and it is why this list grew past pictures.
+///
+/// The order is not arbitrary. Everything with a container signature is asked
+/// first and the bare MPEG frame header is asked last, because it is the only
+/// entry here that is a *pattern* rather than a string — eleven set bits and
+/// four fields that have to be plausible — and it would otherwise claim the odd
+/// file that merely begins with the right byte.
 pub fn sniff_mime(bytes: &[u8]) -> Option<&'static str> {
     if bytes.starts_with(&[0xff, 0xd8, 0xff]) {
         return Some("image/jpeg");
@@ -387,10 +410,97 @@ pub fn sniff_mime(bytes: &[u8]) -> Option<&'static str> {
     if bytes.starts_with(b"GIF87a") || bytes.starts_with(b"GIF89a") {
         return Some("image/gif");
     }
-    if bytes.len() >= 12 && bytes.starts_with(b"RIFF") && &bytes[8..12] == b"WEBP" {
-        return Some("image/webp");
+    // One container, three payloads. `.webp` was already one of them, which is
+    // why this reads as an existing arm learning two more rather than as two
+    // new formats being appended to the list.
+    if bytes.len() >= 12 && bytes.starts_with(b"RIFF") {
+        return match &bytes[8..12] {
+            b"WEBP" => Some("image/webp"),
+            b"WAVE" => Some("audio/wav"),
+            b"AVI " => Some("video/x-msvideo"),
+            _ => None,
+        };
+    }
+    if bytes.starts_with(b"%PDF-") {
+        return Some("application/pdf");
+    }
+    // ISO base media: the `ftyp` box is second, not first, and the brand that
+    // follows it is what says whether the identical container is a film or a
+    // song. An `.m4a` and an `.mp4` differ in those four bytes and nowhere
+    // else that is cheap to reach.
+    if bytes.len() >= 12 && &bytes[4..8] == b"ftyp" {
+        return match &bytes[8..12] {
+            b"M4A " | b"M4B " | b"M4P " | b"F4A " => Some("audio/mp4"),
+            b"qt  " => Some("video/quicktime"),
+            _ => Some("video/mp4"),
+        };
+    }
+    // EBML, which is Matroska and WebM both. The DocType string is an element
+    // in the header rather than at a fixed offset, so it is searched for
+    // instead of indexed — and Matroska is the fallback because a `.mkv` is a
+    // film either way and only the codec support differs.
+    //
+    // Searched over the sniff window and not over the slice, which at ingest
+    // is the *whole file*: a two-gigabyte `.mkv` with the four bytes `webm`
+    // anywhere in its payload would otherwise be renamed by its own contents.
+    if bytes.starts_with(b"\x1a\x45\xdf\xa3") {
+        let header = &bytes[..bytes.len().min(SNIFF_BYTES)];
+        return if find(header, b"webm").is_some() {
+            Some("video/webm")
+        } else {
+            Some("video/x-matroska")
+        };
+    }
+    // Ogg names its codec in the first packet, at a fixed offset. Theora is
+    // the only one of the three that makes this a video, and guessing audio
+    // for an unrecognised codec is the safer way round: a soundtrack playing
+    // out of a cassette is a smaller lie than a silent tape.
+    if bytes.starts_with(b"OggS") {
+        let codec = bytes.get(28..).unwrap_or_default();
+        return if codec.starts_with(b"\x80theora") {
+            Some("video/ogg")
+        } else {
+            Some("audio/ogg")
+        };
+    }
+    if bytes.starts_with(b"fLaC") {
+        return Some("audio/flac");
+    }
+    if bytes.starts_with(b"ID3") || is_mpeg_frame(bytes) {
+        return Some("audio/mpeg");
     }
     None
+}
+
+/// The first index at which `needle` appears in `haystack`.
+///
+/// Only the EBML DocType wants this, and only over the sniff window, so the
+/// naive scan is the right one — a substring search that pays for an index
+/// would be pricing a 64-byte haystack like a document.
+fn find(haystack: &[u8], needle: &[u8]) -> Option<usize> {
+    haystack
+        .windows(needle.len())
+        .position(|window| window == needle)
+}
+
+/// A plausible MPEG audio frame header, which is all an `.mp3` without an ID3
+/// tag has to identify it.
+///
+/// Eleven sync bits alone would claim roughly one file in two thousand at
+/// random, so the three fields behind them are checked for their reserved
+/// values as well. It is still the weakest signature in [`sniff_mime`], which
+/// is why it is asked last and why a bitrate of `free` is refused along with
+/// the reserved one — a real encoder writes neither.
+fn is_mpeg_frame(bytes: &[u8]) -> bool {
+    let (Some(&a), Some(&b), Some(&c)) = (bytes.first(), bytes.get(1), bytes.get(2)) else {
+        return false;
+    };
+    a == 0xff
+        && b & 0xe0 == 0xe0
+        && (b >> 3) & 0x03 != 0x01 // version: 01 is reserved
+        && (b >> 1) & 0x03 != 0x00 // layer: 00 is reserved
+        && !matches!(c >> 4, 0x00 | 0x0f) // bitrate: free, and bad
+        && (c >> 2) & 0x03 != 0x03 // sampling rate: 11 is reserved
 }
 
 /// The file extension a mime type should be written out under, without the dot.
@@ -404,10 +514,23 @@ fn extension_for(mime: &str) -> &'static str {
         "image/png" => "png",
         "image/gif" => "gif",
         "image/webp" => "webp",
-        // Unreachable through ingestion, which decodes before it commits. Kept
-        // because a store directory is a directory on someone's disk, and
-        // offering a name with no extension at all is worse than offering a
-        // dull one.
+        "application/pdf" => "pdf",
+        "video/mp4" => "mp4",
+        "video/quicktime" => "mov",
+        "video/webm" => "webm",
+        "video/x-matroska" => "mkv",
+        "video/x-msvideo" => "avi",
+        "video/ogg" => "ogv",
+        "audio/mpeg" => "mp3",
+        "audio/mp4" => "m4a",
+        "audio/wav" => "wav",
+        "audio/ogg" => "ogg",
+        "audio/flac" => "flac",
+        // Reachable now in a way it was not: ingestion no longer decodes
+        // everything it commits, so a format the sniffer does not know still
+        // gets stored and can still be exported. A store directory is a
+        // directory on someone's disk, and offering a name with no extension
+        // at all is worse than offering a dull one.
         _ => "bin",
     }
 }
@@ -899,14 +1022,29 @@ impl AssetStore {
     // --- variants -----------------------------------------------------------
 
     /// The slow half: full decode, EXIF orientation baked in, two downscales.
-    /// Idempotent, and safe to call for an asset that is not an image — it
-    /// simply produces nothing and the original is served instead.
+    /// Idempotent, and a no-op for an asset the sniffer places as something
+    /// other than a picture — it produces nothing, says so with `Ok`, and the
+    /// original is served instead.
     pub fn build_variants(&self, sha256: &str) -> Result<()> {
         if !valid_hash(sha256) {
             return Err(Error::BadHash);
         }
         let original = self.original_path(sha256);
         let bytes = fs::read(&original).map_err(|_| Error::NotFound)?;
+
+        // This function's own comment claimed a film was safe to pass here and
+        // "simply produces nothing" long before it was: the decode failed, the
+        // error came back, and `schedule_variants` printed "assets: no
+        // variants for <hash>" for every video and every PDF on the board — a
+        // failure line for the one outcome that is not a failure.
+        //
+        // Only a *known* non-picture returns early. Bytes the sniffer cannot
+        // place still go to the decoder, because `with_guessed_format` knows
+        // formats this function does not and a real failure there is worth
+        // hearing about.
+        if sniff_mime(&bytes).is_some_and(|mime| !mime.starts_with("image/")) {
+            return Ok(());
+        }
 
         let orientation = exif_orientation(&bytes);
         let decoded = ImageReader::new(io::Cursor::new(&bytes))
@@ -1004,14 +1142,23 @@ impl AssetStore {
         }
         // Sniffed rather than remembered, because remembering it would mean
         // keeping metadata this side of the boundary.
-        let mime = read_head(&original, 12)
+        let mime = read_head(&original, SNIFF_BYTES)
             .ok()
             .and_then(|head| sniff_mime(&head))
             .unwrap_or("application/octet-stream");
         Some(Resolved {
             path: original,
+            // The original standing in for a variant is only a *temporary*
+            // answer when a variant is coming. Nothing downscales a film, so
+            // for anything that is not a picture this is the final answer at
+            // every variant, and saying so is what lets it be cached.
+            //
+            // That is not tidiness. A `<video>` plays by asking for one range
+            // after another for the length of the file, and `no-store` means
+            // the webview may re-ask for spans it already has — on a 400 MB
+            // interview, off a disk, for the whole sitting.
+            exact: variant == Variant::Original || !mime.starts_with("image/"),
             mime: mime.to_string(),
-            exact: variant == Variant::Original,
         })
     }
 
@@ -1324,6 +1471,149 @@ mod tests {
         let (_dir, store) = store();
         let meta = store.ingest_bytes(&png(2, 2), Some("image/tiff")).unwrap();
         assert_eq!(meta.mime, "image/png");
+    }
+
+    /// An ISO base media header: a box length, `ftyp`, and the brand that says
+    /// which of the family this is. Nothing past byte 12 is looked at.
+    fn ftyp(brand: &[u8; 4]) -> Vec<u8> {
+        let mut out = vec![0, 0, 0, 0x18];
+        out.extend_from_slice(b"ftyp");
+        out.extend_from_slice(brand);
+        out
+    }
+
+    /// An Ogg page whose first packet begins at byte 28 — four bytes of
+    /// capture pattern, then the 23 that carry version, granule, serial,
+    /// sequence, checksum and the one-entry segment table.
+    fn ogg(codec: &[u8]) -> Vec<u8> {
+        let mut out = b"OggS".to_vec();
+        out.resize(28, 0);
+        out.extend_from_slice(codec);
+        out
+    }
+
+    /// An EBML header with a DocType somewhere inside it.
+    fn ebml(doc_type: &[u8]) -> Vec<u8> {
+        let mut out = vec![0x1a, 0x45, 0xdf, 0xa3];
+        out.extend_from_slice(b"\x42\x82");
+        out.extend_from_slice(doc_type);
+        out
+    }
+
+    #[test]
+    fn names_a_type_no_media_element_would_decode_without_one() {
+        // The failure this prevents is silent: `<video>` reads the header
+        // before it reads a byte of the file, and refuses an octet-stream
+        // without saying why.
+        for (name, bytes, expected) in [
+            ("pdf", b"%PDF-1.7\n%\xe2\xe3\xcf\xd3\n".to_vec(), "application/pdf"),
+            ("mp4", ftyp(b"isom"), "video/mp4"),
+            ("mp4 from a phone", ftyp(b"mp42"), "video/mp4"),
+            ("m4a", ftyp(b"M4A "), "audio/mp4"),
+            ("mov", ftyp(b"qt  "), "video/quicktime"),
+            ("webm", ebml(b"webm"), "video/webm"),
+            ("mkv", ebml(b"matroska"), "video/x-matroska"),
+            ("opus in ogg", ogg(b"OpusHead"), "audio/ogg"),
+            ("vorbis in ogg", ogg(b"\x01vorbis"), "audio/ogg"),
+            ("theora in ogg", ogg(b"\x80theora"), "video/ogg"),
+            ("wav", b"RIFF\x24\x00\x00\x00WAVEfmt ".to_vec(), "audio/wav"),
+            ("avi", b"RIFF\x24\x00\x00\x00AVI LIST".to_vec(), "video/x-msvideo"),
+            ("flac", b"fLaC\x00\x00\x00\x22".to_vec(), "audio/flac"),
+            ("mp3 with a tag", b"ID3\x04\x00\x00\x00\x00\x00\x00".to_vec(), "audio/mpeg"),
+            ("mp3 with none", vec![0xff, 0xfb, 0x90, 0x00], "audio/mpeg"),
+        ] {
+            assert_eq!(sniff_mime(&bytes), Some(expected), "{name}");
+
+            // A real file is not its header. `resolve` sniffs a served asset
+            // from the first `SNIFF_BYTES` and nothing else, so every
+            // signature above has to be decidable inside that window — which
+            // is only tested if the fixture is longer than it.
+            let mut padded = bytes.clone();
+            padded.resize(SNIFF_BYTES * 4, 0);
+            assert!(padded.len() > SNIFF_BYTES);
+            assert_eq!(sniff_mime(&padded[..SNIFF_BYTES]), Some(expected), "{name} head");
+
+            // And the answer must not change once the rest of the file is
+            // there: at ingest `sniff_mime` is handed every byte, so anything
+            // that *searches* has to be bounded or the payload votes.
+            assert_eq!(sniff_mime(&padded), Some(expected), "{name} whole");
+        }
+    }
+
+    #[test]
+    fn does_not_let_a_matroska_payload_rename_the_file() {
+        // The DocType is an element in the header. `webm` appearing later is a
+        // coincidence in two gigabytes of video, not a declaration — and at
+        // ingest this function is handed the whole file.
+        let mut mkv = ebml(b"matroska");
+        mkv.resize(SNIFF_BYTES * 2, 0);
+        mkv.extend_from_slice(b"webm");
+        assert_eq!(sniff_mime(&mkv), Some("video/x-matroska"));
+    }
+
+    #[test]
+    fn does_not_hear_an_mp3_in_bytes_that_are_not_one() {
+        // Eleven sync bits on their own are common enough in arbitrary data to
+        // matter, and this is the one signature with no string in it.
+        for junk in [
+            vec![0xff, 0xff, 0xff, 0xff],       // layer and version both reserved
+            vec![0xff, 0xfb, 0xf0, 0x00],       // bitrate index 1111 — "bad"
+            vec![0xff, 0xfb, 0x0c, 0x00],       // bitrate index 0000 — "free"
+            vec![0xff, 0xfb, 0x9c, 0x00],       // sampling rate 11 — reserved
+            vec![0xff, 0xe9, 0x90, 0x00],       // version 01 — reserved
+            vec![0xff],                          // nothing to check
+        ] {
+            assert_eq!(sniff_mime(&junk), None, "{junk:02x?}");
+        }
+    }
+
+    #[test]
+    fn still_reads_the_four_pictures_it_always_could() {
+        assert_eq!(sniff_mime(&png(2, 2)), Some("image/png"));
+        assert_eq!(sniff_mime(&jpeg(2, 2)), Some("image/jpeg"));
+        assert_eq!(sniff_mime(b"GIF89a\x01\x00"), Some("image/gif"));
+        assert_eq!(sniff_mime(b"RIFF\x24\x00\x00\x00WEBPVP8 "), Some("image/webp"));
+    }
+
+    #[test]
+    fn serves_a_film_under_its_own_type_and_lets_it_be_cached() {
+        let (_dir, store) = store();
+        let meta = store.ingest_bytes(&ftyp(b"isom"), None).unwrap();
+        assert_eq!(meta.mime, "video/mp4");
+        // Zero, because there is no pixel box — which is `readAsset`'s problem
+        // (T-261), not this one's.
+        assert_eq!((meta.w, meta.h), (0, 0));
+
+        // Every variant, because the frontend is free to ask for any of them
+        // and a film answers all three with the same file. `exact` is what the
+        // handler turns into `immutable`, and a video plays by asking for one
+        // range after another for the length of the file — the wrong answer
+        // here is re-reading a 400 MB interview off the disk all afternoon.
+        for variant in [Variant::Original, Variant::Display, Variant::Thumb] {
+            let resolved = store.resolve(&meta.sha256, variant).unwrap();
+            assert_eq!(resolved.mime, "video/mp4");
+            assert!(resolved.exact, "{variant:?}");
+        }
+    }
+
+    #[test]
+    fn does_not_report_a_failure_for_a_film_it_was_never_going_to_downscale() {
+        let (_dir, store) = store();
+        let meta = store.ingest_bytes(&ftyp(b"isom"), None).unwrap();
+        // The comment on `build_variants` claimed this for a long time while
+        // the code returned `Undecodable`, so `schedule_variants` printed a
+        // failure line for every film on the board.
+        assert!(store.build_variants(&meta.sha256).is_ok());
+        assert_eq!(walk_files(store.root.as_path()).unwrap().len(), 1);
+
+        // A picture is still downscaled, and bytes nobody can place are still
+        // offered to the decoder — this is a rule about *known* non-pictures.
+        let picture = store.ingest_bytes(&png(4096, 8), None).unwrap();
+        store.build_variants(&picture.sha256).unwrap();
+        assert!(store
+            .resolve(&picture.sha256, Variant::Thumb)
+            .unwrap()
+            .exact);
     }
 
     #[test]

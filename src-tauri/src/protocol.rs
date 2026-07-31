@@ -417,6 +417,73 @@ mod tests {
         assert_eq!(response.status(), StatusCode::RANGE_NOT_SATISFIABLE);
     }
 
+    /// A file that is a film as far as everything downstream is concerned: the
+    /// `ftyp` box is what the sniffer reads and what a decoder reads first too.
+    fn film(store: &AssetStore) -> String {
+        let mut bytes = vec![0, 0, 0, 0x18];
+        bytes.extend_from_slice(b"ftypisom");
+        // Long enough that a range of it is a range of something.
+        bytes.resize(4096, 0x11);
+        store.ingest_bytes(&bytes, None).unwrap().sha256
+    }
+
+    #[test]
+    fn answers_a_film_with_a_type_a_video_element_will_accept() {
+        // T-262. `application/octet-stream` is not a type `<video>` declines
+        // politely — it does not start, and says nothing about why.
+        let (_dir, store, _) = fixture();
+        let sha = film(&store);
+        let response = respond(&store, &get(&format!("asset://localhost/{sha}")));
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(response.headers()[header::CONTENT_TYPE], "video/mp4");
+        assert_eq!(response.headers()[header::ACCEPT_RANGES], "bytes");
+    }
+
+    #[test]
+    fn plays_a_film_through_from_one_range_to_the_next() {
+        // How a media element actually reads a file: a probe of the head, then
+        // span after span to the end. What this asserts is that the spans join
+        // up into the file — a handler that answered each of them with the
+        // whole thing would also "work", and would send the file once per
+        // request for the length of the sitting.
+        let (_dir, store, _) = fixture();
+        let sha = film(&store);
+        let whole = respond(&store, &get(&format!("asset://localhost/{sha}"))).into_body();
+
+        let mut played = Vec::new();
+        while played.len() < whole.len() {
+            let start = played.len();
+            let end = (start + 1023).min(whole.len() - 1);
+            let request = Request::builder()
+                .uri(format!("asset://localhost/{sha}"))
+                .header(header::RANGE, format!("bytes={start}-{end}"))
+                .body(Vec::new())
+                .unwrap();
+            let response = respond(&store, &request);
+            assert_eq!(response.status(), StatusCode::PARTIAL_CONTENT, "from {start}");
+            assert_eq!(response.headers()[header::CONTENT_TYPE], "video/mp4");
+            played.extend_from_slice(response.body());
+        }
+        assert_eq!(played, whole);
+    }
+
+    #[test]
+    fn lets_a_film_be_cached_because_no_variant_is_ever_coming() {
+        // An image at `?v=display` is `no-store` until its downscale exists,
+        // and rightly. Nothing downscales a film, so the same answer there
+        // would make every range request of a 400 MB interview a fresh read.
+        let (_dir, store, _) = fixture();
+        let sha = film(&store);
+        for variant in ["v=original", "v=display", "v=thumb"] {
+            let response = respond(&store, &get(&format!("asset://localhost/{sha}?{variant}")));
+            assert_eq!(
+                response.headers()[header::CACHE_CONTROL],
+                CACHE_CONTROL,
+                "{variant}"
+            );
+        }
+    }
+
     #[test]
     fn is_a_plain_404_for_anything_it_does_not_hold() {
         let (_dir, store, _sha) = fixture();
