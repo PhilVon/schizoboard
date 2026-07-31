@@ -51,6 +51,7 @@ let root: HTMLDivElement;
 let tool: RecordingTool;
 let machine: ToolMachine;
 let suppressed: boolean;
+let readOnly: boolean;
 /** The machine's clock, so the double-click window is a thing the test sets
  *  rather than a thing it waits for. */
 let now: number;
@@ -118,6 +119,7 @@ beforeEach(() => {
 
   tool = new RecordingTool();
   suppressed = false;
+  readOnly = false;
   now = 1000;
   const scene = new Scene();
   machine = new ToolMachine(tool, root, {
@@ -153,6 +155,7 @@ beforeEach(() => {
     hitPin: () => null,
     hitString: () => null,
     suppressed: () => suppressed,
+    readOnly: () => readOnly,
     now: () => now,
   });
 });
@@ -663,5 +666,72 @@ describe("whether a wheel notch would be the tool's", () => {
     expect(machine.wheelClaimed).toBe(true);
     pointer("pointerleave", { pointerId: 1 });
     expect(machine.wheelClaimed).toBe(false);
+  });
+});
+
+/**
+ * A board written by a newer build — T-224, Q-170.
+ *
+ * `suppressed` above is about who owns the *pointer* for the next few hundred
+ * milliseconds, and it is asked at the three points a gesture can begin. This
+ * one is a standing fact about the document, so it is asked at the funnel every
+ * input passes through — which is what makes the difference these tests are
+ * for: `Delete` goes through no claim at all.
+ */
+describe("a read-only board", () => {
+  it("takes no gesture, and no key either", () => {
+    readOnly = true;
+
+    pointer("pointerdown", { button: 0, pointerId: 30, clientX: 10, clientY: 10 });
+    pointer("pointermove", { pointerId: 30, clientX: 60, clientY: 10 });
+    pointer("pointerup", { pointerId: 30, clientX: 60, clientY: 10 });
+    key("Delete");
+    key("Escape");
+    machine.flush(16);
+
+    expect(tool.seen).toEqual([]);
+  });
+
+  /** The wheel goes back to the camera, exactly as it does while panning. */
+  it("hands the wheel back", () => {
+    tool.wantsWheel = true;
+    readOnly = true;
+
+    const wheel = new WheelEvent("wheel", { deltaY: 120, clientX: 0, clientY: 0 });
+    expect(machine.claimWheel(wheel)).toBe(false);
+    machine.flush(16);
+    expect(tool.seen).toEqual([]);
+  });
+
+  /** And it lets go again, because the same machine drives both boards. */
+  it("is not permanent as far as the machine is concerned", () => {
+    readOnly = true;
+    pointer("pointerdown", { button: 0, pointerId: 31, clientX: 0, clientY: 0 });
+    machine.flush(16);
+    expect(tool.seen).toEqual([]);
+
+    readOnly = false;
+    pointer("pointerdown", { button: 0, pointerId: 32, clientX: 0, clientY: 0 });
+    machine.flush(16);
+    expect(kinds()).toEqual(["down"]);
+  });
+
+  /**
+   * What the caller does on the frame the seal lands. A stroke half drawn when
+   * a peer raises the schema version has a pen-up that will never arrive, and
+   * `abandon` is the tool change's own cancel reached without a tool change.
+   */
+  it("can be told to drop what was in flight", () => {
+    pointer("pointerdown", { button: 0, pointerId: 33, clientX: 0, clientY: 0 });
+    machine.flush(16);
+    expect(kinds()).toEqual(["down"]);
+
+    readOnly = true;
+    machine.abandon();
+    expect(tool.cancels).toBe(1);
+
+    pointer("pointerup", { pointerId: 33, clientX: 0, clientY: 0 });
+    machine.flush(16);
+    expect(kinds()).toEqual(["down"]);
   });
 });

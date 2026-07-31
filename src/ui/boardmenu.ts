@@ -575,7 +575,21 @@ export function boardMenuRows(
    * screen can answer, and this one would answer it by opening a save dialog
    * and then failing after the file had been named.
    */
-  board: { export(): void; open(): void; pdf: (() => void) | null; image(): void } | null,
+  board: {
+    export(): void;
+    /**
+     * Null on a board this build may not write to (T-224).
+     *
+     * The same standing `pdf` is on, and for a stronger reason: opening a
+     * bundle *replaces* the board in this window — it writes the new snapshot
+     * over this board's log — so on a read-only board it is the one row here
+     * that would do the exact thing being refused. Absent rather than disabled,
+     * like everything else on these menus.
+     */
+    open: (() => void) | null;
+    pdf: (() => void) | null;
+    image(): void;
+  } | null,
 ): MenuEntry[] {
   const rows = stringMenuRows(scene, write, strings);
   const below: MenuEntry[] = [
@@ -706,20 +720,23 @@ export function boardMenuRows(
           : "Export the board as an image…",
       run: () => board.image(),
     });
-    below.push({
-      /**
-       * Last, and last on purpose. Q-111 made this the one row on the board
-       * that destroys a board — it replaces the one in this window — so it sits
-       * below *Export board…*, which is both the row somebody reading down
-       * wants far more often and, if they take it first, the thing that makes
-       * this one survivable.
-       *
-       * The confirmation is native and lives in `bundle_open`, because nothing
-       * in `capabilities/` lets this side open a dialog at all.
-       */
-      label: "Open a board…",
-      run: () => board.open(),
-    });
+    const openBoard = board.open;
+    if (openBoard !== null) {
+      below.push({
+        /**
+         * Last, and last on purpose. Q-111 made this the one row on the board
+         * that destroys a board — it replaces the one in this window — so it
+         * sits below *Export board…*, which is both the row somebody reading
+         * down wants far more often and, if they take it first, the thing that
+         * makes this one survivable.
+         *
+         * The confirmation is native and lives in `bundle_open`, because
+         * nothing in `capabilities/` lets this side open a dialog at all.
+         */
+        label: "Open a board…",
+        run: () => openBoard(),
+      });
+    }
   }
   return [...rows, ...below];
 }

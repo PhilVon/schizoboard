@@ -12,7 +12,7 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import { BoardClipboard } from "@/app/clipboard";
-import { initialiseBoard, openBoardDoc, type BoardDoc } from "@/crdt/doc";
+import { initialiseBoard, openBoardDoc, sealBoard, type BoardDoc } from "@/crdt/doc";
 import { createItems, createString } from "@/crdt/ops";
 import { readItem } from "@/crdt/schema";
 import { Camera } from "@/state/camera";
@@ -269,5 +269,58 @@ describe("duplicating", () => {
     clipboard.duplicate();
 
     expect(itemsOnBoard().map((item) => item.x).sort((a, b) => a - b)).toEqual([0, 28, 56]);
+  });
+});
+
+/**
+ * A board written by a newer build — T-224, Q-170.
+ *
+ * The clipboard is the one surface where read-only is not simply "no": a copy
+ * is a read, and taking a piece of a board you cannot edit somewhere you can is
+ * most of what looking at one is for. So the two halves of `Ctrl+X` come apart
+ * here and nowhere else.
+ */
+describe("on a sealed board", () => {
+  /** The paper is put down first: a sealed board is one nothing can add to. */
+  function held(): void {
+    const { itemId } = note(0, 0, "the sentence");
+    selection.replace([itemId]);
+    sealBoard(board);
+  }
+
+  it("still copies", () => {
+    held();
+
+    const transfer = fire("copy");
+
+    expect(transfer.getData(CLIP_MIME)).not.toBe("");
+    expect(transfer.getData("text/plain")).toBe("the sentence");
+    expect(said).toEqual(["Copied 1 item"]);
+  });
+
+  /**
+   * And a cut is a copy. The flash says *Copied*, not *Cut*: naming the half
+   * that did not happen is worse than naming the half that did.
+   */
+  it("turns a cut into a copy, and says so", () => {
+    held();
+
+    const transfer = fire("cut");
+
+    expect(transfer.getData(CLIP_MIME)).not.toBe("");
+    expect(deletes).toEqual([]);
+    expect(said).toEqual(["Copied 1 item"]);
+  });
+
+  /** The other direction is refused outright, by both routes into it. */
+  it("takes no paste and no duplicate", () => {
+    held();
+    const transfer = fire("copy");
+
+    expect(clipboard.claim(transfer as unknown as DataTransfer, { x: 500, y: 500 })).toBe(true);
+    expect(itemsOnBoard()).toHaveLength(1);
+
+    clipboard.duplicate();
+    expect(itemsOnBoard()).toHaveLength(1);
   });
 });

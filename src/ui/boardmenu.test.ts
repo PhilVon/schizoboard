@@ -1041,6 +1041,36 @@ describe("the board menu on bare cork", () => {
   });
 
   /**
+   * And it goes altogether on a board this build may not write to (T-224).
+   *
+   * The same standing `pdf` is on — null takes the row away — and the stronger
+   * reason: opening a bundle *replaces* the board in this window, writing the
+   * new snapshot over this one's log. On a read-only board it is the only row
+   * left here that would do the exact thing being refused. Everything else on
+   * this menu is a read or a preference, which is why the menu survives at all.
+   */
+  it("drops opening a board when there is nowhere to open one into", () => {
+    const { invite } = sharing(LINK);
+    const { board, asked } = exporting();
+    const rows = boardMenuRows(
+      scene,
+      write,
+      [],
+      [],
+      invite,
+      switching(true).ageing,
+      { ...board, open: null },
+    ) as MenuRow[];
+
+    const labels = rows.map((r) => r.label);
+    expect(labels).toEqual([AGE_ON, "Copy invite link", EXPORT, PDF, IMAGE]);
+    // And the rest of the menu is untouched — this is one row, not a mode.
+    rows.find((r) => r.label === EXPORT)!.run();
+    rows.find((r) => r.label === IMAGE)!.run();
+    expect(asked).toEqual(["export", "image"]);
+  });
+
+  /**
    * Q-111 made *Open a board…* the one row here that destroys a board, so it
    * goes last — below the row somebody reading down wants far more often, and
    * below the one that makes it survivable if they take it first.
