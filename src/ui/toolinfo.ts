@@ -1,5 +1,6 @@
 /**
- * The tool info bar — what is in your hand and what you can do with it.
+ * The tool info bar — what is in your hand, and what is under the key you are
+ * holding.
  *
  * Bottom left, where the hint line it replaces was. Three things about that
  * line are being fixed rather than restyled:
@@ -18,45 +19,64 @@
  * press that lands in chrome looks exactly like the application ignoring an
  * interaction.
  *
- * ## What it draws
+ * ## What it draws, and why it is short
  *
- * Two lines. The **tool line** is the name, the plain verb, and the tool's own
- * rows followed by the three that belong to every tool. The **board line** is
- * the camera, the search and undo — constant, quieter, and built once in the
- * constructor because it never changes.
+ * The first version of this said every gesture in full, always, and came out six
+ * lines tall — which is the mistake it was built to fix, made again with better
+ * copy in it. Q-194 settled the shape: **the bar names the modifiers at rest and
+ * holding one is what asks the question.**
  *
- * A row whose modifiers are all down is drawn live. Holding `Ctrl`+`Alt` and
- * watching the cut row brighten is the gesture teaching itself, which is D-44's
- * sixth decision and the reason the readout is worth more than a list.
+ * So there are four bands, and only the third of them ever changes:
+ *
+ *   1. the **lead** — the tool, its key, and its plain verb;
+ *   2. the rows that need **nothing held**, which are true whatever you are
+ *      doing and are the only ones no key could ever reveal;
+ *   3. either the **chips** — `hold Shift · Ctrl · Alt`, each lit while its key
+ *      is down — or, when a held key has something behind it on this tool, the
+ *      **rows it reveals**, with their phrases;
+ *   4. the standing **board line**: the camera, the search and undo. Built once
+ *      in the constructor, because it is the same on every frame of every
+ *      session.
+ *
+ * Two thirds of what a tool implements sits behind a modifier, so hiding those
+ * until they are asked for is most of the height — and nothing is lost, because
+ * a gesture you are not holding the key for is one you are not about to make.
  *
  * ## What it costs per frame
  *
  * Called once a frame from the OVERLAY phase, where the rest of the chrome
- * repaints, and it writes DOM on two events only: the lead changing, which
- * happens when the tool does, and the set of live rows changing, which happens
- * when a modifier goes down or up. Everything else is a string compare and an
- * integer compare against what is on screen.
+ * repaints, and it writes DOM on two events: the lead changing, which happens
+ * when the tool does, and band 3 changing, which happens when a modifier goes
+ * down or up. Everything else is two string compares against what is on screen.
  *
- * The policy — what the rows say, and which of them are live — is
- * `ui/toolhint.ts`, tested with no DOM at all. This is the box that shows them.
+ * The policy — which rows rest, which a held set reveals, which modifiers are
+ * worth naming — is `ui/toolhint.ts`, tested with no DOM at all. This is the box
+ * that shows them.
  */
 
 import type { ToolHint, ToolHintRow } from "@/state/tools/tool";
-import { BOARD, live, toolLine, type BoardStatus } from "@/ui/toolhint";
+import {
+  BOARD,
+  heldModifier,
+  modifierLabel,
+  modifiers,
+  restingRows,
+  revealed,
+  toolLine,
+  type BoardStatus,
+} from "@/ui/toolhint";
 
 export class ToolInfo {
   private readonly el: HTMLDivElement;
   private readonly toolEl: HTMLDivElement;
   private readonly leadEl: HTMLSpanElement;
-  /** One element per row of the tool line, in order, so a modifier going down
-   *  is a class toggle rather than a rebuild. */
-  private rowEls: HTMLElement[] = [];
-  private rowData: readonly ToolHintRow[] = [];
+  /** Band 3 — the chips, or what a held key revealed. */
+  private readonly heldEl: HTMLDivElement;
   /** The lead as written. Null until the first sync — which is not the same as
    *  an empty lead, and the difference is the first frame. */
   private writtenLead: string | null = null;
-  /** Which rows are live, one bit each, as written. -1 until the first sync. */
-  private writtenLive = -1;
+  /** A signature of band 3 as written, so an unchanged frame writes nothing. */
+  private writtenHeld: string | null = null;
 
   constructor(host: HTMLElement) {
     this.el = document.createElement("div");
@@ -72,13 +92,16 @@ export class ToolInfo {
     this.leadEl.className = "toolinfo-lead";
     this.toolEl.append(this.leadEl);
 
+    this.heldEl = document.createElement("div");
+    this.heldEl.className = "toolinfo-held";
+
     const board = document.createElement("div");
     board.className = "toolinfo-board";
     // Once. These seven are the same on every frame of every session, so there
     // is nothing here for `sync` to reconsider.
     for (const row of BOARD) board.append(this.row(row));
 
-    this.el.append(this.toolEl, board);
+    this.el.append(this.toolEl, this.heldEl, board);
     host.append(this.el);
   }
 
@@ -96,23 +119,62 @@ export class ToolInfo {
       this.writtenLead = line.lead;
       this.leadEl.textContent = line.lead;
       this.leadEl.classList.toggle("is-warning", line.warning);
-      this.rowData = line.rows;
-      this.rowEls = line.rows.map((row) => this.row(row));
-      // The lead stays; everything after it is this tool's.
-      this.toolEl.replaceChildren(this.leadEl, ...this.rowEls);
-      // The rows are new, so nothing on screen is known live yet.
-      this.writtenLive = -1;
+      // The lead stays; everything after it is this tool's plain gestures.
+      this.toolEl.replaceChildren(
+        this.leadEl,
+        ...(line.warning && line.rows.length === 0 ? [] : restingRows(hint).map((r) => this.row(r))),
+      );
     }
 
-    let mask = 0;
-    for (let i = 0; i < this.rowData.length; i++) {
-      if (live(this.rowData[i]!, held)) mask |= 1 << i;
+    // A sealed board offers nothing at all — not the chips either, since every
+    // gesture behind them is a write.
+    const shown = line.rows.length === 0 ? [] : revealed(hint, held);
+    const chips = line.rows.length === 0 ? [] : modifiers(hint);
+    const lit = chips.filter((name) => heldModifier(name, held));
+
+    /**
+     * What band 3 is showing, as a string.
+     *
+     * The revealed rows are keyed by their own `keys`, which are unique within a
+     * tool; the chip line is keyed by which chips exist *and* which are lit,
+     * because a modifier this tool has nothing behind still lights its chip and
+     * that is a DOM write.
+     */
+    const signature =
+      shown.length > 0
+        ? `r:${shown.map((r) => r.keys).join("|")}`
+        : `c:${chips.join(",")}/${lit.join(",")}`;
+    if (signature === this.writtenHeld) return;
+    this.writtenHeld = signature;
+
+    if (shown.length > 0) {
+      const rows = shown.map((row) => {
+        const el = this.row(row);
+        el.classList.add("is-live");
+        return el;
+      });
+      this.heldEl.replaceChildren(...rows);
+      return;
     }
-    if (mask === this.writtenLive) return;
-    this.writtenLive = mask;
-    for (let i = 0; i < this.rowEls.length; i++) {
-      this.rowEls[i]!.classList.toggle("is-live", (mask & (1 << i)) !== 0);
+    if (chips.length === 0) {
+      this.heldEl.replaceChildren();
+      return;
     }
+    const hold = document.createElement("span");
+    hold.className = "toolinfo-hold";
+    hold.textContent = "hold";
+    this.heldEl.replaceChildren(
+      hold,
+      ...chips.map((name) => {
+        const chip = document.createElement("b");
+        chip.className = "toolinfo-chip";
+        chip.textContent = modifierLabel(name);
+        // Lit with nothing revealed is the honest answer to leaning on `Shift`
+        // in the pen tool: the key is down, and there is nothing behind it here.
+        chip.classList.toggle("is-on", heldModifier(name, held));
+        return chip;
+      }),
+    );
   }
 
   /**

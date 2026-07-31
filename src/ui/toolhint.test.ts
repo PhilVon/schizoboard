@@ -11,7 +11,19 @@ import { describe, expect, it } from "vitest";
 
 import { SelectTool } from "@/state/tools/select";
 import type { ToolHint } from "@/state/tools/tool";
-import { AMBIENT, BOARD, live, rows, toolLine, UNSAVED_LINE } from "@/ui/toolhint";
+import {
+  AMBIENT,
+  BOARD,
+  heldModifier,
+  live,
+  modifierLabel,
+  modifiers,
+  restingRows,
+  revealed,
+  rows,
+  toolLine,
+  UNSAVED_LINE,
+} from "@/ui/toolhint";
 
 const SELECT = new SelectTool().hint;
 
@@ -69,6 +81,74 @@ describe("rows", () => {
       "Ctrl+Z",
       "`",
     ]);
+  });
+});
+
+/**
+ * Q-194's shape: the bar names the keys at rest and holding one is the question.
+ * These three functions are the whole of that decision.
+ */
+describe("the resting split", () => {
+  it("rests on the rows no key could ever reveal", () => {
+    expect(restingRows(TOY).map((r) => r.keys)).toEqual(["click"]);
+    // Select's four: none of them is behind a modifier, so none of them has a
+    // key to bring it back.
+    expect(restingRows(SELECT).map((r) => r.keys)).toEqual([
+      "R+drag",
+      "double-click a pin",
+      "wheel",
+      "1-9",
+    ]);
+  });
+
+  it("hides most of a tool behind its chips", () => {
+    // The point of the whole change: two thirds of select is under a key.
+    expect(restingRows(SELECT).length).toBeLessThan(rows(SELECT).length / 2);
+  });
+
+  it("names the modifiers that have something behind them, in one order", () => {
+    expect(modifiers(SELECT)).toEqual(["Shift", "Control", "Alt"]);
+    // The toy has one Shift row of its own and inherits the ambient three.
+    expect(modifiers(TOY)).toEqual(["Shift", "Control", "Alt"]);
+  });
+
+  /** A tool with nothing on Shift must not offer a Shift chip. */
+  it("leaves out a modifier this tool has no row for", () => {
+    const noShift: ToolHint = { name: "N", key: "N", verb: "v", rows: [] };
+    // Only the ambient rows remain, and none of those is Shift.
+    expect(modifiers(noShift)).toEqual(["Control", "Alt"]);
+  });
+
+  it("reveals exactly what the held keys unlock", () => {
+    expect(revealed(SELECT, held()).map((r) => r.keys)).toEqual([]);
+    expect(revealed(SELECT, held("ShiftLeft")).map((r) => r.keys)).toEqual([
+      "Shift+click",
+      "Shift+drag",
+      "Shift+Delete",
+    ]);
+    expect(revealed(SELECT, held("ControlLeft")).map((r) => r.keys)).toEqual(["Ctrl+drag a pin"]);
+  });
+
+  /**
+   * The chips name keys, not combinations — so the cut is reached by holding
+   * both, and holding one of the pair reveals only that one's rows.
+   */
+  it("brings the cut back when both of its keys are down", () => {
+    const one = revealed(SELECT, held("ControlLeft")).map((r) => r.keys);
+    expect(one).not.toContain("Ctrl+Alt+click a string");
+    const both = revealed(SELECT, held("ControlLeft", "AltLeft")).map((r) => r.keys);
+    expect(both).toContain("Ctrl+Alt+click a string");
+    expect(both).toContain("Alt+drag a pin");
+  });
+
+  it("writes Control as the key cap says it", () => {
+    expect(modifiers(SELECT).map(modifierLabel)).toEqual(["Shift", "Ctrl", "Alt"]);
+  });
+
+  it("reads a modifier off either side of the keyboard", () => {
+    expect(heldModifier("Alt", held("AltRight"))).toBe(true);
+    expect(heldModifier("Alt", held("AltLeft"))).toBe(true);
+    expect(heldModifier("Alt", held("ControlLeft"))).toBe(false);
   });
 });
 
