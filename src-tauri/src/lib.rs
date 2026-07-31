@@ -24,6 +24,11 @@ mod board;
 mod bundle;
 mod clipboard;
 mod docstore;
+// `pub` for the same reason `sync` is: nothing in this file calls it yet. The
+// reading surface (T-275) and the store's answer to two hundred page images
+// (T-299) are what turn it into a command, and until one of them lands this is
+// crate API rather than a private helper.
+pub mod document;
 mod print;
 mod protocol;
 pub mod sync;
