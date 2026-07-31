@@ -181,7 +181,7 @@ Three, and confusing them is the most likely source of bugs, so they get names.
 | Space | Units | Used for |
 |---|---|---|
 | **Board** | Board units (1 = 1 px at 100% zoom) | Item positions, free pins, board ink, rope particles |
-| **Item-local** | Item units, origin at item centre, **un-rotated** | Parented pins, item ink, crop rectangles |
+| **Item-local** | Item units, origin at item centre, **un-rotated** | Parented pins, item ink |
 | **Screen** | Device pixels | Pointer input, rope canvas drawing, all UI |
 
 The un-rotated part of item-local is what makes pins and ink survive rotation for free. Rope particles simulate in board space and are transformed to screen space at draw time, so line widths stay crisp at every zoom without scaling (§6.4).

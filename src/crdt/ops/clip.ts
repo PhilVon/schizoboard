@@ -27,7 +27,7 @@
  * ## What comes with the selection, and what does not
  *
  * Items bring their pins (they are part of the paper), their text, their
- * overridden style, their crop and the ink drawn on them. Free pins come when
+ * overridden style and the ink drawn on them. Free pins come when
  * they were selected — the marquee and follow-the-thread both take them
  * (DESIGN section 3.8).
  *
@@ -72,7 +72,6 @@ import {
   readPin,
   readString,
   readStroke,
-  type Crop,
   type ItemType,
   type PinKind,
   type StringLayer,
@@ -119,7 +118,6 @@ export interface ClipItem {
    * alone.
    */
   readonly asset: AssetInput | null;
-  readonly crop: Crop | null;
   readonly style: ItemStyle;
   readonly text: string;
   readonly strokes: readonly ClipStroke[];
@@ -260,7 +258,6 @@ export function copySubgraph(board: BoardDoc, selection: ClipSelection): BoardCl
       seed: item.seed,
       assetId: item.assetId,
       asset: item.assetId === null ? null : assetInput(board, item.assetId),
-      crop: item.crop === null ? null : { ...item.crop },
       style: { ...item.style },
       text: textOf(board.items.get(item.id)),
       strokes: strokesOf(board.items.get(item.id)),
@@ -320,7 +317,6 @@ export function pasteClip(
       item.set("z", z);
       item.set("seed", clipped.seed);
       item.set("assetId", clipped.assetId);
-      item.set("crop", clipped.crop === null ? null : { ...clipped.crop });
       item.set("text", new Y.Text(clipped.text));
       const style = new Y.Map<unknown>();
       for (const [key, value] of Object.entries(clipped.style)) style.set(key, value);

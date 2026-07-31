@@ -71,13 +71,6 @@ export const MIN_STROKE_SIZE = 0.25;
 /** Invariant 2 — slack is strictly greater than zero, clamped to a minimum. */
 export const MIN_SLACK = 0.01;
 
-export interface Crop {
-  sx: number;
-  sy: number;
-  sw: number;
-  sh: number;
-}
-
 export interface ItemFields {
   id: string;
   type: ItemType;
@@ -91,7 +84,6 @@ export interface ItemFields {
   z: string;
   seed: number;
   assetId: string | null;
-  crop: Crop | null;
   /**
    * What has been overridden of what the seed would decide — `lib/style.ts`.
    *
@@ -259,20 +251,6 @@ function readerFor(value: unknown): ((key: string) => unknown) | null {
   return null;
 }
 
-function readCrop(value: unknown): Crop | null {
-  if (typeof value !== "object" || value === null) return null;
-  const c = value as Partial<Crop>;
-  if (
-    !Number.isFinite(c.sx) ||
-    !Number.isFinite(c.sy) ||
-    !Number.isFinite(c.sw) ||
-    !Number.isFinite(c.sh)
-  ) {
-    return null;
-  }
-  return { sx: c.sx!, sy: c.sy!, sw: c.sw!, sh: c.sh! };
-}
-
 // --- readers --------------------------------------------------------------
 
 export type YMap = Y.Map<unknown>;
@@ -301,7 +279,6 @@ export function readItem(id: string, map: YMap): ItemFields | null {
     z,
     seed: num(map.get("seed"), 0) >>> 0,
     assetId: typeof map.get("assetId") === "string" ? (map.get("assetId") as string) : null,
-    crop: readCrop(map.get("crop")),
     style: readStyle(map.get("style")),
     createdBy: num(map.get("createdBy"), 0),
     createdAt: num(map.get("createdAt"), 0),
