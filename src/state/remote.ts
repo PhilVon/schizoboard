@@ -229,6 +229,19 @@ interface Held {
 
 interface Peer {
   samples: Sample[];
+  /**
+   * What the last `sampleAt` was — the three fields of `Sampled` that are not
+   * the poses, kept because the debug overlay (T-235) has no other way to ask.
+   *
+   * Everything else it draws is state this object already holds for its own
+   * reasons; these three are computed once a frame and thrown away, and they are
+   * the ones that say *why* the two poses on screen differ. Three numbers on an
+   * object there is one of per peer, written in `score` where they are already
+   * in hand.
+   */
+  guessed: boolean;
+  frozen: boolean;
+  speed: number;
   /** The highest sequence number seen. The duplicate and out-of-order filter. */
   seq: number;
   /** `local = t + skew`. Null until the first sample sets it. */
@@ -238,6 +251,51 @@ interface Peer {
   spring: boolean;
   /** The gesture is over: a `final` arrived, or the grab went away. */
   ended: boolean;
+}
+
+/**
+ * Every number this module is tuned by, in one place, for the debug overlay's
+ * legend (T-235).
+ *
+ * A live reading of `jitter` or `spring` says nothing on its own — 14 is only
+ * meaningful beside the 20 it is climbing towards. One export rather than five,
+ * and built from the constants above rather than repeating their values, so a
+ * legend cannot drift from what the code actually does.
+ */
+export const REMOTE_NUMBERS = {
+  delayMs: REMOTE_DELAY_MS,
+  bufferMs: BUFFER_MS,
+  maxExtrapolateMs: MAX_EXTRAPOLATE_MS,
+  handoffGraceMs: HANDOFF_GRACE_MS,
+  springRate: SPRING_RATE,
+  jitterTrip: JITTER_TRIP,
+  jitterMax: JITTER_MAX,
+  stillSpeed: STILL_SPEED,
+} as const;
+
+/**
+ * One remotely-held item, as the two poses that exist for it — what arrived,
+ * and what was written into the scene. Either can be null: `raw` before the
+ * first sample of a gesture that is being handed back, `shown` on the frame an
+ * item was picked up and nothing has been written for it yet.
+ */
+export interface RemoteDebugItem {
+  readonly id: string;
+  readonly raw: PresenceGrabPose | null;
+  readonly shown: PresenceGrabPose | null;
+}
+
+/** One peer, for the debug overlay — see `RemoteMotion.debug`. */
+export interface RemoteDebug {
+  readonly clientId: number;
+  readonly items: readonly RemoteDebugItem[];
+  readonly jitter: number;
+  readonly spring: boolean;
+  readonly skew: number | null;
+  readonly buffered: number;
+  readonly guessed: boolean;
+  readonly frozen: boolean;
+  readonly speed: number;
 }
 
 /** What `sampleAt` found at the playhead. */
@@ -379,6 +437,9 @@ export class RemoteMotion {
       jitter: 0,
       spring: false,
       ended: false,
+      guessed: false,
+      frozen: false,
+      speed: 0,
     };
     if (peer === undefined) this.peers.set(clientId, fresh);
 
@@ -419,6 +480,55 @@ export class RemoteMotion {
   /** The items any peer is currently moving. For the overlay, and for tests. */
   heldBy(clientId: number): ReadonlySet<string> {
     return new Set(this.peers.get(clientId)?.held.keys() ?? []);
+  }
+
+  /**
+   * Both poses for every remotely-held item, and the peer state that explains
+   * the gap between them — the readout the debug overlay draws (T-235).
+   *
+   * > The interpolated pose drives the anchor, never the raw sample; **a debug
+   * > overlay drawing both**; and a guaranteed fallback of critically-damped
+   * > spring anchors. — DESIGN section 11.1, risk 2
+   *
+   * The third of that sentence's three mitigations, and the only one that was
+   * not already built: the first is AC-84 and the second AC-85. It is the one
+   * that makes the other two checkable, because "the anchor followed the
+   * interpolated pose" and "the spring absorbed the jitter" are both claims
+   * about the *difference* between two numbers, and until now only one of them
+   * was anywhere a person could see.
+   *
+   * A method that walks and allocates rather than fields the painter reads,
+   * because it is asked once a frame by a thing that only exists in a dev build
+   * and never at all otherwise — and because `samples` and `held` are private
+   * for good reason. Nothing here is stored for this; it is what the object
+   * already holds, arranged.
+   *
+   * `raw` is what the peer actually sent, which the sender rounds to whole board
+   * units and 1e-4 radians (`state/presence.ts`) — that rounding *is* the jitter
+   * the overlay exists to show, and it is why the two poses differ visibly even
+   * on an item nobody is moving.
+   */
+  debug(): RemoteDebug[] {
+    const out: RemoteDebug[] = [];
+    for (const [clientId, peer] of this.peers) {
+      const newest = peer.samples[peer.samples.length - 1] ?? null;
+      const items: RemoteDebugItem[] = [];
+      for (const [id, held] of peer.held) {
+        items.push({ id, raw: newest?.poses.get(id) ?? null, shown: held.mine });
+      }
+      out.push({
+        clientId,
+        items,
+        jitter: peer.jitter,
+        spring: peer.spring,
+        skew: peer.skew,
+        buffered: peer.samples.length,
+        guessed: peer.guessed,
+        frozen: peer.frozen,
+        speed: peer.speed,
+      });
+    }
+    return out;
   }
 
   /**
@@ -582,6 +692,9 @@ export class RemoteMotion {
   }
 
   private score(peer: Peer, sampled: Sampled): void {
+    peer.guessed = sampled.guessed;
+    peer.frozen = sampled.frozen;
+    peer.speed = sampled.speed;
     const guessing = sampled.guessed && !sampled.frozen && sampled.speed > STILL_SPEED;
     peer.jitter = guessing
       ? Math.min(JITTER_MAX, peer.jitter + 1)

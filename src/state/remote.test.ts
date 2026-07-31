@@ -629,3 +629,80 @@ describe("more than one of them", () => {
     expect(at().x).toBeCloseTo(50, 6);
   });
 });
+
+/**
+ * The readout the debug overlay draws (T-235) — DESIGN 11.1 risk 2's second
+ * mitigation, and the one that makes the other two checkable.
+ *
+ * The claim under test is not "the numbers are right" — every other test in
+ * this file is about that. It is that the readout reports the *two different*
+ * poses. A `debug()` that quietly answered with the same pose twice would draw
+ * a square exactly on its dot on every frame, and the overlay would then say
+ * "the interpolation is perfect" in precisely the case where it had stopped
+ * running.
+ */
+describe("the debug readout", () => {
+  it("says nothing at all about a board with no peers", () => {
+    expect(remote.debug()).toEqual([]);
+  });
+
+  it("reports the raw sample and the interpolated pose as two different poses", () => {
+    item("a");
+    send(0, 0, 0);
+    send(100, 400, 0);
+    // The playhead sits 100 ms back, so the scene holds the *older* pose while
+    // the newest sample is already 400 away. That gap is the whole subject.
+    apply(100);
+
+    const [peer] = remote.debug();
+    expect(peer?.clientId).toBe(PEER);
+    expect(peer?.items).toHaveLength(1);
+    const shown = peer!.items[0]!;
+    expect(shown.id).toBe("a");
+    expect(shown.raw).toEqual({ x: 400, y: 0, rot: 0 });
+    expect(shown.shown?.x).toBe(0);
+    // And it agrees with what was actually written, which is the property that
+    // makes the dot worth drawing.
+    expect(shown.shown?.x).toBe(at().x);
+  });
+
+  it("carries the numbers a legend needs, live", () => {
+    item("a");
+    send(0, 0, 0);
+    send(100, 400, 0);
+    apply(100);
+
+    const [peer] = remote.debug();
+    expect(peer?.buffered).toBe(2);
+    expect(peer?.spring).toBe(false);
+    expect(peer?.jitter).toBe(0);
+    expect(peer?.skew).not.toBeNull();
+    expect(peer?.guessed).toBe(false);
+  });
+
+  /** The flags say *why* the two poses differ, so they have to move when the
+   *  reason does. A playhead past the newest sample is a guess. */
+  it("says when the playhead is guessing rather than interpolating", () => {
+    item("a");
+    send(0, 0, 0);
+    send(100, 400, 0);
+    apply(100);
+    expect(remote.debug()[0]?.guessed).toBe(false);
+
+    // 100 ms later with nothing new: the playhead is past the newest sample.
+    apply(240);
+    expect(remote.debug()[0]?.guessed).toBe(true);
+  });
+
+  it("reports every peer, not just the first", () => {
+    item("a");
+    item("b");
+    send(0, 0, 0);
+    send(100, 400, 0);
+    remote.observe(9, state(0, 0, 0, { id: "b" }), 0);
+    remote.observe(9, state(100, 40, 0, { id: "b" }), 100);
+    apply(100);
+
+    expect(remote.debug().map((p) => p.clientId).sort((x, y) => x - y)).toEqual([7, 9]);
+  });
+});

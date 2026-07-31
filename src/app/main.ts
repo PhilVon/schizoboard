@@ -84,6 +84,7 @@ import { FrameLoop } from "@/render/loop";
 import { Overlay, type PendingRun } from "@/render/overlay";
 import { Janitor } from "@/crdt/janitor";
 import { Peers, readPeer } from "@/render/presence/peers";
+import { RemoteDebugPainter } from "@/render/presence/remotedebug";
 import { PinLayer } from "@/render/pins/dom";
 import { RopeLayer } from "@/render/ropes/paint";
 import { World } from "@/render/world";
@@ -3241,10 +3242,39 @@ async function boot(): Promise<void> {
      * the solver was already reading.
      */
     const tuning = new TuningPanel(world.layers.ui);
+
+    /**
+     * The remote-drag debug overlay, on `Alt`+backquote (T-235, Q-185).
+     *
+     * Its own painter on its own `overlay` subscription rather than an argument
+     * threaded into `overlay.draw` (Q-184), and registered *here* — after the
+     * board's own overlay pass above, so its marks land on top of what they are
+     * marking, and inside this branch, so a production bundle loses the painter,
+     * its canvas, its key listener and the import together. `remote.debug()` is
+     * the only thing left in a shipped build, and nothing calls it.
+     */
+    const remoteDebug = new RemoteDebugPainter(world.layers.ui);
+    loop.on("overlay", () => {
+      remoteDebug.draw(camera, remote.debug());
+    });
+
     (window as unknown as { schizo: unknown }).schizo = {
       board,
       /** The dials, so a driven session can set one without a slider. */
       tuning,
+      /**
+       * The two poses the overlay draws, and the painter itself.
+       *
+       * `remote` because `observe(clientId, state, receivedAt)` takes its times
+       * as arguments and validates an ordinary object through `readGrab` — so a
+       * driven session can be a second peer in *one* window, which is the only
+       * way any of this was ever going to be checked. A real second window puts
+       * the interesting half of the picture in a background tab, and a
+       * background tab's frame loop is throttled to something that has long
+       * since moved on.
+       */
+      remote,
+      remoteDebug,
       scene,
       camera,
       ropes,
