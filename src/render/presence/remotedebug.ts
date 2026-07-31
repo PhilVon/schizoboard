@@ -206,15 +206,21 @@ export class RemoteDebugPainter {
       const dx = item.raw.x - item.shown.x;
       const dy = item.raw.y - item.shown.y;
       const drot = item.raw.rot - item.shown.rot;
-      ctx.fillStyle = LINK;
+      const label = `${Math.hypot(dx, dy).toFixed(1)}u  ${(drot * (180 / Math.PI)).toFixed(2)}°`;
+      // On its own dark pill, because the one thing this label is guaranteed to
+      // be over is the item being dragged — and a sheet of paper is the palest
+      // surface on the board. Driven, plain text here was legible on cork and
+      // very nearly invisible on the note it was describing.
       ctx.font = FONT;
       ctx.textAlign = "left";
       ctx.textBaseline = "middle";
-      ctx.fillText(
-        `${Math.hypot(dx, dy).toFixed(1)}u  ${(drot * (180 / Math.PI)).toFixed(2)}°`,
-        raw.x + RAW_HALF + 4,
-        raw.y - RAW_HALF - 4,
-      );
+      const x = raw.x + RAW_HALF + 5;
+      const y = raw.y - RAW_HALF - 7;
+      const width = ctx.measureText(label).width;
+      ctx.fillStyle = PANEL;
+      ctx.fillRect(x - 4, y - 8, width + 8, 16);
+      ctx.fillStyle = "#e8e2d8";
+      ctx.fillText(label, x, y);
     }
   }
 
