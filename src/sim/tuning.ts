@@ -5,8 +5,31 @@
  * > Feel is found by fiddling, not by derivation, and the fiddling needs to be
  * > fast. — DESIGN section 5.8
  *
- * The panel is not built yet; the module is, so that when it is there is one
- * object to bind it to rather than a hunt through `sim/`.
+ * The panel is `ui/tuning.ts` and it binds to [`TUNABLES`] at the bottom of
+ * this file — one list, in this module, so that a value and the range it is
+ * sensible over are written down in the same place (T-232).
+ *
+ * ## Why these are `let`
+ *
+ * Every value below is a live ESM binding rather than a constant, and the panel
+ * writes them through [`setTuning`]. Nothing in `sim/` changes, imports
+ * nothing new and knows nothing about a panel: an ES module export is a
+ * *binding*, not a copy, so `verlet.ts` reading `ROPE_DAMPING` on the next
+ * substep reads whatever this module last put there.
+ *
+ * That is the whole mechanism, and it is why the alternative — a `TUNING`
+ * object every consumer dots into — was not built. It would have put a
+ * property load in three hot loops to buy nothing this does not already do.
+ *
+ * A production build never calls the setter: the panel is behind
+ * `import.meta.env.DEV` and is eliminated with the rest of the dev block. So if
+ * a bundler decides to inline one of these, the result is the value that is
+ * written here, which is the value production has always had.
+ *
+ * **Nothing derives from these at module load.** A constant computed once from
+ * one of them is a value that silently stops agreeing with its own source the
+ * first time the panel is touched; `sim/ropes.ts` had exactly one and it is now
+ * a function.
  *
  * Units are board units, seconds and radians throughout — never screen pixels
  * and never milliseconds, because the simulation must not change with the zoom
@@ -22,8 +45,8 @@
  * > per frame, so behaviour doesn't change with frame rate and a stalled tab
  * > doesn't explode on resume. — DESIGN section 5.2
  */
-export const SIM_STEP_MS = 1000 / 120;
-export const SIM_MAX_SUBSTEPS = 4;
+export let SIM_STEP_MS = 1000 / 120;
+export let SIM_MAX_SUBSTEPS = 4;
 
 /**
  * Gravity, board units per second squared.
@@ -34,7 +57,7 @@ export const SIM_MAX_SUBSTEPS = 4;
  * a twitch rather than as weight. This is tuned by feel, as section 5.8 says it
  * should be, to a period a little under a second.
  */
-export const GRAVITY = 12000;
+export let GRAVITY = 12000;
 
 /**
  * Damping ratio of the item swing.
@@ -48,7 +71,7 @@ export const GRAVITY = 12000;
  * about 0.1 it rings for ten seconds; over about 0.4 it slumps into place with
  * one lean and never really swings.
  */
-export const SWING_DAMPING = 0.26;
+export let SWING_DAMPING = 0.26;
 
 /**
  * Ceiling on the swing's natural frequency, radians per second.
@@ -59,7 +82,7 @@ export const SWING_DAMPING = 0.26;
  * starts reading as a flicker, and it is also where a 120 Hz integrator starts
  * to lose accuracy.
  */
-export const SWING_MAX_RATE = 14;
+export let SWING_MAX_RATE = 14;
 
 /**
  * When a swing is over.
@@ -71,9 +94,9 @@ export const SWING_MAX_RATE = 14;
  * the corner of the largest item, an angular rate to match, and twelve
  * consecutive **substeps** — a tenth of a second at the fixed timestep.
  */
-export const SWING_SLEEP_ANGLE = 3e-4;
-export const SWING_SLEEP_RATE = 4e-3;
-export const SWING_SLEEP_STEPS = 12;
+export let SWING_SLEEP_ANGLE = 3e-4;
+export let SWING_SLEEP_RATE = 4e-3;
+export let SWING_SLEEP_STEPS = 12;
 
 /**
  * How far apart rope particles sit, board units.
@@ -87,7 +110,7 @@ export const SWING_SLEEP_STEPS = 12;
  * cost too much, and the last thing to reach for if a fold looks blocky —
  * a rope cannot turn tighter than one link.
  */
-export const ROPE_SPACING = 12;
+export let ROPE_SPACING = 12;
 
 /**
  * How much of a rope particle's velocity survives each 1/120 s step.
@@ -103,7 +126,7 @@ export const ROPE_SPACING = 12;
  * about *time* if `ROPE_SUBSTEPS` is ever retuned. `sim/verlet.ts` takes the
  * appropriate root.
  */
-export const ROPE_DAMPING = 0.98;
+export let ROPE_DAMPING = 0.98;
 
 /**
  * How the rope solver spends its budget: micro-steps inside each fixed 1/120 s
@@ -156,8 +179,8 @@ export const ROPE_DAMPING = 0.98;
  * directions move as the solve corrects them — so the second step cleans up
  * what the first one's linearisation left. A third changes nothing measurable.
  */
-export const ROPE_SUBSTEPS = 16;
-export const ROPE_ITERATIONS = 2;
+export let ROPE_SUBSTEPS = 16;
+export let ROPE_ITERATIONS = 2;
 
 /**
  * When a rope is finished moving.
@@ -171,8 +194,8 @@ export const ROPE_ITERATIONS = 2;
  * ropes at different shapes depending on how far you happened to be zoomed
  * in. The two are the same thing at 100%, which is what DESIGN is quoting.
  */
-export const ROPE_SLEEP_MOVE = 0.05;
-export const ROPE_SLEEP_STEPS = 12;
+export let ROPE_SLEEP_MOVE = 0.05;
+export let ROPE_SLEEP_STEPS = 12;
 
 /**
  * How fast a string turns into a different material, in sag-multiplier units
@@ -212,7 +235,7 @@ export const ROPE_SLEEP_STEPS = 12;
  * would leave the rope a hair off its material forever, awake and never
  * sleeping, which is the one thing DESIGN section 5.3 will not have.
  */
-export const MATERIAL_EASE = 1.8;
+export let MATERIAL_EASE = 1.8;
 
 /**
  * How far past the edge of the screen the simulation keeps running, as a
@@ -234,7 +257,7 @@ export const MATERIAL_EASE = 1.8;
  * that actually matters — a rope disturbed just off the edge has a fifth of a
  * screen of panning to settle in before you can see it.
  */
-export const SIM_MARGIN = 0.2;
+export let SIM_MARGIN = 0.2;
 
 /**
  * The ceiling on rope particles stepped in one frame.
@@ -254,4 +277,145 @@ export const SIM_MARGIN = 0.2;
  * awake at any moment" is under a hundred particles; this is the backstop for
  * the board that has gone wrong, not a limit anyone should meet.
  */
-export const MAX_AWAKE_PARTICLES = 2000;
+export let MAX_AWAKE_PARTICLES = 2000;
+
+// --- the panel's half ------------------------------------------------------
+
+/**
+ * One dial: what it is called, what it may be set to, and the two closures
+ * that reach the binding above.
+ *
+ * `read`/`write` rather than a key into an object, because the values *are*
+ * module bindings and there is no object to index. That is the trade the file
+ * header describes, and this is where it is paid — seventeen pairs of closures
+ * in one table, against a property load in the solver's inner loop.
+ */
+export interface Knob {
+  /** The exported name, which is also what the panel labels it with. */
+  readonly key: string;
+  /** What it does, in the fewest words that are still true. */
+  readonly label: string;
+  readonly min: number;
+  readonly max: number;
+  readonly step: number;
+  /**
+   * What changing it will *not* do, for the dials whose effect is not
+   * immediate. Shown under the row, because a knob that appears to do nothing
+   * is worse than one that is not there.
+   */
+  readonly lag?: string;
+  read(): number;
+  write(value: number): void;
+}
+
+function knob(
+  key: string,
+  label: string,
+  range: { min: number; max: number; step: number; lag?: string },
+  read: () => number,
+  write: (value: number) => void,
+): Knob {
+  return { key, label, ...range, read, write };
+}
+
+/**
+ * Every dial in this file, in the order the simulation uses them: the clock,
+ * the swing, the rope, then the two policies about how much work to do.
+ *
+ * The ranges are not guesses. Each one spans the territory the comment above
+ * the value argues over — `SWING_DAMPING` stops at 0.8 because past 0.4 it
+ * "slumps into place with one lean", `ROPE_SUBSTEPS` reaches 32 because the
+ * table above says doubling to it is the next rung — so the ends of a slider
+ * are the ends of the useful range rather than the ends of the number line.
+ */
+export const TUNABLES: readonly Knob[] = [
+  knob(
+    "SIM_STEP_MS",
+    "fixed timestep",
+    { min: 1000 / 240, max: 1000 / 45, step: 0.05, lag: "ropes already asleep keep their old pose" },
+    () => SIM_STEP_MS,
+    (v) => (SIM_STEP_MS = v),
+  ),
+  knob("SIM_MAX_SUBSTEPS", "substep cap per frame", { min: 1, max: 8, step: 1 },
+    () => SIM_MAX_SUBSTEPS, (v) => (SIM_MAX_SUBSTEPS = v)),
+  knob("GRAVITY", "gravity", { min: 0, max: 40000, step: 250 },
+    () => GRAVITY, (v) => (GRAVITY = v)),
+  knob("SWING_DAMPING", "swing damping ratio", { min: 0.02, max: 0.8, step: 0.01 },
+    () => SWING_DAMPING, (v) => (SWING_DAMPING = v)),
+  knob("SWING_MAX_RATE", "swing rate ceiling", { min: 2, max: 30, step: 0.5 },
+    () => SWING_MAX_RATE, (v) => (SWING_MAX_RATE = v)),
+  knob("SWING_SLEEP_ANGLE", "swing sleep angle", { min: 1e-5, max: 3e-3, step: 1e-5 },
+    () => SWING_SLEEP_ANGLE, (v) => (SWING_SLEEP_ANGLE = v)),
+  knob("SWING_SLEEP_RATE", "swing sleep rate", { min: 1e-4, max: 3e-2, step: 1e-4 },
+    () => SWING_SLEEP_RATE, (v) => (SWING_SLEEP_RATE = v)),
+  knob("SWING_SLEEP_STEPS", "swing sleep substeps", { min: 1, max: 60, step: 1 },
+    () => SWING_SLEEP_STEPS, (v) => (SWING_SLEEP_STEPS = v)),
+  knob(
+    "ROPE_SPACING",
+    "particle spacing",
+    { min: 4, max: 40, step: 1, lag: "a rope keeps the particle count it was seeded with" },
+    () => ROPE_SPACING,
+    (v) => (ROPE_SPACING = v),
+  ),
+  knob("ROPE_DAMPING", "rope damping per step", { min: 0.8, max: 1, step: 0.001 },
+    () => ROPE_DAMPING, (v) => (ROPE_DAMPING = v)),
+  knob("ROPE_SUBSTEPS", "rope micro-steps", { min: 1, max: 32, step: 1 },
+    () => ROPE_SUBSTEPS, (v) => (ROPE_SUBSTEPS = v)),
+  knob("ROPE_ITERATIONS", "Newton steps per micro-step", { min: 1, max: 8, step: 1 },
+    () => ROPE_ITERATIONS, (v) => (ROPE_ITERATIONS = v)),
+  knob("ROPE_SLEEP_MOVE", "rope sleep movement", { min: 0.005, max: 0.5, step: 0.005 },
+    () => ROPE_SLEEP_MOVE, (v) => (ROPE_SLEEP_MOVE = v)),
+  knob("ROPE_SLEEP_STEPS", "rope sleep steps", { min: 1, max: 60, step: 1 },
+    () => ROPE_SLEEP_STEPS, (v) => (ROPE_SLEEP_STEPS = v)),
+  knob("MATERIAL_EASE", "material change rate", { min: 0.2, max: 8, step: 0.1 },
+    () => MATERIAL_EASE, (v) => (MATERIAL_EASE = v)),
+  knob("SIM_MARGIN", "simulated margin, viewports", { min: 0, max: 1, step: 0.05 },
+    () => SIM_MARGIN, (v) => (SIM_MARGIN = v)),
+  knob("MAX_AWAKE_PARTICLES", "awake particle cap", { min: 100, max: 20000, step: 100 },
+    () => MAX_AWAKE_PARTICLES, (v) => (MAX_AWAKE_PARTICLES = v)),
+];
+
+/**
+ * What every dial was set to when this module loaded — the numbers argued for
+ * in the comments above, and the only place they are recorded once the panel
+ * has been touched.
+ *
+ * Captured here rather than written out a second time, so a value and its
+ * default cannot drift apart.
+ */
+const DEFAULTS: ReadonlyMap<string, number> = new Map(TUNABLES.map((k) => [k.key, k.read()]));
+
+/**
+ * Set one dial, clamped to its own range and quantised to its own step.
+ *
+ * Clamped rather than rejected: this is reached from a slider, and a slider
+ * cannot ask for anything outside its range in the first place. The clamp is
+ * for the other caller — a test, or a console — and for the day a range is
+ * narrowed under a value somebody already had. Returns what was actually
+ * written, which is what the panel puts in its readout.
+ *
+ * A step of `1e-5` and a value of `3e-4` do not divide cleanly in binary, so
+ * the quantised result is rounded back to the step's own precision. Without
+ * that, a slider at the default shows `0.00030000000000000003`.
+ */
+export function setTuning(key: string, value: number): number {
+  const dial = TUNABLES.find((k) => k.key === key);
+  if (dial === undefined) throw new Error(`no such tuning value: ${key}`);
+  if (!Number.isFinite(value)) return dial.read();
+  const clamped = Math.min(dial.max, Math.max(dial.min, value));
+  const stepped = Math.round(clamped / dial.step) * dial.step;
+  const decimals = Math.max(0, Math.ceil(-Math.log10(dial.step)));
+  const exact = Number(stepped.toFixed(decimals));
+  dial.write(exact);
+  return exact;
+}
+
+/** Put every dial back to the value its own comment argues for. */
+export function resetTuning(): void {
+  for (const dial of TUNABLES) dial.write(DEFAULTS.get(dial.key)!);
+}
+
+/** Whether anything has been moved off its default — the panel's reset row. */
+export function tuningChanged(): boolean {
+  return TUNABLES.some((dial) => dial.read() !== DEFAULTS.get(dial.key));
+}

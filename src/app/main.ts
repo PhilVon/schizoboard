@@ -120,6 +120,7 @@ import { Hud, type HudStats } from "@/ui/hud";
 import { Flash } from "@/ui/flash";
 import { Notice } from "@/ui/notice";
 import { SearchField } from "@/ui/search";
+import { TuningPanel } from "@/ui/tuning";
 import { ContextMenu, type MenuEntry } from "@/ui/menu";
 
 /**
@@ -3211,8 +3212,21 @@ async function boot(): Promise<void> {
    * Nothing in the application may read it. It is write-only from here.
    */
   if (import.meta.env.DEV) {
+    /**
+     * The physics panel, on Shift+backquote beside the HUD (T-232).
+     *
+     * Built here rather than beside the HUD, and behind this branch, because
+     * every write it can make goes through `setTuning` — so a production
+     * bundle loses the panel, the import and the only route by which one of
+     * `sim/tuning.ts`'s values can ever be anything but the number written in
+     * it. `sim/` itself is untouched: what the panel moves is the live binding
+     * the solver was already reading.
+     */
+    const tuning = new TuningPanel(world.layers.ui);
     (window as unknown as { schizo: unknown }).schizo = {
       board,
+      /** The dials, so a driven session can set one without a slider. */
+      tuning,
       scene,
       camera,
       ropes,

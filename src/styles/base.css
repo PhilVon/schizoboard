@@ -238,6 +238,103 @@ body {
   background: rgba(255, 255, 255, 0.12);
 }
 
+/* --- the physics panel, docs/DESIGN.md section 5.8 (dev only) -------------- */
+
+/*
+ * Opposite the HUD and in its idiom, because the two are read together: you
+ * turn a dial on the left and watch the sim row on the right. Sharing a corner
+ * with it was the first attempt and it simply covered it up, which is the one
+ * arrangement that makes the pair useless. Its own scroll rather than a shorter
+ * list — seventeen dials is what section 5.8 means by "all physics
+ * constants", and a panel that hid four of them would send somebody back to
+ * editing the module, which is the thing it exists to stop.
+ */
+.tuning {
+  position: absolute;
+  top: 12px;
+  left: 12px;
+  z-index: 1;
+  display: flex;
+  flex-direction: column;
+  width: 300px;
+  /* Clear of the help bar, which runs the full width of the bottom. */
+  max-height: calc(100vh - 96px);
+  padding: 9px 11px 10px;
+  border-radius: 7px;
+  background: rgba(16, 12, 9, 0.9);
+  backdrop-filter: blur(6px);
+  color: #d9cfc2;
+  font-family: var(--ui-mono);
+  font-size: 11px;
+  line-height: 1.5;
+}
+
+.tuning[hidden] {
+  display: none;
+}
+
+.tuning-list {
+  overflow-y: auto;
+}
+
+.tuning-title {
+  margin-bottom: 6px;
+  font-size: 13px;
+}
+
+.tuning-row {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  align-items: baseline;
+  margin-bottom: 7px;
+}
+
+.tuning-name {
+  opacity: 0.72;
+}
+
+.tuning-value {
+  text-align: right;
+}
+
+.tuning-row input[type="range"] {
+  grid-column: 1 / -1;
+  width: 100%;
+  height: 12px;
+  margin: 2px 0 0;
+  accent-color: #8fb98a;
+}
+
+/* What a dial will not do until something else happens — see `Knob.lag`. */
+.tuning-lag {
+  grid-column: 1 / -1;
+  opacity: 0.45;
+  font-size: 10px;
+}
+
+/*
+ * Outside the scrolling list, not at the end of it. The list is taller than the
+ * panel on any ordinary window, so a reset inside it is one you have to go
+ * looking for — and the moment you want it is the moment you have turned
+ * something too far and want the board back.
+ */
+.tuning-reset {
+  flex: none;
+  width: 100%;
+  margin-top: 2px;
+  padding: 4px 0;
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  border-radius: 4px;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+}
+
+.tuning-reset[hidden] {
+  display: none;
+}
+
 /* --- context menu, docs/DESIGN.md section 3.4 ------------------------------ */
 
 /*
