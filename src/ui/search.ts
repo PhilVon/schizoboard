@@ -5,9 +5,10 @@
  * > — DESIGN section 3.7
  *
  * Top centre, which is the last free corner-ish position in the UI layer: the
- * missing-photo notice has top left, the dev HUD top right, the hint line
+ * missing-photo notice has top left, the dev HUD top right, the tool info bar
  * bottom left and the transient confirmation bottom right (`ui/notice.ts`,
- * `ui/hud.ts`, `ui/flash.ts`). Centre because a search is a thing you asked
+ * `ui/hud.ts`, `ui/toolinfo.ts`, `ui/flash.ts`). The tool drawer has the left
+ * edge between the first and the third. Centre because a search is a thing you asked
  * for and is looking back at you, unlike all four of those, which are the board
  * telling you something while you get on with something else.
  *

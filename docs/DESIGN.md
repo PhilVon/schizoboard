@@ -393,6 +393,22 @@ Strings         1–9 slack presets · Alt+wheel whole-string slack · Enter/Esc
 Search          Ctrl+F find · Enter next match · Shift+Enter previous · Esc close
 ```
 
+### 3.10 The tool drawer and the tool info bar
+
+Everything in the table above was, until Phase 10, the *only* way to reach any of it. That is a reasonable state for a board being built by the person who wrote the table, and an unreasonable one for anybody else: seven tools and about thirty modifiers, none of which is suggested by anything on screen. §3.4's scissors is the sharp case — `Ctrl`+`Alt`+click was chosen precisely because nothing can press it by accident, and the cost of that is that nothing suggests it either.
+
+Two pieces of chrome answer it, and they are one piece of furniture: **which tool you are holding**, and **what it does**.
+
+**The drawer** is a rail of the seven tools down the left edge, vertically centred. Each button is a glyph with its key letter under it at half opacity, because the rail's job is to teach the keyboard rather than to replace it — somebody who finds the drawer finds the shortcuts. It holds the seven and nothing else: not the pens' colours and sizes, which the context menu and the bracket keys already own, and not undo, fit or actual size, which are history and camera rather than tools. A drawer holding all three would stop being a statement about what is in your hand.
+
+**The info bar** is bottom left, where the old hint line was, and it is per tool. It leads with the tool, its key and its plain verb; then the gestures that need nothing held; then either the *chips* — `hold Shift · Ctrl · Alt` — or, while one of those is down, the gestures that key unlocks. Underneath, a quieter standing line for the camera, the search and undo, which belong to no tool.
+
+**The chips are the whole idea.** Two thirds of what a tool implements sits behind a modifier, and a gesture you are not holding the key for is one you are not about to make — so at rest the bar names the keys and says nothing about what is behind them, and holding one is what asks the question. They name *keys*, not combinations, which gives the state that teaches the scissors: on the pin tool, holding `Ctrl` lights its chip and reveals nothing, so `Ctrl` is visibly half of something, and pressing `Alt` finishes the sentence.
+
+**The handle at the foot of the rail is the only toggle, and it puts both away.** No new keyboard shortcut, which is deliberate: the table in §3.9 is what this board can be learned from, and a binding that is not in it is a binding nobody can find. `state/tools/machine.ts` deleted `KeyB` on exactly that ground. A cork-menu row was the third option and was declined as one more row for something the handle already says. Whether the drawer is open is remembered per machine — a taste, like §4.7's ageing, and stored the same way.
+
+Neither panel takes a press it did not ask for. The bar is inert entirely; the rail takes clicks on its buttons and nothing else, and no button is in the tab order — a focused button would eat `Space`, which is the pan, and `Delete`, which is the erase.
+
 ---
 
 ## 4. Art direction
@@ -517,7 +533,7 @@ Handwriting for note text, captions and annotations — a decent hand for body t
 
 **Whatever face is chosen is set glyph by glyph.** A transform does not apply to an inline box, so a letter that leans has to be one — which means no kerning between letters and no joins across them. A *connected* hand therefore comes apart, and this asked for one until T-81 measured what that costs. Kerning is turned off on the whole surface rather than only where the boxes are, because the editor's caret lives in a plain `<textarea>` that can never have them, and two different sets of advances mean the words re-wrap the moment you click into a note.
 
-UI chrome is the opposite: a clean, quiet, neutral sans, low contrast, staying out of the way. The board is the loud part. Toolbars are dark, translucent, and float over the cork without pretending to be physical objects — a fake wooden toolbar would be skeuomorphism, which §1.3 rules out.
+UI chrome is the opposite: a clean, quiet, neutral sans, low contrast, staying out of the way. The board is the loud part. Toolbars are dark, translucent, and float over the cork without pretending to be physical objects — a fake wooden toolbar would be skeuomorphism, which §1.3 rules out. §3.10's drawer and info bar are the two that exist, and they are in that idiom rather than in the paper-slip one the notice and the confirmation use: those two are things somebody left on the board, and these are pieces of the application.
 
 ---
 
@@ -835,7 +851,7 @@ Two more exports beside the bundle, and they answer a different question. A `.sc
 
 **The image is composited, not printed** — six painters into one canvas, in the order §6.2 stacks them. Cork, board ink and both rope passes already draw themselves at any camera, so an export camera costs them nothing. The other two had to be written: the items rasterise through `foreignObject`, and the pins draw from the same sprite bake the screen uses, last, because a pin is physically on top of what it holds. PNG by default because lossless is what someone who has not thought about it wants, with WebP offered beside it in the same save dialog for someone who has seen the file size (Q-138) — a whole-board PNG measured 456 MB.
 
-**Neither carries chrome.** No dev HUD, no help bar, no fps counter. This is not automatic: the first PDF this project produced printed all of it.
+**Neither carries chrome.** No dev HUD, no tool drawer, no info bar, no fps counter. This is not automatic: the first PDF this project produced printed all of it.
 
 Three things an export must force that the screen never does, each of which was invisible until a rendered page was looked at:
 

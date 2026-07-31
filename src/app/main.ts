@@ -157,10 +157,10 @@ async function boot(): Promise<void> {
    * ## Not the read-only case, which already has a louder sign
    *
    * `giveUp` — the store that would not open at all — comes through the same
-   * `onError`, and it is deliberately dropped here: the hint line at the bottom
-   * of this file already opens with THIS BOARD IS NOT BEING SAVED in that
-   * state, permanently and in the reading order somebody scanning the board
-   * actually uses. A flash saying it a second time would be the same news
+   * `onError`, and it is deliberately dropped here: the tool info bar already
+   * opens with THIS BOARD IS NOT BEING SAVED in that state (`ui/toolhint.ts`),
+   * permanently and in the reading order somebody scanning the board actually
+   * uses. A flash saying it a second time would be the same news
    * twice, and the flash is the wrong shape for it besides — a read-only board
    * is permanent for the session and can never recover, which is exactly what
    * `hold`/`say` is not for. `readOnly` is true by the time `onError` runs

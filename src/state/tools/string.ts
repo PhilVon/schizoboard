@@ -75,7 +75,8 @@ const CLOSE_LOOP_SLOP = 18;
 
 export interface StringToolOptions {
   /** The run ended. The caller hands the board back to select, the way the
-   *  note and pin tools do — nothing on screen says which tool is active. */
+   *  note and pin tools do — and for the reason `state/tools/note.ts` gives,
+   *  which outlived the drawer that made half of it obsolete. */
   onDone?: () => void;
   /** Wall clock, injected so the double-click window is testable. */
   now?: () => number;

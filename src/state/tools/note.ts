@@ -13,13 +13,28 @@
  *
  * One placement and the board returns to `select`, rather than staying armed.
  *
- * That is not the usual choice, and it is made for a specific reason: nothing on
- * screen says which tool is active. There is no toolbar, no cursor change, no
- * indicator of any kind — and there should not be one, on a board whose whole
- * argument is that it has no UI furniture on it. A sticky tool with no way to
- * see that it is active is a trap: you press `N`, get distracted, come back, and
- * every click on the cork drops another sheet where you meant to deselect. A
- * one-shot tool cannot do that, and it costs one keystroke per sheet.
+ * That is not the usual choice. It was made because nothing on screen said which
+ * tool was active: no toolbar, no cursor change, no indicator of any kind. A
+ * sticky tool with no way to see that it is active is a trap — you press `N`,
+ * get distracted, come back, and every click on the cork drops another sheet
+ * where you meant to deselect. A one-shot tool cannot do that, and it costs one
+ * keystroke per sheet.
+ *
+ * **Something says so now** (DESIGN section 3.10): the drawer lights the tool in
+ * your hand and the info bar names it. This paragraph used to end "and there
+ * should not be one, on a board whose whole argument is that it has no UI
+ * furniture on it", which was a fair reading while the board was being built by
+ * the person who wrote the key map and stopped being one the moment anybody else
+ * had to find their way in.
+ *
+ * The one-shot behaviour stays, and the indicator is not the reason it should.
+ * Advertising an armed tool tells you *why* the next click made a sheet; it does
+ * not stop the click. The failure is a hand that has moved on while the board
+ * has not, and reading the corner of the screen is exactly what somebody who has
+ * been distracted has not done. What the drawer changes is the cost of the
+ * alternative — a sticky tool would now be visible, so this is a choice about
+ * the gesture rather than a workaround for having no UI. Placing one sheet and
+ * handing the board back is still the right shape for a verb you do once.
  *
  * It also puts the new sheet in the selection, for the same reason paste does:
  * "putting something down and then wanting to move it is one gesture in two

@@ -504,9 +504,10 @@ export function pinMenuRows(
  * ## Why a right-click on bare cork (Q-76)
  *
  * Because it was the only surface left, and it turned out to be the right one.
- * There is no settings panel; the two pieces of standing chrome — the hint line
- * and the dev HUD — are `pointer-events: none` on purpose, each having already
- * swallowed board presses once. A right-click on empty cork with nothing
+ * There is no settings panel; the standing chrome — the tool info bar and the
+ * dev HUD — is `pointer-events: none` on purpose, and the line the info bar
+ * replaced had swallowed board presses for nine phases while three comments,
+ * this one among them, said it did not (T-250). A right-click on empty cork with nothing
  * selected opened nothing at all, which made it the one gesture on this board
  * that was reaching for something and finding nothing.
  *

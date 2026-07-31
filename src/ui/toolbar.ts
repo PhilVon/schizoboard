@@ -7,7 +7,9 @@
  * any kind — and there should not be one." That held while the board was being
  * built by the person who wrote the key map. It stops holding the moment
  * somebody else has to find their way in, and D-44 is where it was decided
- * (with Phil, before any of this was planned).
+ * (with Phil, before any of this was planned). The sentence quoted above has
+ * since been rewritten where it stood; DESIGN section 3.10 is the standing
+ * description of this panel.
  *
  * ## What it is, and what it deliberately is not
  *

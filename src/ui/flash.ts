@@ -22,14 +22,16 @@
  * ## It cannot be clicked, for the usual reason
  *
  * `pointer-events: none`, like the notice, and load-bearing for the same
- * reason: the dev HUD and the hint line have each swallowed board presses, and
+ * reason: the dev HUD and the old hint line each swallowed board presses, and
  * each cost a session to find, because a press that lands in an overlay looks
- * exactly like the application ignoring you. This one is worse than most if it
+ * exactly like the application ignoring you. Both are fixed — the hint line is
+ * gone and the HUD was finally made inert in T-250, having been described as
+ * inert here since before it was. This one is worse than most if it
  * got that wrong — it appears under the cursor's general area moments after a
  * click, which is precisely when the next click is coming.
  *
  * Bottom right, the one corner nothing else uses: the notice is top left, the
- * dev HUD top right, the hint line bottom left.
+ * dev HUD top right, the tool info bar bottom left.
  */
 
 /** How long a message stands before it fades. */
