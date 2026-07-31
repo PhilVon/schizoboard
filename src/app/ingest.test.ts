@@ -223,7 +223,7 @@ describe("reading a clipboard's mind", () => {
 
 describe("layout", () => {
   const image = (w = 1200, h = 800): Ingested => ({
-    kind: "image",
+    kind: "asset",
     sha256: "a".repeat(64),
     asset: { w, h, mime: "image/png", size: 1 },
   });
@@ -278,7 +278,7 @@ describe("layout", () => {
     const [item] = layout(
       [
         {
-          kind: "image",
+          kind: "asset",
           sha256: "c".repeat(64),
           asset: { w: 900, h: 600, mime: "image/jpeg", size: 4096, origName: "dune.jpg" },
         },

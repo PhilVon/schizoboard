@@ -2055,6 +2055,10 @@ async function boot(): Promise<void> {
     camera,
     claim: (data, at) => boardClipboard?.claim(data, at) === true,
     cursor: () => tools.cursor,
+    // Where a refused file says so (T-260). The same surface the export report
+    // uses, because "this did not work" and "this worked" belong in one place —
+    // a person learns where to look once.
+    say: (message) => flash.say(message),
     // Putting something down and then wanting to move it is one gesture in two
     // halves, so the second half starts with it already held.
     onCreated: (ids) => {

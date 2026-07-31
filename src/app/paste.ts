@@ -51,6 +51,7 @@ import {
   type BoardPoint,
   type Ingested,
 } from "@/app/ingest";
+import { assetKind } from "@/crdt/schema";
 import type { AssetMeta, Platform } from "@/platform/types";
 import type { Camera } from "@/state/camera";
 import { isTextTarget } from "@/state/input";
@@ -95,6 +96,14 @@ export interface PasteOptions {
    * happened to be registered in.
    */
   claim?: (data: DataTransfer | null, at: BoardPoint) => boolean;
+  /**
+   * Say one line to the person, transiently — `ui/flash.ts`, which is where
+   * the export report and the board's other passing remarks already go.
+   *
+   * Optional because a `Paste` in a test has nobody to talk to, and because a
+   * refusal that cannot be announced is still a refusal.
+   */
+  say?: (message: string) => void;
 }
 
 /** Everything the clipboard held, read *synchronously* — see `onPaste`. */
@@ -117,6 +126,17 @@ export class Paste {
    * than to the one the user made last. A drop landing mid-paste does the same.
    */
   private queue: Promise<unknown> = Promise.resolve();
+  /**
+   * What this run of the queue could not put down, named for the person.
+   *
+   * An instance field rather than a return value because refusals happen four
+   * routes deep — `fromFiles`, the native clipboard, the HTML fragment and the
+   * OS drop all funnel into `accept` — and threading a second list back out of
+   * all of them would be four signatures changed to carry one sentence. Safe
+   * because `queue` serialises runs: one paste is finished with this before the
+   * next one starts.
+   */
+  private refused: string[] = [];
 
   constructor(options: PasteOptions) {
     this.options = options;
@@ -206,7 +226,47 @@ export class Paste {
     });
   }
 
+  /**
+   * Something was handed over that this board cannot hold.
+   *
+   * Collected rather than said one at a time: dragging a folder in is one
+   * gesture, and four lines about four files is four times the punishment for
+   * it. Reported by `create`, which is the end of every route.
+   */
+  private refuse(what: string, why: string): void {
+    console.warn(`nothing to put on the board: ${what} — it ${why}`);
+    this.refused.push(what);
+  }
+
+  /**
+   * Say what was left out, if anything was.
+   *
+   * **A notice rather than silence** (AC-651). A file that lands nowhere and
+   * says nothing is indistinguishable from a paste that did not happen — and
+   * the person is then left wondering whether the board is broken, which is a
+   * worse state to be in than being told no.
+   *
+   * Plain register on purpose, the same choice `state/missing.ts` makes for its
+   * line: this is a corkboard, and "⚠ UNSUPPORTED FILE TYPE" is exactly what
+   * the whole design is avoiding.
+   */
+  private sayWhatWasRefused(): void {
+    const refused = this.refused;
+    this.refused = [];
+    if (refused.length === 0) return;
+    const say = this.options.say;
+    if (!say) return;
+    if (refused.length === 1) {
+      say(`Nothing here can hold ${refused[0]}`);
+      return;
+    }
+    say(`Nothing here can hold ${refused.length} of those — ${refused.join(", ")}`);
+  }
+
   private create(payloads: readonly Ingested[], at: BoardPoint): void {
+    // Before the early return, not after it: a paste of nothing but refusals is
+    // exactly the case that most needs saying out loud.
+    this.sayWhatWasRefused();
     if (payloads.length === 0) return;
     const inputs: CreateItemInput[] = layout(payloads, at);
     const created = createItems(this.options.board, inputs);
@@ -286,12 +346,26 @@ export class Paste {
    * interstitial or a tracking pixel's JSON.
    */
   private accept(out: Ingested[], meta: AssetMeta, what: string, origName?: string): void {
-    if (!meta.mime.startsWith("image/") || meta.w <= 0 || meta.h <= 0) {
-      console.warn(`not a picture, so nothing to put on the board: ${what} (${meta.mime})`);
+    const kind = assetKind(meta.mime);
+    // Decided from the sniffed bytes and never from the name. `meta.mime` is
+    // the shell's answer after reading the magic numbers (`assets.rs`), so a
+    // `.jpg` holding a zip is a zip here — which is the point of AC-650: an
+    // extension is what somebody typed, and this gate is the one place the
+    // board decides what it is holding.
+    if (kind === "unknown") {
+      this.refuse(what, "is not a picture, a film, a recording or a document");
+      return;
+    }
+    // A picture is the one kind judged on its box, because a picture that will
+    // not decode has no other way of being wrong: the bytes are there, the mime
+    // is right, and the item would hang on the wall as a frame around nothing.
+    // A cassette has no box and is not judged on one (T-261).
+    if (kind === "image" && (meta.w <= 0 || meta.h <= 0)) {
+      this.refuse(what, "says it is a picture and will not open as one");
       return;
     }
     out.push({
-      kind: "image",
+      kind: "asset",
       sha256: meta.sha256,
       asset: {
         w: meta.w,
