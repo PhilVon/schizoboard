@@ -231,6 +231,47 @@ export function titleWorthWriting(title: string, filename: string): string {
 }
 
 /**
+ * Rough advance width of the clean face, uppercased and letterspaced, as a
+ * fraction of its own size.
+ *
+ * An estimate on purpose, and the same estimate `app/ingest.ts` makes for a
+ * note's wrap: measuring would mean a layout read, and this runs in a bind.
+ * Being a little high is the safe direction — it undershoots the size and
+ * leaves a gap, where being low would clip the name it exists to show.
+ */
+const TYPED_ADVANCE = 0.62;
+
+/**
+ * How small a label will go before it gives up and truncates, as a fraction of
+ * the size it wanted.
+ *
+ * A person with a long name and a small tab writes smaller, and then stops and
+ * abbreviates. So does this. The floor is what keeps a forty-character filename
+ * from writing the tab in something nobody can read at any zoom — past it the
+ * name is cut with an ellipsis instead, which at least says it was cut.
+ *
+ * A half, and the half is measured rather than chosen: a third-cut tab on a
+ * 380-unit folder has about 110 units of room, and `configure-vhosts` — sixteen
+ * characters, a real filename off the corpus D-47 swept — needs to come down to
+ * 11 px to fit it. At 0.62 the floor stopped it two points short and the tab
+ * read `CONFIGUR…`, which is a worse label than a small one.
+ */
+const LABEL_FLOOR = 0.5;
+
+/**
+ * The size a typed label has to come down to for `text` to fit `box` units.
+ *
+ * Never larger than `size` — a short name does not get a bigger tab, because
+ * the tab is a physical thing and the type on it is a physical size. And never
+ * below the floor, past which the label truncates rather than shrinking on.
+ */
+export function fitLabel(text: string, box: number, size: number): number {
+  if (text.length === 0 || box <= 0) return size;
+  const wanted = box / (text.length * TYPED_ADVANCE);
+  return Math.max(size * LABEL_FLOOR, Math.min(size, wanted));
+}
+
+/**
  * What goes on the tab, typed, as the case number.
  *
  * The filename without its extension. The extension is what a file *is*, and the

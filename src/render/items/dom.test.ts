@@ -2560,6 +2560,30 @@ describe("a folder, a tape and a cassette", () => {
     expect(host.querySelector(".case-meta")!.textContent).toBe("9 pp.");
   });
 
+  it("gives each cassette the furniture the real object has", () => {
+    // Drawn from photographs, and the structure is what the photographs
+    // changed rather than only the colours. A VHS has TWO windows, one either
+    // side of a label in the middle of the face. A compact cassette has one,
+    // cut through a label that covers nearly all of it — so its window is a row
+    // of the label's own grid rather than a shape lying over one.
+    const vhs = mount(facts({ kind: "video" }));
+    expect(vhs.querySelectorAll(".case-window").length).toBe(2);
+    expect(vhs.querySelector(".case-window.is-left")).not.toBeNull();
+    expect(vhs.querySelector(".case-window.is-right")).not.toBeNull();
+    expect(vhs.querySelectorAll(".case-reel").length).toBe(2);
+    // Beside the label, not inside it.
+    expect(vhs.querySelector(".case-label .case-window")).toBeNull();
+
+    again();
+    const cassette = mount(facts({ kind: "audio" }));
+    expect(cassette.querySelectorAll(".case-window").length).toBe(1);
+    expect(cassette.querySelector(".case-label > .case-window")).not.toBeNull();
+    expect(cassette.querySelectorAll(".case-reel").length).toBe(2);
+    expect(cassette.querySelector(".case-tape")).not.toBeNull();
+    // The openings along the bottom edge, which say which way up it is.
+    expect(cassette.querySelector(".case-holes")).not.toBeNull();
+  });
+
   it("carries the item's own text as a caption anybody can write on", () => {
     const el = mount(facts({ kind: "audio" }), { text: "call 3 - the second one" });
     const caption = el.querySelector(".case-caption")!;

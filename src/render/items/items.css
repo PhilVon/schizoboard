@@ -1409,7 +1409,13 @@ textarea.item-field::-webkit-scrollbar {
   display: grid;
   grid-template-columns: 1fr auto;
   align-content: start;
-  gap: 0.15em 0.6em;
+  /*
+   * No column gap, and the space between the name and the number is padding on
+   * the number instead. The two cells carry the printed rule between them as a
+   * border, and a gap put a break in the middle of it — two underlines rather
+   * than one line printed across the label.
+   */
+  gap: 0.15em 0;
   overflow: hidden;
 }
 
@@ -1426,6 +1432,9 @@ textarea.item-field::-webkit-scrollbar {
 .case-number {
   grid-row: 1;
   grid-column: 1;
+  /* Without this the track's automatic minimum is the text's own width, so the
+     name pushes the runtime off the label instead of being cut. */
+  min-width: 0;
   font-family: "Source Sans 3", ui-sans-serif, system-ui, sans-serif;
   text-transform: uppercase;
   letter-spacing: 0.07em;
@@ -1434,6 +1443,50 @@ textarea.item-field::-webkit-scrollbar {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+/*
+ * A label wraps where a tab does not, and both are what a person does with the
+ * object in their hand: a cassette label has three ruled lines and you carry on
+ * onto the next one; a folder's tab has one line and you write smaller.
+ *
+ * So the ellipsis above is the tab's, and these two take it back. Without it a
+ * 22-character filename on a VHS - whose label is half the face, because two
+ * windows flank it - was cut to `LIGHT-ANCHOR-A…` with three empty ruled lines
+ * underneath it.
+ */
+.case-label > .case-number {
+  /*
+   * The full width of the label and up to two of its ruled lines, which is what
+   * a person writing a long name on a cassette does. Clamped, because three
+   * lines is a label with no room left for the runtime under it, and clipping
+   * silently was what the first version of this did - `LIGHT-ANCHOR-ANIMATIO`,
+   * with the last letter cut off the bottom of the label.
+   */
+  grid-column: 1 / -1;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  /* The first ruled line, under the name rather than beside it. */
+  border-bottom: 1px solid rgba(120, 96, 56, 0.3);
+  padding-bottom: 0.2em;
+}
+
+/*
+ * And the runtime at the foot of the label, on the right — where the reference
+ * cassette prints `C15`, and for the same reason: it is a fact about the tape
+ * rather than part of what somebody wrote on it. Off the name's line entirely,
+ * which is what gives the name the whole width to wrap into.
+ */
+.case-label > .case-meta {
+  grid-row: 5;
+  grid-column: 1 / -1;
+  justify-self: end;
+  align-self: end;
+  padding-left: 0;
 }
 
 /*
@@ -1447,6 +1500,7 @@ textarea.item-field::-webkit-scrollbar {
   grid-row: 1;
   grid-column: 2;
   justify-self: end;
+  padding-left: 0.7em;
   font-family: "Source Sans 3", ui-sans-serif, system-ui, sans-serif;
   font-variant-numeric: tabular-nums;
   letter-spacing: 0.02em;
@@ -1530,9 +1584,24 @@ textarea.item-field::-webkit-scrollbar {
   border-radius: 5px 5px 0 0;
   background: linear-gradient(to bottom, #e0cb96 0%, #d9c48d 100%);
   display: grid;
-  place-items: center;
-  padding: 0 5%;
+  align-items: center;
+  /* `justify-items` stays `stretch`, which is what makes the ellipsis possible:
+     a centred child is as wide as its text and overflows the tab at BOTH ends,
+     so a long name showed its middle - `FIGURE-VHO` for `configure-vhosts` -
+     and no ellipsis anywhere, because there was no truncation to mark. */
+  text-align: center;
+  /*
+   * No padding here, and that is not an omission. A percentage padding resolves
+   * against the *containing block's* inline size, and this tab is absolutely
+   * positioned inside the item — so `0 6%` was 6% of the whole 380-unit folder,
+   * 23 units a side, which ate 45 of the tab's 125 and truncated a name that
+   * fitted. The margin belongs to the type instead, in `em`, below.
+   */
   overflow: hidden;
+}
+
+.folder-tab > .case-number {
+  padding: 0 0.45em;
 }
 
 /*
@@ -1591,69 +1660,131 @@ textarea.item-field::-webkit-scrollbar {
 /* --- the two cassettes ---------------------------------------------------- */
 
 /*
- * Both are the same object at two sizes: a moulded shell, a window into the
- * transport, and a paper label stuck on the front. So they share every rule
- * here and differ only in the four numbers below, which is the strongest
- * evidence available that one class was the right call for the three of them.
+ * Both drawn from photographs of the real objects, which changed the structure
+ * of each of them and not only the colours.
+ *
+ * A **VHS** is a ribbed shell with a white label in the MIDDLE of the face and a
+ * window either side of it, one reel in each. The first version of this had the
+ * label above and a single window below, which is a thing no VHS has ever been.
+ *
+ * A **compact cassette** is a label covering most of the face with the window
+ * cut THROUGH it — writing above the hole, the brand below — and the hubs are
+ * pale toothed spools, not dark packs. So the window is a row of the label's own
+ * grid rather than a shape lying over one, which is both what the object is and
+ * what keeps the writing off it without a magic offset.
  */
 .case-shell {
   position: absolute;
   inset: 0;
   border-radius: 4px;
   /*
-   * Polystyrene, lit from the same top left the whole board is lit from
-   * (DESIGN 4.1). The near-black is not black: a plastic that reaches #000 has
-   * no form at all, and the two stops either side of the middle are what make
-   * this read as a moulding rather than as a hole in the cork.
+   * Polystyrene, lit from the same top left as the whole board (DESIGN 4.1),
+   * with the fine horizontal ribbing both shells are moulded with. The
+   * near-black is not black: a plastic that reaches #000 has no form at all,
+   * and the sampled shell of the reference is #49403e rather than anything
+   * darker.
    */
-  background: linear-gradient(158deg, #3a3531 0%, #262220 38%, #1b1816 72%, #141110 100%);
+  background:
+    repeating-linear-gradient(
+      to bottom,
+      rgba(255, 255, 255, 0.035) 0 1px,
+      rgba(0, 0, 0, 0.05) 1px 3px
+    ),
+    linear-gradient(158deg, #453e3a 0%, #2b2724 34%, #1f1c1a 70%, #171413 100%);
 }
 
-/* The front edge, which on both of these is a flap over the tape path and sits
-   a shade proud of the face above it. */
-.case-shell::after {
+/*
+ * The lip along the top of a VHS — the hinge end of the flap, moulded a shade
+ * proud of the face and with a notch at the middle of it. On a compact cassette
+ * the same pseudo-element is the felt-pad end at the bottom.
+ */
+.item-case[data-kind="vhs"] .case-shell::after {
+  content: "";
+  position: absolute;
+  inset: 0 0 auto 0;
+  height: 15%;
+  border-radius: 4px 4px 0 0;
+  background: linear-gradient(to bottom, #4d4642 0%, #322d2a 62%, #221e1c 100%);
+}
+
+.item-case[data-kind="cassette"] .case-shell::after {
   content: "";
   position: absolute;
   inset: auto 0 0 0;
-  height: 7%;
+  height: 10%;
   border-radius: 0 0 4px 4px;
-  background: linear-gradient(to bottom, #14110f 0%, #2a2624 60%, #1d1a18 100%);
+  background: linear-gradient(to bottom, #17141200 0%, #3a3431 55%, #221e1c 100%);
+}
+
+/* The openings along the bottom edge of a compact cassette - the capstan and
+   pinch-roller cutouts, which is the detail that says which way up it is. */
+.case-holes {
+  position: absolute;
+  left: 22%;
+  right: 22%;
+  bottom: 3.5%;
+  height: 5.5%;
+  display: flex;
+  justify-content: space-between;
+}
+
+.case-holes::before,
+.case-holes::after {
+  content: "";
+  width: 9%;
+  border-radius: 40%;
+  background: #0d0b0a;
 }
 
 .case-window {
-  position: absolute;
-  border-radius: 2px;
-  background: #0b0a09;
+  border-radius: 3px;
+  background: #0a0908;
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 0 6%;
   overflow: hidden;
 }
 
 /*
- * A reel, seen through the window: a hub with the tape wound onto it. The pale
- * ring is the flange catching the light; the dark disc inside it is the pack.
+ * A hub, as the reference has it: a white toothed spool with a steel flange
+ * round it and the spindle hole through the middle. Not a dark pack — that was
+ * the first version's guess and the photograph disagrees with it.
+ *
+ * Two layers, and the order is the trick. The teeth are a repeating conic
+ * underneath; the radial on top is opaque everywhere except the band the teeth
+ * live in, so it does the masking without a mask.
  */
 .case-reel {
   position: relative;
   aspect-ratio: 1;
-  height: 74%;
+  height: 86%;
   border-radius: 50%;
   background:
-    radial-gradient(circle at 38% 33%, #6b6058 0%, #37312c 38%, #241f1c 62%, #191614 100%);
+    radial-gradient(
+      circle at 50% 50%,
+      #171410 0% 20%,
+      rgba(0, 0, 0, 0) 20% 44%,
+      #5f676b 44% 49%,
+      #3b4144 49% 53%,
+      /* Most of the disc is the tape wound on it, which is why the pale part
+         stops at half the radius. The first version ran the hub out to 60% and
+         the two reels read as a pair of eyes looking out of the shell. */
+      #2b241d 53% 72%,
+      #1d1811 72% 90%,
+      #120e0a 90% 100%
+    ),
+    repeating-conic-gradient(from 22deg, #b9bfc0 0 26deg, #838b8f 26deg 45deg);
 }
 
 /*
- * The tape between them. A brown so dark it is nearly the window, because
- * oxide tape is - the only thing that says it is there is that it is warmer
- * than the shell around it.
+ * The span of tape between the two hubs, at the height of their centres, and
+ * the one part of either object that is actually brown.
  */
 .case-tape {
   flex: 1;
-  height: 46%;
-  margin: 0 -3%;
-  background: linear-gradient(to bottom, #2a1c14 0%, #3a2718 45%, #241811 100%);
+  height: 34%;
+  margin: 0 -4%;
+  background: linear-gradient(to bottom, #1d1409 0%, #3b2a19 40%, #2b1d11 72%, #140d07 100%);
 }
 
 /*
@@ -1663,47 +1794,116 @@ textarea.item-field::-webkit-scrollbar {
  */
 .case-label {
   position: absolute;
-  background: linear-gradient(to bottom, #f4eddc 0%, #ece3ce 100%);
   border-radius: 1px;
-  padding: 6% 6% 5%;
+  /*
+   * A percentage of the *object*, not of the label — an absolutely positioned
+   * box resolves percentage padding against its containing block, and unlike
+   * the folder's tab that is the right answer here: the white space round a
+   * label is a fraction of the thing the label is stuck to, so a VHS gets a
+   * wider margin than a compact cassette out of one declaration.
+   */
+  padding: 4.5% 5% 4%;
+  /*
+   * The rules a blank label comes printed with, under the one the typed row
+   * carries — `DATE`, `PROGRAM`, `DETAILS` on the reference. Faint enough to be
+   * paper rather than a form, and anything written in the caption lands on
+   * them, which is what they are for.
+   */
+  background-image:
+    linear-gradient(
+      to bottom,
+      transparent 0 63%,
+      rgba(120, 96, 56, 0.18) 63% 63.7%,
+      transparent 63.7% 83%,
+      rgba(120, 96, 56, 0.18) 83% 83.7%,
+      transparent 83.7% 100%
+    ),
+    linear-gradient(to bottom, #efe9d8 0%, #e4dcc8 100%);
 }
 
-/* A printed rule across the top of the label, which is what a blank cassette
-   label has on it and what everybody writes above and below. */
-.case-label::before {
-  content: "";
-  position: absolute;
-  left: 6%;
-  right: 6%;
-  top: 30%;
-  height: 1px;
-  background: rgba(120, 96, 56, 0.35);
-}
-
-/* A VHS: 187 by 103 mm, and the label covers the top two thirds of the face
-   with the window across the bottom. */
+/*
+ * A VHS: the label in the middle of the face with a window either side of it at
+ * the same height.
+ *
+ * A shade wider than the reference's, which is 38% of the face, and the reason
+ * is that the reference's label is *blank*. Ours has to carry a filename and a
+ * runtime on one line, and a label nobody can read is not a faithful label.
+ *
+ * `position` is here rather than in the shared rule because a compact
+ * cassette's window is a row of its label's grid and is positioned by the grid.
+ * It was in the shared rule, and taking it out for the cassette left the VHS
+ * setting `top` and `width` on a static box - so both of its windows were there
+ * in the tree, sized to nothing, and the tape had no reels at all.
+ */
 .item-case[data-kind="vhs"] .case-label {
-  inset: 6% 6% 34% 6%;
+  inset: 27% 26% 21% 25%;
 }
 
 .item-case[data-kind="vhs"] .case-window {
-  left: 15%;
-  right: 15%;
-  bottom: 9.5%;
-  height: 19%;
+  position: absolute;
+  top: 27%;
+  bottom: 21%;
+  width: 19%;
 }
 
-/* A compact cassette: 100 by 64 mm. Proportionally more window and less label,
-   which is what the object is - the transport is most of a cassette. */
+.item-case[data-kind="vhs"] .case-window.is-left {
+  left: 4%;
+}
+
+.item-case[data-kind="vhs"] .case-window.is-right {
+  right: 4%;
+}
+
+/* One reel per window, centred, and no tape between them - the span is behind
+   the label on a VHS and there is nothing to see of it. */
+.item-case[data-kind="vhs"] .case-window {
+  justify-content: center;
+}
+
+.item-case[data-kind="vhs"] .case-reel {
+  height: 74%;
+}
+
+/* A compact cassette: the label is nearly the whole face. */
 .item-case[data-kind="cassette"] .case-label {
-  inset: 8% 8% 38% 8%;
+  inset: 9% 7% 27% 7%;
 }
 
+/*
+ * And the window is a row of it. `76%` and the aspect together are the
+ * reference's 575 by 135 hole, and putting it in the flow is what stops the
+ * writing above and the writing below from having to know it is there.
+ */
 .item-case[data-kind="cassette"] .case-window {
-  left: 19%;
-  right: 19%;
-  bottom: 13%;
-  height: 21%;
+  grid-row: 2;
+  grid-column: 1 / -1;
+  justify-self: center;
+  width: 78%;
+  aspect-ratio: 4.26;
+  margin: 0.25em 0;
+  padding: 0 4%;
+  /* A pill, as the reference's hole is - a rounded rectangle reads as a screen
+     and this reads as something cut with a router. */
+  border-radius: 999px;
+}
+
+.item-case[data-kind="cassette"] .case-title {
+  grid-row: 3;
+}
+
+.item-case[data-kind="cassette"] .case-caption {
+  grid-row: 4;
+}
+
+/* The runtime is on row 5 and everything above it is content, so the label
+   stretches its rows to the foot rather than packing them at the top. */
+.case-label {
+  grid-template-rows: auto auto auto auto 1fr;
+  align-content: stretch;
+}
+
+.item-case[data-kind="cassette"] .item-field.case-caption {
+  grid-row: 4;
 }
 
 /* --- LOD: the flat card, DESIGN 6.6 --------------------------------------- */

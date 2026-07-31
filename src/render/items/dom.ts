@@ -44,6 +44,7 @@ import {
 } from "@/lib/polaroid";
 import {
   caseNumber,
+  fitLabel,
   pagesLabel,
   runtimeLabel,
   titleWorthWriting,
@@ -1624,20 +1625,40 @@ class CaseView implements View {
       this.grain.style.backgroundImage = `url(${paperGrainUrl("cream")})`;
       front.append(this.grain, this.meta, this.title, this.caption, this.bend);
       this.body.append(sheets, tab, front);
-    } else {
-      // Both cassettes are a shell with a window into the transport and a paper
-      // label stuck on the front. The reels do not turn yet — that is T-268,
-      // which is about the transport being the position readout rather than
-      // about the object being drawn — so they are furniture here.
+    } else if (archetype === "vhs") {
+      // A VHS is read from Phil's reference: a ribbed shell, a white label in
+      // the MIDDLE of the face, and a window either side of it showing one reel
+      // each. Not a label above a window — the two windows flank the label, and
+      // that is the arrangement the object is recognised by.
       const shell = div("case-shell");
-      const window_ = div("case-window");
-      window_.append(div("case-reel is-left"), div("case-tape"), div("case-reel is-right"));
+      const left = div("case-window is-left");
+      left.append(div("case-reel"));
+      const right = div("case-window is-right");
+      right.append(div("case-reel"));
       const label = div("case-label");
       this.ages = label;
       this.bend = null;
       this.grain = null;
       label.append(this.number, this.meta, this.title, this.caption);
-      this.body.append(shell, window_, label);
+      this.body.append(shell, left, right, label);
+    } else {
+      // A compact cassette, likewise from the reference, and its window is the
+      // structural surprise: it is a hole *through the label*, with writing
+      // above it and the brand below. So the window is a row of the label's own
+      // grid rather than a thing lying on top of one — which is also what keeps
+      // the two lines of writing off it without a single magic offset.
+      //
+      // The reels do not turn. That is T-268, which is about the transport being
+      // the position readout rather than about the object being drawn.
+      const shell = div("case-shell");
+      const label = div("case-label");
+      this.ages = label;
+      this.bend = null;
+      this.grain = null;
+      const window_ = div("case-window");
+      window_.append(div("case-reel"), div("case-tape"), div("case-reel"));
+      label.append(this.number, this.meta, window_, this.title, this.caption);
+      this.body.append(shell, label, div("case-holes"));
     }
 
     // Tape last, over the front of the object, exactly as on the other two.
@@ -1690,9 +1711,39 @@ class CaseView implements View {
     if (this.archetype === "folder") {
       this.el.style.setProperty("--tab", String(valueAt(cold.seed, "tab", 0) < 0.34 ? 0 : valueAt(cold.seed, "tab", 0) < 0.67 ? 1 : 2));
     }
+    // The name has just changed, and the size it is written at is a function of
+    // it — see `sizeLabels`. `sizedFor` is the width and has not moved.
+    if (this.sizedFor > 0) this.sizeLabels(this.sizedFor);
     // The grain's offset, so a wall of folders is not one texture repeated —
     // the same trick, and the same function, as a sheet of paper's fibres.
     if (this.grain) this.grain.style.backgroundPosition = grainPosition(cold.seed);
+  }
+
+  /**
+   * The case number, written small enough to fit where it is written.
+   *
+   * A folder's tab is a third of the object and a filename is as long as
+   * somebody made it, so the two do not agree by default: `configure-vhosts` on
+   * a 380-unit folder wants half again the tab it has, and a label that merely
+   * clipped showed the *middle* of the name — `FIGURE-VHO` — which is worse than
+   * either end of it. A person with a long name and a small tab writes smaller,
+   * and `fitLabel` is that, with a floor and an ellipsis under it.
+   *
+   * Called from both the transform and the bind, because it depends on the width
+   * *and* on the string: an object keeps its size for its whole life and its
+   * name changes when a record lands.
+   */
+  private sizeLabels(w: number): void {
+    // Only a folder's tab, and that is the point of the method rather than a
+    // limitation of it. A tab is one line on a strip a third of the object wide,
+    // so a long name has to be written smaller; a cassette label has ruled lines
+    // and the name carries onto the next one, which `items.css` lets it do.
+    const base = w * NUMBER_SIZE;
+    const size =
+      this.archetype === "folder"
+        ? fitLabel(this.number.textContent ?? "", w * TAB_WIDTH * 0.86, base)
+        : base;
+    this.number.style.fontSize = `${Math.max(5, size).toFixed(1)}px`;
   }
 
   /**
@@ -1720,10 +1771,10 @@ class CaseView implements View {
       // the reason a polaroid's caption is: the object has one real-world size
       // and the label on it is a fixed fraction of that, so a folder scaled up
       // is a bigger folder rather than a folder with bigger writing on it.
-      this.number.style.fontSize = `${Math.max(6, w * NUMBER_SIZE).toFixed(1)}px`;
+      this.sizeLabels(w);
       const body = `${Math.max(6, w * CASE_TEXT_SIZE).toFixed(1)}px`;
       this.meta.style.fontSize = body;
-      this.title.style.fontSize = body;
+      this.title.style.fontSize = `${Math.max(6, w * TITLE_SIZE).toFixed(1)}px`;
       this.caption.style.fontSize = body;
       if (this.field) this.field.style.fontSize = body;
     }
@@ -1803,8 +1854,14 @@ function div(className: string): HTMLDivElement {
 
 /** The case number's size, as a fraction of the object's width. */
 const NUMBER_SIZE = 0.055;
-/** And every other line's, which is a little smaller than the number. */
+/** The extracted title's. Biggest of the three, because on a case file it is
+ *  the one line that says what the evidence actually is. */
+const TITLE_SIZE = 0.058;
+/** And the rest, which is the runtime, the page count and the caption. */
 const CASE_TEXT_SIZE = 0.048;
+/** How much of a folder's width the tab takes — a third cut, and the number
+ *  `items.css` writes. Here as well because `fitLabel` needs the box. */
+const TAB_WIDTH = 0.33;
 
 export class DomItemLayer implements ItemLayer {
   private readonly host: HTMLElement;
