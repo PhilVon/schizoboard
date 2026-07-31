@@ -38,8 +38,8 @@ describe("how big each object is", () => {
     // what is asserted rather than either number.
     expect(vhs.w / vhs.h).toBeCloseTo(187 / 103, 2);
     expect(cassette.w / cassette.h).toBeCloseTo(100 / 64, 2);
-    // Landscape, off the reference photograph — see `FOLDER_MM`.
-    expect(folder.w / folder.h).toBeCloseTo(300 / 247, 2);
+    // Wide and flat, because it holds A4 lying horizontal — see `FOLDER_MM`.
+    expect(folder.w / folder.h).toBeCloseTo(310 / 222, 2);
     expect(vhs.w / cassette.w).toBeCloseTo(187 / 100, 2);
   });
 

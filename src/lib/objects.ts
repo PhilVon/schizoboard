@@ -73,16 +73,20 @@ export function assetKind(mime: string): AssetKind {
 const UNITS_PER_MM = 1.55;
 
 /**
- * A letter folder, closed, lying the way Phil's reference photograph has it —
- * **landscape**, with the fold along the bottom and the back panel standing
- * proud on the right.
+ * A folder, closed, holding **A4 lying horizontal** — which is what settles both
+ * of its numbers rather than a guess at either.
  *
- * It was portrait, on the reasoning that a folder holds portrait paper. The
- * reference says otherwise and the reference wins: this is the object as it
- * looks when somebody puts it down, which is the only way it is ever seen on a
- * wall. The area is unchanged, so a case file is exactly as big as it was.
+ * A4 is 297 by 210 mm, so a folder for it is a little over 297 across and a
+ * little over 210 down: wide and flat, and flatter than any of the three
+ * attempts before this one. It was portrait first, on the reasoning that a
+ * folder holds portrait paper, then landscape at 300 by 247 from the shape of
+ * the reference photograph — and still too tall, because that shape was being
+ * eyeballed rather than derived from the sheets inside it.
+ *
+ * The same 1.55 units to the millimetre as the tape and the cassette, so all
+ * three stay in true proportion to each other.
  */
-const FOLDER_MM = { w: 300, h: 247 } as const;
+const FOLDER_MM = { w: 310, h: 222 } as const;
 /** A VHS cassette: 187 x 103 x 25 mm, seen face on. */
 const VHS_MM = { w: 187, h: 103 } as const;
 /** A compact cassette: 100 x 64 x 12 mm. */

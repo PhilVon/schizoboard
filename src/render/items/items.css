@@ -1587,95 +1587,68 @@ textarea.item-field::-webkit-scrollbar {
 }
 
 /*
- * The contents — and the thing the reference photograph is really about.
+ * The contents: **A4 lying horizontal**, which is what a folder of this shape is
+ * for and what decides everything below.
  *
- * Not sheets of paper laid inside a box. It is **one curved ribbon of paper**
- * that comes out from behind the front panel about two fifths along, sweeps up,
- * thickens to a mass of several sheet edges on the right, and **breaks the top
- * of the folder** on its way. That last part is most of why the photograph
- * looks alive and why two rounded rectangles sitting politely inside the box
- * did not: the paper is the only thing on the object that is not a rectangle,
- * and it is the only thing that is not contained.
+ * A sheet 297 mm across in a folder 310 mm across shows along essentially the
+ * whole of its head - so the paper spans the object, edge to edge but for a
+ * finger's width either side. Three earlier attempts had it as two rectangles
+ * on the right, then as a ribbon sweeping out of the right-hand two thirds, and
+ * both were the same mistake twice: paper drawn as a *feature of the folder*
+ * rather than as the sheets that are in it.
  *
- * So the kraft starts a little way down and the paper has the top of the item
- * to itself. Nothing is drawn outside the item's own box - the pins, the ink,
- * the hit test and the baked shadow all still agree about where the object is -
- * but the paper does break the *board's* silhouette, which is the bit that
- * reads.
+ * It still breaks the top of the folder, which is the part that makes the
+ * object look used rather than drawn - the kraft starts a little way down and
+ * the paper has the top of the item to itself. Nothing goes outside the item's
+ * own box, so the pins, the ink, the hit test and the baked shadow all still
+ * agree about where the object is; it is the *board's* silhouette that the
+ * paper breaks.
  */
 .folder-sheets {
   position: absolute;
-  left: 38%;
-  right: 2%;
+  left: 2.5%;
+  right: 2.5%;
   top: 0;
-  height: 15%;
+  height: 13%;
   /*
-   * A long sweep on the left where the ribbon comes out from behind the panel,
-   * and almost square on the right where it is a stack seen end on. Horizontal
-   * and vertical radii given separately, which is what makes it a sweep rather
-   * than a corner.
+   * A sheet's corners, softened - not a sweep. The sweep belonged to the
+   * version where the paper came out of one end.
    */
-  border-radius: 38% 10% 3% 2% / 62% 44% 10% 10%;
-  transform: rotate(calc(var(--spill, 0) * 0.6deg));
+  border-radius: 6% 5% 2% 2% / 26% 22% 8% 8%;
+  transform: rotate(calc(var(--spill, 0) * 0.35deg));
   background:
     /*
-     * The edges of the sheets underneath, which is what says this is a handful
-     * and not one page. Two fine lines, low and to the right, fading out before
-     * the left end where the ribbon is thin.
+     * The edges of the sheets below the top one. Three, because a folder with
+     * one sheet in it is a folder nobody has put anything in, and because the
+     * reference's stack shows exactly this - fine lines rather than separate
+     * shapes. They run the width and fade at the left, where the stack is
+     * squarest to us.
      */
-    linear-gradient(
-      95deg,
-      rgba(0, 0, 0, 0) 22%,
-      rgba(122, 112, 92, 0.16) 46%,
-      rgba(122, 112, 92, 0.2) 100%
-    )
-      0 62% / 100% 0.9% no-repeat,
-    linear-gradient(
-      95deg,
-      rgba(0, 0, 0, 0) 44%,
-      rgba(122, 112, 92, 0.14) 66%,
-      rgba(122, 112, 92, 0.17) 100%
-    )
-      0 78% / 100% 0.9% no-repeat,
-    /* The crease running through it, which every sheet that has been in and out
-       of a folder has. */
-    linear-gradient(
-      101deg,
-      rgba(0, 0, 0, 0) 36%,
-      rgba(255, 255, 255, 0.55) 41%,
-      rgba(148, 140, 122, 0.16) 47%,
-      rgba(0, 0, 0, 0) 54%
-    ),
-    /* Real shading, not flat white. Paper in shadow under a panel is a long way
-       from #fff by the time it meets the kraft, and a band with no tone in it
-       reads as a cut-out. */
+    linear-gradient(93deg, rgba(126, 116, 96, 0.1) 0%, rgba(126, 116, 96, 0.2) 42%, rgba(126, 116, 96, 0.16) 100%)
+      0 58% / 100% 0.9% no-repeat,
+    linear-gradient(93deg, rgba(126, 116, 96, 0.07) 0%, rgba(126, 116, 96, 0.17) 52%, rgba(126, 116, 96, 0.13) 100%)
+      0 74% / 100% 0.9% no-repeat,
+    linear-gradient(93deg, rgba(126, 116, 96, 0.05) 0%, rgba(126, 116, 96, 0.14) 62%, rgba(126, 116, 96, 0.1) 100%)
+      0 88% / 100% 0.8% no-repeat,
+    /* Two creases, because a sheet that has been in and out of a folder has
+       them and a flat white band reads as a cut-out. */
+    linear-gradient(99deg, rgba(0, 0, 0, 0) 20%, rgba(255, 255, 255, 0.55) 25%, rgba(148, 140, 122, 0.14) 31%, rgba(0, 0, 0, 0) 38%),
+    linear-gradient(84deg, rgba(0, 0, 0, 0) 62%, rgba(255, 255, 255, 0.4) 67%, rgba(148, 140, 122, 0.12) 72%, rgba(0, 0, 0, 0) 78%),
     linear-gradient(to bottom, #fcfcf8 0%, #f4f1e8 34%, #e6e1d3 68%, #cdc7b5 100%);
 }
 
 /*
- * A second crest, over the right two thirds of the same ribbon.
- *
- * Two overlapping arcs rather than a rectangle sitting on the end - which is
- * what this was, and it read as a patch: a vertical seam where it began and a
- * step where it stopped. Overlapping the arcs makes the head *undulate*, which
- * is what a stack of paper that has been handled does and what the reference
- * has. One is enough; a third only muddies the line.
+ * The top sheet, standing a little proud of the rest and not quite square in
+ * the folder — the one that is always a few millimetres out. Its lean is what
+ * keeps the head from being a straight line across the object.
  */
-.folder-sheets::after {
+.folder-sheets::before {
   content: "";
   position: absolute;
-  inset: -2% -0.5% 6% 24%;
-  border-radius: 30% 14% 3% 2% / 66% 48% 10% 10%;
-  transform: rotate(calc(var(--spill2, 0) * 0.8deg - 0.45deg));
-  background:
-    linear-gradient(
-      98deg,
-      rgba(0, 0, 0, 0) 30%,
-      rgba(132, 122, 100, 0.13) 58%,
-      rgba(132, 122, 100, 0.17) 100%
-    )
-      0 74% / 100% 1.1% no-repeat,
-    linear-gradient(to bottom, #ffffff 0%, #f8f5ed 40%, #ece7da 76%, #dad4c4 100%);
+  inset: -1.5% 6% 34% 3%;
+  border-radius: 7% 6% 2% 2% / 40% 34% 10% 10%;
+  transform: rotate(calc(var(--spill2, 0) * 0.5deg - 0.35deg));
+  background: linear-gradient(to bottom, #ffffff 0%, #f9f6ef 58%, #ece7db 100%);
 }
 
 .folder-front {
