@@ -154,7 +154,13 @@ export function commitStrokes(
   // quantise, delta-encode — and it neither reads nor writes the document, so
   // holding a transaction open across it would widen the one window in this
   // application where a peer's update has to wait.
-  const packed = inputs.map((input) => ({ input, packed: packStroke(input.samples) }));
+  //
+  // Filtered *before* the pack rather than after, which is not tidiness: an
+  // infinite sample does not survive `packStroke` to be inspected. See
+  // [`writable`].
+  const packed = inputs
+    .filter(writable)
+    .map((input) => ({ input, packed: packStroke(input.samples) }));
   if (packed.every(({ packed: p }) => p.pts.length === 0)) return [];
 
   return mutate(board, Origin.INK_COMMIT, () => {
@@ -186,6 +192,76 @@ export function commitStrokes(
     }
     return out;
   });
+}
+
+/**
+ * Whether a run can go in the document at all — invariant 1, for ink.
+ *
+ * > Every number in the document is finite. — DATA-MODEL section 13
+ *
+ * Items and pins have guarded this since T-155 and this file did not, on the
+ * reasonable-looking grounds that samples come from pointer events and pointer
+ * events carry numbers. They do; a *transform* is what does not. Every sample
+ * here has been through the camera and, for ink on an item, through that item's
+ * inverse rotation as well — so one NaN in a pose reaches this function as a
+ * whole strokeful of NaN, which is how the same class of bug reached items in
+ * the first place.
+ *
+ * Nothing downstream catches it. The first step is shared: `Math.round(NaN)` is
+ * NaN and `zigzag(NaN)` is NaN, so `writeVarint` pushes NaN — and
+ * `Uint8Array.from` **coerces that to 0**. The bytes are therefore non-empty and
+ * the empty-stroke guard below does not fire. What lands in the document from
+ * there depends on how much of the run was spoilt, and both shapes were run
+ * with this guard removed rather than argued from the source:
+ *
+ * - **Every sample** — the transform case, and the common one. Every comparison
+ *   in the packer's bbox loop is false against NaN, so the box is stored at the
+ *   `±Infinity` it was seeded with: four separate breaches of invariant 1. On
+ *   bare cork it is worse again, because `inkTileKey` is then handed
+ *   `(Infinity + -Infinity) / 2` and the stroke is filed under the tile
+ *   `"NaN,NaN"`, where nothing will ever look for it and from which nothing can
+ *   evict it.
+ * - **One sample, at an end of the run.** The packer deltas each point against
+ *   the last, so a single NaN poisons `px`/`py` and *every* delta after it is
+ *   NaN too — all of them coerced to zero. A forty-sample stroke stores as
+ *   eight bytes and unpacks to two points at the origin, while the bbox was
+ *   measured off the real coordinates and knows nothing about it. That is
+ *   invariant 7: a box that contains no point in the stroke it belongs to.
+ *
+ * A NaN in the *middle* of a run is the one shape that is harmless, and only by
+ * accident: the simplify ranks points by `chordError`, `NaN > worst` is false,
+ * so the bad sample loses every comparison and is dropped as an unremarkable
+ * interior point. It is not a case worth having, and this guard takes it too.
+ *
+ * An *infinite* sample is worse and is why this runs before the pack rather
+ * than checking the packer's output: `writeVarint` divides by 128 until the
+ * value drops below 128, and Infinity never does. It is an unbounded loop
+ * pushing NaN into an array, inside a pen-up, on the main thread.
+ *
+ * The **whole run** goes, not the offending sample. Partly because a mark with
+ * a point missing out of the middle is a movement the hand did not make, and
+ * partly because of the provenance above: a bad transform does not produce one
+ * bad sample among good ones, it produces nothing but bad samples, and a rule
+ * that salvages three points out of four hundred would be dressing that up as a
+ * stroke. Skipped rather than coerced for `createItems`' reason — nothing
+ * refers to a stroke that does not exist yet, so refusing costs only the mark,
+ * and the caller already reads the returned list rather than assuming it
+ * matches the input one for one.
+ *
+ * `size`, `opacity` and `seed` are checked too. They are written to the map
+ * unexamined a few lines below, and invariant 1 is about every number in the
+ * document rather than about the interesting ones.
+ */
+function writable(input: CommitStrokeInput): boolean {
+  if (!Number.isFinite(input.size)) return false;
+  if (input.opacity !== undefined && !Number.isFinite(input.opacity)) return false;
+  if (input.seed !== undefined && !Number.isFinite(input.seed)) return false;
+  for (const sample of input.samples) {
+    if (!Number.isFinite(sample.x)) return false;
+    if (!Number.isFinite(sample.y)) return false;
+    if (!Number.isFinite(sample.pressure)) return false;
+  }
+  return true;
 }
 
 /**

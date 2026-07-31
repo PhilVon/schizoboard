@@ -185,6 +185,78 @@ describe("Persistence", () => {
       expect(store.appends).toBe(5);
       expect(errors).toHaveLength(1);
     });
+
+    /**
+     * The other end of that (T-220). The failure is shown as a *standing*
+     * sentence — the board is not being saved, and it will still not be being
+     * saved in a minute — so something has to take it down again, and the only
+     * thing that knows the run of failures has ended is this class.
+     */
+    it("says so when a write works again", async () => {
+      const store = new Store();
+      const errors: unknown[] = [];
+      let recoveries = 0;
+      const board = openBoardDoc();
+      const persistence = new Persistence(board, store, {
+        onError: (e) => errors.push(e),
+        onRecovered: () => (recoveries += 1),
+      });
+      await persistence.open();
+
+      store.failing = true;
+      polaroid(board, 1, 1);
+      await persistence.flush();
+      expect(errors).toHaveLength(1);
+      expect(recoveries).toBe(0);
+
+      store.failing = false;
+      await persistence.flush();
+      expect(recoveries).toBe(1);
+    });
+
+    /** One each way per run, so the two pair up and a caller needs no flag. */
+    it("pairs a recovery with each run of failures and no more", async () => {
+      const store = new Store();
+      const errors: unknown[] = [];
+      let recoveries = 0;
+      const board = openBoardDoc();
+      const persistence = new Persistence(board, store, {
+        onError: (e) => errors.push(e),
+        onRecovered: () => (recoveries += 1),
+      });
+      await persistence.open();
+
+      for (let run = 0; run < 2; run += 1) {
+        store.failing = true;
+        polaroid(board, run, run);
+        await persistence.flush();
+        await persistence.flush();
+        store.failing = false;
+        await persistence.flush();
+      }
+
+      expect(errors).toHaveLength(2);
+      expect(recoveries).toBe(2);
+    });
+
+    /** A board whose disk has never misbehaved is never told anything. */
+    it("says nothing at all when every write works", async () => {
+      const store = new Store();
+      let spoken = 0;
+      const board = openBoardDoc();
+      const persistence = new Persistence(board, store, {
+        onError: () => (spoken += 1),
+        onRecovered: () => (spoken += 1),
+      });
+      await persistence.open();
+
+      polaroid(board, 2, 2);
+      await persistence.flush();
+      await persistence.compact();
+
+      expect(store.appends).toBeGreaterThan(0);
+      expect(spoken).toBe(0);
+    });
   });
 
   describe("when the document on disk cannot be read", () => {
@@ -222,6 +294,27 @@ describe("Persistence", () => {
 
       expect(store.appends).toBe(0);
       expect(store.compactions).toBe(0);
+    });
+
+    /**
+     * And never recovers, because nothing writes after `giveUp` and there is no
+     * success to recover with. The distinction matters to whoever is holding
+     * the sentence up: this one is permanent for the session, and taking it
+     * down would be a lie (T-220).
+     */
+    it("never announces a recovery, because there is nothing to recover", async () => {
+      const store = new Unreadable();
+      let recoveries = 0;
+      const persistence = new Persistence(openBoardDoc(), store, {
+        onError: () => {},
+        onRecovered: () => (recoveries += 1),
+      });
+      await persistence.open();
+      await persistence.flush();
+      await persistence.compact();
+
+      expect(persistence.readOnly).toBe(true);
+      expect(recoveries).toBe(0);
     });
 
     it("treats a snapshot that does not decode the same way", async () => {

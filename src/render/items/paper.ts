@@ -5,9 +5,17 @@
  * > its own grain texture at low opacity, its own edge treatment, and its own
  * > slight colour variation across the sheet. — DESIGN section 4.4
  *
- * One grain tile is generated for the whole board and shared by every sheet;
- * each sheet samples it from a different offset derived from its seed, so no
- * two are identical and the cost is one bitmap rather than one per item.
+ * One grain tile is generated **per stock** and shared by every sheet of it;
+ * each sheet samples that tile from a different offset derived from its seed, so
+ * no two are identical and the cost is five bitmaps rather than one per item.
+ *
+ * Five and not one is the sentence above — "each has its own grain texture" —
+ * and it is the half this file had wrong until T-222: the tile was memoised
+ * into a single module variable, so whichever sheet mounted first decided the
+ * fibres for every sheet on the board, and `stock` was not even a parameter.
+ * Five and not five hundred is the cost: a 256px tile is a data URL of some tens
+ * of kilobytes and a decode, and a board is five hundred sheets. `grainPosition`
+ * is what keeps two sheets of the same stock from being the same picture.
  *
  * What is here is stock, tint and grain. The rest of what DESIGN 4.4 makes a
  * property of the stock — its edge treatment, and which side it leaves the pad
@@ -23,15 +31,50 @@ interface Stock {
   base: string;
   /** Ruling, if any: colour and spacing in board units. */
   rule?: { color: string; spacing: number; margin?: string };
+  /** What this stock's pulp looks like. See [`paperGrainUrl`]. */
+  grain: Grain;
+}
+
+/**
+ * The four numbers that separate one stock's fibres from another's.
+ *
+ * Taste calls, all of them, and they sit around the single set this file used
+ * for everything rather than striking out — a machine-made bond is finer and
+ * flatter than a legal pad, technical paper is smoother than either, and card
+ * is dense with short fibres. Nothing here is measured and nothing can be: the
+ * test below pins that the five tiles *differ*, which is the claim DESIGN 4.4
+ * makes, and how much they should differ is a judgement to make on a real board.
+ */
+interface Grain {
+  /** Peak-to-peak speckle either side of mid grey, in levels out of 255. */
+  swing: number;
+  /** Fibres per tile, as a multiple of the tile's width. */
+  density: number;
+  /** Shortest and longest fibre, in tile pixels. */
+  length: readonly [number, number];
+  /** How dark one fibre is. Low, always — DESIGN 4.4 says "at low opacity". */
+  alpha: number;
 }
 
 /** Warm, low-chroma, and none of them pure white — paper never is. */
 const STOCKS: Record<PaperStock, Stock> = {
-  white: { base: "#f7f4ed" },
-  cream: { base: "#f2e9d6" },
-  legal: { base: "#f6efb9", rule: { color: "rgba(90,120,160,0.35)", spacing: 22 } },
-  graph: { base: "#f4f2e8", rule: { color: "rgba(120,140,120,0.28)", spacing: 14 } },
-  index: { base: "#f8f5ef", rule: { color: "rgba(150,120,120,0.3)", spacing: 20, margin: "rgba(190,110,110,0.5)" } },
+  white: { base: "#f7f4ed", grain: { swing: 20, density: 2.4, length: [3, 11], alpha: 0.04 } },
+  cream: { base: "#f2e9d6", grain: { swing: 30, density: 3.8, length: [4, 18], alpha: 0.06 } },
+  legal: {
+    base: "#f6efb9",
+    rule: { color: "rgba(90,120,160,0.35)", spacing: 22 },
+    grain: { swing: 34, density: 4.4, length: [5, 20], alpha: 0.055 },
+  },
+  graph: {
+    base: "#f4f2e8",
+    rule: { color: "rgba(120,140,120,0.28)", spacing: 14 },
+    grain: { swing: 14, density: 1.3, length: [2, 8], alpha: 0.03 },
+  },
+  index: {
+    base: "#f8f5ef",
+    rule: { color: "rgba(150,120,120,0.3)", spacing: 20, margin: "rgba(190,110,110,0.5)" },
+    grain: { swing: 26, density: 5, length: [2, 9], alpha: 0.05 },
+  },
 };
 
 const NOTE_STOCKS: PaperStock[] = ["white", "cream", "legal", "graph"];
@@ -118,16 +161,37 @@ export function stockRuling(stock: PaperStock): string {
   return lines;
 }
 
+/** One tile per stock, generated on the first sheet of it to mount. */
+const grainUrls = new Map<PaperStock, string>();
+
 /**
- * Fibrous grain. Generated once and shared; individual sheets shift it.
+ * A stable starting point per stock. It has only to differ between stocks —
+ * there is no sheet in this, and deliberately: a tile keyed by the first
+ * sheet's seed is a tile decided by mount order, which is what T-222 was.
+ */
+function grainSeed(stock: PaperStock): number {
+  let hash = 0x9a3f1c;
+  for (let i = 0; i < stock.length; i++) hash = (hash * 31 + stock.charCodeAt(i)) >>> 0;
+  return hash;
+}
+
+/**
+ * Fibrous grain, one tile per stock. Individual sheets shift it
+ * ([`grainPosition`]) rather than each generating their own.
  *
  * Cross-hatched rather than isotropic noise, because paper has a direction to
- * it — pure per-pixel speckle reads as television static, not as pulp.
+ * it — pure per-pixel speckle reads as television static, not as pulp. What the
+ * stock changes is how coarse the speckle is, how many fibres there are, how
+ * long they run and how dark each one is; see [`Grain`].
+ *
+ * A canvas with no 2D context returns the empty string and **caches nothing**.
+ * That is a browser that is out of memory or a headless one, and it is a
+ * condition that passes — a tile is asked for again on the next mount, and
+ * remembering a failure would leave the board with no grain for the session.
  */
-let grainUrl: string | null = null;
-
-export function paperGrainUrl(seed: number, size = 256): string {
-  if (grainUrl) return grainUrl;
+export function paperGrainUrl(stock: PaperStock, size = 256): string {
+  const cached = grainUrls.get(stock);
+  if (cached !== undefined) return cached;
 
   const canvas = document.createElement("canvas");
   canvas.width = size;
@@ -135,11 +199,12 @@ export function paperGrainUrl(seed: number, size = 256): string {
   const ctx = canvas.getContext("2d");
   if (!ctx) return "";
 
-  const rng = mulberry32(seed ^ 0x9a3f1c);
+  const grain = (STOCKS[stock] ?? STOCKS.white).grain;
+  const rng = mulberry32(grainSeed(stock));
   const image = ctx.createImageData(size, size);
   const data = image.data;
   for (let i = 0, p = 0; i < size * size; i++, p += 4) {
-    const v = 128 + (rng() - 0.5) * 26;
+    const v = 128 + (rng() - 0.5) * grain.swing;
     data[p] = v;
     data[p + 1] = v;
     data[p + 2] = v;
@@ -148,21 +213,23 @@ export function paperGrainUrl(seed: number, size = 256): string {
   ctx.putImageData(image, 0, 0);
 
   // Fibres: short strokes at two shallow angles.
+  const [shortest, longest] = grain.length;
   ctx.lineWidth = 1;
-  for (let i = 0; i < size * 3; i++) {
+  for (let i = 0; i < size * grain.density; i++) {
     const x = rng() * size;
     const y = rng() * size;
-    const length = 3 + rng() * 14;
+    const length = shortest + rng() * (longest - shortest);
     const angle = (rng() < 0.5 ? 0.1 : Math.PI / 2 - 0.1) + (rng() - 0.5) * 0.35;
-    ctx.strokeStyle = `rgba(${rng() < 0.5 ? 90 : 200},${rng() < 0.5 ? 90 : 200},90,0.05)`;
+    ctx.strokeStyle = `rgba(${rng() < 0.5 ? 90 : 200},${rng() < 0.5 ? 90 : 200},90,${grain.alpha})`;
     ctx.beginPath();
     ctx.moveTo(x, y);
     ctx.lineTo(x + Math.cos(angle) * length, y + Math.sin(angle) * length);
     ctx.stroke();
   }
 
-  grainUrl = canvas.toDataURL("image/png");
-  return grainUrl;
+  const url = canvas.toDataURL("image/png");
+  grainUrls.set(stock, url);
+  return url;
 }
 
 /** Per-sheet grain offset, so no two sheets show the same fibres. */
