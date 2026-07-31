@@ -8,20 +8,26 @@
  * anchored to the *viewport* and a broad soft light gradient anchored to the
  * *world*, so panning moves across a surface that isn't uniformly lit.
  *
- * The board is unbounded, so nothing here is a picture of a board — every
- * layer is a tile generated from the board seed and repeated indefinitely.
- * Three tiles at three very different periods is what kills the repeat: you
- * would have to pan several thousand board units to see the same combination
- * of grain, blotch and light twice.
+ * The board is unbounded, so almost nothing here is a picture of a board —
+ * three of the four surface layers are a tile generated from the board seed and
+ * repeated indefinitely. Three tiles at three very different periods is what
+ * kills the repeat: you would have to pan several thousand board units to see
+ * the same combination of grain, blotch and light twice.
  *
- * Layers are viewport-sized divs whose background-position tracks the camera.
- * That repaints the full viewport on any camera change, which is a real cost
- * and deliberately not optimised yet: the phase-0 fidelity spike (T-16) is the
- * thing that decides whether it needs to become a transform-only trick, and
+ * Those three are viewport-sized divs whose background-position tracks the
+ * camera. That repaints the full viewport on any camera change, which is a real
+ * cost and deliberately not optimised yet: the phase-0 fidelity spike (T-16) is
+ * the thing that decides whether it needs to become a transform-only trick, and
  * guessing before measuring is how renderers end up complicated for nothing.
+ *
+ * **The fourth is the exception and the reason it is worth naming them
+ * separately.** Pinholes (T-231) are the one mark on this surface that is
+ * somewhere rather than everywhere, so they are a canvas with sprites blitted
+ * at pin positions — no period, no background-position, and the one cork layer
+ * an export cannot fill with a pattern. See [`pinholeLod`] and [`pinholesFor`].
  */
 
-import { mulberry32 } from "@/lib/seed";
+import { mulberry32, valueAt } from "@/lib/seed";
 import type { Camera } from "@/state/camera";
 
 /**
@@ -67,6 +73,50 @@ const GRAIN_FADE_IN = 0.45;
 /** Cork is warm, mid-brown and fairly desaturated. Shadows elsewhere in the
  *  app are drawn from this, never from black (DESIGN section 4.1). */
 const CORK_BASE = { r: 173, g: 130, b: 84 };
+
+/**
+ * Pinholes — DESIGN section 4.2, "faint accumulated pinholes near where pins
+ * are", and the one layer here that is a *place* rather than a tile.
+ *
+ * Everything else on the cork repeats indefinitely because the board is
+ * unbounded and there is nothing to anchor a picture to. A pinhole has
+ * somewhere to be, so this layer is a canvas the size of the viewport rather
+ * than a background-position, and it is the only cork layer an export cannot
+ * fill with a pattern.
+ *
+ * The section used to ask for holes near where pins "are **and have been**",
+ * which was struck on Q-178: removing a pin is a hard `Y.Map` delete, there is
+ * no `deletedAt` and no tombstone a renderer is allowed to read, and the local
+ * mirror drops its empty sets on purpose so that "a board that has had pins
+ * added and removed all afternoon does not accumulate empty sets". Nothing on
+ * this board remembers a pin that is gone, and the three ways to make it
+ * remember were a schema change that only grows, a local record that would
+ * make two peers see two different corks, or a hash of position that would not
+ * be history anyway.
+ */
+
+/** The sprite is baked square at this many pixels. */
+const PINHOLE_PX = 32;
+/** Board units that square covers when blitted. The pit is about a sixth of it. */
+const PINHOLE_UNITS = 9;
+/** How far from its pin a hole may sit, in board units. */
+const PINHOLE_SPREAD = 20;
+/** Holes per pin, inclusive. Two is a pair, five is a patch. */
+const PINHOLE_MIN = 2;
+const PINHOLE_MAX = 5;
+/** Distinct baked sprites. Four is enough that a patch does not read as stamped. */
+const PINHOLE_VARIANTS = 4;
+/** See [`pinholeLod`] — a later band than the grain's, for a different reason. */
+const PINHOLE_FADE_OUT = 0.35;
+const PINHOLE_FADE_IN = 0.85;
+
+/**
+ * The warm brown every shadow in the application is drawn from, matching
+ * `--shadow-warm` in `base.css`. Never black — DESIGN section 4.1.
+ */
+const SHADOW_WARM = "38, 24, 12";
+/** The lip of a hole, catching the light: cork, lifted, not white. */
+const CORK_LIP = "232, 208, 172";
 
 function smoothstep(t: number): number {
   return t * t * (3 - 2 * t);
@@ -129,6 +179,139 @@ export function grainLod(zoom: number): number {
   if (zoom <= GRAIN_FADE_OUT) return 0;
   const t = (zoom - GRAIN_FADE_OUT) / (GRAIN_FADE_IN - GRAIN_FADE_OUT);
   return smoothstep(t);
+}
+
+/**
+ * Pinhole opacity for a zoom level, and it fades out *later* than the grain.
+ *
+ * Not the same band, because the two vanish for opposite reasons. Grain goes
+ * because its 512-unit tile starts to read as wallpaper — a fact about the
+ * repeat, not about the size of a fleck. A pinhole has no repeat and is simply
+ * two board units across: at the 29% the board fits to on opening it is six
+ * tenths of a pixel, which is not a faint mark but a grey smear over the cork.
+ * DESIGN section 6.6's rule, applied to the smallest thing on the board —
+ * below a threshold, stop drawing what cannot be seen.
+ *
+ * So they are a detail you find on the way in rather than one the board wears
+ * from across the room, which is also true of the real thing.
+ */
+export function pinholeLod(zoom: number): number {
+  if (zoom >= PINHOLE_FADE_IN) return 1;
+  if (zoom <= PINHOLE_FADE_OUT) return 0;
+  const t = (zoom - PINHOLE_FADE_OUT) / (PINHOLE_FADE_IN - PINHOLE_FADE_OUT);
+  return smoothstep(t);
+}
+
+/**
+ * Where one pin's holes sit, relative to it, in board units.
+ *
+ * **Near a pin, not under it.** A hole directly beneath a pin is a hole nobody
+ * can see, because the pin is on top of it — so the mark this draws is the
+ * scatter of near misses and second thoughts around a pin rather than the one
+ * it is standing in. That is what the accumulation in DESIGN section 4.2 looks
+ * like on a real board: not one clean puncture, but a patch of them.
+ *
+ * Deterministic from the board seed and the pin's id, so it is the same patch
+ * on every peer and after every reload, and a pin that is dragged carries its
+ * patch with it. That last part is a small lie about cork — a real hole stays
+ * where the cork was pierced — and it is the lie the alternative costs too
+ * much to avoid: a hole that stayed would be a record of where a pin *had
+ * been*, and there is nowhere on this board to keep one (Q-178).
+ */
+export function pinholesFor(seed: number, pinId: string): Pinhole[] {
+  const count =
+    PINHOLE_MIN + Math.floor(valueAt(seed, `holes:${pinId}`) * (PINHOLE_MAX - PINHOLE_MIN + 1));
+  const out: Pinhole[] = [];
+  for (let i = 0; i < count; i++) {
+    const angle = valueAt(seed, `hole-a:${pinId}`, i) * Math.PI * 2;
+    // Square-rooted so the patch is evenly covered rather than crowded at the
+    // pin: a uniform radius puts half the holes in the inner quarter of the
+    // disc, which reads as a ring of dirt round the pin instead of a scatter.
+    const radius = Math.sqrt(valueAt(seed, `hole-r:${pinId}`, i)) * PINHOLE_SPREAD;
+    out.push({
+      dx: Math.cos(angle) * radius,
+      dy: Math.sin(angle) * radius,
+      variant: Math.floor(valueAt(seed, `hole-v:${pinId}`, i) * PINHOLE_VARIANTS),
+    });
+  }
+  return out;
+}
+
+/** One hole, as an offset from its pin. */
+export interface Pinhole {
+  readonly dx: number;
+  readonly dy: number;
+  readonly variant: number;
+}
+
+/**
+ * One baked hole. DESIGN section 4.2 budgets "one extra sprite layer" and this
+ * is the sprite — drawn once at construction and blitted, never a per-frame
+ * gradient, which is section 4's governing principle: fidelity comes from
+ * baking, not from per-frame effects.
+ *
+ * ## Which side is lit
+ *
+ * A pit is not a bump, and getting this backwards is the fastest way to make a
+ * surface look wrong (DESIGN section 4.1: "nothing else breaks it as fast as
+ * one element lit from the wrong side"). The light is from the upper left,
+ * about 30 degrees off vertical. It falls *into* the hole and lands on the
+ * inside wall that faces it — which is the **lower-right** wall. The upper-left
+ * inside wall is the one in shadow, and it is the one nearest the light.
+ *
+ * So: the dark is up-left and the lit lip is down-right, which is the mirror
+ * image of every item shadow in the application, and correctly so.
+ */
+function pinholeSprite(seed: number, variant: number, px: number): HTMLCanvasElement {
+  const { canvas, ctx } = makeCanvas(px);
+  const rng = mulberry32(saltedVariant(seed, variant));
+  const c = px / 2;
+  // The pit, as a fraction of the sprite. The rest of the sprite is the halo
+  // and the margin that keeps a scaled blit off its own edge.
+  // About 2.5 board units across, which is a pushpin. Measured back off the
+  // screen rather than chosen: at the first pass the pit was half again this
+  // and 0.62 dark, and it sampled at luminance 74 against cork at 148 — a hole
+  // punched clean through a sheet of cork rather than the *faint* mark the
+  // section asks for. These numbers put it near 110, a quarter down on the
+  // surface instead of a half.
+  const pit = px * (0.12 + rng() * 0.05);
+  const offset = pit * 0.45;
+
+  // The bruise: cork compressed around the puncture, wider and much fainter
+  // than the hole itself.
+  const halo = ctx.createRadialGradient(c, c, pit * 0.5, c, c, pit * 2.6);
+  halo.addColorStop(0, `rgba(${SHADOW_WARM}, 0.1)`);
+  halo.addColorStop(1, `rgba(${SHADOW_WARM}, 0)`);
+  ctx.fillStyle = halo;
+  ctx.fillRect(0, 0, px, px);
+
+  // The hole. The focus is offset up-left, so the darkest part of the pit is
+  // the wall the light cannot reach.
+  const hole = ctx.createRadialGradient(c - offset, c - offset, 0, c, c, pit);
+  hole.addColorStop(0, `rgba(${SHADOW_WARM}, 0.42)`);
+  hole.addColorStop(0.72, `rgba(${SHADOW_WARM}, 0.27)`);
+  hole.addColorStop(1, `rgba(${SHADOW_WARM}, 0)`);
+  ctx.fillStyle = hole;
+  ctx.beginPath();
+  ctx.arc(c, c, pit, 0, Math.PI * 2);
+  ctx.fill();
+
+  // The lit lip, down-right, inside the rim. A stroke rather than a fill
+  // because what catches the light is the wall, and a wall seen from above is
+  // an arc. It carries more of the read than its alpha suggests: with the pit
+  // softened, this is most of what says pit rather than speck.
+  ctx.strokeStyle = `rgba(${CORK_LIP}, 0.34)`;
+  ctx.lineWidth = Math.max(0.6, pit * 0.32);
+  ctx.beginPath();
+  ctx.arc(c, c, pit * 0.86, -0.35, Math.PI * 0.72);
+  ctx.stroke();
+
+  return canvas;
+}
+
+/** A fourth derived stream, in the convention the three tiles already use. */
+function saltedVariant(seed: number, variant: number): number {
+  return (seed ^ 0xc2b2ae35 ^ Math.imul(variant + 1, 0x27d4eb2f)) >>> 0;
 }
 
 function makeCanvas(size: number): { canvas: HTMLCanvasElement; ctx: CanvasRenderingContext2D } {
@@ -259,15 +442,42 @@ interface CorkLayer {
   lod?: boolean;
 }
 
+/**
+ * What the pinhole layer needs of a pin, and no more.
+ *
+ * Structural rather than `PinNode` from `state/scene.ts` deliberately: this
+ * file's whole import list is two modules, and a background has no business
+ * knowing what a pin *is*. A world position and something stable to seed from
+ * is the entire question it asks.
+ */
+export interface PinPoint {
+  readonly id: string;
+  /** World position, as the LAYOUT phase resolved it. */
+  readonly wx: number;
+  readonly wy: number;
+}
+
 export class Cork {
   private readonly layers: CorkLayer[];
   private readonly host: HTMLElement;
   private readonly seed: number;
   private writtenVersion = -1;
 
-  constructor(host: HTMLElement, seed: number) {
+  /** The pinhole layer, and the sprites it blits. */
+  private readonly holes: HTMLCanvasElement;
+  private readonly holeCtx: CanvasRenderingContext2D | null;
+  private readonly sprites: HTMLCanvasElement[];
+  private readonly pins: () => Iterable<PinPoint>;
+
+  /**
+   * `pins` is a function rather than a value because the cork outlives every
+   * pin on the board and is constructed before most of them exist. It is read
+   * on the frames that need it and never held.
+   */
+  constructor(host: HTMLElement, seed: number, pins: () => Iterable<PinPoint> = () => []) {
     this.host = host;
     this.seed = seed;
+    this.pins = pins;
 
     // The flat cork colour belongs to the container, not to the grain bitmap.
     // The grain fades out at low zoom (see grainLod), and if the base colour
@@ -280,11 +490,21 @@ export class Cork {
     blotch.className = "cork-layer cork-blotch";
     const light = document.createElement("div");
     light.className = "cork-layer cork-light";
+    // Under the light and over the blotch: a hole is in the surface, so the
+    // room's lighting falls across it like it falls across everything else.
+    this.holes = document.createElement("canvas");
+    this.holes.className = "cork-holes";
+    this.holeCtx = this.holes.getContext("2d");
+    this.sprites = [];
+    for (let v = 0; v < PINHOLE_VARIANTS; v++) {
+      this.sprites.push(pinholeSprite(seed, v, PINHOLE_PX));
+    }
+
     const vignette = document.createElement("div");
     // Viewport-anchored, so it takes no camera update at all.
     vignette.className = "cork-vignette";
 
-    host.append(grain, blotch, light, vignette);
+    host.append(grain, blotch, this.holes, light, vignette);
 
     this.layers = [
       { el: grain, tile: GRAIN_TILE, url: "", lod: true },
@@ -335,19 +555,91 @@ export class Cork {
     this.writtenVersion = -1;
   }
 
-  /** DOM phase (5). Anchors every layer to the world. */
-  apply(camera: Camera): void {
-    if (camera.version === this.writtenVersion) return;
-    this.writtenVersion = camera.version;
-    const z = camera.zoom;
-    const ox = -camera.x * z;
-    const oy = -camera.y * z;
-    for (const layer of this.layers) {
-      const size = layer.tile * z;
-      layer.el.style.backgroundSize = `${size}px ${size}px`;
-      layer.el.style.backgroundPosition = `${ox}px ${oy}px`;
-      if (layer.lod) layer.el.style.opacity = grainLod(z).toFixed(3);
+  /**
+   * DOM phase (5). Anchors every layer to the world.
+   *
+   * `pinsMoved` is the one thing the tiled layers never needed: they are a
+   * function of the camera alone, so a camera version was the whole of their
+   * dirty check. A hole is somewhere, so this layer also has to redraw when a
+   * pin arrives, is dragged, or is taken out — and when an *item* moves, which
+   * carries every pin parented to it. The caller owns that question because
+   * the caller is holding the frame's dirty sets.
+   */
+  apply(camera: Camera, pinsMoved = false): void {
+    const cameraMoved = camera.version !== this.writtenVersion;
+    if (cameraMoved) {
+      this.writtenVersion = camera.version;
+      const z = camera.zoom;
+      const ox = -camera.x * z;
+      const oy = -camera.y * z;
+      for (const layer of this.layers) {
+        const size = layer.tile * z;
+        layer.el.style.backgroundSize = `${size}px ${size}px`;
+        layer.el.style.backgroundPosition = `${ox}px ${oy}px`;
+        if (layer.lod) layer.el.style.opacity = grainLod(z).toFixed(3);
+      }
     }
+    if (cameraMoved || pinsMoved) this.paintHoles(camera);
+  }
+
+  /**
+   * Redraw the pinhole canvas for where the camera is now.
+   *
+   * A clear and a blit per hole. That is a handful of `drawImage` calls against
+   * the three full-viewport background repaints `apply` has already asked the
+   * compositor for on the same frame, so it is not the expensive thing here and
+   * was never going to be — which is why the sprites are baked once and this
+   * loop does no drawing of its own.
+   *
+   * Off-screen holes are skipped rather than clipped. A board can hold any
+   * number of pins and only the ones in front of you cost anything.
+   */
+  private paintHoles(camera: Camera): void {
+    const ctx = this.holeCtx;
+    if (ctx === null) return;
+
+    const dpr = window.devicePixelRatio || 1;
+    const w = Math.max(1, Math.round(this.host.clientWidth * dpr));
+    const h = Math.max(1, Math.round(this.host.clientHeight * dpr));
+    if (this.holes.width !== w || this.holes.height !== h) {
+      this.holes.width = w;
+      this.holes.height = h;
+    }
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.clearRect(0, 0, w, h);
+
+    const lod = pinholeLod(camera.zoom);
+    if (lod <= 0) return;
+
+    ctx.globalAlpha = lod;
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    const size = PINHOLE_UNITS * camera.zoom;
+    const half = size / 2;
+    const width = this.host.clientWidth;
+    const height = this.host.clientHeight;
+
+    for (const pin of this.pins()) {
+      // A patch is at most `PINHOLE_SPREAD` across, so a pin that far outside
+      // the viewport has nothing inside it. One comparison rejects the whole
+      // patch rather than four per hole.
+      const px = (pin.wx - camera.x) * camera.zoom;
+      const py = (pin.wy - camera.y) * camera.zoom;
+      const reach = (PINHOLE_SPREAD + PINHOLE_UNITS) * camera.zoom;
+      if (px < -reach || py < -reach || px > width + reach || py > height + reach) continue;
+
+      for (const hole of pinholesFor(this.seed, pin.id)) {
+        const sprite = this.sprites[hole.variant % this.sprites.length];
+        if (sprite === undefined) continue;
+        ctx.drawImage(
+          sprite,
+          px + hole.dx * camera.zoom - half,
+          py + hole.dy * camera.zoom - half,
+          size,
+          size,
+        );
+      }
+    }
+    ctx.globalAlpha = 1;
   }
 
   /**
@@ -394,6 +686,36 @@ export class Cork {
       ctx.globalCompositeOperation = step.blend;
       ctx.fillStyle = pattern;
       ctx.fillRect(0, 0, width, height);
+    }
+
+    // The pinholes, which are the one cork layer that is not a `CorkFill`: a
+    // pattern needs a period and a hole has a place instead. Drawn here rather
+    // than skipped because a board exported without them is a board with pins
+    // standing on unmarked cork, and the whole of the detail is that they are
+    // not.
+    ctx.globalCompositeOperation = "source-over";
+    const lod = pinholeLod(camera.zoom);
+    if (lod > 0) {
+      ctx.globalAlpha = lod;
+      const size = PINHOLE_UNITS * camera.zoom;
+      const half = size / 2;
+      const reach = (PINHOLE_SPREAD + PINHOLE_UNITS) * camera.zoom;
+      for (const pin of this.pins()) {
+        const px = (pin.wx - camera.x) * camera.zoom;
+        const py = (pin.wy - camera.y) * camera.zoom;
+        if (px < -reach || py < -reach || px > width + reach || py > height + reach) continue;
+        for (const hole of pinholesFor(this.seed, pin.id)) {
+          const sprite = this.sprites[hole.variant % this.sprites.length];
+          if (sprite === undefined) continue;
+          ctx.drawImage(
+            sprite,
+            px + hole.dx * camera.zoom - half,
+            py + hole.dy * camera.zoom - half,
+            size,
+            size,
+          );
+        }
+      }
     }
     ctx.restore();
   }

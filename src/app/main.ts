@@ -282,7 +282,10 @@ async function boot(): Promise<void> {
   // --- presentation --------------------------------------------------------
   const camera = new Camera();
   const world = new World(root);
-  const cork = new Cork(world.layers.cork, boardSeed(board));
+  // T-231. The pin source is a thunk because the cork is built before the
+  // document has finished loading and outlives every pin on it; `scene` is
+  // declared below, and by the time a frame asks it is there.
+  const cork = new Cork(world.layers.cork, boardSeed(board), () => scene.pins.values());
   /**
    * What this machine can show of each photograph, and how far off the rest are.
    *
@@ -2833,7 +2836,11 @@ async function boot(): Promise<void> {
 
   loop.on("dom", () => {
     world.applyCamera(camera);
-    cork.apply(camera);
+    // The pinhole layer redraws when a pin has moved as well as when the camera
+    // has (T-231), and `items` is in that list because a parented pin travels
+    // with its sheet without ever appearing in `dirty.pins` — that set is for
+    // "the rest", as its own comment says.
+    cork.apply(camera, dirty.all || dirty.pins.size > 0 || dirty.items.size > 0);
     /**
      * The paper somebody is writing on can be taken away underneath them — a
      * peer's delete, an undo, a document that resynced. Closing it here rather

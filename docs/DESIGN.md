@@ -408,7 +408,9 @@ Shadow colour is never black. It's a desaturated warm brown drawn from the cork,
 
 A seamless cork texture, tiled, with a large-scale low-frequency noise overlay at low opacity to break up the repeat — tiling artefacts on a background are the single most common way this kind of app announces that it's cheap.
 
-Over the top: a very slight vignette anchored to the viewport, and a broad soft light gradient anchored to the *world*, so panning moves across a surface that isn't uniformly lit. The cork also carries faint accumulated pinholes near where pins are and have been, which is a lovely detail that costs one extra sprite layer.
+Over the top: a very slight vignette anchored to the viewport, and a broad soft light gradient anchored to the *world*, so panning moves across a surface that isn't uniformly lit. The cork also carries faint accumulated pinholes near where pins are, which is a lovely detail that costs one extra sprite layer.
+
+**This sentence used to say "near where pins are *and have been*", and the second half was struck on Q-178.** Nothing on this board remembers a pin that is gone: `deletePins` is a hard `Y.Map` delete, there is no `deletedAt` and no tombstone a renderer may read, and the local mirror drops its empty sets on purpose so a board pinned and unpinned all afternoon does not accumulate them. The three ways to give it a memory were a document field that only ever grows (§11.1's fifth risk, by name), a local record that would make two people looking at one board see two different corks, or a hash of position — which would be a pattern rather than a history and would put holes where nobody ever worked. So the layer draws around the pins that are there, and does it as a patch of near misses rather than one mark per pin, because the hole a pin is standing in is a hole you cannot see.
 
 The board is unbounded, so the texture is generated from a per-board seed and tiles indefinitely.
 
