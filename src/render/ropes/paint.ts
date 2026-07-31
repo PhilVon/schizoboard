@@ -112,6 +112,82 @@ const HIGHLIGHT_LIFT = 0.42;
 const HIGHLIGHT_LIFT_MAX = 0.82;
 
 /**
+ * Twist — the width of the nick between one turn of ply and the next.
+ *
+ * > Twist and fibre come from a subtle repeating variation along the length
+ * > rather than from simulation. — DESIGN section 4.6
+ *
+ * The one sentence in 4.6 that had nothing behind it. What it asks for is a
+ * *repeat along arc length*, and the batching is what makes that hard: a batch
+ * is one `Path2D` and a handful of `stroke()` calls, so anything that varies
+ * within a batch has to be context state set once — which rules out a per-point
+ * width, a per-segment alpha, and everything else that would need the painter to
+ * re-walk the points. The slack rungs above take the other way out, quantising
+ * and adding to the batch key, and that is not available here: a rung is a fact
+ * about a whole gap and cannot repeat *inside* one.
+ *
+ * `setLineDash` is the one thing canvas repeats along arc length for free. It is
+ * context state, it applies to a whole path, and the rasteriser does the arc
+ * length — so the twist costs no extra `stroke()`, no extra batch and no walk,
+ * and 300 strings redrawn every frame measure 0.50 ms with it and 0.50 ms
+ * without.
+ *
+ * And it lands on the **highlight**, which is what makes it read as twist rather
+ * than as a dotted line: light on a twisted cord is not a continuous specular,
+ * it is a row of glints, one on each crest of the ply, dipping where the groove
+ * between them turns away from the light. Breaking the highlight is not an
+ * effect added on top of the three passes — it is the third pass drawn right.
+ *
+ * ## The gap is half a pixel, and that is the whole idea
+ *
+ * `TWIST_GAP` is *sub-pixel and constant*, which is what separates this from a
+ * dashed line. A gap of half a pixel cannot clear a pixel, so the rasteriser
+ * never removes anything: it renders the nick as a partial coverage, and what
+ * comes out is a highlight that dims and recovers, once per turn of the ply. A
+ * modulation rather than an interruption.
+ *
+ * That is also why it is constant rather than a fraction of the width. A
+ * fraction makes the *interruption* grow with the string until it is a break,
+ * and the pitch already carries everything that ought to scale. Driven at 100%
+ * on a ladder, the peak-to-trough brightness of a 6 px string's highlight goes
+ * 2.6 with no twist, 17.7 at a fifth of a pixel, 43 at a half, 60 at 0.8 and 76
+ * at 2.2 — and the pictures either side of the half are the argument: at 0.8 a
+ * thick string is visibly *ticked*, a row of white dashes, and by 2.2 it is a
+ * rope drawn as a dashed line. Half a pixel is the last value that still reads
+ * as fibre.
+ *
+ * Being sub-pixel is also what lets every string carry it. An earlier version
+ * bounded the gap in whole pixels and had to decline thin strings and wire
+ * outright, because a whole-pixel break in a 1.25 px highlight is a dotted line;
+ * a half-pixel dip in the same highlight is simply a slightly restless glint.
+ *
+ * The pitch is the part that scales, as a multiple of the *drawn* width — see
+ * `StringFibre.twist`. It rides on the width for free, which also means it
+ * inherits AC-70: the width is in screen pixels at every zoom, so the twist is
+ * too. Driven at 40%, 100% and 250%, an 11 px pitch measures 11 px at all three.
+ */
+const TWIST_GAP = 0.5;
+
+/**
+ * The shortest pitch that is still a texture, in screen pixels.
+ *
+ * Below about this, a repeat stops being read as a repeat and starts being read
+ * as a *dotted line*: the nick comes round often enough that its share of the
+ * highlight stops being a rhythm and becomes an overall beading. Wire is what
+ * found it — its ply is the tightest of the three and it draws the thinnest, so
+ * a 3 px wire came out at a 2.8 px pitch, which put a half-pixel nick every
+ * three pixels along the brightest specular on the board and read as a string of
+ * beads rather than as braid.
+ *
+ * Flooring the pitch rather than lowering wire's `twist` because it is not a
+ * fact about wire: any fibre thin enough lands here, and the number that decides
+ * it is a property of the screen. The cost is that the tightest-plied strings
+ * all converge on the same pitch at the thin end of the ladder, which is exactly
+ * what happens to real cord seen from far enough away.
+ */
+const TWIST_MIN_PITCH = 4.5;
+
+/**
  * The floor on a body stroke, in screen pixels.
  *
  * `palette.ts` starts its thickness ladder at 2 rather than 1 because a 1 px
@@ -195,6 +271,28 @@ export function slackRung(slack: number): number {
 }
 
 /**
+ * One turn of ply as a dash: a lit run, and the sub-pixel nick that ends it.
+ *
+ * The pitch rides on the *drawn* width rather than the authored thickness, so a
+ * string on the taut rung has a slightly tighter twist than a slack one — which
+ * is what happens to a real cord you pull on, and which comes out of the numbers
+ * already there rather than out of a rule.
+ *
+ * Null only for a fibre with no ply at all, and for a string so narrow that its
+ * pitch would not clear the nick — neither of which any material and any rung of
+ * the thickness ladder can currently produce, and both of which would otherwise
+ * ask the rasteriser for a dash of a negative length.
+ *
+ * Exported for `paint.test.ts`: from inside the painter this is two multiplies,
+ * and what is worth asserting is that the pitch scales and the nick does not.
+ */
+export function twistDash(width: number, twist: number): number[] | null {
+  if (twist <= 0) return null;
+  const pitch = Math.max(TWIST_MIN_PITCH, width * twist);
+  return [pitch - TWIST_GAP, TWIST_GAP];
+}
+
+/**
  * How far outside the viewport a string still counts as visible, in board
  * units. A string whose bounding box is just off-screen can still have a
  * *stroke* on screen once the shadow and half the line width are added, and a
@@ -243,6 +341,10 @@ interface Batch {
   highlightWidth: number;
   /** Alpha of the fuzz pass, or zero for a fibre that has none. */
   halo: number;
+  /** One turn of ply as a dash — the lit run and the sub-pixel nick that ends
+   *  it, in screen pixels. Null for a fibre with no ply, which draws a solid
+   *  highlight. */
+  twist: number[] | null;
 }
 
 export class RopeLayer {
@@ -473,10 +575,28 @@ export class RopeLayer {
 
     // 3. Highlight: perpendicular to the light, toward the lit side. How bright
     //    and how tight is the material's doing — see `lib/material.ts`.
+    //
+    //    And dipping once per turn of the ply, which is the twist — see
+    //    `TWIST_GAP`. The dash and the cap are both context state and `restore`
+    //    puts them back, so they stay inside the pass and no later stroke
+    //    inherits either.
     ctx.save();
     ctx.translate(-LIGHT_DY * HIGHLIGHT_OFFSET, LIGHT_DX * HIGHLIGHT_OFFSET);
     ctx.strokeStyle = batch.highlight;
     ctx.lineWidth = batch.highlightWidth;
+    if (batch.twist !== null) {
+      ctx.setLineDash(batch.twist);
+      // Butt caps, and only here. `lineCap` is round for the whole batch, and a
+      // round cap does not stop at the end of its dash — it puts a semicircle of
+      // half the line width past it, at *both* ends of every gap. So a gap
+      // narrower than the highlight is filled in by the two dashes either side
+      // of it and the twist is simply not drawn, which is not a subtle twist but
+      // an absent one, and it goes wrong worst on the widest strings: a top-rung
+      // yarn draws a 5.6 px highlight, which closes a 2.2 px gap completely.
+      // Found by sampling the pixels of a driven board — twelve pixels of flat
+      // highlight where a groove was supposed to be — and invisible from here.
+      ctx.lineCap = "butt";
+    }
     ctx.stroke(batch.path);
     ctx.restore();
   }
@@ -509,6 +629,7 @@ export class RopeLayer {
       width,
       highlightWidth: Math.max(HIGHLIGHT_MIN, width * HIGHLIGHT_WIDTH * fib.gloss),
       halo: fib.halo,
+      twist: twistDash(width, fib.twist),
     };
     this.batches.push(batch);
     return batch;

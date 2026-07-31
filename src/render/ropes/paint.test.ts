@@ -10,8 +10,9 @@
 
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
+import { STRING_THICKNESSES } from "@/lib/palette";
 import { DEFAULT_SLACK, MIN_SLACK, presetSlack } from "@/lib/slack";
-import { lighten, RopeLayer, slackRung } from "@/render/ropes/paint";
+import { lighten, RopeLayer, slackRung, twistDash } from "@/render/ropes/paint";
 import { LIGHT_DX, LIGHT_DY } from "@/render/items/shadow";
 import { RopeSet } from "@/sim/ropes";
 import { Camera } from "@/state/camera";
@@ -20,7 +21,14 @@ import { Scene, type StringNodes } from "@/state/scene";
 
 interface Calls {
   clearRect: number;
-  strokes: Array<{ width: number; style: string; tx: number; ty: number }>;
+  strokes: Array<{
+    width: number;
+    style: string;
+    tx: number;
+    ty: number;
+    dash: number[];
+    cap: string;
+  }>;
   /** Anything that would be a blur rather than a second pass — AC-69. */
   forbidden: string[];
   moves: Array<[number, number]>;
@@ -51,25 +59,41 @@ function stubCanvas(): HTMLCanvasElement {
   canvas.height = 800;
   // The context tracks its own translate stack so a stroke can report where it
   // was actually drawn — which is the whole of the shadow and highlight test.
+  //
+  // The dash is saved and restored alongside it, because that is a real thing
+  // that can go wrong: `setLineDash` is context state on the same stack, and a
+  // dash left set by one batch's highlight would come out on the *next* batch's
+  // shadow. Recording it per stroke is what makes that assertable.
   let tx = 0;
   let ty = 0;
-  const stack: Array<[number, number]> = [];
+  let dash: number[] = [];
+  const stack: Array<[number, number, number[], string]> = [];
   const ctx = {
-    save: () => stack.push([tx, ty]),
+    save: () => stack.push([tx, ty, dash, ctx.lineCap]),
     restore: () => {
       const previous = stack.pop();
-      if (previous) [tx, ty] = previous;
+      if (previous) [tx, ty, dash, ctx.lineCap] = previous;
     },
     setTransform: vi.fn(),
     translate: (x: number, y: number) => {
       tx += x;
       ty += y;
     },
+    setLineDash: (segments: number[]) => {
+      dash = segments;
+    },
     clearRect: () => {
       calls.clearRect++;
     },
     stroke: () => {
-      calls.strokes.push({ width: ctx.lineWidth, style: String(ctx.strokeStyle), tx, ty });
+      calls.strokes.push({
+        width: ctx.lineWidth,
+        style: String(ctx.strokeStyle),
+        tx,
+        ty,
+        dash,
+        cap: ctx.lineCap,
+      });
     },
     beginPath: vi.fn(),
     strokeStyle: "" as string,
@@ -178,9 +202,16 @@ describe("drawing into an export canvas", () => {
     expect(calls.clearRect).toBeGreaterThan(0);
   });
 
+  /**
+   * Every pass, not merely the first — T-214 and T-215 were both a layer that
+   * silently did not reach an image export, and the twist is exactly the shape
+   * of thing that goes missing there: one line of context state inside one pass.
+   * A thick string, because a default one is declined the dash anyway and would
+   * pass this test with the dash dropped.
+   */
   it("draws the same three passes it would on the board", () => {
     const { layer, ctx } = exportLayer("over");
-    string("s1", "p1", "p2");
+    string("s1", "p1", "p2", { thickness: 6 });
     layer.drawInto(ctx, scene, ropes, camera);
     const exported = calls.strokes.map((stroke) => ({ ...stroke }));
 
@@ -189,8 +220,14 @@ describe("drawing into an export canvas", () => {
     draw(layer);
 
     expect(exported).toHaveLength(calls.strokes.length);
-    expect(exported[0]!.style).toBe(calls.strokes[0]!.style);
-    expect(exported[0]!.width).toBeCloseTo(calls.strokes[0]!.width, 6);
+    for (const [i, stroke] of exported.entries()) {
+      expect(stroke.style).toBe(calls.strokes[i]!.style);
+      expect(stroke.width).toBeCloseTo(calls.strokes[i]!.width, 6);
+      expect(stroke.dash).toEqual(calls.strokes[i]!.dash);
+    }
+    // And the twist really was in what was compared, rather than absent from
+    // both sides.
+    expect(exported[2]!.dash).toHaveLength(2);
   });
 
   /**
@@ -851,5 +888,228 @@ describe("the highlight tint", () => {
     expect(lighten("red", 0.5)).toBe("red");
     expect(lighten("#abc", 0.5)).toBe("#abc");
     expect(lighten("rgb(1,2,3)", 0.5)).toBe("rgb(1,2,3)");
+  });
+});
+
+/**
+ * > Twist and fibre come from a subtle repeating variation along the length
+ * > rather than from simulation. — DESIGN section 4.6
+ *
+ * A dash is the only thing canvas repeats along *arc length* without a second
+ * walk of the points, so what is worth pinning here is that it lands on the
+ * highlight and nowhere else, that it never escapes the pass, and that the
+ * strings it declines to draw it on are declined for the stated reason.
+ */
+/**
+ * > Twist and fibre come from a subtle repeating variation along the length
+ * > rather than from simulation. — DESIGN section 4.6
+ *
+ * A dash is the only thing canvas repeats along *arc length* without a second
+ * walk of the points, so what is worth pinning here is that it lands on the
+ * highlight and nowhere else, that neither it nor the cap it needs escapes the
+ * pass, and that the nick stays sub-pixel — which is the whole difference
+ * between a twist and a dashed line, and the one thing a number here can lose.
+ */
+describe("the twist", () => {
+  /** The highlight is the last pass; yarn puts a halo pass before the body, so
+   *  counting from the end is the only way that holds for every fibre. */
+  const highlightOf = () => calls.strokes[calls.strokes.length - 1]!;
+
+  it("breaks the highlight and leaves the other passes solid", () => {
+    const layer = new RopeLayer(stubCanvas(), "over");
+    string("s1", "p1", "p2", { thickness: 6 });
+    draw(layer);
+
+    const [shadow, body, highlight] = calls.strokes;
+    expect(shadow.dash).toEqual([]);
+    expect(body.dash).toEqual([]);
+    expect(highlight.dash).toHaveLength(2);
+  });
+
+  /**
+   * The nick is sub-pixel, and it is meant to stay that way.
+   *
+   * A gap that clears a pixel is one the rasteriser can actually empty, and the
+   * highlight stops dimming and starts *breaking* — driven on a ladder, 0.8 px
+   * is where a thick string reads as a row of white ticks. Under a pixel it can
+   * only ever be partial coverage, which is a modulation. Every material at
+   * every rung, because the pitch scales with the width and the temptation to
+   * scale the nick with it is exactly what this forbids.
+   */
+  it("keeps the nick sub-pixel on every material and every rung", () => {
+    for (const material of ["string", "yarn"]) {
+      for (const thickness of STRING_THICKNESSES) {
+        calls.strokes.length = 0;
+        const layer = new RopeLayer(stubCanvas(), "over");
+        dirty.everything();
+        string("s1", "p1", "p2", { thickness, material });
+        draw(layer);
+
+        const [lit, nick] = highlightOf().dash;
+        expect(nick).toBeLessThan(1);
+        expect(nick).toBeGreaterThan(0);
+        // And the lit run is the rest of a pitch, not a second small number:
+        // two comparable dashes would be a dotted line whatever their size.
+        expect(lit!).toBeGreaterThan(nick! * 3);
+      }
+    }
+  });
+
+  /**
+   * Every rung of every *spun* fibre carries it, which is what being sub-pixel
+   * buys. An earlier version bounded the nick in whole pixels and had to
+   * decline the thin end of the ladder outright, because a whole-pixel break in
+   * a 1.25 px highlight is a dotted line; half a pixel needs no room.
+   */
+  it("leaves no rung of a spun fibre without one", () => {
+    for (const material of ["string", "yarn"]) {
+      for (const thickness of STRING_THICKNESSES) {
+        calls.strokes.length = 0;
+        const layer = new RopeLayer(stubCanvas(), "over");
+        dirty.everything();
+        string("s1", "p1", "p2", { thickness, material });
+        draw(layer);
+        expect(highlightOf().dash).toHaveLength(2);
+      }
+    }
+  });
+
+  /**
+   * Wire has none, at any thickness, and keeps its round cap with it.
+   *
+   * Metal is the one fibre here whose highlight really is continuous, and the
+   * drawing agrees emphatically: wire's specular is the brightest thing on the
+   * board and its width sits on `HIGHLIGHT_MIN`, so a nick that is invisible on
+   * cotton reads as a row of beads on it. Driven, it was the one string of six
+   * anybody would have noticed.
+   */
+  it("gives wire no twist at all", () => {
+    for (const thickness of STRING_THICKNESSES) {
+      calls.strokes.length = 0;
+      const layer = new RopeLayer(stubCanvas(), "over");
+      dirty.everything();
+      string("s1", "p1", "p2", { thickness, material: "wire" });
+      draw(layer);
+      expect(highlightOf().dash).toEqual([]);
+      expect(highlightOf().cap).toBe("round");
+    }
+  });
+
+  /**
+   * The dash is butt-capped, and every other pass is not.
+   *
+   * A round cap puts a semicircle of half the line width *past* the end of its
+   * dash, at both ends of every gap — so a gap narrower than the highlight is
+   * closed by the two dashes either side of it and the twist is not drawn at
+   * all. With a sub-pixel nick that is every string on the board. It failed
+   * worst where the string is widest: a top-rung yarn draws a 5.6 px highlight,
+   * which swallowed a 2.2 px gap whole. What caught it was sampling a driven
+   * board and finding twelve pixels of flat highlight where a groove should
+   * have been; from in here it looked like a working feature.
+   *
+   * The other passes keep their round caps, which is what stops a string
+   * ending in a square edge at the pin.
+   */
+  it("butt-caps the dashed pass and nothing else", () => {
+    const layer = new RopeLayer(stubCanvas(), "over");
+    string("s1", "p1", "p2", { thickness: 6 });
+    draw(layer);
+
+    const [shadow, body, highlight] = calls.strokes;
+    expect(highlight.cap).toBe("butt");
+    expect(shadow.cap).toBe("round");
+    expect(body.cap).toBe("round");
+  });
+
+  /**
+   * Neither the dash nor the cap leaks. Both are context state on the same
+   * stack as the transform, so either one left set would come out on the *next*
+   * batch — a dashed shadow under a solid string, or every string on the board
+   * squared off at its pins.
+   */
+  it("does not leak the dash or the cap into the next batch", () => {
+    const layer = new RopeLayer(stubCanvas(), "over");
+    string("s1", "p1", "p2", { thickness: 6 });
+    string("s2", "p1", "p2", { thickness: 6, color: "#2c5aa8" });
+    draw(layer);
+
+    expect(calls.strokes).toHaveLength(6);
+    for (const stroke of calls.strokes.slice(3, 5)) {
+      expect(stroke.dash).toEqual([]);
+      expect(stroke.cap).toBe("round");
+    }
+  });
+
+  /**
+   * The pitch is a multiple of the *drawn* width, not of the authored
+   * thickness — see `StringFibre.twist`.
+   *
+   * Which only means anything where the two differ, so this asks yarn: its
+   * weight is 1.5, so a thickness of 6 draws at 9, and a pitch taken off the
+   * wrong one comes out two thirds of the size. On plain string the numbers are
+   * equal and the same test passes with the bug in.
+   */
+  it("takes its pitch from the width the string actually draws at", () => {
+    const layer = new RopeLayer(stubCanvas(), "over");
+    string("s1", "p1", "p2", { thickness: 6, material: "yarn" });
+    draw(layer);
+
+    const dash = highlightOf().dash;
+    expect(dash[0]! + dash[1]!).toBeCloseTo(6 * 1.5 * 2.7, 6);
+  });
+
+  /** Yarn is spun wool and takes a longer, slower turn than plain cotton
+   *  string — per unit of drawn width, so this is about the ply and not about
+   *  yarn simply being fatter. */
+  it("gives yarn a slower ply than plain string", () => {
+    const pitchOf = (material: string): number => {
+      calls.strokes.length = 0;
+      const layer = new RopeLayer(stubCanvas(), "over");
+      dirty.everything();
+      string("s1", "p1", "p2", { thickness: 6, material });
+      draw(layer);
+      const dash = highlightOf().dash;
+      return dash[0]! + dash[1]!;
+    };
+
+    expect(pitchOf("string") / 6).toBeLessThan(pitchOf("yarn") / (6 * 1.5));
+  });
+
+  /** The pitch scales with the width; the nick is the same half pixel at every
+   *  size, which is what keeps a thick rope from being drawn as a dashed one. */
+  it("scales the pitch and holds the nick", () => {
+    for (const w of [3, 4.5, 6.5, 10]) {
+      const dash = twistDash(w, 1.9);
+      expect(dash).not.toBeNull();
+      const [lit, nick] = dash!;
+      expect(lit! + nick!).toBeCloseTo(w * 1.9, 6);
+      expect(nick).toBeCloseTo(0.5, 6);
+    }
+
+    // Zero twist is a fibre with no visible ply — nothing today, and honoured
+    // so that a smooth one added later needs no code here.
+    expect(twistDash(6, 0)).toBeNull();
+  });
+
+  /**
+   * Under the shortest legible pitch the repeat stops reading as a rhythm and
+   * starts reading as beading — a nick every three pixels along the brightest
+   * specular on the board. Wire is what found it and wire is what this holds:
+   * its ply is the tightest and it draws the thinnest, so it is the fibre that
+   * reaches the floor first, and at the thin end of the ladder every material
+   * converges on the same pitch.
+   */
+  it("floors the pitch where a repeat stops being a texture", () => {
+    const pitch = (w: number, t: number): number => {
+      const [lit, nick] = twistDash(w, t)!;
+      return lit! + nick!;
+    };
+
+    // A thin string on the bottom rung draws 2 px wide and would otherwise come
+    // out at a 3.8 px pitch.
+    expect(2 * 1.9).toBeLessThan(4.5);
+    expect(pitch(2, 1.9)).toBeCloseTo(4.5, 6);
+    // Wide enough and the fibre's own ply governs again.
+    expect(pitch(6, 1.9)).toBeCloseTo(11.4, 6);
   });
 });

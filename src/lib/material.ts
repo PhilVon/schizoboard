@@ -80,6 +80,22 @@ export interface StringFibre {
   /** Alpha of an extra wide pass under the body, which is what stray fibres
    *  look like from a distance. Zero for anything that does not have any. */
   readonly halo: number;
+  /**
+   * The twist pitch, as a multiple of the *drawn body width* — how far along
+   * the string one turn of the ply goes, and therefore how often the highlight
+   * is interrupted (DESIGN section 4.6's "subtle repeating variation along the
+   * length").
+   *
+   * A multiple of the width rather than a length, because the pitch of a real
+   * cord is a fact about its diameter: fat wool takes a long lazy turn and thin
+   * braided wire takes a tight one, and both look wrong at the other's period.
+   * It rides on the width for free, which also means it inherits AC-70 — the
+   * drawn width is in screen pixels at every zoom, so the twist is too.
+   *
+   * Zero for a fibre with no visible ply at all. Nothing is zero today, and the
+   * painter honours it so that a smooth fibre added later needs no code.
+   */
+  readonly twist: number;
 }
 
 /**
@@ -96,16 +112,24 @@ export interface StringFibre {
  * - **Yarn** is wool: thick, limp and fuzzy. It hangs further because there is
  *   no stiffness in it at all, it draws half again as wide, and its highlight
  *   is dim and spread because light lands on a hundred fibre ends rather than
- *   on a cylinder. The halo is what those ends look like at any distance.
+ *   on a cylinder. The halo is what those ends look like at any distance. Its
+ *   ply is the longest of the three — spun wool is a slow, soft turn.
  * - **Wire** is picture wire: thin, stiff, and the only thing on the board with
  *   a real specular. A third of the sag, a fraction under the width, and a
  *   highlight pushed bright and squeezed narrow, which is the whole difference
- *   between metal and cotton in three strokes.
+ *   between metal and cotton in three strokes. And the only one with **no
+ *   twist**: metal is the one fibre here whose highlight really is continuous,
+ *   and the drawing agrees emphatically. Wire's specular is the brightest thing
+ *   on the board and its width sits on `HIGHLIGHT_MIN`, so it is a near-white
+ *   line one pixel wide on dark cork — the highest contrast anywhere — and a
+ *   nick in it that is invisible on cotton reads as a row of beads. Driven, it
+ *   was the one string of six that anybody would have noticed. Nothing is lost
+ *   by the zero: it is what a braid looks like.
  */
 export const STRING_MATERIALS: readonly StringFibre[] = [
-  { id: "string", label: "String", sag: 1, weight: 1, sheen: 1, gloss: 1, halo: 0 },
-  { id: "yarn", label: "Yarn", sag: 1.5, weight: 1.5, sheen: 0.5, gloss: 1.5, halo: 0.5 },
-  { id: "wire", label: "Wire", sag: 0.35, weight: 0.8, sheen: 1.75, gloss: 0.6, halo: 0 },
+  { id: "string", label: "String", sag: 1, weight: 1, sheen: 1, gloss: 1, halo: 0, twist: 1.9 },
+  { id: "yarn", label: "Yarn", sag: 1.5, weight: 1.5, sheen: 0.5, gloss: 1.5, halo: 0.5, twist: 2.7 },
+  { id: "wire", label: "Wire", sag: 0.35, weight: 0.8, sheen: 1.75, gloss: 0.6, halo: 0, twist: 0 },
 ];
 
 /** > `'string' | 'yarn' | 'wire'` — DATA-MODEL section 5. The first is what a
