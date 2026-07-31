@@ -15,6 +15,14 @@
       made in CORS mode, and a preload without it is a second, separate fetch.
     -->
     <link rel="preload" href="/fonts/patrick-hand.woff2" as="font" type="font/woff2" crossorigin />
+    <!--
+      The clean face is NOT preloaded, deliberately. It is `font-display: block`
+      like the hand, so a note set in it blocks the same way — but it is on a
+      minority of items on a minority of boards, and preloading it would spend
+      15 KB of the opening fetch on most boards that never show it. `block` with
+      no preload means those notes come in a beat late on a cold open, which is
+      the right side of the trade for something you chose per item.
+    -->
     <link rel="stylesheet" href="/src/styles/base.css" />
     <script type="module" src="/src/app/main.ts"></script>
   </head>

@@ -13,10 +13,10 @@ import { describe, expect, it } from "vitest";
 
 import { DirtySets } from "@/state/dirty";
 import { FLATTEN_MS, Flatten } from "@/state/flatten";
-import { Scene, type ItemCold, type ItemPose, type PinNode } from "@/state/scene";
+import { Scene, type ItemColdInput, type ItemPose, type PinNode } from "@/state/scene";
 import { drawnPose } from "@/state/tools/frame";
 
-function cold(id: string, over: Partial<ItemCold> = {}): ItemCold {
+function cold(id: string, over: Partial<ItemColdInput> = {}): ItemColdInput {
   return {
     id,
     type: "note",

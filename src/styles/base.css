@@ -401,6 +401,37 @@ body {
   background: linear-gradient(#f4efe6 0%, #cdc5b8 40%, #7d7466 100%);
 }
 
+/*
+ * The two chips on the item menu's Writing strip (T-244).
+ *
+ * Same idea as the three fibres above: a drawing of the thing rather than the
+ * thing, because the real one is a whole note and this is a 15-pixel box. Two
+ * ruled lines, leaning for the board's hand and level for the clean face - the
+ * lean is the only thing about the two you can see at this size. A difference
+ * of letterform is invisible in fifteen pixels; a difference of posture is not.
+ */
+.menu-fibre-hand,
+.menu-fibre-clean {
+  width: 15px;
+  height: 15px;
+  border-radius: 1px;
+  background: #ece4d6;
+  box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.45);
+}
+
+.menu-fibre-hand {
+  background:
+    linear-gradient(100deg, transparent 42%, #6d6156 42%, #6d6156 52%, transparent 52%),
+    linear-gradient(100deg, transparent 68%, #6d6156 68%, #6d6156 78%, transparent 78%),
+    #ece4d6;
+}
+
+.menu-fibre-clean {
+  background:
+    linear-gradient(#6d6156, #6d6156) 2px 5px / 11px 1.5px no-repeat,
+    linear-gradient(#6d6156, #6d6156) 2px 9px / 8px 1.5px no-repeat,
+    #ece4d6;
+}
 /* --- phase-0 scaffolding, removed once items land (T-24) ------------------- */
 
 .hint {

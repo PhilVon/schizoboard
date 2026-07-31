@@ -261,6 +261,7 @@ beforeEach(() => {
       setPoses: (poses, phase) => writes.push({ kind: "poses", phase, poses: new Map(poses) }),
       setSizes: (sizes, phase) => writes.push({ kind: "sizes", phase, sizes: new Map(sizes) }),
       deleteItems: (ids, keepPins) => writes.push({ kind: "delete", ids: [...ids], keepPins }),
+      setItemStyle: () => {},
       // Reached from the context menu rather than from a gesture, so the select
       // tool never calls these — but the seam is one interface and a double has
       // to satisfy all of it.

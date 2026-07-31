@@ -14,8 +14,10 @@ import { describe, expect, it } from "vitest";
 import {
   atVariant,
   BOARD_FONT_URL,
+  BOARD_FONT_URLS,
   collectStyles,
   dataUri,
+  exportStylesheet,
   fontDataUri,
   fontWasInlined,
   inlineFont,
@@ -49,6 +51,56 @@ describe("gathering the stylesheet", () => {
 
   it("is empty rather than undefined for a document with no styles", () => {
     expect(collectStyles([])).toBe("");
+  });
+});
+
+/**
+ * Every face, not just the hand — T-243 gave an item a second one to be set in,
+ * and a font a `data:` SVG cannot reach fails **silently**: the writing comes
+ * out in whatever the machine has, at different advances, wrapping differently.
+ * One clean-face note on a board of forty is one note that would quietly come
+ * out wrong, on a route where nothing throws.
+ */
+describe("carrying every face in", () => {
+  const face = (family: string, url: string): string =>
+    `@font-face { font-family: "${family}"; src: url("${url}") format("woff2"); }`;
+
+  const board = (): CSSStyleSheet =>
+    sheet(
+      face("Patrick Hand", "/fonts/patrick-hand.woff2"),
+      face("Source Sans 3", "/fonts/source-sans-3.woff2"),
+      ".paper-text { font-size: 19px }",
+    );
+
+  /** A `fetch` that answers each URL with bytes that name it, so the assertions
+   *  can tell which face landed where. */
+  const serving = (...ok: string[]) =>
+    ((url: string) =>
+      Promise.resolve({
+        ok: ok.includes(url),
+        status: ok.includes(url) ? 200 : 404,
+        arrayBuffer: () => Promise.resolve(new Uint8Array([ok.indexOf(url)]).buffer),
+      })) as unknown as typeof fetch;
+
+  it("inlines both of them", async () => {
+    const css = await exportStylesheet([board()], BOARD_FONT_URLS, serving(...BOARD_FONT_URLS));
+    for (const url of BOARD_FONT_URLS) expect(fontWasInlined(css, url)).toBe(true);
+    expect(css).not.toContain("/fonts/");
+  });
+
+  /** The whole point of the loop. A version that stopped at the first URL would
+   *  pass every assertion about the hand and lose the second face. */
+  it("does not stop at the first", async () => {
+    const css = await exportStylesheet([board()], BOARD_FONT_URLS, serving(...BOARD_FONT_URLS));
+    expect(fontWasInlined(css, "/fonts/source-sans-3.woff2")).toBe(true);
+  });
+
+  /** Louder than losing it. A missing font leaves no trace in the file, so the
+   *  export is the last place it can be noticed at all. */
+  it("throws rather than exporting a face it could not fetch", async () => {
+    await expect(
+      exportStylesheet([board()], BOARD_FONT_URLS, serving("/fonts/patrick-hand.woff2")),
+    ).rejects.toThrow("/fonts/source-sans-3.woff2");
   });
 });
 

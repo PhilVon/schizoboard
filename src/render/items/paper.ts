@@ -23,8 +23,16 @@
  */
 
 import { grainOffset, mulberry32, valueAt } from "@/lib/seed";
+import { STOCK_BASE } from "@/lib/style";
 
-export type PaperStock = "white" | "cream" | "legal" | "graph" | "index";
+/**
+ * Re-exported rather than declared, so the document's vocabulary and this
+ * file's table of colours and grains cannot drift apart — `lib/style.ts` owns
+ * the five names because `crdt/` has to validate them and `ui/` has to draw
+ * them, and neither may reach in here.
+ */
+export type { PaperStock } from "@/lib/style";
+import type { PaperStock } from "@/lib/style";
 
 interface Stock {
   /** Base sheet colour. */
@@ -58,20 +66,20 @@ interface Grain {
 
 /** Warm, low-chroma, and none of them pure white — paper never is. */
 const STOCKS: Record<PaperStock, Stock> = {
-  white: { base: "#f7f4ed", grain: { swing: 20, density: 2.4, length: [3, 11], alpha: 0.04 } },
-  cream: { base: "#f2e9d6", grain: { swing: 30, density: 3.8, length: [4, 18], alpha: 0.06 } },
+  white: { base: STOCK_BASE.white, grain: { swing: 20, density: 2.4, length: [3, 11], alpha: 0.04 } },
+  cream: { base: STOCK_BASE.cream, grain: { swing: 30, density: 3.8, length: [4, 18], alpha: 0.06 } },
   legal: {
-    base: "#f6efb9",
+    base: STOCK_BASE.legal,
     rule: { color: "rgba(90,120,160,0.35)", spacing: 22 },
     grain: { swing: 34, density: 4.4, length: [5, 20], alpha: 0.055 },
   },
   graph: {
-    base: "#f4f2e8",
+    base: STOCK_BASE.graph,
     rule: { color: "rgba(120,140,120,0.28)", spacing: 14 },
     grain: { swing: 14, density: 1.3, length: [2, 8], alpha: 0.03 },
   },
   index: {
-    base: "#f8f5ef",
+    base: STOCK_BASE.index,
     rule: { color: "rgba(150,120,120,0.3)", spacing: 20, margin: "rgba(190,110,110,0.5)" },
     grain: { swing: 26, density: 5, length: [2, 9], alpha: 0.05 },
   },
@@ -243,8 +251,38 @@ export function grainPosition(seed: number): string {
  * colour variation across the sheet"; this is the across-sheets half, which
  * is what stops fifty notes reading as fifty copies of one note.
  */
-export function sheetTint(seed: number): string {
-  const hue = (valueAt(seed, "tint-h") - 0.5) * 14;
-  const light = (valueAt(seed, "tint-l") - 0.5) * 5;
-  return `hue-rotate(${hue.toFixed(2)}deg) brightness(${(1 + light / 100).toFixed(4)})`;
+export function seedTint(seed: number): string {
+  return tintFilter((valueAt(seed, "tint-h") - 0.5) * 14, (valueAt(seed, "tint-l") - 0.5) * 5);
 }
+
+/**
+ * A tint as the filter that applies it — hue rotation in degrees, lightness in
+ * percent.
+ *
+ * Split out of [`seedTint`] so a chosen tint and a seeded one are formatted by
+ * the same line (T-225). Two formatters would round differently, and a sheet
+ * that changes shade very slightly the moment somebody first touches it is a
+ * defect nobody would think to look for.
+ *
+ * Clamped rather than refused, to the range the seed itself draws from. A tint
+ * is a *variation on the paper*: past about a half-turn of hue a sheet stops
+ * reading as paper at all, and a brightness that can reach zero is a black
+ * rectangle you can still select and delete but can no longer see the writing
+ * on. `crdt/schema.ts` keeps non-numbers out; the taste is here.
+ */
+export function tintFilter(hue: number, light: number): string {
+  const h = Math.min(TINT_HUE_LIMIT, Math.max(-TINT_HUE_LIMIT, hue));
+  const l = Math.min(TINT_LIGHT_LIMIT, Math.max(-TINT_LIGHT_LIMIT, light));
+  return `hue-rotate(${h.toFixed(2)}deg) brightness(${(1 + l / 100).toFixed(4)})`;
+}
+
+/**
+ * How far a tint may go, either way.
+ *
+ * Four times what the seed spends — the seed draws hue from ±7 and lightness
+ * from ±2.5 — so choosing one is meaningfully more than the board does on its
+ * own without becoming a colour picker. DESIGN 4.4 asks for "slight colour
+ * variation"; this is the ceiling on what "slight" can be stretched to.
+ */
+export const TINT_HUE_LIMIT = 28;
+export const TINT_LIGHT_LIMIT = 10;

@@ -1741,6 +1741,61 @@ describe("ageing", () => {
  * These tests are therefore about the attribute and about the one thing that is
  * not CSS — the writing.
  */
+/**
+ * The clean face — DESIGN 3.6, T-243. What is testable here is the attribute
+ * and the one thing that is not CSS: whether the writing goes down as glyph
+ * boxes or as a text node.
+ */
+describe("the face an item is written in", () => {
+  const item = (): HTMLElement => host.querySelector<HTMLElement>(".item")!;
+  const boxes = (): number => host.querySelectorAll(".hand-word > span").length;
+
+  it("says nothing for the board's own hand", () => {
+    add("a", { type: "note", text: "who saw it" });
+    layer.sync(scene, dirty, null);
+    // Absent rather than "hand", so a selector written before this existed goes
+    // on meaning what it meant — the same rule the LOD attribute follows.
+    expect(item().dataset["face"]).toBeUndefined();
+  });
+
+  it("marks the item when the clean one is chosen", () => {
+    add("a", { type: "note", text: "who saw it", style: { fontFamily: "clean" } });
+    layer.sync(scene, dirty, null);
+    expect(item().dataset["face"]).toBe("clean");
+  });
+
+  /**
+   * The clean face is laid down as one text node whatever the zoom. A print
+   * face does not lean, so it needs no box per glyph — and not having one is
+   * what lets it kern, which is most of why anybody would choose it.
+   */
+  it("writes it without a box per letter, so it can kern", () => {
+    add("a", { type: "note", text: "who saw it", style: { fontFamily: "clean" } });
+    layer.sync(scene, dirty, null);
+    expect(boxes()).toBe(0);
+    expect(host.querySelector(".paper-text")!.textContent).toBe("who saw it");
+  });
+
+  it("still gives the hand its boxes, which is what the jitter needs", () => {
+    add("a", { type: "note", text: "who saw it" });
+    layer.sync(scene, dirty, null);
+    expect(boxes()).toBeGreaterThan(0);
+  });
+
+  /** Choosing it and then putting it back is a real gesture, and the attribute
+   *  has to come off rather than merely stop being read. */
+  it("takes the mark off again when the override is cleared", () => {
+    add("a", { type: "note", text: "who saw it", style: { fontFamily: "clean" } });
+    layer.sync(scene, dirty, null);
+    expect(item().dataset["face"]).toBe("clean");
+
+    add("a", { type: "note", text: "who saw it" });
+    layer.sync(scene, dirty, null);
+    expect(item().dataset["face"]).toBeUndefined();
+    expect(boxes()).toBeGreaterThan(0);
+  });
+});
+
 describe("LOD tiers", () => {
   const writing = (): HTMLElement =>
     host.querySelector<HTMLElement>(".paper-text")!;

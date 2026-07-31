@@ -100,6 +100,7 @@ beforeEach(() => {
       setPoses: () => {},
       setSizes: () => {},
       deleteItems: () => {},
+      setItemStyle: () => {},
       bringToFront: () => {},
       sendToBack: () => {},
       createNote: () => {},

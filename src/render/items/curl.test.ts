@@ -2,11 +2,11 @@ import { describe, expect, it } from "vitest";
 
 import { cornerCurl, cornerFace, curlAt } from "@/render/items/curl";
 import { tapedCorners } from "@/render/items/tape";
-import { Scene, type ItemCold, type ItemPose, type PinNode } from "@/state/scene";
+import { Scene, type ItemColdInput, type ItemPose, type PinNode } from "@/state/scene";
 
 const [TL, TR, BR, BL] = [0, 1, 2, 3];
 
-function cold(id: string, over: Partial<ItemCold> = {}): ItemCold {
+function cold(id: string, over: Partial<ItemColdInput> = {}): ItemColdInput {
   return {
     id,
     type: "note",

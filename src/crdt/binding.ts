@@ -193,6 +193,10 @@ export class Binding {
         createdBy: fields.createdBy,
         createdAt: fields.createdAt,
         text: text instanceof Y.Text ? text.toString() : "",
+        // A write inside the style map already routes here — the nested-event
+        // branch below ends in `syncItem` — so choosing a paper stock rebuilds
+        // the item's view with no new observer and no new dirty flag.
+        style: fields.style,
       },
       { x: fields.x, y: fields.y, rot: fields.rot, w: fields.w, h: fields.h },
     );
