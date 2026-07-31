@@ -56,8 +56,28 @@ import type { AssetVariant } from "@/platform/types";
 import { SHADOW_BLEED } from "@/render/items/shadow";
 import { TAPE_LENGTH } from "@/render/items/tape";
 
-/** The face the board writes in, and the one thing an export must not lose. */
-export const BOARD_FONT_URL = "/fonts/patrick-hand.woff2";
+/**
+ * Every face an item can be written in, and the thing an export must not lose.
+ *
+ * A list rather than a constant since T-243, and the plural is load-bearing.
+ * A `data:` SVG cannot reach a relative URL, and a font it cannot reach fails
+ * **silently** — the writing simply comes out in whatever the machine has, in
+ * different advances, wrapping differently. That was measured once for the hand
+ * (D-34 §4) and it is exactly as true of the second face: one note set in the
+ * clean face on a board of forty is one note that would quietly come out wrong,
+ * on a route where nothing throws.
+ *
+ * The hand is first because it is the default and because
+ * `BOARD_FONT_URL` — the single-URL shorthand the rest of this file's helpers
+ * default to — has to keep meaning what it meant.
+ */
+export const BOARD_FONT_URLS: readonly string[] = [
+  "/fonts/patrick-hand.woff2",
+  "/fonts/source-sans-3.woff2",
+];
+
+/** The board's own hand — the default for every helper that takes one URL. */
+export const BOARD_FONT_URL = BOARD_FONT_URLS[0];
 
 /**
  * An SVG carrying a piece of the board, ready to be drawn into a canvas.
@@ -551,12 +571,23 @@ export interface RasterReport {
  */
 export async function exportStylesheet(
   sheets: Iterable<CSSStyleSheet> = document.styleSheets,
-  url = BOARD_FONT_URL,
+  urls: readonly string[] = BOARD_FONT_URLS,
+  // Injected for the same reason `RasterDeps.decode` is: happy-dom has no
+  // network, and what is worth testing here is which faces are asked for and
+  // what happens when one is missing — neither of which needs a real one.
+  get: typeof fetch = fetch,
 ): Promise<string> {
-  const css = collectStyles(sheets);
-  const response = await fetch(url);
-  if (!response.ok) throw new Error(`${url} — ${response.status}`);
-  return inlineFont(css, fontDataUri(await response.arrayBuffer()), url);
+  let css = collectStyles(sheets);
+  // Every face, and a failure to fetch any one of them throws rather than
+  // being skipped. A missing font does not announce itself in the file — the
+  // writing comes out in a fallback with different advances — so the only place
+  // it can be noticed is here, where there is still something to notice.
+  for (const url of urls) {
+    const response = await get(url);
+    if (!response.ok) throw new Error(`${url} — ${response.status}`);
+    css = inlineFont(css, fontDataUri(await response.arrayBuffer()), url);
+  }
+  return css;
 }
 
 /**

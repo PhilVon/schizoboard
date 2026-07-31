@@ -45,6 +45,7 @@ import {
 import { rotateIn, type Point } from "@/lib/rotate";
 import { grainPosition, paperGrainUrl, stockBase, stockRuling } from "@/render/items/paper";
 import {
+  faceOf,
   sheetEdgeOf,
   stockOf,
   tapeOf,
@@ -1184,7 +1185,25 @@ class PaperView implements View {
     // A per-sheet hue-rotate is its own compositing pass, for a tint that is not
     // distinguishable from the cork at this size.
     this.surface.style.filter = plain ? "none" : tintOf(cold);
-    writeHand(this.body, cold.text, cold.seed, plain);
+    /**
+     * The face — DESIGN 3.6, resolved by `render/items/style.ts`.
+     *
+     * A data attribute rather than an inline `font-family`, so `items.css` can
+     * hold the family and its size correction together. They are one decision:
+     * Source Sans 3 sets 16% wider than the hand, and a family swapped without
+     * the size re-wraps the note and takes the writing off the ruling.
+     *
+     * The clean face is written **plain** whatever the tier. `plain` is the LOD
+     * flag everywhere else in this file, and here it carries a second meaning
+     * that wants exactly the same code: a print face does not lean, so it needs
+     * no box per glyph — and not having one is what lets it kern, which is most
+     * of why anybody would choose it. The hand cannot kern at any zoom
+     * (`hand.ts`), and that trade is the whole of what this face offers.
+     */
+    const face = faceOf(cold);
+    if (face === "hand") delete this.el.dataset["face"];
+    else this.el.dataset["face"] = face;
+    writeHand(this.body, cold.text, cold.seed, plain || face === "clean");
   }
 
   transform(x: number, y: number, rot: number, w: number, h: number, lift: number): void {
