@@ -292,6 +292,22 @@ body {
   overflow-y: auto;
 }
 
+/**
+ * The remote-drag debug overlay's own canvas (T-235), which exists only while
+ * it is switched on and only in a dev build.
+ *
+ * Full-bleed over the `ui` layer and inert: it is a readout, and a press meant
+ * for a photograph underneath it must reach the photograph. Above the tuning
+ * panel's z-index would put marks over the dials, so it sits below — the panel
+ * is something you touch and this is something you read.
+ */
+.remote-debug {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
+}
+
 .tuning-title {
   margin-bottom: 6px;
   font-size: 13px;
