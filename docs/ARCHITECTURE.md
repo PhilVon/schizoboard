@@ -33,7 +33,7 @@ src/
   crdt/
     schema.ts         types and typed accessors — imports nothing from render/ or sim/
     doc.ts            Y.Doc, root types, schema version
-    ops/              items · pins · strings · ink · z · cascade
+    ops/              items · pins · strings · ink · z · cascade · clip
                       ALL mutations live here; each wraps doc.transact(fn, origin)
     binding.ts        the ONLY module that reads Yjs events → Scene + dirty sets
     undo.ts
@@ -45,6 +45,7 @@ src/
     dirty.ts          dirty sets: items, ropes, ink, plus coarse flags
     camera.ts
     selection.ts
+    erase.ts          what Delete removes, shared with Ctrl+X
     tools/            machine.ts + select · pin · string · marker · highlighter · eraser
 
   sim/
@@ -245,6 +246,12 @@ What crosses instead is a manifest and a snapshot, framed as `[u32 le length][js
 Try the web `paste` event first — it's the fast path, needs no permission, and handles inline images and text well. Fall back to native when it comes back empty or reports zero-length files, which is what happens with Explorer and Finder file copies.
 
 Native is strictly more capable and covers the cases that otherwise silently fail: file paths, multi-image payloads, and reliable source URLs from clipboard HTML. Files dragged in from the OS arrive as paths rather than blobs and go straight into the store without ever touching JS.
+
+**The board has a second clipboard, and the system one arbitrates between them** (`app/clipboard.ts`, T-227, Q-162). `Ctrl+C` copies *paper* — a subgraph with its seeds, style overrides, pins, ink and the strings between them — and that stays in memory as the plain data of `crdt/ops/clip.ts`, because there is no clipboard format that carries it and inventing one would mean defending the document against whatever a hostile page could put in a `text/x-schizoboard`.
+
+Which leaves `Ctrl+V`, which is not a keybinding here at all: paste is the DOM `paste` event and it means *read the system clipboard*. So a copy writes **a token and no payload** — a fresh id under `application/x-schizoboard-clip`, plus the copied text for every other application — and a paste is the board's only if that exact token comes back. Anything copied anywhere on the machine since takes the token with it, so the two clipboards are ordered by recency without a permission, an async read or a timer. A second window of this application gets the text, which is honest: the paper was never on the clipboard.
+
+Measured in WebView2 before it was designed on: the `copy` event fires with no DOM selection, and a custom MIME type set on it survives the round trip.
 
 ### 4.6 Plugins
 

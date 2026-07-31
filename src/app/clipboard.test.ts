@@ -132,7 +132,9 @@ describe("copying", () => {
     // nothing, so the event is not ours and is not taken.
     expect([...transfer.data.keys()]).toEqual([]);
     expect(lastEvent.defaultPrevented).toBe(false);
-    expect(clipboard.isEmpty).toBe(true);
+    // And nothing to claim a paste with, which is the same statement made where
+    // it can be observed.
+    expect(clipboard.claim(transfer as unknown as DataTransfer, { x: 0, y: 0 })).toBe(false);
   });
 
   it("stands down inside a note's editor", () => {
@@ -246,8 +248,11 @@ describe("duplicating", () => {
     clipboard.duplicate();
 
     // Duplicating something is not a statement about what you want to paste
-    // next, so nothing was announced and there is still nothing to claim with.
-    expect(clipboard.isEmpty).toBe(true);
+    // next, so nothing was announced and a paste still has nothing of ours to
+    // find on the system clipboard.
+    const anything = new FakeTransfer();
+    anything.setData(CLIP_MIME, "whatever was there before");
+    expect(clipboard.claim(anything as unknown as DataTransfer, { x: 0, y: 0 })).toBe(false);
     expect(said).toEqual([]);
   });
 

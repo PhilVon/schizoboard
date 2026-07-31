@@ -110,12 +110,6 @@ export class BoardClipboard {
     this.disposers.length = 0;
   }
 
-  /** Whether anything has been copied — the item menu and the board menu both
-   *  want to know before offering a paste row. */
-  get isEmpty(): boolean {
-    return this.clip === null;
-  }
-
   /**
    * Does this paste belong to the board clipboard?
    *
