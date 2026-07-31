@@ -61,6 +61,13 @@ export interface AssetInput {
   mime: string;
   size: number;
   origName?: string;
+  /**
+   * Seconds, for a film or a cassette (T-300). Absent and `null` mean the same
+   * thing — nobody measured it — and neither is written.
+   */
+  duration?: number | null;
+  /** Pages, for a document. Same rule. */
+  pages?: number | null;
 }
 
 export interface CreatedItem {
@@ -71,6 +78,51 @@ export interface CreatedItem {
 /** A number that can go in the document, or zero. */
 function finite(value: number): number {
   return Number.isFinite(value) ? value : 0;
+}
+
+/**
+ * Put an asset's metadata in the document, if it is not already there.
+ *
+ * **The one writer.** There were two — this and `pasteClip`'s, which had drifted
+ * into a copy that wrote five of the keys and had no idea about the rest, so a
+ * cassette copied to another board arrived with no duration on it. That is the
+ * failure this shape exists to stop: the record is what reaches a peer *ahead*
+ * of the bytes, so a field dropped here cannot be recovered on the far side by
+ * anything short of sending the file.
+ *
+ * Written once and never again: two people pasting the same photograph produce
+ * the same hash, and the second write is byte-identical to the first, so
+ * re-registering would be churn on the wire for no change.
+ */
+export function registerAsset(
+  board: BoardDoc,
+  sha256: string,
+  input: AssetInput,
+  now: number,
+): void {
+  if (board.assets.has(sha256)) return;
+  const asset = new Y.Map<unknown>();
+  // Zero rather than skipped: `readAsset` returns null for a photograph with a
+  // non-positive dimension, so an unusable record reads as absent — and absent
+  // is a state the item renders (DESIGN section 7.5). A record that is merely
+  // missing would be too, but this way the hash is still registered and a peer
+  // can still be asked for the bytes. A cassette has no box and is not judged
+  // on one (T-261).
+  asset.set("w", finite(input.w));
+  asset.set("h", finite(input.h));
+  asset.set("mime", input.mime);
+  asset.set("size", finite(input.size));
+  asset.set("origName", input.origName ?? null);
+  // Written only when there is one. An absent key and a key holding `null` read
+  // the same way, so writing the null would be a byte on the wire per
+  // photograph to say nothing — and `Y.Map` is per-property LWW, so a later
+  // build that learns to measure something this one could not can fill the key
+  // in without touching anything beside it.
+  if (typeof input.duration === "number") asset.set("duration", input.duration);
+  if (typeof input.pages === "number") asset.set("pages", input.pages);
+  asset.set("addedBy", board.doc.clientID);
+  asset.set("addedAt", now);
+  board.assets.set(sha256, asset);
 }
 
 /**
@@ -131,24 +183,8 @@ export function createItems(
       item.set("createdAt", now);
       board.items.set(itemId, item);
 
-      // Written once and never again: two people pasting the same photograph
-      // produce the same hash, and the second write is byte-identical to the
-      // first, so re-registering it would be churn on the wire for no change.
-      if (input.assetId && input.asset && !board.assets.has(input.assetId)) {
-        const asset = new Y.Map<unknown>();
-        // Zero rather than skipped: `readAsset` already returns null for a
-        // non-positive dimension, so an unusable record reads as absent — and
-        // absent is a state the item renders (DESIGN section 7.5). A record
-        // that is merely missing would be too, but this way the hash is still
-        // registered and a peer can still be asked for the bytes.
-        asset.set("w", finite(input.asset.w));
-        asset.set("h", finite(input.asset.h));
-        asset.set("mime", input.asset.mime);
-        asset.set("size", finite(input.asset.size));
-        asset.set("origName", input.asset.origName ?? null);
-        asset.set("addedBy", board.doc.clientID);
-        asset.set("addedAt", now);
-        board.assets.set(input.assetId, asset);
+      if (input.assetId && input.asset) {
+        registerAsset(board, input.assetId, input.asset, now);
       }
 
       let pinId: string | null = null;

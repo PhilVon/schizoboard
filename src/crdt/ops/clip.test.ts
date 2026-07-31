@@ -24,7 +24,7 @@ import { commitStroke } from "@/crdt/ops/ink";
 import { createItems, deleteItems, setItemStyle, setItemText } from "@/crdt/ops/items";
 import { createPin } from "@/crdt/ops/pins";
 import { createString } from "@/crdt/ops/strings";
-import { readItem, readPin, readString, readStroke, type YMap } from "@/crdt/schema";
+import { readAsset, readItem, readPin, readString, readStroke, type YMap } from "@/crdt/schema";
 import { UndoHistory } from "@/crdt/undo";
 
 let board: BoardDoc;
@@ -139,6 +139,34 @@ describe("what a copy takes", () => {
     );
     const asset = elsewhere.assets.get("abc123")!;
     expect([asset.get("mime"), asset.get("origName")]).toEqual(["image/jpeg", "kodak.jpg"]);
+  });
+
+  /**
+   * T-261. A copied cassette is the same recording, and the board it lands on
+   * may never hold a byte of it — so the duration has to be carried rather than
+   * re-derived. Re-deriving means having the file, and the whole point of the
+   * record is that it travels ahead of one.
+   */
+  it("carries what was measured of a cassette onto a board that has no bytes", () => {
+    const [made] = createItems(board, [
+      {
+        type: "polaroid",
+        x: 0,
+        y: 0,
+        w: 300,
+        h: 300,
+        assetId: "tape01",
+        asset: { w: 0, h: 0, mime: "audio/mpeg", size: 4096, duration: 1606.139 },
+      },
+    ]);
+
+    const clip = copySubgraph(board, { items: [made!.itemId], pins: [] })!;
+    const elsewhere = openBoardDoc();
+    pasteClip(elsewhere, clip, { x: 0, y: 0 });
+
+    const asset = readAsset("tape01", elsewhere.assets.get("tape01")!)!;
+    expect(asset.kind).toBe("audio");
+    expect(asset.duration).toBeCloseTo(1606.139, 3);
   });
 });
 

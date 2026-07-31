@@ -299,6 +299,15 @@ export class Paste {
         mime: meta.mime,
         size: meta.size,
         ...(origName ? { origName } : {}),
+        // Carried from here even though the gate above still only lets
+        // pictures past, and a picture never has one. The shell measures this
+        // at ingest for whatever it was handed (T-300), and the moment the
+        // gate learns about kinds (T-260) a cassette arrives through this
+        // same line with its duration already on it. Dropping it here would
+        // mean the record is written without a duration the shell already
+        // knew — and there is no second chance to measure it on a peer that
+        // never holds the bytes.
+        ...(meta.duration !== null ? { duration: meta.duration } : {}),
       },
     });
   }

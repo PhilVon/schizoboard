@@ -159,6 +159,42 @@ export interface StrokeFields {
   pts: Uint8Array;
 }
 
+/**
+ * What a file is, as far as the board is concerned — which is to say, which
+ * object it becomes on the wall.
+ *
+ * > No new item types. The face is chosen from the asset's mime.
+ * > — D-46 section 2
+ *
+ * `unknown` is not a face. It is a file this build cannot place, and it exists
+ * so that `readAsset` can tell "a record describing something we do not
+ * understand" from "a record describing a cassette", which are different
+ * amounts of missing.
+ */
+export type AssetKind = "image" | "video" | "audio" | "document" | "unknown";
+
+/**
+ * The one place a mime becomes a kind.
+ *
+ * Derived rather than stored, and that is a decision rather than an omission:
+ * every asset record already on a board — every photograph anybody has pasted
+ * since T-21 — was written before this existed, so a record without a kind has
+ * to be classifiable anyway. Writing the kind as well would make it a second
+ * statement of a fact the mime already makes, and two writers of one fact can
+ * disagree where a derivation cannot.
+ *
+ * The cost, stated plainly: a peer on a later build that understands some mime
+ * this one has never heard of gains nothing by knowing what it is. An
+ * unfamiliar mime is unfamiliar here, permanently.
+ */
+export function assetKind(mime: string): AssetKind {
+  if (mime.startsWith("image/")) return "image";
+  if (mime.startsWith("video/")) return "video";
+  if (mime.startsWith("audio/")) return "audio";
+  if (mime === "application/pdf") return "document";
+  return "unknown";
+}
+
 export interface AssetFields {
   sha256: string;
   w: number;
@@ -168,6 +204,23 @@ export interface AssetFields {
   origName: string;
   addedBy: number;
   addedAt: number;
+  /** Derived from `mime`; see [`assetKind`]. Never read off the map. */
+  kind: AssetKind;
+  /**
+   * Seconds, for a film or a cassette. `null` for everything else and for a
+   * container the shell could not read.
+   *
+   * Read once at ingest by the machine holding the file (T-300), because the
+   * item reaches a peer long before the bytes do — the spine of a cassette has
+   * to say something while a 400 MB interview is still transferring.
+   *
+   * A stored zero reads back as `null` on purpose. Nothing this build writes
+   * can produce one, and a J-card reading `0:00` is a claim that the tape is
+   * empty, which is a worse thing to say than nothing.
+   */
+  duration: number | null;
+  /** Pages, for a document. `null` when it is not one or nobody has counted. */
+  pages: number | null;
 }
 
 // --- coercion -------------------------------------------------------------
@@ -385,20 +438,58 @@ function readBbox(value: unknown): readonly [number, number, number, number] {
   return [box[0]!, box[1]!, box[2]!, box[3]!];
 }
 
+/**
+ * Read an asset record.
+ *
+ * ## The box guard, which is the load-bearing line in here
+ *
+ * A record with no pixel box used to read as *absent*, and that was right while
+ * every asset was a photograph: a photograph whose dimensions are unknown is a
+ * record that cannot be used for anything, and absent is a state the item
+ * already renders (DESIGN section 7.5). It is also the single most likely place
+ * to lose a file silently, because absent from here means absent from
+ * `referencedAssets`, which means collected by the sweep.
+ *
+ * A cassette has no pixel box. Neither does a case file, and neither does a
+ * VHS — the film has a frame size but the *object on the wall* is a cassette,
+ * and its shape is the cassette's. So the guard learns which kinds are supposed
+ * to have a box rather than being relaxed for everything (I-95).
+ *
+ * It still applies to `unknown`, and that is deliberate: a record whose mime
+ * says nothing and whose box says nothing is the genuinely unusable record the
+ * guard was written for, and it goes on reading as absent exactly as it did
+ * before any of this.
+ */
 export function readAsset(sha256: string, map: YMap): AssetFields | null {
+  const mime = str(map.get("mime"), "application/octet-stream");
+  const kind = assetKind(mime);
   const w = num(map.get("w"), 0);
   const h = num(map.get("h"), 0);
-  if (w <= 0 || h <= 0) return null;
+  if ((kind === "image" || kind === "unknown") && (w <= 0 || h <= 0)) return null;
   return {
     sha256,
     w,
     h,
-    mime: str(map.get("mime"), "application/octet-stream"),
+    mime,
     size: num(map.get("size"), 0),
     origName: str(map.get("origName"), ""),
     addedBy: num(map.get("addedBy"), 0),
     addedAt: num(map.get("addedAt"), 0),
+    kind,
+    duration: positive(map.get("duration")),
+    pages: positive(map.get("pages")),
   };
+}
+
+/**
+ * A number that is a measurement, or nothing.
+ *
+ * Zero is not a measurement here — see `AssetFields.duration`. Nor is a
+ * negative, an infinity or a `NaN`, all of which are what a hostile or simply
+ * older peer can put in a `Y.Map` that this side has to survive reading.
+ */
+function positive(value: unknown): number | null {
+  return typeof value === "number" && Number.isFinite(value) && value > 0 ? value : null;
 }
 
 /**
