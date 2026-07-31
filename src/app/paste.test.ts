@@ -42,6 +42,7 @@ class FakeNative {
       h: decoded ? 800 : 0,
       mime,
       size,
+      duration: null,
     };
   }
 

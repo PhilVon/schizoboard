@@ -133,7 +133,20 @@ export class MockPlatform implements Platform {
       }
     }
 
-    const meta: AssetMeta = { sha256, w, h, mime: type, size: bytes.byteLength };
+    // No duration here, and it is a real difference from the shell rather than
+    // an oversight (T-300). Reading one in the browser means attaching the
+    // blob to a media element and waiting for `loadedmetadata` — an event that
+    // never arrives under a test DOM, so the mock would either hang or invent a
+    // timeout. `null` is the honest answer for a platform that did not measure
+    // it, and it is the same `null` a container the shell cannot read produces.
+    const meta: AssetMeta = {
+      sha256,
+      w,
+      h,
+      mime: type,
+      size: bytes.byteLength,
+      duration: null,
+    };
     this.assets.set(sha256, { meta, url: URL.createObjectURL(blob), bytes });
     // Natively this arrives once the variants are generated; here the bytes
     // are already resolved, so it fires on the next turn to keep the same

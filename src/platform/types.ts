@@ -73,6 +73,18 @@ export interface AssetMeta {
   h: number;
   mime: string;
   size: number;
+  /**
+   * Seconds, for a film or a cassette. `null` for everything that is not one,
+   * and for a container the shell could not read (T-300).
+   *
+   * `null` and `0` are not the same answer and must not be collapsed into one:
+   * a spine with nothing written on it is a tape nobody has measured, and a
+   * spine reading `0:00` is a tape with nothing on it. The number is read at
+   * ingest by the machine holding the file, because the item reaches a peer
+   * long before the bytes do — a 400 MB interview has to say how long it is
+   * while it is still transferring.
+   */
+  duration: number | null;
 }
 
 /** Everything on disk for this board's document, as opaque frames. */

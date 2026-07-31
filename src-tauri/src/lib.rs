@@ -7,7 +7,7 @@
 //!
 //! Modules land as their tasks do: `assets` (T-21), `protocol` (T-22),
 //! `docstore` (T-20), `clipboard` (T-23), `bundle` (T-84), `sync` (T-69),
-//! `print` (T-207).
+//! `print` (T-207), `document` (T-297), `media` (T-300).
 //!
 //! ## Nothing runs on the main thread
 //!
@@ -29,6 +29,7 @@ mod docstore;
 // (T-299) are what turn it into a command, and until one of them lands this is
 // crate API rather than a private helper.
 pub mod document;
+mod media;
 mod print;
 mod protocol;
 pub mod sync;
@@ -1329,3 +1330,4 @@ mod tests {
         assert_eq!(hosting_change(true, None, "def"), HostingChange::Restart);
     }
 }
+
