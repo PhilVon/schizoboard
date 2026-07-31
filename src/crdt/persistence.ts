@@ -29,10 +29,24 @@
  * work a minute later, which is the one failure this whole subsystem exists to
  * make impossible (AC-146).
  *
- * The `doc:persist-error` event in the IPC surface is not wired up yet, and
- * deliberately: every call this module makes is awaited, so a failed write
- * already arrives as a rejected promise with a caller. The event is for a
- * writer with nobody waiting on it, which is the embedded relay (T-69).
+ * ## How a failed write gets out of here
+ *
+ * Not through `doc:persist-error`. That event is declared in the IPC surface
+ * and has no producer in Rust and no listener here, and it does not need one:
+ * `doc_append_update` and `doc_compact` both await the disk before they return
+ * (`lib.rs`), so every failure this module can have arrives as a rejected
+ * promise on a call it made. The event was for a writer with nobody waiting on
+ * it, and there is no such writer — the relay never touches the docstore. It is
+ * left where it is with the other declared-and-unproduced events for the doc
+ * pass to settle (T-237).
+ *
+ * What was actually missing was the last hop (T-220). The rejection reached
+ * `report`, `report` called `onError`, and `onError` defaulted to
+ * `console.error` because the one construction of this class passed no options
+ * — so a board that had stopped being saved looked exactly like a board that
+ * was being saved. [`PersistenceOptions.onError`] and
+ * [`PersistenceOptions.onRecovered`] are the two ends of that, and `app/main.ts`
+ * puts them on the bottom-right flash.
  */
 
 import * as Y from "yjs";
@@ -49,8 +63,24 @@ export interface PersistenceOptions {
   batchBytes?: number;
   /** Write a snapshot and start the log again once it has grown past this. */
   compactBytes?: number;
-  /** Told the first time a write fails, and again after any write succeeds. */
+  /**
+   * Told once at the start of a run of failures, and not again until one has
+   * ended — a disconnected disk is one piece of news, not sixty a second.
+   *
+   * Also told when the store could not be opened at all, which is a different
+   * and worse thing: that one is permanent for the session and `readOnly` is
+   * how a caller tells them apart.
+   */
   onError?: (error: unknown) => void;
+  /**
+   * Told when a write succeeds after [`onError`] fired — and never otherwise,
+   * so a caller can pair the two without keeping its own flag.
+   *
+   * This exists because the sentence a user is shown for a failure is a
+   * standing one ("the board is not being saved"), and a standing sentence that
+   * is no longer true is worse than never having said it.
+   */
+  onRecovered?: () => void;
 }
 
 const DEFAULTS = {
@@ -72,6 +102,7 @@ export class Persistence {
   private readonly batchBytes: number;
   private readonly compactBytes: number;
   private readonly onError: (error: unknown) => void;
+  private readonly onRecovered: () => void;
 
   /** Updates seen since the last flush, in order. */
   private pending: Uint8Array[] = [];
@@ -99,6 +130,7 @@ export class Persistence {
     this.onError =
       options.onError ??
       ((error) => console.error("the board could not be written to disk:", error));
+    this.onRecovered = options.onRecovered ?? (() => console.info("the board is being written again"));
   }
 
   /** Nothing is being written, and nothing will be. */
@@ -154,7 +186,7 @@ export class Persistence {
       try {
         await this.native.docAppendUpdate(batch);
         this.stored += batch.byteLength;
-        this.failing = false;
+        this.recovered();
         if (this.stored >= this.compactAt) await this.compactNow();
       } catch (error) {
         // Kept, not dropped. A write that failed because a disk was briefly
@@ -267,7 +299,7 @@ export class Persistence {
       await this.native.docCompact(snapshot(this.board));
       this.stored = 0;
       this.compactAt = this.compactBytes;
-      this.failing = false;
+      this.recovered();
     } catch (error) {
       // Back off by a whole threshold rather than retrying on the next flush:
       // encoding the document is the expensive half, and doing it every 200 ms
@@ -292,5 +324,23 @@ export class Persistence {
     if (this.failing) return;
     this.failing = true;
     this.onError(error);
+  }
+
+  /**
+   * The other end of [`report`] — a write that worked after one that did not.
+   *
+   * Silent unless there was something to recover from, which is what lets a
+   * caller hold a standing "not being saved" line up and take it down again
+   * without tracking the state a second time. A board whose disk has never
+   * misbehaved never calls this at all.
+   *
+   * **Not called on a broken store.** `giveUp` reports and sets `broken`, and
+   * nothing writes after that, so there is no success to recover with — which
+   * is correct: a board that opened read-only stays read-only for the session.
+   */
+  private recovered(): void {
+    if (!this.failing) return;
+    this.failing = false;
+    this.onRecovered();
   }
 }

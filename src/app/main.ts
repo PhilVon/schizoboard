@@ -9,6 +9,7 @@
  *     interaction -> crdt/ops -> Y.Doc -> observer -> binding -> Scene -> render
  */
 
+import { ASSET_SWEEP_DELAY_MS, sweepAssets } from "@/app/assetgc";
 import { Binding } from "@/crdt/binding";
 import {
   assetOrigName,
@@ -138,7 +139,51 @@ async function boot(): Promise<void> {
 
   // --- document ------------------------------------------------------------
   const board = openBoardDoc();
-  const persistence = new Persistence(board, native);
+  /**
+   * Where a refused *write* goes, so that a board which has stopped saving
+   * itself says so (T-220).
+   *
+   * ## Not the read-only case, which already has a louder sign
+   *
+   * `giveUp` — the store that would not open at all — comes through the same
+   * `onError`, and it is deliberately dropped here: the hint line at the bottom
+   * of this file already opens with THIS BOARD IS NOT BEING SAVED in that
+   * state, permanently and in the reading order somebody scanning the board
+   * actually uses. A flash saying it a second time would be the same news
+   * twice, and the flash is the wrong shape for it besides — a read-only board
+   * is permanent for the session and can never recover, which is exactly what
+   * `hold`/`say` is not for. `readOnly` is true by the time `onError` runs
+   * because `giveUp` sets it first.
+   *
+   * What was left with no sign at all is the case in between: the store opened,
+   * the board is being written, and then the disk starts refusing. That one is
+   * recoverable, is invisible today, and is what these two callbacks carry.
+   *
+   * ## Why it is held rather than said straight away
+   *
+   * `open()` is awaited a few lines below — it has to be, so a board that
+   * already exists keeps its own cork seed — and `open()` can start a
+   * compaction on a long log before returning. The `Flash` that speaks for all
+   * this is built with the rest of the UI, a long way down. So the first thing
+   * to fail can fail before the board has a mouth; held here and said the
+   * moment there is one, rather than dropped for being early.
+   */
+  let heldTrouble: string | null = null;
+  let sayTrouble: ((message: string | null) => void) | null = null;
+  const trouble = (message: string | null): void => {
+    heldTrouble = message;
+    sayTrouble?.(message);
+  };
+  const persistence = new Persistence(board, native, {
+    onError: (error) => {
+      // The console keeps the reason. The flash gets the consequence, because
+      // the reason is `EBUSY` and the consequence is somebody's afternoon.
+      console.error("the board could not be written to disk:", error);
+      if (persistence.readOnly) return;
+      trouble("The board is not being saved — your changes are here, but they are not reaching the disk");
+    },
+    onRecovered: () => trouble(null),
+  });
   // Before `initialiseBoard`, so a board that already exists keeps its own cork
   // seed and creation date rather than having fresh ones merged over the top,
   // and before the binding starts, so the scene is mirrored once.
@@ -1856,6 +1901,22 @@ async function boot(): Promise<void> {
    */
   const flash = new Flash(world.layers.ui);
   /**
+   * And now the store has somewhere to complain to — see `trouble` at the top
+   * of `boot`.
+   *
+   * `hold` rather than `say` for the failure: `ui/flash.ts` reserves it for "a
+   * thing that is happening and stays true until it stops", which is exactly a
+   * disk that is refusing writes, and it ends by being replaced with the
+   * sentence that says it finished. A 2.4-second `say` for this would be a
+   * board quietly not saving itself for the rest of the afternoon.
+   */
+  sayTrouble = (message) => {
+    if (message === null) flash.say("The board is being saved again");
+    else flash.hold(message);
+  };
+  // A store that failed to open did so before this line existed.
+  if (heldTrouble !== null) sayTrouble(heldTrouble);
+  /**
    * When the notice last checked that what it is counting is still on the board.
    *
    * The check is a scene walk, so it is throttled and — more to the point — only
@@ -3086,6 +3147,25 @@ async function boot(): Promise<void> {
   provider?.on("status", (status) => {
     if (status === "synced") void reconcileAssets();
   });
+
+  /**
+   * And the other direction: the photographs on this disk that the board has
+   * stopped referring to (T-219). `reconcileAssets` above fetches what is
+   * missing; this releases what is surplus, and until now nothing did — the
+   * whole collector was built and never called.
+   *
+   * Scheduled rather than awaited, and once. `app/assetgc.ts` holds the policy
+   * and the reasons for it; all that belongs here is that it happens at all.
+   */
+  window.setTimeout(() => {
+    void sweepAssets(native, board, { readOnly: persistence.readOnly }).then((result) => {
+      if (result === null || result.freedBytes === 0) return;
+      console.info(
+        `[assets] reclaimed ${Math.round(result.freedBytes / 1024)} kB; ` +
+          `${result.kept} photographs are still on the board`,
+      );
+    });
+  }, ASSET_SWEEP_DELAY_MS);
 
   const hint = document.createElement("div");
   hint.className = "hint";

@@ -1191,7 +1191,7 @@ class PaperView implements View {
     // `.paper-grain` is `display: none` at these tiers, so this is only saving
     // the write — but a tile URL on a hidden node is still a property the
     // browser parses on every one of five hundred sheets.
-    if (!plain) this.grain.style.backgroundImage = `url(${paperGrainUrl(cold.seed)})`;
+    if (!plain) this.grain.style.backgroundImage = `url(${paperGrainUrl(stock)})`;
     this.grain.style.backgroundPosition = grainPosition(cold.seed);
     // A per-sheet hue-rotate is its own compositing pass, for a tint that is not
     // distinguishable from the cork at this size.
