@@ -61,8 +61,8 @@ export class NoteTool implements Tool {
   readonly hint: ToolHint = {
     name: "Note",
     key: "N",
-    verb: "click for a blank sheet, and it comes up already selected",
-    rows: [{ keys: "Esc", does: "give the board back without making one" }],
+    verb: "click for a blank sheet — it comes up selected",
+    rows: [{ keys: "Esc", does: "make nothing, give the board back" }],
   };
 
   private readonly options: NoteToolOptions;

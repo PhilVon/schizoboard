@@ -89,7 +89,7 @@ export class EraserTool implements Tool {
     rows: [
       {
         keys: "Ctrl at the press",
-        does: "rub the cork rather than the sheet under the pointer",
+        does: "rub the cork, not the sheet",
         holds: ["Control"],
       },
       { keys: "[ and ]", does: "size the rubber" },

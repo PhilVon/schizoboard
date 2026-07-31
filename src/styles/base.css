@@ -682,6 +682,112 @@ body {
   width: 22px;
 }
 
+/* --- the tool info bar, D-43 ----------------------------------------------- */
+
+/*
+ * Bottom left, where the hint line was, and in the drawer's idiom rather than
+ * the paper slip of `.notice` and `.flash` - it is a piece of the application,
+ * not something somebody left on the board (DESIGN section 4.8).
+ *
+ * Two properties here are repairs rather than styling, and both are named in
+ * `ui/toolinfo.ts`:
+ *
+ *   `max-width`, because the line it replaces had none and wrapped into a block
+ *   across most of the bottom of the viewport;
+ *
+ *   `pointer-events: none`, because that block also swallowed every press that
+ *   landed in it. Three source comments already assert the hint line is inert
+ *   (`notice.ts`, `flash.ts`, `boardmenu.ts`) and none of them was true.
+ */
+.toolinfo {
+  position: absolute;
+  left: 12px;
+  bottom: 12px;
+  /*
+   * Two rows to a line, measured rather than chosen: the average row is a key
+   * and a short phrase, and at 74ch — the first number this had — every one of
+   * select's twelve took a line of its own and the bar stood 321px tall, into
+   * the drawer beside it. Wide enough for two, and no wider: past that the eye
+   * has to travel the width of the board to find the end of a line it is only
+   * glancing at.
+   */
+  max-width: 96ch;
+  padding: 6px 10px 7px;
+  border-radius: 7px;
+  background: rgba(16, 12, 9, 0.86);
+  backdrop-filter: blur(6px);
+  color: #d9cfc2;
+  font-family: var(--ui-mono);
+  font-size: 11px;
+  line-height: 1.65;
+  pointer-events: none;
+}
+
+/*
+ * Text flow, not flex, and this is the whole difference between a readout and
+ * the block the hint line was. A flex item is atomic: twelve rows wrapped as
+ * twelve flex children is twelve lines, a third of the viewport tall, standing
+ * over the cork and into the drawer beside it - which is the failure being
+ * fixed, reproduced with better copy in it. Laid out as text they pack several
+ * to a line and select's twelve come down to five.
+ *
+ * `inline-block` on the row rather than plain `inline`, so a line may break
+ * between rows and never inside one: "Ctrl+drag a pin" on one line and "keep it
+ * in the item it is already in" on the next reads as two gestures.
+ */
+.toolinfo-tool,
+.toolinfo-board {
+  display: block;
+}
+
+.toolinfo-row {
+  display: inline-block;
+}
+
+/* The camera, the search and undo: true on every frame of every session, so it
+ * sits below the tool's own line and well under it in weight. */
+.toolinfo-board {
+  opacity: 0.38;
+}
+
+/* Its rows are already quiet by their parent; a second fade would take them to
+ * a quarter of the tool line and off the back of the cork. */
+.toolinfo-board .toolinfo-row {
+  opacity: 1;
+}
+
+.toolinfo-lead {
+  color: #f4ece0;
+  font-weight: 700;
+}
+
+/* A board that is read-only, or one that is not being saved. The one colour on
+ * this bar that is not a shade of the paper. */
+.toolinfo-lead.is-warning {
+  color: #ffab84;
+}
+
+.toolinfo-row:not(.is-live) {
+  opacity: 0.55;
+}
+
+/* Every key this row needs is down right now - D-44's sixth decision, and the
+ * whole reason the bar is worth more than a list. */
+.toolinfo-row.is-live {
+  color: #f8ecd2;
+}
+
+.toolinfo-row:not(:first-child)::before {
+  content: "·";
+  padding: 0 7px;
+  opacity: 0.45;
+}
+
+.toolinfo-keys {
+  margin-right: 5px;
+  font-weight: 600;
+}
+
 /* --- phase-0 scaffolding, removed once items land (T-24) ------------------- */
 
 .hint {
@@ -890,6 +996,7 @@ body {
   .hud,
   .hint,
   .toolbar,
+  .toolinfo,
   .notice,
   .flash,
   /* A search field open when you hit export prints the word you were looking
