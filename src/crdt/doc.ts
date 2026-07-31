@@ -243,13 +243,17 @@ export function referencedAssets(board: BoardDoc): string[] {
  * The name a photograph arrived under, for a save dialog to offer back (T-101).
  *
  * `undefined` rather than `""` when there is nothing to offer, because that is
- * what `assetExport(sha256, origName?)` reads as "no suggestion" — and the two
- * ways of having none arrive differently. A board that never learned the name
- * has no `origName` key at all; one written by `crdt/ops/items.ts` from a paste
- * with no filename in it (a screenshot, a drag out of another window) stores an
- * empty string, which `readAsset` hands back verbatim. Passing that `""` through
- * would put a dialog on screen with an empty filename box, which is strictly
- * worse than letting Rust name the file after the hash.
+ * what `assetExport(sha256, origName?)` reads as "no suggestion". A paste with
+ * no filename in it (a screenshot, a drag out of another window) writes `null`
+ * — `crdt/ops/items.ts` and `crdt/ops/clip.ts` both `?? null` — and a board that
+ * never learned the name has no `origName` key at all. Either way `readAsset`
+ * hands back something falsy, and passing it through would put a dialog on
+ * screen with an empty filename box, which is strictly worse than letting Rust
+ * name the file after the hash. So both collapse to `undefined` here.
+ *
+ * This said the paste stored an *empty string* until a re-survey checked it
+ * against the two ops; the coercion below meant the behaviour was right anyway,
+ * which is exactly why nothing caught it.
  *
  * Here rather than in `app/main.ts`, which is where the call is made, because
  * that module is wiring and nothing tests it — and this is the whole of AC-189.

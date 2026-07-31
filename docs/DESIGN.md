@@ -182,7 +182,7 @@ Three, and confusing them is the most likely source of bugs, so they get names.
 |---|---|---|
 | **Board** | Board units (1 = 1 px at 100% zoom) | Item positions, free pins, board ink, rope particles |
 | **Item-local** | Item units, origin at item centre, **un-rotated** | Parented pins, item ink |
-| **Screen** | Device pixels | Pointer input, rope canvas drawing, all UI |
+| **Screen** | CSS pixels | Pointer input, rope canvas drawing, all UI |
 
 The un-rotated part of item-local is what makes pins and ink survive rotation for free. Rope particles simulate in board space and are transformed to screen space at draw time, so line widths stay crisp at every zoom without scaling (§6.4).
 
@@ -451,7 +451,7 @@ All four corners are lit *differently*, and this is where §4.1 bites hardest. A
 
 **Nothing about a lifted corner is round.** A sheet bends about a *line*, so every contour of equal height across the corner is a straight line parallel to that fold, and the shape is a triangle whose other two sides are the paper's own edges. It was built out of radial gradients centred on the corner for two versions, so the shading was a disc and the fold was an arc. That survived review while a note sat alone on cork, where a brown disc on brown cork is camouflage, and failed the moment two notes overlapped and a disc landed on a white sheet — worst at the bottom pair, which is the fully-curled pair on anything hanging off one pin.
 
-Four diagonal linear gradients replace it exactly. A colour stop on a 45° gradient *is* a straight line across the corner at a fixed distance from it, at any aspect ratio, and a band that has faded out by its last stop needs no mask to be a triangle — the sheet's own box already clips it to one. That last property is the whole reason the shading can live on the paper and stay honest, and the reason the cast shadow could not live anywhere else.
+Four diagonal directions replace it exactly — eight gradients, a lit flap and a dark one each, the dark one also carrying the roll foot and the cast shadow. A colour stop on a 45° gradient *is* a straight line across the corner at a fixed distance from it, at any aspect ratio, and a band that has faded out by its last stop needs no mask to be a triangle — the sheet's own box already clips it to one. That last property is the whole reason the shading can live on the paper and stay honest, and the reason the cast shadow could not live anywhere else.
 
 The tone falls from the tip toward the fold and there is no crisp line anywhere in the figure. That direction is the curl: the corner is furthest off the paper at its tip and flush with it where it goes flat. Two separate versions were rejected for putting a hard edge in — a sharp crease at the fold, which read as a folded panel stuck onto the sheet, and a hard-bounded cast shadow, which read as a rectangle laid over it. The shape reads because its contours are straight and parallel, not because anything is crisp; every edge that is actually visible has to be the paper's own.
 
@@ -469,7 +469,7 @@ Pin head diameter stays within a range in *screen* space as you zoom out, so pin
 
 The most important surface in the application.
 
-Rendered as a three-pass stroke along the simulated polyline:
+Rendered as a three-pass stroke along the simulated polyline — plus a fourth for a fibre with fuzz, which this list predates and §3.4's yarn needs:
 
 1. **Shadow** — offset along the light direction, a desaturated warm brown at low alpha (§4.1, never black), wider than the string. The *same* shadow everywhere, including where the string lies on top of an item.
 
@@ -540,15 +540,16 @@ Verlet integration with position-based constraint projection.
 Each segment between adjacent pins is an independent chain of particles. Per frame, at a fixed timestep:
 
 1. Integrate: `next = pos + (pos − prev) × damping + gravity × dt²`
-2. Project distance constraints between neighbours, several iterations, each pass moving both particles halfway to satisfaction.
+2. Solve the distance constraints. A chain's constraints form a **tridiagonal** system, so it is solved directly — one forward pass and one backward one — rather than relaxed toward a solution. This step said "several iterations, each pass moving both particles halfway to satisfaction" until T-147; see D-23 and the note below for the bug that forced the change, and §3.4, which has referred to "solving the rope exactly" since.
 3. Re-pin the endpoints to their pins' current world positions.
-4. Resolve item collisions if the string is on the `over` layer (§5.6).
+
+There is no fourth step. This list carried "resolve item collisions if the string is on the `over` layer" for a long time, and §5.6 now opens by saying there is no rope-item collision: draping was built and scrapped (D-22). An `over` string draws above the item layer and passes over what it crosses, so the solver has three steps and no seam for a fourth.
 
 Working numbers, to be tuned: particles spaced 10–14 board units, so 12–20 per segment; 6 constraint iterations; damping around 0.98; gravity tuned by feel rather than by physical accuracy.
 
 Fixed timestep of 1/120 s with an accumulator and a cap of four substeps per frame, so behaviour doesn't change with frame rate and a stalled tab doesn't explode on resume.
 
-> **Tuned, and one of those numbers was wrong — see D-17.** Six constraint iterations leaves a rope settled **23% longer than its own rest length**, hanging 19 board units below the analytic pose, because position-based dynamics holds a load by holding a violation and the error is therefore permanent rather than transient. Iterating harder barely helps; halving the timestep quarters it. Shipped: sixteen micro-steps inside each fixed 1/120 s step, two alternating constraint passes each. The fixed step, the accumulator and the four-substep cap above are unchanged — those are what framerate independence is measured in.
+> **Tuned, and one of those numbers was wrong — see D-17.** Six constraint iterations leaves a rope settled **23% longer than its own rest length**, hanging 19 board units below the analytic pose, because position-based dynamics holds a load by holding a violation and the error is therefore permanent rather than transient. Iterating harder barely helps; halving the timestep quarters it. Shipped: sixteen micro-steps inside each fixed 1/120 s step, two passes of the direct solve each — `ROPE_ITERATIONS` is now how many Newton steps that solve takes, not how many relaxation sweeps. The fixed step, the accumulator and the four-substep cap above are unchanged — those are what framerate independence is measured in.
 >
 > Step 3 also went the other way round in the end. Re-pinning *after* the passes leaves the link next to each pin stretched by however far that pin moved, every frame; the endpoints are seated on their pins *before* projection and never integrated, which is the same statement made as infinite mass.
 
@@ -769,7 +770,7 @@ Strings deserve their specific shape: the run is an array of **nodes**, each hol
 
 Three measures, all necessary:
 
-**Drags don't write per frame.** The live pose goes over the ephemeral channel; one transaction is written on release. A throttled write every half second guards against a crash losing work, merged into the same undo entry.
+**Drags don't write per frame.** The live pose goes over the ephemeral channel; one transaction is written on release. A throttled write every 300 ms guards against a crash losing work, merged into the same undo entry. It said half a second as an illustration, and half a second is the one figure that cannot work: DATA-MODEL §11 fixes the undo manager at `captureTimeout: 400`, so every write would land 100 ms outside the window and a three-second drag would become seven undo entries rather than one.
 
 **Strokes commit as one record.** Everything up to pen-up is local and ephemeral. On release the stroke is simplified, quantised, delta-encoded and packed into a byte array — roughly 3–4 bytes per point against 50-odd for JSON floats. One stroke is one document entry, one undo step, one delete.
 
@@ -964,7 +965,7 @@ Phase 3 is the first phase where the app is recognisably the product. Phase 4 is
 
 - ~~**Does the string pulling back on items (§5.7) survive contact with reality?**~~ **Answered by being struck, not by being tried.** The phase 3 prototype this asked for never happened and nobody recorded a decision either way, which is how it survived to be found again by two of D-41's surveyors. Struck on Q-157 as fundamentally redundant — §5.7 now says one-way is final and gives the reasoning.
 - **How much ageing is too much?** Still needs a real board and a week of living with it — but no longer needs a week to be *looked* at. T-79 built the ladder: one seed at five ages, five seeds at one age, and a sheet turned four ways to check the fold against the light. A single value is unjudgeable and the ladder is what showed the first crease was drawn as a scratch.
-- ~~**Is `under` string discoverable?**~~ **Answered on T-50: declined**, with the human agreeing in writing. Tucking a string behind a photo is a lovely detail nobody may ever find, and the candidate answer here was to make it happen automatically when a photo is dropped on top of a string. It is addressed instead by the `B` key and the context menu's *Tuck behind* row — discoverable by being in the menu rather than by being automatic, which is also the answer that never surprises anybody.
+- ~~**Is `under` string discoverable?**~~ **Answered on T-50: declined**, with the human agreeing in writing. Tucking a string behind a photo is a lovely detail nobody may ever find, and the candidate answer here was to make it happen automatically when a photo is dropped on top of a string. It is addressed instead by the context menu's *Tuck behind* row — discoverable by being in the menu rather than by being automatic, which is also the answer that never surprises anybody.
 - ~~**What's the right handwriting face?**~~ **Answered (Q-101): Patrick Hand**, chosen out of four rendered on the same board rather than from samples. The jitter half was already answered (§3.6, T-81): it is expressed in `em`, so it holds up at every size by construction, and below about half zoom the text is illegible with or without it — which is the LOD tiers' problem, not the jitter's. `public/fonts/README.md` carries what changing the face would cost.
 - ~~**Should search do anything beyond flying the camera?**~~ **Answered (Q-176): it marks them all, faintly.** T-85 had already settled the half the pillar cares about — nothing is filtered and nothing is hidden. The unsettled half was "matches" *plural*, and the answer is that the camera still flies to one and flashes it, and every other match wears a faint border for as long as the search is open (T-236, §3.7). A third option — ticks at the viewport edge pointing at matches off screen — was declined as the wrong scope: this marks what is already in front of you rather than becoming a device for finding what is not.
 - ~~**Do we need an explicit "board time" for ageing,** or is wall-clock adequate?~~ **Answered (Q-105): wall-clock is adequate**, and per item rather than per board. §4.7 has the reasoning and what it costs.

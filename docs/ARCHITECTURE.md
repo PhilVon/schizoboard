@@ -33,12 +33,18 @@ src/
   crdt/
     schema.ts         types and typed accessors — imports nothing from render/ or sim/
     doc.ts            Y.Doc, root types, schema version
-    ops/              items · pins · strings · ink · z · cascade · clip
+    ops/              items · pins · strings · ink · z · cascade · clip · load · janitor
                       ALL mutations live here; each wraps doc.transact(fn, origin)
+    origins.ts        who a change came from — undo and the janitor both key on it
+    invariants.ts     DATA-MODEL 13's nine, as checkers
+    janitor.ts        compaction of dangling refs; never repairs on read
+    zindex.ts         fractional index, jittered
     binding.ts        the ONLY module that reads Yjs events → Scene + dirty sets
     undo.ts
     persistence.ts    batched adapter over the native update log
-    sync/             SyncProvider interface · ws · lan · relay · assets
+    sync/             provider · transport (the socket) · protocol (the wire
+                      format) · exchange (asset fetch policy) · assets.
+                      LAN discovery and the relay are Rust — src-tauri/src/sync/
 
   state/
     scene.ts          plain mirrored scene graph; hot fields in typed arrays
@@ -46,8 +52,11 @@ src/
     camera.ts
     selection.ts
     erase.ts          what Delete removes, shared with Ctrl+X
-    tools/            machine.ts + select · pin · string · marker · highlighter · eraser
-                      quickpull.ts is the one gesture no tool owns — every tool holds one
+    tools/            machine.ts + select · pin · string · marker · eraser · note · frame
+                      the highlighter is not a module: it is a MarkerTool built with
+                      tool: "highlighter" (app/main.ts)
+                      quickpull.ts and scissors.ts are the two gestures no tool owns —
+                      every tool holds one of each
 
   sim/
     verlet.ts         constraint solver, fixed-timestep accumulator
@@ -74,10 +83,11 @@ src/
     mock.ts           the same interface for browser dev, so the frontend runs with no shell
     index.ts · env.ts which of the two is in use, and how that is decided
 
-  lib/                fifteen dependency-free helpers — angle, carry, cellgrid, ids,
+  lib/                sixteen dependency-free helpers — angle, carry, cellgrid, ids,
                       ink, inkhit, material, palette, polaroid, pressure, rotate,
-                      seed, slack, strokepack, textdiff. Imports NOTHING; there is
-                      an eslint rule saying so, and it is what stops rule 2 being
+                      seed, slack, strokepack, style, textdiff. Imports nothing
+                      OUTSIDE lib/ — a few reach sideways to each other — and there
+                      is an eslint rule saying so, which is what stops rule 2 being
                       laundered through here.
 
   styles/             base.css — chrome tokens and the print rules. Not the board.
@@ -107,7 +117,7 @@ src-tauri/
 
 This exists so that `sim/` and `render/` can run at 60 fps against tight typed-array loops without ever touching Yjs, and so that either can be tested with no document at all.
 
-`crdt/binding.ts` is the sole translator. It is the only file in the codebase that subscribes to Yjs events.
+`crdt/binding.ts` is the sole translator: it is the only thing that subscribes to the document's **content** — `items`, `pins`, `strings` — and the only thing that writes the Scene. It is not the only `observe` in the repo, and the claim used to say so: `persistence.ts` and `sync/provider.ts` take the doc's raw `update` event because batching and syncing are about frames rather than about meaning, and `app/main.ts` observes `meta` alone to notice a schema version from a newer build. None of those reads content or touches the Scene.
 
 ### 2.2 Why `platform/tauri.ts` is one module
 
@@ -174,7 +184,7 @@ All thirty, as `generate_handler!` registers them.
 
 ```
 // commands (all async)
-app_info()                 → { version, platform }
+app_info()                 → { name, version, os, arch }
 
 asset_ingest_bytes(bytes)  → { sha256, w, h, mime, size }
 asset_ingest_path(path)    → same
@@ -204,8 +214,10 @@ clipboard_source_url()     → url | null   // the CF_HTML SourceURL line, Win32
 
 sync_start(config) / sync_stop() / sync_status()
 sync_take_invite()         → invite | null    // what a deep link arrived carrying
-board_remembered()         → { boardId, secret } | null
-board_remember(boardId, secret)               // beside the document, per Q-75
+board_remembered()         → boardId | null
+board_remember(boardId)                       // beside the document, per Q-75
+                                              // the secret never crosses: sync/secret.rs
+                                              // keeps one per board name, so it follows
 
 peer_have_summary()        → sha256[]     // everything this machine can serve
 asset_size(sha256)         → bytes        // 0 for one it does not hold
@@ -316,8 +328,8 @@ Rust does chunking, verification and the store commit. The frontend only orchest
 | `crdt/ops` | Unit tests against a headless `Y.Doc`. No renderer, no DOM. |
 | Merge semantics | **The fuzz harness.** Two documents, randomised concurrent operation sequences, all invariants in §13 of `DATA-MODEL.md` asserted after every merge. This is the highest-value test in the project. |
 | `sim/` | Golden tests: given pins and slack, the settled pose is within tolerance of the analytic catenary. Sleep must actually happen within a bounded frame count. |
-| `render/` | Screenshot comparison on a fixed board at fixed zooms. |
-| Perf | A benchmark board — 1000 items, 300 strings, heavy ink — with frame-time assertions in CI. |
+| `render/` | Unit tests over what the painters *call*, against a recording context — stroke counts, widths, offsets, dashes, and the calls that are forbidden. Screenshot comparison was the plan and was struck on Q-148 with the CI row below. |
+| Perf | Measured by driving the running app and reading `loop.timings`, one scenario at a time, with the numbers written into the doc or the source beside the constant they justify. A benchmark board with frame-time assertions in CI was the plan; there is no CI in this repo — struck on Q-148 for want of a git remote, and the standing performance-budget plan struck with D-41 item 10. |
 | Native | Rust unit tests for hashing, variants, chunking and bundle round-trips. |
 
 The fuzz harness earns priority because concurrent editing bugs are invisible in single-user testing and extremely painful in production.

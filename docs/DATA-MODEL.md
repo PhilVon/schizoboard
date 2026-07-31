@@ -66,11 +66,11 @@ items: {
 | `seed` | plain number | Drives all deterministic per-item variation: scatter rotation, paper grain offset, edge raggedness, ageing, handwriting jitter. Assigned once at creation, never changed. |
 | `assetId` | plain string \| null | SHA-256 hex. |
 | `text` | **`Y.Text`** | Note body or polaroid caption. Character-level concurrent editing. |
-| `style` | **`Y.Map`** | `paperStock`, `tint`, `tapeStyle`, `fontFamily`, `fontSize`, `torn`, `agingEnabled`. A `Y.Map` so two people adjusting different properties don't clobber each other. |
+| `style` | **`Y.Map`** | `paperStock`, `tint`, `tapeStyle`, `fontFamily`, `torn` — the five `lib/style.ts` defines and `setItemStyle` can write. A `Y.Map` so two people adjusting different properties don't clobber each other. This row also listed `fontSize` and `agingEnabled` until a re-survey found neither had ever existed: no reader, no writer, and nothing in DESIGN asking for a per-item text size or a per-item ageing switch. They are struck rather than left as a promise. |
 | `strokes` | **`Y.Map`** | Nested deliberately — see below. |
 | `createdBy`, `createdAt` | plain | Provenance and tie-breaking. |
 
-**`crop` was struck (T-240, Q-190).** It was here from the beginning as `{sx, sy, sw, sh}` and nothing ever wrote one: `createItems` set it to `null`, the clipboard round-tripped it faithfully, `readItem` validated it — and `state/scene.ts`'s `ItemCold`, the only item record a painter reads, never carried the field at all. So it was inert from the document to the screen rather than merely unproduced, and §3.4 of DESIGN has never asked for a cropping gesture. It is struck rather than reserved because nothing is lost by striking it: a `crop` key left on an item by an older build is simply ignored on read, which is not true of an unknown `type` (see the row above — that is why `card` had to stay). The photograph a polaroid frame trims to fit is a different thing entirely and is not stored: it is `object-fit: cover` at draw time (`lib/polaroid.ts`).
+**`crop` was struck (T-240, Q-190).** It was here from the beginning as `{sx, sy, sw, sh}` and nothing ever wrote one: `createItems` set it to `null`, the clipboard round-tripped it faithfully, `readItem` validated it — and `state/scene.ts`'s `ItemCold`, the only item record a painter reads, never carried the field at all. So it was inert from the document to the screen rather than merely unproduced, and §3.4 of DESIGN has never asked for a cropping gesture. It is struck rather than reserved because nothing is lost by striking it: a `crop` key left on an item by an older build is simply ignored on read, which is not true of an unknown `type` (see the row above — that is why `card` had to stay). The photograph a polaroid frame trims to fit is a different thing entirely and is not stored: it is `object-fit: cover` at draw time (`render/items/items.css`).
 
 **Why `strokes` is nested inside the item.** Ink dies with the item it was drawn on, and undoing a delete must restore the ink atomically. Nesting gives both for free: deleting the item's map deletes the strokes with it, and one undo entry restores everything. Pins can't work this way (they're referenced by strings and can outlive the item), which is why they're top-level and need explicit cascade code (§8).
 
@@ -175,7 +175,7 @@ Identical shape whether nested under an item or under a board-ink tile.
 
 ```js
 stroke: Y.Map {
-  id, tool, color, size, opacity, seed,
+  tool, color, size, opacity, seed,
   bbox: [x0, y0, x1, y1],
   z,
   pts: Uint8Array          // packed
@@ -264,8 +264,8 @@ One state object per client, flushed at most every other frame. Never persisted;
   user:      { id, name, color },
   cursor:    { x, y, tool },
   selection: { items: [...], strings: [...], pins: [...] },
-  grab:      null | { kind, ids, pose, seq, t, phase },
-  wet:       null | { id, target, tool, color, size, base, pts: [...] },
+  grab:      null | { kind, ids, poses: [...], seq, t, phase },
+  wet:       [ { id, item, tool, color, size, opacity, base, pts: [...] }, ... ],
   locks:     { segments: [...] }
 }
 ```

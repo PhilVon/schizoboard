@@ -480,9 +480,10 @@ export interface Platform {
   // JavaScript ever looking at it — which is also what keeps a 12 MB original
   // out of the renderer's heap.
   //
-  // ARCHITECTURE section 4.4 also lists `peer_want(sha256, priority)`. It is
-  // gone, and D-28 says why: it puts the queue in Rust, and Rust has no socket
-  // to the relay — the connection belongs to the webview.
+  // `peer_want(sha256, priority)` is gone, and D-28 says why: it puts the queue
+  // in Rust, and Rust has no socket to the relay — the connection belongs to the
+  // webview. ARCHITECTURE section 4.4 listed it for a while; it does not now,
+  // and §5.2 records the removal.
 
   /**
    * Every hash this machine holds bytes for, for the `HAVE` announcement.
