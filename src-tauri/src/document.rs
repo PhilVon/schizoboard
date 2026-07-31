@@ -264,50 +264,129 @@ impl std::fmt::Display for Error {
 
 impl std::error::Error for Error {}
 
-/// Read a PDF off the disk.
+/// A document held open, so that one page can be read without reading the rest.
 ///
-/// The path is the store's, not the user's — by the time anything gets here the
-/// bytes have already been ingested and hashed, so this never sees a name a
-/// person typed.
+/// **This is the shape T-299 measured its way to and it is not a convenience.**
+/// A real hundred-page scan on the machine this was written on takes 5,860 ms
+/// to read every page and 57 ms to read page one; a two-hundred-page filing is
+/// therefore about twelve seconds of work to open, and about sixty milliseconds
+/// to read the first page of. Reading a document is not one slow operation, it
+/// is a hundred operations of which the reader wants one.
+///
+/// The split falls where the cost does. Loading the file's structure — the
+/// cross-reference table and the page tree — is roughly independent of page
+/// count and cheap: 3 to 25 ms typically, 53 ms for that 51 MB scan, 221 ms for
+/// the largest file on the machine. Per-page cost is what varies, from 0.2 ms
+/// for plain text to 92 ms for a page carrying a figure, because lifting an
+/// image means decoding and re-encoding it. So the expensive half is exactly
+/// the half nobody has asked for yet, and holding the cheap half open is what
+/// makes page-turning affordable.
+pub struct Reader {
+    doc: Document,
+    /// Page numbers and their objects, in reading order. lopdf hands these back
+    /// as a map; the order is the document's own pagination and is the identity
+    /// a quote cites.
+    ids: Vec<(u32, ObjectId)>,
+    /// How many pages this reader has actually produced.
+    ///
+    /// Here because "a page is read without reading the rest" is a claim about
+    /// *work done*, and work done is not otherwise observable: a reader that
+    /// read all two hundred pages and handed back one would look identical from
+    /// the outside — same answer, same allocation, just twelve seconds slower.
+    /// Counting is the only way to assert it that is not a stopwatch.
+    read: std::sync::atomic::AtomicUsize,
+}
+
+impl Reader {
+    /// Open a PDF off the disk.
+    ///
+    /// The path is the store's, not the user's — by the time anything gets here
+    /// the bytes have already been ingested and hashed, so this never sees a
+    /// name a person typed.
+    pub fn open(path: &Path) -> Result<Reader> {
+        let options = LoadOptions::with_max_decompressed_size(MAX_STRUCTURE_BYTES);
+        let doc = Document::load_with_options(path, options)
+            .map_err(|e| Error::Malformed(e.to_string()))?;
+        Reader::of(doc)
+    }
+
+    /// Open a PDF already in memory. The tests build their fixtures this way,
+    /// and so does anything that has the bytes but no file.
+    pub fn open_bytes(bytes: &[u8]) -> Result<Reader> {
+        let options = LoadOptions::with_max_decompressed_size(MAX_STRUCTURE_BYTES);
+        let doc = Document::load_mem_with_options(bytes, options)
+            .map_err(|e| Error::Malformed(e.to_string()))?;
+        Reader::of(doc)
+    }
+
+    fn of(doc: Document) -> Result<Reader> {
+        // `is_encrypted` is not "was this file encrypted" — lopdf strips
+        // `/Encrypt` from the trailer the moment it successfully decrypts,
+        // which it does for the empty user password. So this is true only when
+        // the bytes are still ciphertext, which is the one case where reading
+        // on would hand back a document made of noise.
+        if doc.is_encrypted() {
+            return Err(Error::Encrypted);
+        }
+        let ids: Vec<(u32, ObjectId)> = doc.get_pages().into_iter().collect();
+        if ids.len() > MAX_PAGES {
+            return Err(Error::TooLarge(format!(
+                "{} pages is more than this build will read",
+                ids.len()
+            )));
+        }
+        Ok(Reader {
+            doc,
+            ids,
+            read: std::sync::atomic::AtomicUsize::new(0),
+        })
+    }
+
+    /// How many pages there are — known from the page tree, without reading one.
+    pub fn page_count(&self) -> usize {
+        self.ids.len()
+    }
+
+    /// How many pages this reader has produced since it was opened. See the
+    /// field for why it is counted at all.
+    pub fn pages_read(&self) -> usize {
+        self.read.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// Read one page, by the number printed on it.
+    ///
+    /// `None` means there is no such page, which is a different thing from a
+    /// page that turned out to be [`PageContent::Empty`].
+    pub fn page(&self, index: u32) -> Option<Page> {
+        let (index, page_id) = self.ids.iter().copied().find(|(n, _)| *n == index)?;
+        Some(self.produce(index, page_id))
+    }
+
+    /// Every page. The whole cost, taken deliberately — an export or a bundle
+    /// wants this; somebody turning to page four does not.
+    pub fn read_all(&self) -> Reading {
+        let pages = self
+            .ids
+            .iter()
+            .map(|&(index, page_id)| self.produce(index, page_id))
+            .collect();
+        Reading { pages }
+    }
+
+    fn produce(&self, index: u32, page_id: ObjectId) -> Page {
+        self.read.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        read_page(&self.doc, index, page_id)
+    }
+}
+
+/// Read every page of a PDF off the disk.
 pub fn read_pdf(path: &Path) -> Result<Reading> {
-    let options = LoadOptions::with_max_decompressed_size(MAX_STRUCTURE_BYTES);
-    let doc = Document::load_with_options(path, options)
-        .map_err(|e| Error::Malformed(e.to_string()))?;
-    read_document(&doc)
+    Ok(Reader::open(path)?.read_all())
 }
 
-/// Read a PDF already in memory. The tests build their fixtures this way, and
-/// so does anything that has the bytes but no file.
+/// Read every page of a PDF already in memory.
 pub fn read_pdf_bytes(bytes: &[u8]) -> Result<Reading> {
-    let options = LoadOptions::with_max_decompressed_size(MAX_STRUCTURE_BYTES);
-    let doc = Document::load_mem_with_options(bytes, options)
-        .map_err(|e| Error::Malformed(e.to_string()))?;
-    read_document(&doc)
-}
-
-fn read_document(doc: &Document) -> Result<Reading> {
-    // `is_encrypted` is not "was this file encrypted" — lopdf strips `/Encrypt`
-    // from the trailer the moment it successfully decrypts, which it does for
-    // the empty user password. So this is true only when the bytes are still
-    // ciphertext, which is the one case where reading on would hand back a
-    // document made of noise.
-    if doc.is_encrypted() {
-        return Err(Error::Encrypted);
-    }
-
-    let ids = doc.get_pages();
-    if ids.len() > MAX_PAGES {
-        return Err(Error::TooLarge(format!(
-            "{} pages is more than this build will read",
-            ids.len()
-        )));
-    }
-
-    let mut pages = Vec::with_capacity(ids.len());
-    for (index, page_id) in ids {
-        pages.push(read_page(doc, index, page_id));
-    }
-    Ok(Reading { pages })
+    Ok(Reader::open_bytes(bytes)?.read_all())
 }
 
 // ---------------------------------------------------------------------------
