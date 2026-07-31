@@ -66,6 +66,7 @@ import type {
   StringAnchor,
   Tool,
   ToolContext,
+  ToolHint,
   ToolInput,
 } from "@/state/tools/tool";
 
@@ -90,6 +91,28 @@ interface Stop {
 
 export class StringTool implements Tool {
   readonly id = "string";
+
+  /**
+   * See [`ToolHint`]. The only tool with a run in progress, so both rows are
+   * about ending one — and the loop row is the gesture nothing else suggests.
+   *
+   * `Esc` here **ends** the run rather than reverting it: a run of two or more
+   * stops is committed on the way out (`finish`). That is worth being exact
+   * about, because `Esc` throws work away in the pens and does not here.
+   */
+  readonly hint: ToolHint = {
+    name: "String",
+    key: "S",
+    verb: "click each stop in turn — a stop on an item pushes a pin into it",
+    rows: [
+      {
+        keys: "Shift+click the first pin",
+        does: "close the run into a loop",
+        holds: ["Shift"],
+      },
+      { keys: "Enter, Esc or double-click", does: "end the run and keep it" },
+    ],
+  };
 
   private readonly options: StringToolOptions;
   private readonly stops: Stop[] = [];

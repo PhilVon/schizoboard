@@ -76,6 +76,7 @@ import type {
   StringHit,
   Tool,
   ToolContext,
+  ToolHint,
   ToolInput,
   WritePose,
   WriteSize,
@@ -286,6 +287,41 @@ function farNode(ctx: ToolContext, run: StringNodes, from: number): StringNode |
 
 export class SelectTool implements Tool {
   readonly id = "select";
+
+  /**
+   * What this tool does, for the info bar — see [`ToolHint`].
+   *
+   * The longest of the eight, because select is where everything that is not a
+   * pen lives. Every row below names a gesture implemented in *this* file, and
+   * two of them say something more careful than the old hint line did:
+   *
+   *   - `Shift`+click **toggles**. Pressing it on something already selected
+   *     takes it out, and ends the gesture there — a sentence reading "adds to
+   *     the selection" would be wrong half the time somebody used it.
+   *   - the wheel, `Alt`+wheel and `1`-`9` all need the string **selected**
+   *     first. Rolling the wheel over an unselected one is the camera's, and
+   *     the readout has to say which, or the gesture reads as broken.
+   *
+   * `Alt`+drag, `Alt`+click and `Ctrl`+`Alt`+click are absent on purpose: those
+   * three belong to `quickpull.ts` and `scissors.ts` and work in *every* tool,
+   * so they are declared once as ambient rows rather than eight times here.
+   */
+  readonly hint: ToolHint = {
+    name: "Select",
+    key: "V",
+    verb: "drag to move · drag a note's edge to resize · drag the cork to marquee",
+    rows: [
+      { keys: "Shift+click", does: "add something to the selection, or take it out", holds: ["Shift"] },
+      { keys: "Shift+drag", does: "marquee on to what is already selected", holds: ["Shift"] },
+      { keys: "R+drag", does: "rotate without reaching for the handle" },
+      { keys: "Ctrl+drag a pin", does: "keep it in the item it is already in", holds: ["Control"] },
+      { keys: "double-click a pin", does: "select everything its strings reach" },
+      { keys: "wheel", does: "sag one gap of a selected string" },
+      { keys: "Alt+wheel", does: "sag every gap of it at once", holds: ["Alt"] },
+      { keys: "1-9", does: "slack presets, taut to slack, on a selected string" },
+      { keys: "Shift+Delete", does: "remove the evidence and leave its pins in the cork", holds: ["Shift"] },
+    ],
+  };
 
   private phase: GesturePhase = "idle";
 

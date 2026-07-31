@@ -18,6 +18,9 @@ import type { PointerSample, Tool, ToolContext, ToolInput } from "@/state/tools/
 
 class RecordingTool implements Tool {
   readonly id = "recording";
+  /** Required on the interface, so the double carries one. Nothing here reads
+   *  it — the info bar is `ui/`'s and this is the machine's. */
+  readonly hint = { name: "Recording", key: "", verb: "record what it is handed", rows: [] };
   readonly seen: ToolInput[] = [];
   readonly heldAtHandle: string[][] = [];
   ticks = 0;

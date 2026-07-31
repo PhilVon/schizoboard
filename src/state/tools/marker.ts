@@ -110,7 +110,13 @@ import { QuickPull } from "@/state/tools/quickpull";
 import { Scissors } from "@/state/tools/scissors";
 import type { Point } from "@/lib/rotate";
 import { itemLocal } from "@/state/tools/frame";
-import type { PointerSample, Tool, ToolContext, ToolInput } from "@/state/tools/tool";
+import type {
+  PointerSample,
+  Tool,
+  ToolContext,
+  ToolHint,
+  ToolInput,
+} from "@/state/tools/tool";
 
 export interface MarkerToolOptions {
   /** `"marker"` or `"highlighter"` — the two differ in geometry and compositing,
@@ -137,8 +143,55 @@ export interface MarkerToolOptions {
  *  time, so a frame with no ink on it allocates nothing at all. */
 const EMPTY_RUNS: readonly WetStroke[] = Object.freeze([]);
 
+/**
+ * What each of the three pens says about itself — see [`ToolHint`].
+ *
+ * A lookup rather than the constructor's `highlighter ? … : …` ternary, and
+ * that is not an inconsistency: the ternary is a two-way branch because width,
+ * colour and opacity genuinely have two answers between them and the smudge
+ * takes the marker's, while the *sentences* have three. `lib/ink.ts`'s
+ * `inkColors` is the same shape and the same reason — it is the one other place
+ * where `"erase"` has an answer of its own rather than a default.
+ *
+ * The rows are shared because the gesture is: all three fix their surface at
+ * pen-down, all three walk `INK_SIZES` on the brackets, and all three throw the
+ * live run away on `Escape`. Only the nouns differ.
+ */
+const HINTS: Readonly<Record<InkTool, ToolHint>> = Object.freeze({
+  marker: hintFor("Marker", "M", "draw", "the nib"),
+  highlighter: hintFor("Highlighter", "H", "draw a wide, translucent line", "the nib"),
+  // `Shift+E`, and the only tool on the board whose key is not a bare letter.
+  erase: hintFor("Smudge", "Shift+E", "rub part of a mark away", "the smudge"),
+});
+
+function hintFor(name: string, key: string, verb: string, nib: string): ToolHint {
+  return {
+    name,
+    key,
+    verb,
+    rows: [
+      {
+        // Latched at pen-down: letting go of `Ctrl` halfway through the stroke
+        // changes nothing. It declares `holds` all the same, so the row lights
+        // while the key is down — which is the moment the reader can still act
+        // on it, and the whole of what a live row is for.
+        keys: "Ctrl at pen-down",
+        does: "mark the cork rather than the sheet under the pointer",
+        holds: ["Control"],
+      },
+      { keys: "[ and ]", does: `size ${nib}` },
+      // Not "finish" — `Escape` here *discards* the run in progress. A stroke is
+      // committed on pointer-up and by nothing else, and a readout that said
+      // otherwise would cost somebody a line they thought they had kept.
+      { keys: "Esc", does: "throw away the stroke in progress and give the board back" },
+    ],
+  };
+}
+
 export class MarkerTool implements Tool {
   readonly id: string;
+  /** This pen's own sentences — see [`HINTS`]. */
+  readonly hint: ToolHint;
 
   private readonly options: MarkerToolOptions;
   private readonly tool: InkTool;
@@ -212,6 +265,7 @@ export class MarkerTool implements Tool {
     this.options = options;
     this.tool = options.tool ?? "marker";
     this.id = this.tool;
+    this.hint = HINTS[this.tool];
     const highlighter = this.tool === "highlighter";
     this.ink = options.color ?? (highlighter ? DEFAULT_HIGHLIGHTER_COLOR : DEFAULT_MARKER_COLOR);
     this.nib = options.size ?? (highlighter ? DEFAULT_HIGHLIGHTER_SIZE : DEFAULT_INK_SIZE);
