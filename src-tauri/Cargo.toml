@@ -49,6 +49,19 @@ tauri-plugin-deep-link = "2"
 # at all.
 tauri-plugin-single-instance = { version = "2", features = ["deep-link"] }
 
+# T-233, and the last of ARCHITECTURE section 4.6's planned list with a
+# user-visible consequence: without it the window opens centred at 1440x900
+# every time, whatever you did to it yesterday. Nothing else in the repo does
+# that job — `app/prefs.ts` keeps its preferences in `localStorage`, which the
+# webview owns and which knows nothing about the frame around it.
+#
+# Registered conditionally in `lib.rs`, for the same reason `single-instance`
+# is. Also like the two above, it appears in no capability: the plugin ships
+# three commands and the webview may call none of them, because a window's
+# geometry is the operating system's business and the board's business is
+# paper.
+tauri-plugin-window-state = "2"
+
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 

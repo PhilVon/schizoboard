@@ -258,11 +258,13 @@ Measured in WebView2 before it was designed on: the `copy` event fires with no D
 
 Planned: `fs` (scoped), `dialog`, `clipboard-manager`, `opener`, `store`, `window-state`, `single-instance`, `deep-link` (for `schizo://` invites), `updater`, `log`, `os`, `process`.
 
-**Five are compiled in**: `opener`, `dialog` (which pulls `fs` in with it, for the scope type its own file argument needs), `deep-link`, and `single-instance` with the `deep-link` feature. The rest are not, and the list above should be read as what was planned rather than as what is there.
+**Six are compiled in**: `opener`, `dialog` (which pulls `fs` in with it, for the scope type its own file argument needs), `deep-link`, `single-instance` with the `deep-link` feature, and `window-state`. The rest are not, and the list above should be read as what was planned rather than as what is there.
 
 Two of the missing have deliberate substitutes with the reason written down beside them. `store` is `localStorage`, because a preference that failed to load must not hold up the board and because the frontend has to run in a plain browser, which is where most of this application is developed (`app/prefs.ts`). `clipboard-manager` is a direct Win32 read of `CF_HTML`, because nothing safe wraps that format and the `SourceURL:` line is the whole reason the clipboard is being read at all (`clipboard.rs`, T-97).
 
-The one with a user-visible consequence is `window-state`: the window does not come back where you left it, and nothing else in the repo does that job. It is filed as T-233 rather than left as an unbuilt line here.
+`window-state` (T-233) restores three things and not the six it offers by default — size, position, and whether the window was maximised. `VISIBLE` is left off because it saves `is_visible()` at teardown and then declines to show the window at all on the next launch if it read false, which is a state the application has no affordance to leave; `DECORATIONS` and `FULLSCREEN` are fields nothing here ever changes.
+
+**It is skipped for an instance with `SCHIZOBOARD_DATA_DIR` set**, which is the second thing in `run` to key on that variable and for the same reason as the first. The plugin's `.window-state.json` lives in `app_config_dir()`, which on Windows is the same `%APPDATA%\com.philw.schizoboard` as `app_data_dir()` — so the file sits beside `doc/` and `assets/` and is *not* moved by the override, which is the trap. It is shared by every instance on the machine, exactly as `APPDATA` turned out to be (`DATA_DIR_ENV` in `lib.rs` records how that was found out). A scratch peer that registered it would write the installed application's window geometry on its way out.
 
 A plugin being initialised is not the same as the webview being able to call it. `dialog` is registered for Rust's own use and appears in no capability, so `asset_export` is the only thing in the application that can open a file dialog — a script in the webview cannot open one of its own. Prefer that shape for anything that touches the disk.
 
