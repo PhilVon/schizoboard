@@ -96,6 +96,12 @@ let paste: Paste;
 let cursor: { x: number; y: number } | null;
 let created: string[];
 let transactions: number;
+/**
+ * What the board's own clipboard says about a paste — null when it holds
+ * nothing, which is the case every other test in this file is in
+ * (`app/clipboard.ts`).
+ */
+let claim: ((data: DataTransfer | null, at: { x: number; y: number }) => boolean) | null;
 
 /** A `DataTransfer` is only valid during its event, so the real one is a
  *  one-shot too — this stands in for exactly the surface paste reads. */
@@ -168,10 +174,12 @@ beforeEach(async () => {
   camera.resize(1000, 800);
   cursor = null;
   created = [];
+  claim = null;
   paste = new Paste({
     native: native as unknown as Platform,
     board,
     camera,
+    claim: (data, at) => claim?.(data, at) === true,
     cursor: () => cursor,
     onCreated: (ids) => created.push(...ids),
   });
@@ -184,6 +192,26 @@ beforeEach(async () => {
 afterEach(() => paste.destroy());
 
 describe("what wins", () => {
+  it("stands aside for the board's own clipboard, before reading anything", async () => {
+    // The token said the last copy on this machine was a piece of this board,
+    // so the text beside it is a description of that paper and not a note
+    // somebody wants (T-227). Nothing may be ingested, and the point it was
+    // asked about is the point the paste would have used.
+    const asked: { x: number; y: number }[] = [];
+    cursor = { x: 300, y: 200 };
+    claim = (_data, at) => {
+      asked.push(at);
+      return true;
+    };
+
+    await firePaste({ text: "the words that were on the paper" });
+
+    expect(itemsOnBoard()).toEqual([]);
+    expect(native.calls).toEqual([]);
+    expect(asked).toEqual([camera.screenToBoard(300, 200)]);
+  });
+
+
   it("makes a polaroid of image bytes on the clipboard", async () => {
     await firePaste({ files: [imageFile(2048)] });
     const items = itemsOnBoard();

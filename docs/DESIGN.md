@@ -207,6 +207,9 @@ Every interaction below states its input, its result, and its undo. Where undo s
 | HTML with an `<img>` | The image is fetched and made a polaroid; this is what "copy image from a web page" actually puts on the clipboard, and handling it is not optional |
 | File paths (Explorer/Finder copy) | Each image file becomes a polaroid; handled natively, since the web clipboard event can't see these |
 | Multiple images | A loose fan at the paste point, slightly overlapping, each at its own angle — not a grid |
+| A piece of this board | The paper itself — seeds, style, pins, ink and the strings between them (§3.9's `Ctrl+C`) |
+
+The last row is a different kind of clipboard and is the reason `Ctrl+C` needs saying at all: copying two notes and pasting them gives you two more notes rather than the sentences they had on them, and the strings between what you copied come with it. It arrives held, so putting it down and moving it is one gesture in two halves. `Ctrl+D` is the same thing with no clipboard in between — a copy down and to the right of the original, which is where a second sheet on a pile would sit. Which of the two clipboards a `Ctrl+V` means is decided by whichever was copied to last, and ARCHITECTURE §4.5 is how.
 
 Paste point is the cursor if it's over the board, otherwise the viewport centre. Dragging files in from the OS behaves identically. Undo: standard, one entry for the whole paste even when it creates twenty items.
 

@@ -59,6 +59,7 @@ import {
   phraseFor,
   type ExportPhase,
 } from "@/app/export";
+import { BoardClipboard } from "@/app/clipboard";
 import { exportImage } from "@/app/exportImage";
 import { exportPdf, type Stage as PdfStage } from "@/app/exportPdf";
 import { noteSizeFor } from "@/app/ingest";
@@ -1879,10 +1880,22 @@ async function boot(): Promise<void> {
     );
   });
 
+  /**
+   * The board's own clipboard, which cannot be built yet: it says what it did
+   * through the flash, and the flash needs the UI layer that is put together
+   * a hundred lines below. `Paste` needs to be able to *ask* it before then,
+   * so the question goes through the binding rather than through the object.
+   *
+   * Null is the honest answer during boot — a paste arriving between these two
+   * lines has no clip to be, because nothing has been copied yet.
+   */
+  let boardClipboard: BoardClipboard | null = null;
+
   const paste = new Paste({
     native,
     board,
     camera,
+    claim: (data, at) => boardClipboard?.claim(data, at) === true,
     cursor: () => tools.cursor,
     // Putting something down and then wanting to move it is one gesture in two
     // halves, so the second half starts with it already held.
@@ -1926,6 +1939,55 @@ async function boot(): Promise<void> {
   };
   // A store that failed to open did so before this line existed.
   if (heldTrouble !== null) sayTrouble(heldTrouble);
+
+  /**
+   * And now `Ctrl+C`, `Ctrl+X` and `Ctrl+D` have somewhere to say what they did
+   * — see the `let` above `paste` for why this is here rather than there.
+   *
+   * `write` and not the document: cut deletes through the same queued writer
+   * every other verb uses, because it is the same delete `Delete` performs
+   * (`state/erase.ts`).
+   */
+  boardClipboard = new BoardClipboard({
+    board,
+    camera,
+    selection,
+    scene,
+    write: writer,
+    cursor: () => tools.cursor,
+    // A paste puts down items, free pins and the strings between them, and the
+    // gesture that usually follows is moving the lot — so it arrives held, the
+    // same way `Paste` hands over what it created.
+    onPasted: (pasted) => {
+      selection.replaceThread(pasted.items, pasted.strings, pasted.freePins);
+      // Fresh paper lands above everything, so any pin it came down on top of
+      // has a new topmost item — the same re-home every create queues.
+      rehome();
+    },
+    say: (message) => flash.say(message),
+  });
+  boardClipboard.attach();
+
+  /**
+   * > `Ctrl+D` duplicate — DESIGN section 3.9
+   *
+   * Ambient, like undo and unlike `Ctrl+A`: it acts on the selection rather than
+   * on a gesture, and the selection survives a tool change. Nothing about
+   * putting a second copy of a note on the board is the pen's business or the
+   * pin's, so a person who drew on something and wants two of it should not
+   * have to press `V` first.
+   *
+   * `preventDefault` because in a plain browser this is *bookmark this page*.
+   */
+  window.addEventListener("keydown", (e) => {
+    if (!(e.ctrlKey || e.metaKey) || e.altKey || e.shiftKey) return;
+    if (e.code !== "KeyD" || isTextTarget(e.target)) return;
+    e.preventDefault();
+    // Queued so that it lands *in order* with whatever else this frame is about
+    // to write. A duplicate that ran ahead of the pose a release queued moments
+    // earlier would copy the note from where it used to be.
+    queued.push(() => boardClipboard?.duplicate());
+  });
   /**
    * When the notice last checked that what it is counting is still on the board.
    *
