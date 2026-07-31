@@ -339,6 +339,19 @@ export class ToolMachine {
     return this.heldKeys.has(`${name}Left`) || this.heldKeys.has(`${name}Right`);
   }
 
+  /**
+   * Every key code down right now — the same set [`modifier`] answers from, and
+   * the same one a tool reads as `ctx.held`.
+   *
+   * The set itself rather than a copy, because the info bar asks once a frame
+   * and a fresh `Set` per frame for a question that is usually "nothing is
+   * down" would be an allocation for nothing. Read-only to the caller by type,
+   * and there is exactly one writer.
+   */
+  get held(): ReadonlySet<string> {
+    return this.heldKeys;
+  }
+
   /** INPUT phase. Drains the frame's input, then steps the tool once. */
   flush(dtMs: number): void {
     this.ended = this.pendingEnd;

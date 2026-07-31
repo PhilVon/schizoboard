@@ -682,6 +682,91 @@ body {
   width: 22px;
 }
 
+/* --- the tool info bar, D-43 ----------------------------------------------- */
+
+/*
+ * Bottom left, where the hint line was, and in the drawer's idiom rather than
+ * the paper slip of `.notice` and `.flash` - it is a piece of the application,
+ * not something somebody left on the board (DESIGN section 4.8).
+ *
+ * Two properties here are repairs rather than styling, and both are named in
+ * `ui/toolinfo.ts`:
+ *
+ *   `max-width`, because the line it replaces had none and wrapped into a block
+ *   across most of the bottom of the viewport;
+ *
+ *   `pointer-events: none`, because that block also swallowed every press that
+ *   landed in it. Three source comments already assert the hint line is inert
+ *   (`notice.ts`, `flash.ts`, `boardmenu.ts`) and none of them was true.
+ */
+.toolinfo {
+  position: absolute;
+  left: 12px;
+  bottom: 12px;
+  max-width: 74ch;
+  padding: 6px 10px 7px;
+  border-radius: 7px;
+  background: rgba(16, 12, 9, 0.86);
+  backdrop-filter: blur(6px);
+  color: #d9cfc2;
+  font-family: var(--ui-mono);
+  font-size: 11px;
+  line-height: 1.65;
+  pointer-events: none;
+}
+
+.toolinfo-tool,
+.toolinfo-board {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+}
+
+/* The camera, the search and undo: true on every frame of every session, so it
+ * sits below the tool's own line and well under it in weight. */
+.toolinfo-board {
+  opacity: 0.38;
+}
+
+/* Its rows are already quiet by their parent; a second fade would take them to
+ * a quarter of the tool line and off the back of the cork. */
+.toolinfo-board .toolinfo-row {
+  opacity: 1;
+}
+
+.toolinfo-lead {
+  color: #f4ece0;
+  font-weight: 700;
+}
+
+/* A board that is read-only, or one that is not being saved. The one colour on
+ * this bar that is not a shade of the paper. */
+.toolinfo-lead.is-warning {
+  color: #ffab84;
+}
+
+.toolinfo-row {
+  opacity: 0.55;
+}
+
+/* Every key this row needs is down right now - D-44's sixth decision, and the
+ * whole reason the bar is worth more than a list. */
+.toolinfo-row.is-live {
+  opacity: 1;
+  color: #f8ecd2;
+}
+
+.toolinfo-row:not(:first-child)::before {
+  content: "·";
+  padding: 0 7px;
+  opacity: 0.45;
+}
+
+.toolinfo-keys {
+  margin-right: 5px;
+  font-weight: 600;
+}
+
 /* --- phase-0 scaffolding, removed once items land (T-24) ------------------- */
 
 .hint {
@@ -890,6 +975,7 @@ body {
   .hud,
   .hint,
   .toolbar,
+  .toolinfo,
   .notice,
   .flash,
   /* A search field open when you hit export prints the word you were looking
