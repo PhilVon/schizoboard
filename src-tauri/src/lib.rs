@@ -30,6 +30,9 @@ mod docstore;
 // crate API rather than a private helper.
 pub mod document;
 mod media;
+// `pub` for the reason `document` is: nothing in this file calls it yet. The
+// reading surface (T-275) is what turns it into a command.
+pub mod pages;
 mod print;
 mod protocol;
 pub mod sync;

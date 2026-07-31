@@ -1406,7 +1406,10 @@ fn read_head(path: &Path, n: usize) -> io::Result<Vec<u8>> {
     Ok(buffer)
 }
 
-fn walk_files(root: &Path) -> io::Result<Vec<PathBuf>> {
+/// `pub(crate)` for `pages`, whose whole argument is that reading a document
+/// writes nothing here — a claim that is only worth making if something counts
+/// the files and proves it (AC-692).
+pub(crate) fn walk_files(root: &Path) -> io::Result<Vec<PathBuf>> {
     let mut out = Vec::new();
     let mut stack = vec![root.to_path_buf()];
     while let Some(dir) = stack.pop() {
