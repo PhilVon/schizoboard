@@ -147,6 +147,21 @@ body {
   opacity: 0.4;
 }
 
+/* Pinholes (T-231). A canvas rather than a background, because these are the
+ * one thing on the cork that is somewhere: the sprite is blitted at each pin's
+ * world position, so there is no period to repeat and nothing to anchor with a
+ * background-position. Sits under `.cork-light` so the room's lighting falls
+ * across a hole exactly as it falls across the surface it is in.
+ *
+ * `width` and `height` are attributes the renderer writes in device pixels;
+ * these two keep the element itself at CSS size whatever that backing store is. */
+.cork-holes {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+}
+
 /* A room's worth of light falling across the board, also world-anchored, so
  * panning moves across a surface that is not uniformly lit. */
 .cork-light {
