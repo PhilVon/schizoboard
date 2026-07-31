@@ -12,10 +12,10 @@ import { describe, expect, it } from "vitest";
 
 import { DirtySets } from "@/state/dirty";
 import { FLASH_MS, Flashes } from "@/state/flash";
-import { Scene, type ItemCold, type ItemPose } from "@/state/scene";
+import { Scene, type ItemColdInput, type ItemPose } from "@/state/scene";
 
 function add(scene: Scene, id: string, pose: Partial<ItemPose> = {}): void {
-  const cold: ItemCold = {
+  const cold: ItemColdInput = {
     id,
     type: "polaroid",
     z: "a0",

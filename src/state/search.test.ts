@@ -15,11 +15,11 @@
 
 import { describe, expect, it } from "vitest";
 
-import { Scene, type ItemCold, type ItemPose } from "@/state/scene";
+import { Scene, type ItemColdInput, type ItemPose } from "@/state/scene";
 import { Search } from "@/state/search";
 
 function add(scene: Scene, id: string, text: string, pose: Partial<ItemPose> = {}): void {
-  const cold: ItemCold = {
+  const cold: ItemColdInput = {
     id,
     type: "note",
     z: "a0",
@@ -57,7 +57,7 @@ describe("Search", () => {
   it("matches a polaroid's caption the same as a note's body — it is one field", () => {
     const scene = new Scene();
     add(scene, "note", "the harbour at dawn", { y: 0 });
-    const cold: ItemCold = {
+    const cold: ItemColdInput = {
       id: "photo",
       type: "polaroid",
       z: "a1",

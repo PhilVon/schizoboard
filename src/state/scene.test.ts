@@ -10,13 +10,13 @@ import { DirtySets } from "@/state/dirty";
 import { drawnPose } from "@/state/tools/frame";
 import {
   Scene,
-  type ItemCold,
+  type ItemColdInput,
   type ItemPose,
   type SceneStroke,
   type StringNodes,
 } from "@/state/scene";
 
-function cold(id: string, over: Partial<ItemCold> = {}): ItemCold {
+function cold(id: string, over: Partial<ItemColdInput> = {}): ItemColdInput {
   return {
     id,
     type: "polaroid",

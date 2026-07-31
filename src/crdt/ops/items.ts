@@ -17,6 +17,7 @@ import { MIN_ITEM_SIZE, readItem, readPin, type ItemType, type YMap } from "@/cr
 import { keyAbove } from "@/crdt/zindex";
 import { highestZ } from "@/crdt/ops/z";
 import { newSeed, scatterAngle } from "@/lib/seed";
+import type { ItemStyle } from "@/lib/style";
 import { diffText } from "@/lib/textdiff";
 
 export interface CreateItemInput {
@@ -323,6 +324,54 @@ export function setItemText(board: BoardDoc, itemId: string, next: string): void
     if (!edit) return;
     if (edit.remove > 0) text.delete(edit.at, edit.remove);
     if (edit.insert.length > 0) text.insert(edit.at, edit.insert);
+  });
+}
+
+/**
+ * Override — or stop overriding — what the seed decides about an item's look.
+ *
+ * `patch` is applied property by property and **`undefined` means clear**: it
+ * deletes the key so the seed answers again, rather than writing an absence.
+ * That is the whole reason `style` is a map instead of a record on the item, and
+ * it is what makes the concurrent story in DATA-MODEL section 3 true rather than
+ * merely claimed — two people, one changing the paper and one taking the tape
+ * off, touch different keys and neither loses. A record would have them writing
+ * the same value and the later one winning the lot.
+ *
+ * A property this build does not know is not in `ItemStyle` and so cannot be
+ * written here, which is the other half of `readStyle`'s forward compatibility:
+ * this build drops what it cannot read and **never rewrites the map wholesale**,
+ * so a later build's sixth property survives an edit made on this one.
+ *
+ * Every item in one transaction, so restyling a selection of twenty is one undo
+ * entry — the same rule `createItems` and `deleteItems` follow.
+ */
+export function setItemStyle(
+  board: BoardDoc,
+  itemIds: readonly string[],
+  patch: Partial<ItemStyle>,
+): void {
+  const keys = Object.keys(patch) as (keyof ItemStyle)[];
+  if (itemIds.length === 0 || keys.length === 0) return;
+
+  mutate(board, Origin.LOCAL_USER, () => {
+    for (const id of itemIds) {
+      const item = board.items.get(id);
+      if (!item) continue;
+      const style = item.get("style");
+      // Every item made by `createItems` has one. An item that arrived without
+      // it — a hand-built document, a future build that dropped the key — gets
+      // one now rather than being skipped, because refusing to restyle a sheet
+      // that is on the board and selected is not a failure anybody can read.
+      const map = style instanceof Y.Map ? (style as Y.Map<unknown>) : new Y.Map<unknown>();
+      if (map !== style) item.set("style", map);
+
+      for (const key of keys) {
+        const value = patch[key];
+        if (value === undefined) map.delete(key);
+        else map.set(key, value);
+      }
+    }
   });
 }
 

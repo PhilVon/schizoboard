@@ -18,6 +18,7 @@
  */
 
 import type { InkSurface, WetStroke } from "@/lib/ink";
+import type { ItemStyle } from "@/lib/style";
 import type { Camera, Vec2 } from "@/state/camera";
 import type { DirtySets } from "@/state/dirty";
 import type { Scene } from "@/state/scene";
@@ -152,6 +153,17 @@ export interface BoardWriter {
   /** `keepPins` is Shift+Delete: the evidence goes, the string web keeps its
    *  shape with a hole where it was (DESIGN section 3.8). */
   deleteItems(ids: readonly string[], keepPins: boolean): void;
+  /**
+   * Override what the seed decides about how these items look — DATA-MODEL
+   * section 3's `style` map, reached from the item context menu.
+   *
+   * A **patch**, and `undefined` in it means *clear*: it takes the override off
+   * and lets the seed answer again. That is not the same as writing a default,
+   * and the difference is the whole design — see `lib/style.ts`. So a menu row
+   * that says "back to whatever this sheet was" passes `{ paperStock: undefined }`
+   * rather than a stock name.
+   */
+  setItemStyle(ids: readonly string[], patch: Partial<ItemStyle>): void;
   /**
    * Move these items to one end of the stack — DESIGN section 2.1's z-order,
    * reached from the item context menu.

@@ -34,6 +34,7 @@ import { shortest } from "@/lib/angle";
 import { CellGrid } from "@/lib/cellgrid";
 import type { InkSample, InkSurface } from "@/lib/ink";
 import { rotateIn, rotateOut, type Point } from "@/lib/rotate";
+import { NO_STYLE, type ItemStyle } from "@/lib/style";
 
 const INITIAL_CAPACITY = 256;
 
@@ -90,7 +91,23 @@ export interface ItemCold {
   createdAt: number;
   /** Plain text snapshot. The Y.Text stays behind the binding. */
   text: string;
+  /**
+   * What has been overridden of what `seed` would decide — `lib/style.ts`.
+   *
+   * Cold rather than hot, and it belongs here for the reason everything else in
+   * this interface does: changing an item's paper is a rebuild of its view, not
+   * a number the frame loop reads. `render/items/dom.ts` already re-binds on
+   * identity (`this.boundCold === cold`), and the binding hands over a fresh
+   * record on every style write, so no new invalidation is needed.
+   *
+   * Always an object. `{}` is the state of nearly every item on the board.
+   */
+  style: ItemStyle;
 }
+
+/** What [`Scene.putItem`] will take: a cold record whose `style` may be left
+ *  off, because an item with nothing overridden is the ordinary one. */
+export type ItemColdInput = Omit<ItemCold, "style"> & { style?: ItemStyle };
 
 /**
  * Where a pin should be parented and what its coordinates become there — the
@@ -774,8 +791,17 @@ export class Scene {
     this.capacity = next;
   }
 
-  /** Insert or replace. Returns the slot. */
-  putItem(cold: ItemCold, pose: ItemPose): number {
+  /**
+   * Insert or replace. Returns the slot.
+   *
+   * `style` may be left off and is filled in with `NO_STYLE`. The invariant
+   * that a stored `ItemCold` always carries an object is worth having — it is
+   * what lets every reader write `cold.style.paperStock ?? seedAnswer` without
+   * a null check — but it is worth having *here*, at the one door into the
+   * mirror, rather than restated by every literal that builds one.
+   */
+  putItem(input: ItemColdInput, pose: ItemPose): number {
+    const cold: ItemCold = input.style === undefined ? { ...input, style: NO_STYLE } : (input as ItemCold);
     // Geometry in, so what is over what may have changed.
     this.overStale = true;
     let slot = this.slots.get(cold.id);

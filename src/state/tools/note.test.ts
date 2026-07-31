@@ -50,6 +50,7 @@ beforeEach(() => {
       setPoses: () => {},
       setSizes: () => {},
       deleteItems: () => {},
+      setItemStyle: () => {},
       bringToFront: () => {},
       sendToBack: () => {},
       createPin: () => {},

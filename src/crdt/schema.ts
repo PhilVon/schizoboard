@@ -27,6 +27,17 @@
 
 import * as Y from "yjs";
 
+import {
+  isItemFace,
+  isPaperStock,
+  NO_STYLE,
+  TAPE_ALL,
+  TAPE_NONE,
+  type ItemFace,
+  type ItemStyle,
+  type PaperStock,
+} from "@/lib/style";
+
 export const SCHEMA_VERSION = 1;
 
 export type ItemType = "polaroid" | "note" | "scrap" | "card";
@@ -67,6 +78,14 @@ export interface ItemFields {
   seed: number;
   assetId: string | null;
   crop: Crop | null;
+  /**
+   * What has been overridden of what the seed would decide — `lib/style.ts`.
+   *
+   * Always an object, never null, and `{}` for the overwhelming majority of
+   * items. That asymmetry is deliberate: a null would make every reader ask
+   * "chosen nothing, or not read yet?", and the answer is always the first.
+   */
+  style: ItemStyle;
   createdBy: number;
   createdAt: number;
 }
@@ -159,6 +178,73 @@ function bool(value: unknown, fallback: boolean): boolean {
   return typeof value === "boolean" ? value : fallback;
 }
 
+/**
+ * Read the style map, keeping only what this build recognises.
+ *
+ * Property by property rather than all-or-nothing, and that is the point of it
+ * being a map. A peer on a later build that has learned a sixth property writes
+ * it alongside the five here; this reader drops the one it does not know and
+ * keeps the four it does, so a board shared across two builds degrades one
+ * appearance at a time instead of losing every override on the item.
+ *
+ * It also takes a `Y.Map` or a plain object without asking which. What arrives
+ * is a Yjs type in the app and a literal in a test, and both answer `get`
+ * — except that a plain object does not, which is why this goes through a
+ * reader rather than through `map.get` directly.
+ */
+function readStyle(value: unknown): ItemStyle {
+  const get = readerFor(value);
+  if (get === null) return NO_STYLE;
+
+  const style: {
+    paperStock?: PaperStock;
+    tint?: { hue: number; light: number };
+    tapeStyle?: number;
+    torn?: boolean;
+    fontFamily?: ItemFace;
+  } = {};
+
+  const stock = get("paperStock");
+  if (isPaperStock(stock)) style.paperStock = stock;
+
+  const face = get("fontFamily");
+  if (isItemFace(face)) style.fontFamily = face;
+
+  const torn = get("torn");
+  if (typeof torn === "boolean") style.torn = torn;
+
+  // A mask, so anything outside the four bits is not a tape arrangement this
+  // build can draw — and a fractional one is not a mask at all.
+  const tape = get("tapeStyle");
+  if (typeof tape === "number" && Number.isInteger(tape) && tape >= TAPE_NONE && tape <= TAPE_ALL) {
+    style.tapeStyle = tape;
+  }
+
+  const tint = get("tint");
+  const tintGet = readerFor(tint);
+  if (tintGet !== null) {
+    const hue = tintGet("hue");
+    const light = tintGet("light");
+    // Both or neither. Half a tint is not a tint, and defaulting the missing
+    // half to zero would silently render a different sheet from the one the
+    // writer meant.
+    if (typeof hue === "number" && Number.isFinite(hue) && typeof light === "number" && Number.isFinite(light)) {
+      style.tint = { hue, light };
+    }
+  }
+
+  return style;
+}
+
+/** `get` for a `Y.Map` or a plain object, or null for neither. */
+function readerFor(value: unknown): ((key: string) => unknown) | null {
+  if (value instanceof Y.Map) return (key) => (value as YMap).get(key);
+  if (typeof value === "object" && value !== null) {
+    return (key) => (value as Record<string, unknown>)[key];
+  }
+  return null;
+}
+
 function readCrop(value: unknown): Crop | null {
   if (typeof value !== "object" || value === null) return null;
   const c = value as Partial<Crop>;
@@ -202,6 +288,7 @@ export function readItem(id: string, map: YMap): ItemFields | null {
     seed: num(map.get("seed"), 0) >>> 0,
     assetId: typeof map.get("assetId") === "string" ? (map.get("assetId") as string) : null,
     crop: readCrop(map.get("crop")),
+    style: readStyle(map.get("style")),
     createdBy: num(map.get("createdBy"), 0),
     createdAt: num(map.get("createdAt"), 0),
   };

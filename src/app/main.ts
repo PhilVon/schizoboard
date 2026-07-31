@@ -42,6 +42,7 @@ import {
   scaleNodeSlack,
   scaleStringSlack,
   setItemPoses,
+  setItemStyle,
   sendToBack,
   setNodeSlack,
   setStringSlack,
@@ -579,6 +580,15 @@ async function boot(): Promise<void> {
       // paper under them. The plain delete needs this too: taking the top
       // photograph away leaves its pins to whatever was beneath.
       rehome();
+    },
+    /**
+     * Appearance only, so no `rehome`: a paper stock or a strip of tape changes
+     * nothing about where anything is, and the over-index is a question about
+     * geometry (Q-146). The one write on this list that does not move the board.
+     */
+    setItemStyle: (ids, patch) => {
+      const snapshot = [...ids];
+      queued.push(() => setItemStyle(board, snapshot, patch));
     },
     /**
      * The two ends of the stack. Copied and queued like every other write here,
