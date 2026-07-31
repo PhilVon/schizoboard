@@ -65,6 +65,7 @@ use ureq::http::Uri;
 use ureq::unversioned::resolver::{DefaultResolver, ResolvedSocketAddrs, Resolver};
 use ureq::unversioned::transport::{DefaultConnector, NextTimeout};
 
+use crate::document;
 use crate::media;
 
 /// Longest edge of the display variant, in pixels.
@@ -126,6 +127,18 @@ pub struct AssetMeta {
     /// of a cassette it may not hold a single byte of — the record travels
     /// ahead of the file, so the runtime has to be in it (AC-688).
     pub duration: Option<f64>,
+    /// Pages, for a document; `None` for everything else and for a PDF this
+    /// build cannot open. Here for exactly the reason `duration` is: a folder on
+    /// a machine that will never hold the file still says how thick it is.
+    ///
+    /// Its sibling `/Title` is deliberately **not** here. Q-211 settled that a
+    /// document's declared title is derived locally and never enters the
+    /// document, so it is asked for by [`crate::document_title`] against a file
+    /// this machine already holds, rather than carried out of ingest to be
+    /// written down. The two facts come off the same structure load and go to
+    /// different places, which is the whole distinction: a page count is what
+    /// the object *is*, a title is what one machine can currently *read*.
+    pub pages: Option<u32>,
 }
 
 /// What to put in front of the user when they export an asset.
@@ -927,6 +940,11 @@ impl AssetStore {
         // that could differ between the machine that pasted the film and the
         // machine that was sent it.
         let duration = media::probe_duration(bytes, &mime);
+        // And the page count, on the same argument and in the same place: one
+        // structure load, no page read, and `commit_received` comes through here
+        // too so a folder that arrived over the wire counts its pages by the
+        // same code as one that was pasted.
+        let pages = document::probe(bytes, &mime).map(|d| d.pages);
 
         self.restore_from_trash(&sha256);
         let target = self.original_path(&sha256);
@@ -942,6 +960,7 @@ impl AssetStore {
             mime,
             size,
             duration,
+            pages,
         })
     }
 
@@ -1683,6 +1702,93 @@ mod tests {
             serde_json::to_value(&picture).unwrap()["duration"],
             serde_json::Value::Null
         );
+    }
+
+    /// A document of `count` blank pages, written with lopdf so the fixture is
+    /// a real file rather than a byte string nobody can read the diff of.
+    fn pdf(count: usize) -> Vec<u8> {
+        use lopdf::{dictionary, Document, Object};
+        let mut doc = Document::with_version("1.5");
+        let pages_id = doc.new_object_id();
+        let kids: Vec<Object> = (0..count)
+            .map(|_| {
+                doc.add_object(dictionary! { "Type" => "Page", "Parent" => pages_id })
+                    .into()
+            })
+            .collect();
+        doc.objects.insert(
+            pages_id,
+            Object::Dictionary(dictionary! {
+                "Type" => "Pages",
+                "Kids" => kids,
+                "Count" => count as i64,
+                "MediaBox" => vec![0.into(), 0.into(), 612.into(), 792.into()],
+            }),
+        );
+        let catalog = doc.add_object(dictionary! { "Type" => "Catalog", "Pages" => pages_id });
+        doc.trailer.set("Root", catalog);
+        let mut out = Vec::new();
+        doc.save_to(&mut out).expect("fixture should write");
+        out
+    }
+
+    #[test]
+    fn a_folder_knows_how_thick_it_is_the_moment_it_is_ingested() {
+        // AC-668's half of the plumbing, and the same argument the duration
+        // above makes: the page count is in the meta ingestion *returns*,
+        // because that is what the frontend writes into the document and the
+        // document reaches a peer long before the file does.
+        let (_dir, store) = store();
+        let meta = store.ingest_bytes(&pdf(12), None).unwrap();
+        assert_eq!(meta.mime, "application/pdf");
+        assert_eq!(meta.pages, Some(12));
+        // And nothing else grew one. A picture is not a document with no pages,
+        // it is a thing that pages are not a fact about.
+        assert_eq!(store.ingest_bytes(&png(4, 4), None).unwrap().pages, None);
+        assert_eq!(store.ingest_bytes(&wav(1), None).unwrap().pages, None);
+    }
+
+    #[test]
+    fn a_document_that_will_not_open_is_stored_anyway_and_counts_no_pages() {
+        // 6% of the files D-47 swept will not parse. Refusing the bytes over it
+        // would be refusing a paste the user cannot do anything about, so the
+        // asset lands and the folder has nothing written under its filename.
+        let (_dir, store) = store();
+        let meta = store
+            .ingest_bytes(b"%PDF-1.7\n%\xe2\xe3\xcf\xd3\nand then nonsense", None)
+            .unwrap();
+        assert_eq!(meta.mime, "application/pdf");
+        assert_eq!(meta.pages, None);
+        assert!(store.original_path(&meta.sha256).is_file());
+    }
+
+    #[test]
+    fn a_page_count_crosses_to_the_frontend_as_a_number_or_a_null() {
+        // The same thing `duration` needs and for the same reason: an `Option`
+        // serialised as an absent key type-checks on both sides and reads as
+        // `undefined` at run time.
+        let (_dir, store) = store();
+        let folder = store.ingest_bytes(&pdf(3), None).unwrap();
+        let picture = store.ingest_bytes(&png(4, 4), None).unwrap();
+        assert_eq!(serde_json::to_value(&folder).unwrap()["pages"], serde_json::json!(3));
+        assert_eq!(
+            serde_json::to_value(&picture).unwrap()["pages"],
+            serde_json::Value::Null
+        );
+    }
+
+    #[test]
+    fn a_document_that_arrived_over_the_wire_can_still_be_asked_what_it_is_called() {
+        // The title is derived locally (Q-211), so the *receiving* machine has
+        // to be able to read it off the file — there is nothing in the record
+        // to fall back on. That is only true if what landed is the file.
+        let (_from, sender) = store();
+        let (_to, receiver) = store();
+        let meta = sender.ingest_bytes(&pdf(5), None).unwrap();
+        assert!(transfer(&sender, &receiver, &meta.sha256));
+        let probe = document::probe_path(&receiver.original_path(&meta.sha256))
+            .expect("the received bytes are still a document");
+        assert_eq!(probe.pages, 5);
     }
 
     #[test]

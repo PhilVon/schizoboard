@@ -159,6 +159,14 @@ export class TauriPlatform implements Platform {
     return `${convertFileSrc(sha256, "asset")}?v=${variant}`;
   }
 
+  /**
+   * A structure load and no page read — 3 to 53 ms on the corpus D-47 swept,
+   * on the blocking pool with the rest of the store's work.
+   */
+  documentTitle(sha256: string): Promise<string | null> {
+    return invoke<string | null>("document_title", { sha256 });
+  }
+
   docAppendUpdate(bytes: Uint8Array): Promise<void> {
     // Coalescing into ~200ms / 32kB batches is crdt/persistence.ts's job; by
     // the time a call reaches here it is already a batch.

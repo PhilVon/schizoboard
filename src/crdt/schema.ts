@@ -27,6 +27,7 @@
 
 import * as Y from "yjs";
 
+import { assetKind, type AssetKind } from "@/lib/objects";
 import {
   isItemFace,
   isPaperStock,
@@ -157,42 +158,6 @@ export interface StrokeFields {
   z: string;
   bbox: readonly [number, number, number, number];
   pts: Uint8Array;
-}
-
-/**
- * What a file is, as far as the board is concerned — which is to say, which
- * object it becomes on the wall.
- *
- * > No new item types. The face is chosen from the asset's mime.
- * > — D-46 section 2
- *
- * `unknown` is not a face. It is a file this build cannot place, and it exists
- * so that `readAsset` can tell "a record describing something we do not
- * understand" from "a record describing a cassette", which are different
- * amounts of missing.
- */
-export type AssetKind = "image" | "video" | "audio" | "document" | "unknown";
-
-/**
- * The one place a mime becomes a kind.
- *
- * Derived rather than stored, and that is a decision rather than an omission:
- * every asset record already on a board — every photograph anybody has pasted
- * since T-21 — was written before this existed, so a record without a kind has
- * to be classifiable anyway. Writing the kind as well would make it a second
- * statement of a fact the mime already makes, and two writers of one fact can
- * disagree where a derivation cannot.
- *
- * The cost, stated plainly: a peer on a later build that understands some mime
- * this one has never heard of gains nothing by knowing what it is. An
- * unfamiliar mime is unfamiliar here, permanently.
- */
-export function assetKind(mime: string): AssetKind {
-  if (mime.startsWith("image/")) return "image";
-  if (mime.startsWith("video/")) return "video";
-  if (mime.startsWith("audio/")) return "audio";
-  if (mime === "application/pdf") return "document";
-  return "unknown";
 }
 
 export interface AssetFields {

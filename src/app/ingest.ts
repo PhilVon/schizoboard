@@ -22,6 +22,7 @@
  */
 
 import type { AssetInput, CreateItemInput } from "@/crdt/ops";
+import { assetKind, objectSizeFor } from "@/lib/objects";
 import { polaroidFor } from "@/lib/polaroid";
 import { newSeed, valueAt } from "@/lib/seed";
 
@@ -253,15 +254,15 @@ export function layout(payloads: readonly Ingested[], at: BoardPoint): CreateIte
 
   return payloads.map((payload, i) => {
     const seed = newSeed();
-    // `polaroidFor` on something with no pixel box gives a square, which is
-    // what it already did for a photograph whose dimensions had not arrived —
-    // so a cassette and a case file get a sheet-sized placeholder here. The
-    // shapes those objects are actually meant to be, and the faces on them,
-    // are T-267; this is the gate, and inventing them here would be deciding
-    // that task's question in passing.
+    // A photograph is the one thing on this board whose *shape* is a fact about
+    // its bytes, so it is the one that has to be asked. The other three are
+    // objects with sizes of their own — a VHS is 187 by 103 millimetres whatever
+    // is recorded on it — which is why this is a lookup by kind and not a
+    // measurement, and why it is right before a single byte has arrived.
     const size =
       payload.kind === "asset"
-        ? polaroidFor(payload.asset.w, payload.asset.h)
+        ? (objectSizeFor(assetKind(payload.asset.mime)) ??
+          polaroidFor(payload.asset.w, payload.asset.h))
         : noteSizeFor(payload.text);
 
     // Position along the fan, in [-1, 1] rather than in item indices: the

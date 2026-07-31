@@ -42,7 +42,8 @@ class FakeNative {
       h: decoded ? 800 : 0,
       mime,
       size,
-      duration: null,
+      duration: mime === "video/mp4" || mime.startsWith("audio/") ? 92 : null,
+      pages: mime === "application/pdf" ? 14 : null,
     };
   }
 
@@ -518,6 +519,36 @@ describe("what the board will take", () => {
     // And the record says what each one is, which is what the face will read.
     const mimes = [...board.assets.values()].map((asset) => asset.get("mime"));
     expect(mimes.sort()).toEqual(["application/pdf", "audio/mpeg", "video/mp4"]);
+  });
+
+  it("carries the page count and the runtime into the record, and no title", async () => {
+    // AC-668's other half. The record is what reaches a peer *ahead* of the
+    // bytes, so a fact the shell measured at ingest and this line dropped is a
+    // fact nobody else can ever recover — there is no second chance to count
+    // the pages of a document that machine will never hold.
+    await firePaste({
+      files: [
+        named("filing.pdf", "application/pdf", 2048),
+        named("interview.mp4", "video/mp4", 4096),
+      ],
+    });
+
+    const records = [...board.assets.values()];
+    const folder = records.find((asset) => asset.get("mime") === "application/pdf")!;
+    const tape = records.find((asset) => asset.get("mime") === "video/mp4")!;
+    expect(folder.get("pages")).toBe(14);
+    expect(tape.get("duration")).toBe(92);
+
+    // And each one carries only what is a fact about it. A photograph does not
+    // spend a null on the wire to say it has no runtime, and a film does not
+    // spend one to say it has no pages.
+    expect(folder.has("duration")).toBe(false);
+    expect(tape.has("pages")).toBe(false);
+
+    // Nor does either carry a title. What a document says it is called is
+    // derived locally and never enters the document (Q-211); this asserts the
+    // absence, because the whole of that answer is that the key is not there.
+    expect(records.some((asset) => asset.has("title"))).toBe(false);
   });
 
   it("puts a case file on the board even though it has no pixel box", async () => {

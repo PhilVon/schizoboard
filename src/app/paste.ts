@@ -51,7 +51,7 @@ import {
   type BoardPoint,
   type Ingested,
 } from "@/app/ingest";
-import { assetKind } from "@/crdt/schema";
+import { assetKind } from "@/lib/objects";
 import type { AssetMeta, Platform } from "@/platform/types";
 import type { Camera } from "@/state/camera";
 import { isTextTarget } from "@/state/input";
@@ -382,6 +382,15 @@ export class Paste {
         // knew — and there is no second chance to measure it on a peer that
         // never holds the bytes.
         ...(meta.duration !== null ? { duration: meta.duration } : {}),
+        // And the page count, on exactly the same argument (AC-668). A folder's
+        // thickness reaches a peer ahead of the file, and there is no second
+        // chance to count the pages of a document that machine never holds.
+        //
+        // Its sibling does not come through here. What the document says it is
+        // *called* is derived locally and never enters the record (Q-211), so
+        // there is nothing to carry — the folder asks for it separately, against
+        // a file this machine has.
+        ...(meta.pages !== null ? { pages: meta.pages } : {}),
       },
     });
   }

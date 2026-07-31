@@ -347,6 +347,27 @@ impl Reader {
         self.ids.len()
     }
 
+    /// What the file says it is called, if it says anything.
+    ///
+    /// The document information dictionary's `/Title`, and nothing else. Not the
+    /// first heading, not the largest run on page one, not XMP: those are all
+    /// *readings* of the document, and a reading is a claim about the evidence
+    /// that D-46 section 6 does not let this side of the line make. `/Title` is
+    /// the file stating its own name, which is the same category of fact as a
+    /// film's runtime.
+    ///
+    /// `None` covers three things that are all the same to a label — no `/Info`,
+    /// no `/Title`, and a `/Title` that is blank or nothing but space. A folder
+    /// with no title writes one line instead of two.
+    pub fn title(&self) -> Option<String> {
+        let info = self.doc.trailer.get(b"Info").ok()?;
+        let dict = match info {
+            Object::Reference(id) => self.doc.get_object(*id).ok()?.as_dict().ok()?,
+            other => other.as_dict().ok()?,
+        };
+        tidy(&text_string(dict.get(b"Title").ok()?.as_str().ok()?))
+    }
+
     /// How many pages this reader has produced since it was opened. See the
     /// field for why it is counted at all.
     pub fn pages_read(&self) -> usize {
@@ -387,6 +408,151 @@ pub fn read_pdf(path: &Path) -> Result<Reading> {
 /// Read every page of a PDF already in memory.
 pub fn read_pdf_bytes(bytes: &[u8]) -> Result<Reading> {
     Ok(Reader::open_bytes(bytes)?.read_all())
+}
+
+// ---------------------------------------------------------------------------
+// What a document says about itself, at ingest
+// ---------------------------------------------------------------------------
+
+/// Characters of `/Title` that reach the document.
+///
+/// A tab on a folder, not a field. Anything past this is a sentence somebody put
+/// in the wrong box, and the record is what crosses the wire — a peer who will
+/// never hold the file should not be sent a paragraph to describe it with.
+const MAX_TITLE_CHARS: usize = 120;
+
+/// The two facts a folder's tab needs, read once by the machine holding the file.
+///
+/// The same bargain [`crate::media::probe_duration`] makes, and for the same
+/// stated reason: the asset record reaches a peer long before the bytes do, so a
+/// number that can only be got from the bytes has to be taken at ingest or it is
+/// never available to anyone else at all.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Probe {
+    pub pages: u32,
+    pub title: Option<String>,
+}
+
+/// Read a document's page count and declared title, or `None` if this is not a
+/// document, or is one this build cannot open.
+///
+/// It costs a structure load — 3 to 53 ms on the corpus T-299 measured, and 221
+/// ms for the largest file on that machine — against an ingest that has already
+/// hashed the whole file. No page is read: `page_count` comes off the page tree
+/// and `/Title` off the trailer, which is why a two hundred page scan costs the
+/// same here as a two page memo.
+///
+/// A malformed or encrypted file yields `None` rather than an error, because the
+/// caller is a paste and nothing about this is worth refusing bytes over: a PDF
+/// this build cannot parse is still a PDF, and it becomes a folder with nothing
+/// written under its filename.
+pub fn probe(bytes: &[u8], mime: &str) -> Option<Probe> {
+    if mime != "application/pdf" {
+        return None;
+    }
+    Some(of(&Reader::open_bytes(bytes).ok()?))
+}
+
+/// The same two facts, off a file this machine already holds.
+///
+/// The route the *title* takes, because Q-211 settled that a title is derived
+/// locally and never enters the document: a machine learns what a folder is
+/// called by reading the file, and a machine without the file does not learn it
+/// at all. Asked once per document the board actually shows, rather than at
+/// ingest, so that the one code path serves a paste, a transfer that has just
+/// committed, a board reopened tomorrow and a bundle somebody sent — none of
+/// which are ingests, and three of which would otherwise need their own answer.
+pub fn probe_path(path: &Path) -> Option<Probe> {
+    Some(of(&Reader::open(path).ok()?))
+}
+
+fn of(reader: &Reader) -> Probe {
+    Probe {
+        pages: reader.page_count() as u32,
+        title: reader.title(),
+    }
+}
+
+/// Collapse, trim and cap — or `None` if there is nothing left.
+///
+/// Producers write titles with newlines in them, with runs of tabs where a
+/// template had a field, and with nothing but spaces where a template had none.
+/// All three are the same thing to a label, and doing this once here means the
+/// frontend never has to wonder whether a title it was given is really a title.
+fn tidy(text: &str) -> Option<String> {
+    let mut out = String::new();
+    for word in text.split_whitespace() {
+        if !out.is_empty() {
+            out.push(' ');
+        }
+        out.push_str(word);
+        if out.chars().count() >= MAX_TITLE_CHARS {
+            break;
+        }
+    }
+    // By characters, because the cap is about how much label there is, and
+    // because cutting a UTF-8 string by bytes can cut a character in half.
+    let capped: String = out.chars().take(MAX_TITLE_CHARS).collect();
+    if capped.is_empty() {
+        None
+    } else {
+        Some(capped)
+    }
+}
+
+/// Decode a PDF *text string* — PDF 32000-1 section 7.9.2.2.
+///
+/// Three encodings share one syntax and are told apart by what the string starts
+/// with: a UTF-16BE byte order mark, a UTF-8 one (PDF 2.0), or neither, which
+/// means PDFDocEncoding. Guessing wrong is not a subtle failure — a UTF-16 title
+/// read as bytes is every other character a NUL.
+///
+/// Lossy on purpose at both ends. A lone surrogate or an odd trailing byte is a
+/// producer bug, and a replacement character in a folder's title is a better
+/// outcome than a title that is `None` because one byte was wrong.
+fn text_string(bytes: &[u8]) -> String {
+    if let Some(rest) = bytes.strip_prefix(&[0xFE, 0xFF]) {
+        let units: Vec<u16> = rest
+            .chunks_exact(2)
+            .map(|pair| u16::from_be_bytes([pair[0], pair[1]]))
+            .collect();
+        return String::from_utf16_lossy(&units);
+    }
+    if let Some(rest) = bytes.strip_prefix(&[0xEF, 0xBB, 0xBF]) {
+        return String::from_utf8_lossy(rest).into_owned();
+    }
+    bytes.iter().map(|&b| pdf_doc_char(b)).collect()
+}
+
+/// One byte of PDFDocEncoding as a character.
+///
+/// Latin-1 in the two ranges where the two agree, and a table in the two where
+/// they do not: PDFDocEncoding puts accents in `0x18`–`0x1F` where Latin-1 has
+/// control codes, and typography in `0x80`–`0x9F` where Latin-1 has more of
+/// them. `0x9F` and `0xAD` are undefined and become the replacement character,
+/// which is what an undefined code point is.
+///
+/// The table is PDF 32000-1 Annex D.2's and **not** Windows-1252's, which
+/// disagrees with it about nearly every byte in `0x80`–`0x9F` — a right single
+/// quote is `0x90` here and `0x92` there. It matters less than it looks: a
+/// producer with a character to write that is not ASCII writes UTF-16 with a
+/// mark, so in practice this path decodes ASCII and the two tables agree.
+fn pdf_doc_char(byte: u8) -> char {
+    const ACCENTS: [char; 8] = ['\u{2D8}', '\u{2C7}', '\u{2C6}', '\u{2D9}', '\u{2DD}', '\u{2DB}', '\u{2DA}', '\u{2DC}'];
+    const TYPOGRAPHY: [char; 32] = [
+        '\u{2022}', '\u{2020}', '\u{2021}', '\u{2026}', '\u{2014}', '\u{2013}', '\u{192}',
+        '\u{2044}', '\u{2039}', '\u{203A}', '\u{2212}', '\u{2030}', '\u{201E}', '\u{201C}',
+        '\u{201D}', '\u{2018}', '\u{2019}', '\u{201A}', '\u{2122}', '\u{FB01}', '\u{FB02}',
+        '\u{141}', '\u{152}', '\u{160}', '\u{178}', '\u{17D}', '\u{131}', '\u{142}', '\u{153}',
+        '\u{161}', '\u{17E}', '\u{FFFD}',
+    ];
+    match byte {
+        0x18..=0x1F => ACCENTS[(byte - 0x18) as usize],
+        0x80..=0x9F => TYPOGRAPHY[(byte - 0x80) as usize],
+        0xA0 => '\u{20AC}',
+        0xAD => '\u{FFFD}',
+        other => other as char,
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -2688,5 +2854,129 @@ mod tests {
         let error = read_pdf_bytes(b"this is not a document at all")
             .expect_err("a text file is not a PDF");
         assert!(matches!(error, Error::Malformed(_)), "got {error:?}");
+    }
+
+    // --- what the folder's tab is written from (T-267) ---------------------
+
+    /// A document of `count` blank pages, with `title` in its `/Info` if given
+    /// as raw bytes — raw, because half of what is under test is *which*
+    /// encoding those bytes are in.
+    fn titled(count: usize, title: Option<&[u8]>) -> Vec<u8> {
+        let mut builder = Builder::new();
+        for _ in 0..count {
+            builder.page(dictionary! {});
+        }
+        if let Some(title) = title {
+            let info = builder.doc.add_object(dictionary! {
+                "Title" => Object::String(title.to_vec(), lopdf::StringFormat::Literal),
+            });
+            builder.doc.trailer.set("Info", info);
+        }
+        builder.finish()
+    }
+
+    #[test]
+    fn a_probe_counts_the_pages_without_reading_one() {
+        let bytes = titled(7, None);
+        // Through the `Reader` rather than through `probe`, because the claim is
+        // about work done and only the reader can be asked (T-299).
+        let reader = Reader::open_bytes(&bytes).expect("fixture should open");
+        assert_eq!(reader.page_count(), 7);
+        assert_eq!(reader.pages_read(), 0, "a page count is not a page read");
+
+        let probe = probe(&bytes, "application/pdf").expect("a PDF probes");
+        assert_eq!(probe.pages, 7);
+    }
+
+    #[test]
+    fn only_a_pdf_is_probed() {
+        // The bytes really are a document; the mime is what decides, because it
+        // is the store's answer after sniffing and the one thing that has looked
+        // at the file (T-260).
+        let bytes = titled(1, None);
+        assert_eq!(probe(&bytes, "video/mp4"), None);
+        assert_eq!(probe(&bytes, "application/pdf").map(|p| p.pages), Some(1));
+    }
+
+    #[test]
+    fn a_document_this_build_cannot_open_probes_as_nothing_rather_than_failing() {
+        // 6% of the files D-47 swept. A paste is not refused over it — the
+        // folder simply has no page count on it.
+        assert_eq!(probe(b"%PDF-1.7 and then nonsense", "application/pdf"), None);
+    }
+
+    #[test]
+    fn a_title_is_read_in_each_of_the_three_encodings_a_pdf_may_write_it_in() {
+        let latin = titled(1, Some(b"Findings"));
+        assert_eq!(
+            probe(&latin, "application/pdf").and_then(|p| p.title).as_deref(),
+            Some("Findings")
+        );
+
+        // UTF-16BE with a byte order mark, which is what every producer that
+        // has ever seen a non-ASCII character writes. Read as bytes it is every
+        // other character a NUL, which is why the mark is checked first.
+        let mut utf16 = vec![0xFE, 0xFF];
+        for unit in "Rapport financier".encode_utf16() {
+            utf16.extend_from_slice(&unit.to_be_bytes());
+        }
+        assert_eq!(
+            probe(&titled(1, Some(&utf16)), "application/pdf")
+                .and_then(|p| p.title)
+                .as_deref(),
+            Some("Rapport financier")
+        );
+
+        // PDFDocEncoding, which is Latin-1 except in the two ranges where it is
+        // not: 0x90 is a right single quote and 0x84 an em dash. Those are the
+        // *spec's* code points and not Windows-1252's, where the same two bytes
+        // are a private-use control and a low double quote — the two encodings
+        // disagree about almost the whole of `0x80`–`0x9F`, and this is the one
+        // that PDF 32000-1 section 7.9.2.2 says a text string is written in.
+        let quoted = probe(&titled(1, Some(b"O\x90Brien \x84 statement")), "application/pdf")
+            .and_then(|p| p.title);
+        assert_eq!(quoted.as_deref(), Some("O\u{2019}Brien \u{2014} statement"));
+    }
+
+    #[test]
+    fn a_title_that_says_nothing_is_no_title_at_all() {
+        // Three ways to be absent, and a tab cannot tell them apart: no `/Info`
+        // dictionary, an `/Info` with no `/Title`, and a `/Title` of whitespace.
+        assert_eq!(probe(&titled(1, None), "application/pdf").and_then(|p| p.title), None);
+        assert_eq!(
+            probe(&titled(1, Some(b"   \r\n\t ")), "application/pdf").and_then(|p| p.title),
+            None
+        );
+    }
+
+    #[test]
+    fn a_title_is_collapsed_and_capped_because_it_is_going_on_a_label() {
+        let ragged = titled(1, Some(b"  Interim\n\treport   2019  "));
+        assert_eq!(
+            probe(&ragged, "application/pdf").and_then(|p| p.title).as_deref(),
+            Some("Interim report 2019")
+        );
+
+        let long = "x".repeat(400);
+        let capped = probe(&titled(1, Some(long.as_bytes())), "application/pdf")
+            .and_then(|p| p.title)
+            .expect("a long title is still a title");
+        assert_eq!(capped.chars().count(), MAX_TITLE_CHARS);
+    }
+
+    #[test]
+    fn the_cap_counts_characters_rather_than_bytes() {
+        // Four bytes each in UTF-8. Cutting by bytes would end the string in the
+        // middle of one, which is not a string at all.
+        let long: String = std::iter::repeat_n('\u{1F600}', 200).collect();
+        let mut utf16 = vec![0xFE, 0xFF];
+        for unit in long.encode_utf16() {
+            utf16.extend_from_slice(&unit.to_be_bytes());
+        }
+        let capped = probe(&titled(1, Some(&utf16)), "application/pdf")
+            .and_then(|p| p.title)
+            .expect("emoji are a title too");
+        assert_eq!(capped.chars().count(), MAX_TITLE_CHARS);
+        assert!(capped.chars().all(|c| c == '\u{1F600}'));
     }
 }

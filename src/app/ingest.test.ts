@@ -228,6 +228,65 @@ describe("layout", () => {
     asset: { w, h, mime: "image/png", size: 1 },
   });
 
+  /**
+   * A file that is not a picture is an object with a size of its own (T-267).
+   *
+   * The line this replaced sized everything through `polaroidFor`, which on a
+   * record with no pixel box hands back a square — so a cassette and a case file
+   * both arrived as the same sheet-shaped placeholder.
+   */
+  const file = (mime: string): Ingested => ({
+    kind: "asset",
+    sha256: "b".repeat(64),
+    asset: { w: 0, h: 0, mime, size: 1 },
+  });
+
+  it("gives each kind of file the shape of the object it becomes", () => {
+    const [folder] = layout([file("application/pdf")], { x: 0, y: 0 });
+    const [tape] = layout([file("video/mp4")], { x: 0, y: 0 });
+    const [cassette] = layout([file("audio/mpeg")], { x: 0, y: 0 });
+
+    // All three landscape, which the folder was not until Phil's reference
+    // photograph showed one lying the way somebody actually puts it down. The
+    // proportions themselves are `lib/objects.ts`'s to assert in detail.
+    expect(folder!.w).toBeGreaterThan(folder!.h);
+    expect(tape!.w).toBeGreaterThan(tape!.h);
+    expect(cassette!.w).toBeGreaterThan(cassette!.h);
+    // And in the order they are in life: a case file is the biggest thing on the
+    // wall and a compact cassette the smallest.
+    expect(folder!.w).toBeGreaterThan(tape!.w);
+    expect(tape!.w).toBeGreaterThan(cassette!.w);
+  });
+
+  it("sizes an object off its kind and never off its bytes", () => {
+    // The record for a film carries the frame size, and the object on the wall
+    // is a cassette: its shape has nothing to do with what was recorded on it.
+    const wide: Ingested = {
+      kind: "asset",
+      sha256: "c".repeat(64),
+      asset: { w: 3840, h: 2160, mime: "video/mp4", size: 1 },
+    };
+    const [a] = layout([wide], { x: 0, y: 0 });
+    const [b] = layout([file("video/mp4")], { x: 0, y: 0 });
+    expect(a!.w).toBe(b!.w);
+    expect(a!.h).toBe(b!.h);
+  });
+
+  it("still measures a photograph, which is the one whose shape is its bytes", () => {
+    const [portrait] = layout([image(800, 1200)], { x: 0, y: 0 });
+    const [landscape] = layout([image(1200, 800)], { x: 0, y: 0 });
+    expect(portrait!.h).toBeGreaterThan(portrait!.w);
+    expect(landscape!.w).toBeGreaterThan(landscape!.h);
+  });
+
+  it("is still one item type for all four, whatever the object", () => {
+    // The line most likely to grow a type, and the reason it must not is a
+    // data-loss argument rather than a taste one (D-46 section 2).
+    for (const mime of ["application/pdf", "video/mp4", "audio/mpeg", "image/png"]) {
+      expect(layout([file(mime)], { x: 0, y: 0 })[0]!.type).toBe("polaroid");
+    }
+  });
+
   it("puts one thing where it was put", () => {
     const [item] = layout([image()], { x: 120, y: -40 });
     // Jittered, because nothing arrives straight — but on the spot.

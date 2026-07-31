@@ -25,7 +25,7 @@ import {
   snapshot,
 } from "@/crdt/doc";
 import * as ops from "@/crdt/ops";
-import { SCHEMA_VERSION } from "@/crdt/schema";
+import { readAsset, SCHEMA_VERSION } from "@/crdt/schema";
 import {
   bringToFront,
   commitStrokes,
@@ -77,7 +77,7 @@ import { variantFor } from "@/platform/types";
 import { Cork } from "@/render/cork";
 import { Culler } from "@/render/cull";
 import { BoardInkLayer } from "@/render/ink/board";
-import { DomItemLayer, type AssetView } from "@/render/items/dom";
+import { DomItemLayer, NO_FACTS, type AssetFacts, type AssetView } from "@/render/items/dom";
 import { NO_AGEING, WALL_CLOCK } from "@/render/items/wear";
 import { Lod, READING_ZOOM } from "@/render/lod";
 import { FrameLoop } from "@/render/loop";
@@ -394,6 +394,64 @@ async function boot(): Promise<void> {
     // mentioned. Both are blank, and the difference is one repaint.
     return { url: "", phase: assets.phase(sha256), fraction: assets.fraction(sha256) };
   };
+  /**
+   * What a document says it is called — the derived local index of Q-211.
+   *
+   * Local because that is the answer: a title never enters the document, never
+   * crosses the wire and is never written down, so a machine holding no bytes
+   * has none and that is the intended state. `""` means asked and there is not
+   * one; absent means not yet asked.
+   *
+   * In memory only. It is rebuilt by asking the shell again on the next boot,
+   * which costs one structure load per case file the person actually looks at —
+   * and is what makes this the same code path for a paste, a transfer that has
+   * just committed, a board reopened tomorrow and an opened bundle.
+   */
+  const titles = new Map<string, string>();
+  /**
+   * What the *document* says an asset is, for the renderer to choose a face from
+   * (D-46 section 2) and write a label out of.
+   *
+   * Read through on every ask rather than mirrored into the scene, and that is
+   * deliberate: nothing observes `board.assets`, so a cached copy would have no
+   * way of learning that a peer's record had landed. A `Y.Map` get and a
+   * coercion per bind of an asset item is a great deal cheaper than the write
+   * this sits in front of.
+   *
+   * The one side effect is the title probe, and it is the same shape as
+   * `assetUrl`'s want: the layer that already decides what to mount is a better
+   * answer to "which documents are worth reading off the disk" than a second
+   * opinion about it. Asked once per hash — `titles.set` before the await, so a
+   * board of forty folders is forty probes and not forty a frame.
+   */
+  const assetFacts = (sha256: string): AssetFacts => {
+    const map = board.assets.get(sha256);
+    const record = map ? readAsset(sha256, map) : null;
+    if (record === null) return NO_FACTS;
+    const title = titles.get(sha256);
+    if (title === undefined && record.kind === "document" && assets.isReady(sha256)) {
+      titles.set(sha256, "");
+      void native
+        .documentTitle(sha256)
+        .then((found) => {
+          if (!found) return;
+          titles.set(sha256, found);
+          // The record did not change, so nothing else would have redrawn it.
+          refreshAsset(sha256);
+        })
+        .catch(() => {
+          // A shell that cannot answer is a folder with no title on it, which
+          // is already three quarters of them (D-47). Nothing to report.
+        });
+    }
+    return {
+      kind: record.kind,
+      name: record.origName,
+      title: title ?? "",
+      duration: record.duration,
+      pages: record.pages,
+    };
+  };
   /** Phase 3, after the torsion: the note being written on, laid flat (T-178). */
   const flatten = new Flatten();
   /**
@@ -404,7 +462,7 @@ async function boot(): Promise<void> {
    * `onInput` is wired to the document in T-180; for now the field is a
    * scratchpad, and closing it throws the text away.
    */
-  const items = new DomItemLayer(world.layers.world, assetUrl, {
+  const items = new DomItemLayer(world.layers.world, assetUrl, assetFacts, {
     /**
      * Straight to the document, not queued to phase 9 like a tool's writes.
      *

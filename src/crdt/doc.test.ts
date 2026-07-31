@@ -24,7 +24,8 @@ import {
 } from "@/crdt/doc";
 import { applyPersisted } from "@/crdt/ops/load";
 import { createItems, deleteItems } from "@/crdt/ops/items";
-import { assetKind, readAsset, SCHEMA_VERSION } from "@/crdt/schema";
+import { readAsset, SCHEMA_VERSION } from "@/crdt/schema";
+import { assetKind } from "@/lib/objects";
 
 const PHOTO = "a".repeat(64);
 const OTHER = "b".repeat(64);
