@@ -43,23 +43,16 @@ import {
   FRAME_SIDE,
 } from "@/lib/polaroid";
 import { rotateIn, type Point } from "@/lib/rotate";
+import { grainPosition, paperGrainUrl, stockBase, stockRuling } from "@/render/items/paper";
 import {
-  defaultStock,
-  grainPosition,
-  paperGrainUrl,
-  sheetTint,
-  stockBase,
-  stockRuling,
-} from "@/render/items/paper";
+  sheetEdgeOf,
+  stockOf,
+  tapeOf,
+  tintOf,
+  tornOf,
+} from "@/render/items/style";
 import { cornerCurl, cornerFace, CURL_PROPS, FACE_PROPS } from "@/render/items/curl";
-import {
-  edgePoints,
-  EDGE_PROPS,
-  insideEdge,
-  sheetEdge,
-  tearEdge,
-  type SheetEdge,
-} from "@/render/items/edge";
+import { edgePoints, EDGE_PROPS, insideEdge } from "@/render/items/edge";
 import { ItemInk } from "@/render/ink/canvas";
 import { TextEditor, type ItemEditorHooks } from "@/render/items/editor";
 import { clearHand, writeHand } from "@/render/items/hand";
@@ -91,7 +84,6 @@ import {
   TAPE_WIDTH,
   tapeAngle,
   tapeClipPath,
-  tapedCorners,
   tapeFlip,
 } from "@/render/items/tape";
 import { DETAIL, type Tier } from "@/render/lod";
@@ -256,13 +248,9 @@ export interface Silhouette {
   readonly n: number;
 }
 
-function sheetEdgeOf(cold: ItemCold, wear: number): SheetEdge {
-  const worn = Math.round(wear * 100) / 100;
-  const ear = dogEarOf(cold.seed, worn);
-  const fold =
-    ear.amount > 0 ? { corner: ear.corner, depth: Math.round(ear.depth * 10) / 10 } : null;
-  return sheetEdge(defaultStock(cold.type, cold.seed), cold.seed, fold);
-}
+// `sheetEdgeOf` moved to `render/items/style.ts` with the other four (T-225):
+// it resolves a stock, and there is now one place that knows what resolving a
+// stock means.
 
 interface View {
   readonly el: HTMLDivElement;
@@ -704,7 +692,7 @@ class PolaroidView implements View {
     this.caption.classList.toggle("is-empty", cold.text.length === 0);
     // Inline, so `items.css` cannot reach it — see the same four lines in
     // `PaperView.bind`.
-    this.el.style.filter = plain ? "none" : sheetTint(cold.seed);
+    this.el.style.filter = plain ? "none" : tintOf(cold);
   }
 
   /**
@@ -1141,7 +1129,7 @@ class PaperView implements View {
     this.boundCold = cold;
     this.boundPlain = plain;
     this.boundEar = ear;
-    const stock = defaultStock(cold.type, cold.seed);
+    const stock = stockOf(cold);
     this.el.dataset["stock"] = stock;
     // The silhouette, where its corners are, and where the pulp shows. All of
     // them are the stock's and the seed's, so all of them are written here
@@ -1172,7 +1160,7 @@ class PaperView implements View {
     for (let i = 0; i < EDGE_PROPS.length; i++) {
       this.el.style.setProperty(EDGE_PROPS[i]!, `${(edge.corners[i] ?? 0).toFixed(2)}px`);
     }
-    const tear = tearEdge(stock);
+    const tear = tornOf(cold);
     if (tear) this.el.dataset["tear"] = tear;
     else delete this.el.dataset["tear"];
     // The stock's own colour stays at every tier: it is the flat paper, and it
@@ -1195,7 +1183,7 @@ class PaperView implements View {
     this.grain.style.backgroundPosition = grainPosition(cold.seed);
     // A per-sheet hue-rotate is its own compositing pass, for a tint that is not
     // distinguishable from the cork at this size.
-    this.surface.style.filter = plain ? "none" : sheetTint(cold.seed);
+    this.surface.style.filter = plain ? "none" : tintOf(cold);
     writeHand(this.body, cold.text, cold.seed, plain);
   }
 
@@ -1902,7 +1890,7 @@ export class DomItemLayer implements ItemLayer {
       // One question, two answers off it. Nothing pinned is taped (`tape.ts`),
       // and a taped corner does not curl (`curl.ts`) — so asking twice would be
       // two chances to disagree about the same sheet.
-      const taped = tapedCorners(cold.seed, scene.pinCount(id));
+      const taped = tapeOf(cold, scene.pinCount(id));
       view.setTape(cold.seed, taped);
       // `view.folded` and not a second `dogEarOf`, for the reason directly above:
       // the bind a few lines up has already decided whether this sheet has a fold
