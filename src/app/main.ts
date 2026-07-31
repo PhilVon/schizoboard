@@ -3037,6 +3037,17 @@ async function boot(): Promise<void> {
       // And the match a search flew you to (Q-151) — same painter, same amber,
       // separate lifetime.
       found,
+      /**
+       * And every other match, wearing a faint border for as long as the search
+       * is open (T-236, Q-176).
+       *
+       * The `Search` itself, which is already the shape the overlay asks for.
+       * Not `search.ids` — a getter call here would hand over the array and
+       * lose the version beside it, and the version is the whole reason a
+       * board with six borders on it does not restroke a full-viewport canvas
+       * sixty times a second.
+       */
+      search,
     );
     hud.update(frame.now);
     if (missing.count > 0 && frame.now - noticeSweptAt > NOTICE_SWEEP_MS) {

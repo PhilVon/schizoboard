@@ -189,6 +189,57 @@ export interface FlashSource {
 }
 
 /**
+ * Everything a live search matched — `state/search.ts`, which is this shape.
+ *
+ * A version rather than a comparison of the list: this is asked on every frame
+ * and the answer changes at the rate somebody types, so the cheap question is
+ * "is this the same answer as last frame" and the expensive one is "how is it
+ * different". The same bargain `Selection.version` already makes.
+ */
+export interface MatchSource {
+  /** Matching item ids, in reading order. Empty when nothing is being sought. */
+  readonly ids: readonly string[];
+  readonly version: number;
+}
+
+/**
+ * The faint border round the *other* matches — T-236, Q-176.
+ *
+ * > Just to mark the item it travelled to. Perhaps a faint border to identify
+ * > others that may be on screen.
+ *
+ * DESIGN section 11.2 asked whether search should mark matches plural and left
+ * it open; that is the answer, and *faint* is the whole specification. The
+ * camera flies to one match and flashes it, and this says: and those, and
+ * those. It is a thing you notice about what is already in front of you, not a
+ * device for finding what is not — DESIGN section 2.5 will not have a search
+ * putting a view of the board on the board, and a border that shouted would be
+ * a filter drawn in a different medium.
+ *
+ * Amber, like the flash, because these are the same kind of thing as the one
+ * that just flashed and a mark in the selection family would say "you have
+ * these selected". Dark under pale over at low alpha, for the reason every
+ * other mark on this canvas is: no single colour is legible on cork, on an
+ * off-white polaroid frame and on a photograph, and *faint* must not mean
+ * *invisible on half the board*.
+ *
+ * It hugs the sheet — a smaller stand-off than the flash's, which starts at 4
+ * and opens to 14 as it fades. A quiet mark at the pulse's own radius would
+ * read as a flash that had stalled.
+ *
+ * The weight was chosen off a ladder rather than by feel — six notes, four of
+ * them matching, rendered at 0.70, 0.55, 0.40 and 0.28. One value of "faint" is
+ * unjudgeable: 0.70 competes with the selection outline, and at 0.28 I could no
+ * longer tell a matched sheet from a bare one at a glance, which is a mark that
+ * costs a canvas pass and says nothing. 0.40 is the rung where it is quiet and
+ * still legible.
+ */
+const MATCH_UNDER = "rgba(30, 18, 6, 0.4)";
+const MATCH_OVER = "rgba(255, 186, 74, 0.4)";
+const MATCH_WIDTH = 1.25;
+const MATCH_PAD = 2;
+
+/**
  * The string run being drawn. The cotton red of a real string, so the run
  * reads as the thing it is about to become rather than as UI chrome — but
  * thinner and flat, with no shadow and no highlight, because it is not string
@@ -303,6 +354,14 @@ export class Overlay {
    */
   private cameraVersion = -1;
   private selectionVersion = -1;
+  /**
+   * The search answer the borders on the canvas belong to.
+   *
+   * `-1` because a fresh `Search` is already on 0 and its empty answer is a
+   * real one — the frame a search closes has to clear, and it says so by
+   * bumping the version to an empty list rather than by disappearing.
+   */
+  private matchesVersion = -1;
   private hadMarquee = false;
   /** The candidate ring changes with nothing else: dragging a pin across a
    *  still board moves no item, no camera and no selection. */
@@ -451,6 +510,16 @@ export class Overlay {
      * amber, separate lifetimes — `state/flash.ts` has the argument.
      */
     found: FlashSource | null = null,
+    /**
+     * Every match of the search that is currently open — T-236.
+     *
+     * All of them, including the one `found` is flashing. Not "the others":
+     * the flash lasts 800ms and the search does not, so special-casing the
+     * current match would take its border away the moment the pulse ended and
+     * leave the one item you are actually looking at as the only unmarked
+     * match on the board.
+     */
+    matches: MatchSource | null = null,
   ): void {
     const ctx = this.ctx;
     if (!ctx) return;
@@ -485,9 +554,17 @@ export class Overlay {
     // the last of them expires.
     const wantsFlash =
       (flashes !== null && !flashes.isEmpty) || (found !== null && !found.isEmpty);
+    // Standing rather than fading, so unlike a flash its mere presence is not a
+    // reason to redraw: a border on four notes nobody is touching is the same
+    // picture every frame. What makes it stale is the answer changing, which is
+    // a keystroke, or a matched item moving.
+    const wantsMatches = matches !== null && matches.ids.length > 0;
     const stale =
       wantsMarquee ||
       wantsFlash ||
+      (matches !== null && matches.version !== this.matchesVersion) ||
+      // A match dragged by a hand or by a collaborator carries its border.
+      (wantsMatches && (dirty.all || dirty.items.size > 0)) ||
       // The frame the last one expires on still has it on the canvas.
       this.hadFlash ||
       wantsPending ||
@@ -558,6 +635,7 @@ export class Overlay {
     this.highlighted = highlight;
     this.cameraVersion = camera.version;
     this.selectionVersion = selection.version;
+    if (matches !== null) this.matchesVersion = matches.version;
     if (!stale) return;
 
     // The clear is deferred rather than done up front, so that a frame which
@@ -589,6 +667,11 @@ export class Overlay {
     // Straight after the halo and before every other piece of chrome, so a
     // string that is both hovered and selected still reads as selected first.
     if (wantsThreads && this.drawThreads(ctx, camera, scene, ropes, hoveredPin)) drew = true;
+    // Under both flashes, so that the one match the camera flew to reads as the
+    // pulse over its own quiet border rather than as a border drawn across a
+    // pulse. They are the same colour, and at these alphas the order is close to
+    // invisible — it is stated so that it is a decision.
+    if (wantsMatches && this.drawMatches(ctx, camera, scene, matches.ids)) drew = true;
     // Under the selection outline rather than over it: a flash is transient and
     // the selection is a fact, and an amber ring painted across the outline of
     // something you have hold of would make the two read as one confused mark.
@@ -1058,6 +1141,63 @@ export class Overlay {
       ctx.stroke();
     }
     return true;
+  }
+
+  /**
+   * The faint border round everything a live search matched — T-236, Q-176.
+   *
+   * The same box the flash draws and the same amber, at half the weight and a
+   * tighter stand-off, with no fade: this is a standing statement about the
+   * board while a search is open rather than an event. `MATCH_UNDER` and
+   * `MATCH_OVER` carry the alpha in the colour rather than through
+   * `globalAlpha`, because unlike a flash it does not vary — two constant
+   * strings, no per-frame arithmetic and no `save`/`restore` for an alpha that
+   * is never anything else.
+   *
+   * **Items only.** Nothing else on the board holds prose — strokes are packed
+   * points, a pin has a colour and a kind — so there is no other shape a match
+   * can be (`state/search.ts` says the same thing from the other end).
+   *
+   * Off-screen matches are skipped rather than clamped to the edge. Q-176's
+   * third option was a tick at the viewport border for exactly those, and the
+   * answer was the narrower one: this marks what is in front of you.
+   */
+  private drawMatches(
+    ctx: CanvasRenderingContext2D,
+    camera: Camera,
+    scene: Scene,
+    ids: readonly string[],
+  ): boolean {
+    let drew = false;
+    for (const id of ids) {
+      const slot = scene.slotOf(id);
+      // A collaborator can delete a note between the walk and this frame.
+      if (slot === undefined) continue;
+
+      const scale = carryScale(scene.lift[slot]!);
+      const hw = (scene.w[slot]! * camera.zoom * scale) / 2 + MATCH_PAD;
+      const hh = (scene.h[slot]! * camera.zoom * scale) / 2 + MATCH_PAD;
+      const centre = camera.boardToScreen(scene.renderX(slot), scene.renderY(slot), this.a);
+      const reach = Math.hypot(hw, hh);
+      if (centre.x + reach < 0 || centre.x - reach > camera.width) continue;
+      if (centre.y + reach < 0 || centre.y - reach > camera.height) continue;
+
+      this.clear(ctx);
+      drew = true;
+      ctx.save();
+      ctx.translate(centre.x, centre.y);
+      // The drawn angle, like every other box on this canvas: a match still
+      // swinging on its pin wears its border square to the paper.
+      ctx.rotate(scene.renderRot(slot));
+      ctx.strokeStyle = MATCH_UNDER;
+      ctx.lineWidth = MATCH_WIDTH + 1.5;
+      ctx.strokeRect(-hw, -hh, hw * 2, hh * 2);
+      ctx.strokeStyle = MATCH_OVER;
+      ctx.lineWidth = MATCH_WIDTH;
+      ctx.strokeRect(-hw, -hh, hw * 2, hh * 2);
+      ctx.restore();
+    }
+    return drew;
   }
 
   /**
