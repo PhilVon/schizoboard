@@ -1408,7 +1408,7 @@ textarea.item-field::-webkit-scrollbar {
 /*
  * Not here either: hiding the writing below 15%.
  *
- * DESIGN 6.6 gives the bottom tier "flat coloured rectangles", and this rule was
+ * DESIGN 6.6 gave a bottom tier "flat coloured rectangles", and this rule was
  * that clause. It has been taken out, for two reasons that agree.
  *
  * It buys nothing: D-33 measured a flat rectangle against a flat card and they
@@ -1421,7 +1421,8 @@ textarea.item-field::-webkit-scrollbar {
  * a change of appearance; making the words vanish and return is a glitch, and it
  * was paying for itself with a measurement of zero.
  *
- * The bottom tier keeps its other three clauses, which is where its value is:
- * straight one-pixel chords with no sag, pins hidden, board ink from tile
- * thumbnails. Those are T-199.
+ * Nor do the other three clauses survive: the whole bottom tier went with T-199
+ * on Q-121, and `render/lod.ts` now has exactly two — `full` and `card`. So this
+ * note is about a tier that no longer exists, and is kept only because the
+ * *reasoning* still governs anything that proposes to remove text at a zoom.
  */

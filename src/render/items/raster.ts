@@ -2,12 +2,17 @@
  * Turning the items into pixels — the one part of an image export that has to be
  * invented (D-34).
  *
- * Everything else on this board already draws itself into a canvas at an
- * arbitrary camera: cork, the board-ink tiles, both rope layers and the overlay
- * are all painters that take a camera and draw per-point, which is what keeps a
- * line crisp at every zoom and what means an *export* camera costs them nothing
- * new. Only the items are DOM, so "how does a board become an image" is one
- * question rather than five, and this file is that question.
+ * Most of this board already draws itself into a canvas at an arbitrary camera:
+ * cork, the board-ink tiles, both rope layers and the overlay are all painters
+ * that take a camera and draw per-point, which is what keeps a line crisp at
+ * every zoom and what means an *export* camera costs them nothing new.
+ *
+ * D-34 and D-37 put it as "only the items are DOM", and that sentence — carried
+ * into this header, where it was load-bearing — was not true. `render/pins/`
+ * is DOM as well, and had no painter, so every image export came back without a
+ * pushpin in it until T-214 wrote the sixth one. The items were the *hard*
+ * question rather than the only one, and this file is still that question; the
+ * count is what was wrong.
  *
  * The route, measured before it was chosen: clone the item subtree into an
  * `<svg><foreignObject>`, serialise it, load it as a `data:` URL and draw it to
