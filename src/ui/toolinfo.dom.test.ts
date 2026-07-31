@@ -1,25 +1,27 @@
 /**
  * @vitest-environment happy-dom
  *
- * The bar as a box: that it draws what the policy hands it, that a modifier
- * going down brightens exactly the rows that need it, that a frame which
- * changed nothing writes nothing, and that it takes no press.
+ * The bar as a box: that it rests on its chips, that holding a key swaps them
+ * for what that key unlocks, that a frame which changed nothing writes nothing,
+ * and that it takes no press.
  *
- * What the rows *say* is `toolhint.test.ts`'s, with no DOM in it. This file
- * only asks whether the box shows them.
+ * What the rows *say* and which of them rest is `toolhint.test.ts`'s, with no
+ * DOM in it. This file only asks whether the box shows them.
  */
 
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { EraserTool } from "@/state/tools/eraser";
 import { MarkerTool } from "@/state/tools/marker";
+import { PinTool } from "@/state/tools/pin";
 import { SelectTool } from "@/state/tools/select";
-import { AMBIENT, BOARD, UNSAVED_LINE } from "@/ui/toolhint";
+import { BOARD, restingRows, UNSAVED_LINE } from "@/ui/toolhint";
 import { ToolInfo } from "@/ui/toolinfo";
 
 const SELECT = new SelectTool().hint;
 const MARKER = new MarkerTool().hint;
 const ERASER = new EraserTool().hint;
+const PIN = new PinTool().hint;
 
 let host: HTMLElement;
 let bar: ToolInfo;
@@ -36,10 +38,20 @@ function toolRows(): HTMLElement[] {
   return [...host.querySelectorAll<HTMLElement>(".toolinfo-tool .toolinfo-row")];
 }
 
+/** Band 3 when a key is down: the rows it unlocked. */
 function liveKeys(): string[] {
-  return toolRows()
+  return [...host.querySelectorAll<HTMLElement>(".toolinfo-held .toolinfo-row")]
     .filter((r) => r.classList.contains("is-live"))
     .map((r) => r.querySelector(".toolinfo-keys")?.textContent ?? "");
+}
+
+/** Band 3 at rest: the keys worth holding, and which of them are down. */
+function chips(): string[] {
+  return [...host.querySelectorAll(".toolinfo-chip")].map((c) => c.textContent ?? "");
+}
+
+function litChips(): string[] {
+  return [...host.querySelectorAll(".toolinfo-chip.is-on")].map((c) => c.textContent ?? "");
 }
 
 beforeEach(() => {
@@ -65,37 +77,122 @@ describe("the tool info bar", () => {
   it("says which tool is in hand, and what it plainly does", () => {
     bar.sync(SELECT, held());
     expect(lead()).toBe(`Select (V) — ${SELECT.verb}`);
-    expect(toolRows()).toHaveLength(SELECT.rows.length + AMBIENT.length);
+  });
+
+  /**
+   * Q-194, and the whole of why the bar is short. At rest it shows the four
+   * gestures no key could reveal and names the three keys that would reveal the
+   * rest — not the twelve rows it used to say always.
+   */
+  it("rests on the gestures no key hides, and names the keys that hide the others", () => {
+    bar.sync(SELECT, held());
+    expect(toolRows().map((r) => r.querySelector(".toolinfo-keys")?.textContent)).toEqual([
+      "R+drag",
+      "double-click a pin",
+      "wheel",
+      "1-9",
+    ]);
+    expect(chips()).toEqual(["Shift", "Ctrl", "Alt"]);
+    expect(litChips()).toEqual([]);
+    expect(liveKeys()).toEqual([]);
   });
 
   it("swaps the whole line when the tool changes", () => {
     bar.sync(SELECT, held());
     bar.sync(MARKER, held());
     expect(lead()).toBe(`Marker (M) — draw`);
-    expect(toolRows()).toHaveLength(MARKER.rows.length + AMBIENT.length);
-    expect(toolRows()[0]?.textContent).toContain("Ctrl at pen-down");
+    // The pen's two plain rows; its Ctrl row is behind the chip.
+    expect(toolRows().map((r) => r.querySelector(".toolinfo-keys")?.textContent)).toEqual([
+      "[ and ]",
+      "Esc",
+    ]);
   });
 
   describe("a row brightens while its keys are down", () => {
     /** The scissors — the gesture nothing on this board suggests, which is why
      *  the lighting exists at all (D-44). */
-    it("lights the cut only with both of Ctrl and Alt", () => {
+    it("brings the cut back only with both of Ctrl and Alt", () => {
       bar.sync(SELECT, held("ControlLeft"));
       expect(liveKeys()).not.toContain("Ctrl+Alt+click a string");
       bar.sync(SELECT, held("ControlLeft", "AltLeft"));
       expect(liveKeys()).toContain("Ctrl+Alt+click a string");
     });
 
-    it("lights every Shift row of the tool in hand, and nothing else", () => {
+    it("shows every Shift row of the tool in hand, and nothing else", () => {
       bar.sync(SELECT, held("ShiftRight"));
       expect(liveKeys()).toEqual(["Shift+click", "Shift+drag", "Shift+Delete"]);
+      // The chips have given the line over to what they were standing for.
+      expect(chips()).toEqual([]);
     });
 
-    it("puts them out again when the key comes up", () => {
+    it("gives the chips back when the key comes up", () => {
       bar.sync(SELECT, held("AltLeft"));
       expect(liveKeys().length).toBeGreaterThan(0);
       bar.sync(SELECT, held());
       expect(liveKeys()).toEqual([]);
+      expect(chips()).toEqual(["Shift", "Ctrl", "Alt"]);
+    });
+
+    /**
+     * Leaning on Shift with a pen in hand. A pen has nothing on Shift and
+     * neither do the ambient three, so Shift is not offered as a chip at all —
+     * and the line keeps standing rather than going blank, which is what a bar
+     * that emptied on an unbound key would read as.
+     */
+    it("keeps the line standing when a key with nothing behind it goes down", () => {
+      bar.sync(MARKER, held("ShiftLeft"));
+      expect(liveKeys()).toEqual([]);
+      expect(chips()).toEqual(["Ctrl", "Alt"]);
+      expect(litChips()).toEqual([]);
+    });
+
+    /**
+     * The chip lights on a key that is offered but has revealed nothing yet, and
+     * the pin tool is where that happens: its only `Ctrl` gesture is the ambient
+     * cut, which wants `Alt` as well. So holding `Ctrl` there says *this key is
+     * half of something* — press `Alt` and the cut appears — which is the one
+     * state a bar without chips could not express at all.
+     */
+    /**
+     * The chip line is already on screen and only which chip is lit changes —
+     * so the guard that stops an unchanged frame writing has to count the lit
+     * ones, not just which chips exist. Cheaper versions of it compare the chips
+     * alone, return early, and leave every chip dark for as long as the key is
+     * down.
+     */
+    it("lights a chip on a line that was already drawn", () => {
+      bar.sync(PIN, held());
+      expect(litChips()).toEqual([]);
+      bar.sync(PIN, held("ControlLeft"));
+      expect(litChips()).toEqual(["Ctrl"]);
+      bar.sync(PIN, held());
+      expect(litChips()).toEqual([]);
+    });
+
+    it("lights a chip whose key is offered but has not revealed anything yet", () => {
+      bar.sync(PIN, held("ControlLeft"));
+      expect(chips()).toEqual(["Ctrl", "Alt"]);
+      expect(litChips()).toEqual(["Ctrl"]);
+      expect(liveKeys()).toEqual([]);
+
+      // Both down brings the cut back — and the two `Alt` rows with it, since
+      // `Alt` is now down too and the chips name keys rather than combinations.
+      bar.sync(PIN, held("ControlLeft", "AltLeft"));
+      expect(liveKeys()).toEqual([
+        "Alt+drag a pin",
+        "Alt+click a pin",
+        "Ctrl+Alt+click a string",
+      ]);
+    });
+
+    it("keeps the plain gestures visible under whatever is held", () => {
+      bar.sync(SELECT, held("ControlLeft"));
+      expect(toolRows().map((r) => r.querySelector(".toolinfo-keys")?.textContent)).toEqual([
+        "R+drag",
+        "double-click a pin",
+        "wheel",
+        "1-9",
+      ]);
     });
 
     /** Rows are rebuilt when the tool changes, so the live bits have to be
@@ -154,7 +251,9 @@ describe("the tool info bar", () => {
       bar.sync(SELECT, held(), { unsaved: true });
       expect(lead().startsWith(UNSAVED_LINE)).toBe(true);
       expect(lead()).toContain(SELECT.verb);
-      expect(toolRows()).toHaveLength(SELECT.rows.length + AMBIENT.length);
+      // That board still takes every gesture, so it rests exactly as usual.
+      expect(toolRows()).toHaveLength(restingRows(SELECT).length);
+      expect(chips()).toEqual(["Shift", "Ctrl", "Alt"]);
       expect(host.querySelector(".toolinfo-lead")?.classList.contains("is-warning")).toBe(true);
     });
 
@@ -163,6 +262,8 @@ describe("the tool info bar", () => {
       expect(lead()).toContain("MADE BY A NEWER VERSION");
       expect(lead()).not.toContain(SELECT.verb);
       expect(toolRows()).toEqual([]);
+      // Not the chips either: every gesture behind them is a write.
+      expect(chips()).toEqual([]);
       // The board line stays: the camera, the search and the exports are the
       // whole of what you can still do with a board you may only look at.
       expect(host.querySelectorAll(".toolinfo-board .toolinfo-row")).toHaveLength(BOARD.length);

@@ -73,6 +73,64 @@ export function rows(hint: ToolHint): readonly ToolHintRow[] {
   return [...hint.rows, ...AMBIENT];
 }
 
+/** The three, in the order a chip line names them. */
+export const MODIFIERS = ["Shift", "Control", "Alt"] as const;
+export type Modifier = (typeof MODIFIERS)[number];
+
+/** How a modifier is written on a chip — `Control` is `Ctrl` everywhere else on
+ *  this board, and the chip is the thing a reader matches against a key cap. */
+export function modifierLabel(name: Modifier): string {
+  return name === "Control" ? "Ctrl" : name;
+}
+
+/**
+ * The rows a tool offers with nothing held.
+ *
+ * These are the whole of what the bar says at rest, and the reason it can be
+ * short: two thirds of what a tool implements is behind a modifier, and a
+ * gesture you are not holding the key for is a gesture you are not about to
+ * make. Naming all of them at rest is what made this bar six lines tall — the
+ * same shape of mistake as the line it replaced, which said everything always.
+ *
+ * Nothing is lost, because a row with no `holds` has no key to reveal it: these
+ * are exactly the ones that could never appear any other way.
+ */
+export function restingRows(hint: ToolHint): readonly ToolHintRow[] {
+  return rows(hint).filter((row) => (row.holds ?? []).length === 0);
+}
+
+/**
+ * Which modifiers have something behind them, in [`MODIFIERS`] order.
+ *
+ * Each one separately, including the pair `Ctrl`+`Alt`+click needs: the chips
+ * say which *keys* are worth holding, not which combinations exist. Holding one
+ * of a pair then reveals nothing and the other chip is still lit beside it,
+ * which is the only hint the cut needs — and is more than the board gave it
+ * before, which was nothing at all.
+ */
+export function modifiers(hint: ToolHint): readonly Modifier[] {
+  const seen = new Set<string>();
+  for (const row of rows(hint)) for (const name of row.holds ?? []) seen.add(name);
+  return MODIFIERS.filter((name) => seen.has(name));
+}
+
+/** Is this modifier down? The same two-codes-per-word mapping [`live`] uses. */
+export function heldModifier(name: Modifier, held: ReadonlySet<string>): boolean {
+  return held.has(`${name}Left`) || held.has(`${name}Right`);
+}
+
+/**
+ * What holding these keys reveals — every row all of whose modifiers are down.
+ *
+ * Empty is the ordinary answer, and it has two quite different causes the caller
+ * has to tell apart: nothing is held, or something is held that this tool has
+ * nothing behind. Both fall back to the chip line — a bar that went blank
+ * because you leaned on `Shift` in the pen tool would read as broken.
+ */
+export function revealed(hint: ToolHint, held: ReadonlySet<string>): readonly ToolHintRow[] {
+  return rows(hint).filter((row) => live(row, held));
+}
+
 /**
  * Is every key this row needs down right now?
  *
