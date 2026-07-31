@@ -86,6 +86,15 @@ export interface PasteOptions {
   cursor: () => { x: number; y: number } | null;
   /** The ids of everything a paste created, in order. */
   onCreated?: (itemIds: string[]) => void;
+  /**
+   * The board's own clipboard, asked first — true means this paste was its
+   * paper and has already been put down (`app/clipboard.ts`).
+   *
+   * A question rather than a second `paste` listener, because two listeners
+   * deciding the same thing independently are ordered only by the order they
+   * happened to be registered in.
+   */
+  claim?: (data: DataTransfer | null, at: BoardPoint) => boolean;
 }
 
 /** Everything the clipboard held, read *synchronously* — see `onPaste`. */
@@ -144,6 +153,15 @@ export class Paste {
   private onPaste(event: ClipboardEvent): void {
     if (isTextTarget(event.target)) return;
     const data = event.clipboardData;
+    // Asked before anything is read out of the transfer: a token of ours on the
+    // system clipboard means the last copy on this machine was a piece of this
+    // board, and what should land is the paper rather than the text describing
+    // it. Anything copied anywhere since takes the token with it, which is the
+    // whole of how the two clipboards decide who is more recent.
+    if (this.options.claim?.(data, this.pastePoint()) === true) {
+      event.preventDefault();
+      return;
+    }
     const clip: Snapshot = {
       files: data ? Array.from(data.files) : [],
       text: data?.getData("text/plain") ?? "",
