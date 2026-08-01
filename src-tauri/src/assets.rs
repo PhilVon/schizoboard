@@ -52,7 +52,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, SystemTime};
 
 use image::imageops::FilterType;
-use image::{DynamicImage, ImageDecoder, ImageReader, Limits};
+use image::{DynamicImage, ImageDecoder, ImageEncoder, ImageReader, Limits};
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 // `unversioned` is ureq's own word for "this API does not follow semver yet".
@@ -234,7 +234,7 @@ const OVERHEAD: u64 = 8 * 1024 * 1024;
 /// [`AssetStore::commit_received`], a bundle entry.
 ///
 /// **It cannot bound a photograph, and nothing byte-shaped can.** An 11 MiB
-/// JPEG of 121 megapixels asked for 794 MiB (D-54), because the cost of a
+/// JPEG of 121 megapixels asked for 794 MiB (D-54, and 391 MiB now), because the cost of a
 /// picture is its pixels rather than its bytes. A JPEG's compression ratio is a
 /// property of the picture — sky against foliage — so no byte figure predicts
 /// it. That is [`decode_peak`]'s job, and [`MAX_PICTURE_PEAK`] is the ceiling
@@ -250,83 +250,121 @@ pub(crate) const MAX_ASSET_BYTES: u64 = 768 * 1024 * 1024;
 ///
 /// `imageops::resize` runs vertically into an `Rgba32FImage` and then
 /// horizontally back out of it, so the middle of every downscale is sixteen
-/// bytes a pixel even for a JPEG that is three. It is not a rounding error: at
-/// 121 megapixels this term is 430 MiB against the decoded surface's 346, which
-/// makes it the **largest** thing in [`decode_peak`] for any photograph anybody
-/// is realistically going to paste.
+/// bytes a pixel even for a JPEG that is three. At 121 megapixels that was
+/// 430 MiB against a decoded surface of 346 — **the largest single thing in a
+/// picture ingest, and not the picture** — which is why [`downscale`] stops
+/// using this filter past a 2× reduction (T-310).
+///
+/// It is still here because the mild reductions that keep `resize` still pay it.
+/// They are bounded by construction: a picture that keeps this filter is inside
+/// twice the variant's edge, so the term cannot exceed 5120 × 2560 × 16.
 const RESAMPLE_BYTES_PER_PIXEL: u64 = 16;
 
 /// What building an asset's variants asks the machine for — the other half of
 /// the ingest road, and the half [`disk_ingest_peak`] cannot see.
 ///
-/// **Three terms, and none of them is the file.** D-57 measured nine pictures
-/// on the rig D-55 and D-56 used — the real application, one fresh process per
-/// file, private bytes at 20 ms — and this predicts every one of them from
-/// above, by between 0.9 and 2.3 MiB:
+/// **None of the terms is the file.** D-57 and D-58 measured ten pictures on the
+/// rig D-55 and D-56 used — the real application, one fresh process per file,
+/// private bytes at 20 ms — and this predicts every one of them from above:
 ///
-/// | picture | depth | measured | this says |
-/// |---|---|---|---|
-/// | 4000 × 4000 | 8-bit | 226.7 MiB | 229.0 |
-/// | 8000 × 8000 | 8-bit | 521.6 | 523.3 |
-/// | 11000 × 11000 | 8-bit | 803.4 | 804.3 |
-/// | 22000 × 5500 | 8-bit | 574.0 | 589.5 |
-/// | 6000 × 6000 | 8-bit + alpha | 403.7 | 405.4 |
-/// | 3000 × 3000 | 16-bit + alpha | 242.2 | 244.2 |
-/// | 4500 × 4500 | 16-bit + alpha | 387.3 | 389.1 |
-/// | 6000 × 6000 | 16-bit + alpha | 566.8 | 568.5 |
-/// | 3000 × 3000 | 16-bit | 212.5 | 214.5 |
+/// | picture | depth | measured | this says | was, before T-310 |
+/// |---|---|---|---|---|
+/// | 4000 × 4000 | 8-bit | 226.6 MiB | 247.8 | 226.7 |
+/// | 8000 × 8000 | 8-bit | 227.5 | 229.5 | 521.6 |
+/// | 11000 × 11000 | 8-bit | 391.4 | 393.4 | 803.4 |
+/// | 22000 × 5500 | 8-bit | 363.1 | 393.4 | 574.0 |
+/// | 14142 × 14142 | 8-bit | 618.9 | 620.5 | *would not arrive* |
+/// | 6000 × 6000 | 8-bit + alpha | 277.7 | 292.0 | 403.7 |
+/// | 3000 × 3000 | 16-bit + alpha | 241.8 | 390.2 | 242.2 |
+/// | 4500 × 4500 | 16-bit + alpha | 387.0 | 535.1 | 387.3 |
+/// | 6000 × 6000 | 16-bit + alpha | 451.5 | 480.2 | 566.8 |
+/// | 3000 × 3000 | 16-bit | 212.1 | 252.0 | 212.5 |
 ///
-/// The 4:1 row is the exception at 15.5 MiB over, and deliberately: the variant
-/// term below is the *square* variant, which is the largest one, and a picture
-/// four times wider than it is tall gets a variant a quarter of that size. A
-/// bound may be generous about a shape; it may not be short about one.
+/// The rows that barely moved are the ones under 5120 on their long edge, which
+/// is where `downscale` keeps the old filter on purpose. They are also the rows
+/// this is most generous about, and it does not matter: a picture that small is
+/// nowhere near the ceiling, so the slack cannot bind.
 ///
 ///   - **the surface** is `w × h ×` the decoder's own bytes per pixel, and the
 ///     depth in there is why a *megapixel* ceiling would not have held either:
-///     36 megapixels at sixteen bits costs 567 MiB where 121 megapixels at
-///     eight costs 574. The depth is a property of the picture in exactly the
-///     way the compression ratio is.
-///   - **the intermediate** is the *short* edge times the display variant's
-///     edge, because `resize` filters vertically first into a buffer as wide as
-///     the source and as tall as the variant. The same 121 megapixels cost
-///     803 MiB square and 574 MiB at 4:1 — so the shape decides as well as the
-///     count, and neither of them is a number a person would have guessed.
-///   - **the variant** is the display downscale, in the source's own depth. Its
-///     *encode* is not a term: by the time it runs the intermediate has been
-///     dropped and the encoder writes into the pages it just freed. That only
-///     became true when the PNG road stopped encoding at sixteen bits (see
-///     `write_variant`); before that it cost a fixed 337 MiB and was the peak
-///     of the whole road.
+///     36 megapixels at sixteen bits cost more than 121 at eight. The depth is
+///     a property of the picture in exactly the way the compression ratio is.
+///   - **the intermediate** is zero for anything big, which is what T-310
+///     changed. It used to be the *short* edge times the variant's edge at
+///     sixteen bytes a pixel — `resize` filters vertically into an
+///     `Rgba32FImage` first — and it made the **shape** decide as much as the
+///     count: 121 megapixels cost 803 MiB square and 574 at 4:1. Past a 2×
+///     reduction `downscale` now takes a box average, which allocates nothing
+///     but its result, and those two rows are 391.4 and 363.1 — the same
+///     picture, and the difference is the variant rather than the source.
+///   - **the variant**, twice: the downscale itself and the copy `to_rgb8` or
+///     `to_rgba8` hands the encoder. The *square* variant, which is the largest
+///     at any depth — a bound may be generous about a shape and may not be
+///     short about one, which is the whole of the 4:1 row's 30 MiB.
+///   - **[`PNG_ENCODE_PEAK`]**, on the alpha road only.
 ///
-/// The thumb pass is absent for the same reason: it filters through 256 rather
-/// than 2560, a tenth of the intermediate, against a surface that has not moved.
+/// The thumb pass is not a term. It comes off the display variant rather than
+/// off the original, so there is nothing left in it that scales with the source.
 ///
 /// Saturating throughout, because two of the three terms are a product of
 /// numbers a *file* chose. A bound that wraps to something small is worse than
 /// no bound at all.
-const fn decode_peak(file: u64, w: u64, h: u64, bytes_per_pixel: u64) -> u64 {
+const fn decode_peak(file: u64, w: u64, h: u64, bytes_per_pixel: u64, alpha: bool) -> u64 {
     let surface = w.saturating_mul(h).saturating_mul(bytes_per_pixel);
+    let long_edge = if w > h { w } else { h };
     let short_edge = if w < h { w } else { h };
-    let intermediate = short_edge
-        .saturating_mul(DISPLAY_MAX_EDGE as u64)
-        .saturating_mul(RESAMPLE_BYTES_PER_PIXEL);
+    // Zero for anything big, which is the whole of T-310: past a 2× reduction
+    // `downscale` takes the box average, and a box average allocates nothing but
+    // its own result. What is left is the mild-reduction branch, and it is
+    // bounded rather than merely small — a picture that keeps `resize` is by
+    // definition inside twice the variant's edge, so this can never exceed
+    // 5120 × 2560 × 16.
+    let intermediate = if long_edge >= (DISPLAY_MAX_EDGE as u64) * (BOX_FILTER_FROM as u64) {
+        0
+    } else {
+        short_edge
+            .saturating_mul(DISPLAY_MAX_EDGE as u64)
+            .saturating_mul(RESAMPLE_BYTES_PER_PIXEL)
+    };
+    // Twice: the variant, and the copy the encoder is handed — `to_rgb8` and
+    // `to_rgba8` both allocate, including when the image is already in that
+    // form. The square variant, which is the largest one at any given depth.
     let variant = (DISPLAY_MAX_EDGE as u64)
         .saturating_mul(DISPLAY_MAX_EDGE as u64)
-        .saturating_mul(bytes_per_pixel);
+        .saturating_mul(bytes_per_pixel)
+        .saturating_mul(2);
+    // A PNG chunk carries its own length, so the `png` crate cannot start
+    // writing IDAT until it has compressed all of it — the filtered image and
+    // the deflated image are both in memory, inside the crate, where nothing on
+    // this side can stream them. Only the alpha road pays it, and the colour
+    // type says at probe time whether this picture can take that road.
+    let encode = if alpha { PNG_ENCODE_PEAK } else { 0 };
     file.saturating_add(surface)
         .saturating_add(intermediate)
         .saturating_add(variant)
+        .saturating_add(encode)
         .saturating_add(OVERHEAD)
 }
+
+/// What the `png` crate holds while it encodes a variant, over and above the
+/// variant itself and the copy handed to it.
+///
+/// Rounded up from 81 MiB, the largest of the two alpha runs in D-58, and it is
+/// a constant rather than a multiple because it is the *variant* being encoded
+/// and the variant is always 2560 square at most. It does not scale with the
+/// picture: an eight-bit alpha variant of 25 MiB and a sixteen-bit one of 50
+/// left 80 and 69 MiB unaccounted respectively.
+const PNG_ENCODE_PEAK: u64 = 96 * 1024 * 1024;
 
 /// How much of [`INGEST_MEMORY_BUDGET`] one picture may ask for.
 ///
 /// **This stands where a ceiling would stand, and it is not a ceiling**, because
-/// a picture's cost is three numbers and a ceiling is one. There is no
-/// megapixel figure to write down here: the count, the shape and the depth all
-/// move it, and the two runs that prove it are 121 megapixels costing 803 MiB
-/// one way round and 574 the other, and 36 megapixels costing more than either
-/// at sixteen bits.
+/// a picture's cost is more than one number. There is no megapixel figure to
+/// write down here: the depth moves it as much as the count does, and 36
+/// megapixels at sixteen bits used to cost more than 121 at eight. The *shape*
+/// moved it too, until T-310 — 121 megapixels cost 803 MiB square and 574 at
+/// 4:1 — which is the term this model lost and the one nobody would have
+/// guessed was there.
 ///
 /// **The whole budget, and deliberately not the four fifths [`MAX_ASSET_BYTES`]
 /// holds itself to** (Q-234). The margin on the disk road is there because that
@@ -337,23 +375,23 @@ const fn decode_peak(file: u64, w: u64, h: u64, bytes_per_pixel: u64) -> u64 {
 ///
 /// What it admits, for a square picture and a small file:
 ///
-/// | depth | admitted |
-/// |---|---|
-/// | 8-bit, no alpha — a photograph | about 170 megapixels |
-/// | 8-bit with alpha | about 139 |
-/// | 16-bit with alpha | about 81 |
+/// | depth | admitted | before T-310 |
+/// |---|---|---|
+/// | 8-bit, no alpha — a photograph | about 342 megapixels | 170 |
+/// | 8-bit with alpha | about 228 | 139 |
+/// | 16-bit with alpha | about 107 | 81 |
 ///
-/// **Two of those three rows are past the 512 MiB `image` allows a decode by
-/// default**, which is why [`decode_limits`] exists rather than being tidiness:
-/// without it the crate would quietly refuse a 139-megapixel PNG that this
-/// number admits, after the file was stored and the item was on the board.
+/// **The numbers doubled and this constant did not move**, which is the same
+/// thing D-56 said about [`MAX_ASSET_BYTES`]: `downscale` stopped filtering
+/// through a buffer as wide as the source (T-310, Q-236) and the ceiling
+/// followed the measurement. A 200-megapixel phone photograph — Samsung and
+/// Xiaomi ship them — needed about 1148 MiB and did not arrive under any share
+/// of this budget; it now costs 618 MiB and does.
 ///
-/// A 200-megapixel phone photograph still does **not** fit, and would not have
-/// fitted under any share of this budget: it needs about 1148 MiB, of which 552
-/// is [`RESAMPLE_BYTES_PER_PIXEL`] rather than the picture. Taking that term out
-/// is the next thing to do here and would bring the same photograph to about
-/// 650 MiB (T-310) — the same shape of finding as D-56's, which is that the
-/// number moves when the code does and not before.
+/// **Every one of those three rows is past the 512 MiB `image` allows a decode
+/// by default**, which is why [`decode_limits`] exists rather than being
+/// tidiness: without it the crate would quietly refuse a picture this number
+/// admits, after the file was stored and the item was on the board.
 const MAX_PICTURE_PEAK: u64 = INGEST_MEMORY_BUDGET;
 
 // Pinned where they are defined and not in a test, because these are
@@ -501,7 +539,7 @@ pub enum Error {
     ///
     /// **Not an [`Error::TooLarge`]**, and the distinction is the whole of
     /// T-308: that one is about the file, and an 11 MiB JPEG of 121 megapixels
-    /// asks for 803 MiB. No byte figure predicts a picture, because what a
+    /// asked for 803 MiB. No byte figure predicts a picture, because what a
     /// picture costs is its pixels and their depth (D-54, D-57) — so what this
     /// carries is the picture's own numbers, and what it says is about the
     /// picture. Somebody told the file is too big when the file is 11 MiB will
@@ -1043,6 +1081,42 @@ fn swaps_axes(orientation: u32) -> bool {
     matches!(orientation, 5..=8)
 }
 
+/// Below this reduction a box average is the wrong filter, and above it the
+/// only one worth paying for.
+///
+/// Two, because at two each output pixel covers a whole two-by-two block and the
+/// average is exact. Below it the block is fractional, the box degenerates
+/// towards nearest-neighbour, and it aliases: measured on sixty photographs
+/// against CatmullRom, a 1.2× reduction moves the picture by 4.48 levels out of
+/// 255 with a worst channel of 228, where 2× moves it by 1.30 and 4.3× by 2.24
+/// (D-58).
+///
+/// The split costs nothing, which is the good part: `resize`'s intermediate is
+/// as wide as the *source*, so the mild reductions this keeps it for are exactly
+/// the ones where the source is small enough for it not to matter.
+const BOX_FILTER_FROM: u32 = 2;
+
+/// Downscale, by whichever filter suits the reduction.
+///
+/// `thumbnail` is an exact area average and allocates nothing but its result.
+/// `resize` filters vertically into an `Rgba32FImage` as wide as the source and
+/// as tall as the output, at [`RESAMPLE_BYTES_PER_PIXEL`] — 430 MiB for a
+/// 121-megapixel photograph, which was the largest single thing in an ingest and
+/// the reason a picture's *shape* changed what it cost.
+///
+/// The box average is not a compromise for the reductions it is used at. Over
+/// sixty real photographs at the 4.3× a display variant actually does, it came
+/// out **4.2 per cent sharper** than CatmullRom rather than softer — the filter
+/// in use spreads its window wide when it reduces this far — and moved the
+/// picture by a mean of 1.96 levels out of 255 (D-58, Q-236).
+fn downscale(image: &DynamicImage, edge: u32) -> DynamicImage {
+    if image.width().max(image.height()) >= edge.saturating_mul(BOX_FILTER_FROM) {
+        image.thumbnail(edge, edge)
+    } else {
+        image.resize(edge, edge, FilterType::CatmullRom)
+    }
+}
+
 fn apply_orientation(image: DynamicImage, orientation: u32) -> DynamicImage {
     match orientation {
         2 => image.fliph(),
@@ -1086,6 +1160,11 @@ struct Probed {
     /// a property of the picture, and it moves the cost by nearly three times at
     /// the same pixel count (D-57).
     bytes_per_pixel: u64,
+    /// Whether the decoded surface has an alpha channel at all, which decides
+    /// whether this picture's variant *can* take the PNG road — the expensive
+    /// one. Whether it actually does is `uses_alpha`'s answer and is not known
+    /// until the pixels are read, so a bound has to assume it will.
+    alpha: bool,
 }
 
 /// Dimensions and depth without decoding. Every format here carries both in a
@@ -1107,7 +1186,8 @@ fn probe_picture(bytes: &[u8]) -> Result<Probed> {
         .into_decoder()
         .map_err(|e| Error::Undecodable(e.to_string()))?;
     let (w, h) = decoder.dimensions();
-    let bytes_per_pixel = u64::from(decoder.color_type().bytes_per_pixel());
+    let colour = decoder.color_type();
+    let bytes_per_pixel = u64::from(colour.bytes_per_pixel());
     let (w, h) = if swaps_axes(exif_orientation(bytes)) {
         (h, w)
     } else {
@@ -1117,6 +1197,7 @@ fn probe_picture(bytes: &[u8]) -> Result<Probed> {
         w,
         h,
         bytes_per_pixel,
+        alpha: colour.has_alpha(),
     })
 }
 
@@ -1471,6 +1552,7 @@ impl AssetStore {
                     u64::from(picture.w),
                     u64::from(picture.h),
                     picture.bytes_per_pixel,
+                    picture.alpha,
                 );
                 if asked > MAX_PICTURE_PEAK {
                     return Err(Error::PictureTooLarge {
@@ -1657,19 +1739,25 @@ impl AssetStore {
         // second copy on disk is the one thing a content-addressed store is
         // supposed to make impossible.
         let oversized = image.width() > DISPLAY_MAX_EDGE || image.height() > DISPLAY_MAX_EDGE;
+        // Borrowed when the only reason for a variant is the rotation — cloning
+        // a decoded 40-megapixel image to hand it straight to an encoder is
+        // 160 MB of memcpy for nothing.
+        let display: Cow<'_, DynamicImage> = if oversized {
+            Cow::Owned(downscale(&image, DISPLAY_MAX_EDGE))
+        } else {
+            Cow::Borrowed(&image)
+        };
         if oversized || orientation != 1 {
-            // Borrowed when the only reason for a variant is the rotation —
-            // cloning a decoded 40-megapixel image to hand it straight to an
-            // encoder is 160 MB of memcpy for nothing.
-            let display: Cow<'_, DynamicImage> = if oversized {
-                Cow::Owned(image.resize(DISPLAY_MAX_EDGE, DISPLAY_MAX_EDGE, FilterType::CatmullRom))
-            } else {
-                Cow::Borrowed(&image)
-            };
             self.write_variant(sha256, Variant::Display, &display, JPEG_QUALITY_DISPLAY)?;
         }
 
-        let thumb = image.resize(THUMB_MAX_EDGE, THUMB_MAX_EDGE, FilterType::Lanczos3);
+        // **Off the display variant, not off the original.** Ten times smaller
+        // again from something already filtered is what a mip chain is, and it
+        // is indistinguishable at 256 pixels — while going back to the original
+        // meant a second pass whose cost scaled with the *source*, which is the
+        // one property this whole road was just rid of. When there is no display
+        // variant the original is already inside 2560 and bounded anyway.
+        let thumb = downscale(&display, THUMB_MAX_EDGE);
         self.write_variant(sha256, Variant::Thumb, &thumb, JPEG_QUALITY_THUMB)?;
         Ok(())
     }
@@ -1682,38 +1770,45 @@ impl AssetStore {
         quality: u8,
     ) -> Result<()> {
         fs::create_dir_all(self.dir_for(sha256))?;
-        let mut encoded = Vec::new();
-        let ext = if uses_alpha(image) {
-            // **Eight bits a channel whatever the original was.** A variant
-            // exists to be shown, a webview shows eight, and the original is
-            // still on disk untouched for anything that wants the rest.
-            //
-            // It is here for the memory rather than for the pixels. Encoding a
-            // 2560-square variant *at sixteen* cost 337 MiB, against fifty for
-            // the variant itself and against nothing measurable on the same
-            // road at eight (D-57) — a fixed cost, the same at every source
-            // size, and it is the one road where the peak of the whole decode
-            // was not the resize. Eight bits takes the branch out of the model
-            // as well as out of the measurement.
-            image
-                .to_rgba8()
-                .write_to(&mut io::Cursor::new(&mut encoded), image::ImageFormat::Png)
-                .map_err(|e| Error::Undecodable(e.to_string()))?;
-            ".png"
-        } else {
-            let mut encoder =
-                image::codecs::jpeg::JpegEncoder::new_with_quality(&mut encoded, quality);
-            encoder
-                .encode_image(&image.to_rgb8())
-                .map_err(|e| Error::Undecodable(e.to_string()))?;
-            ".jpg"
-        };
+        let alpha = uses_alpha(image);
+        let ext = if alpha { ".png" } else { ".jpg" };
         // The other extension may be left over from a previous build with a
         // different alpha verdict, and two variants would make `resolve`'s
         // answer depend on probe order.
-        let stale = self.path_for(sha256, variant, if ext == ".png" { ".jpg" } else { ".png" });
+        let stale = self.path_for(sha256, variant, if alpha { ".jpg" } else { ".png" });
         let _ = fs::remove_file(stale);
-        write_atomic(&self.path_for(sha256, variant, ext), &encoded)
+
+        // **Encoded into the file rather than into a buffer.** There was a
+        // `Vec` here that the whole variant was built in and then written from,
+        // and with the resize intermediate gone (T-310) it was what the peak of
+        // the alpha road had become: a 2560-square variant of 25 MiB was costing
+        // 144. A `Vec` that nobody sized doubles, and the allocator keeps every
+        // outgrown half — the same shape T-307 took out of `ingest_path`, and
+        // the reason *sizing* it was the wrong answer there is the reason
+        // removing it is the right one here. An encoder is a `Write`; a file is
+        // a `Write`. There was never anything for the buffer to do.
+        write_atomic_with(&self.path_for(sha256, variant, ext), |file| {
+            if alpha {
+                // **Eight bits a channel whatever the original was.** A variant
+                // exists to be shown, a webview shows eight, and the original is
+                // still on disk untouched for anything that wants the rest.
+                // Encoding a 2560-square variant *at sixteen* cost a fixed
+                // 337 MiB (D-57).
+                let rgba = image.to_rgba8();
+                image::codecs::png::PngEncoder::new(file)
+                    .write_image(
+                        rgba.as_raw(),
+                        rgba.width(),
+                        rgba.height(),
+                        image::ExtendedColorType::Rgba8,
+                    )
+                    .map_err(|e| Error::Undecodable(e.to_string()))
+            } else {
+                image::codecs::jpeg::JpegEncoder::new_with_quality(file, quality)
+                    .encode_image(&image.to_rgb8())
+                    .map_err(|e| Error::Undecodable(e.to_string()))
+            }
+        })
     }
 
     // --- reading ------------------------------------------------------------
@@ -1957,22 +2052,49 @@ fn trashed_at(name: &str) -> Option<u64> {
 /// ingesting the same photograph at the same moment would otherwise share one
 /// temporary file, and the second one's `File::create` would truncate it out
 /// from under the first one's rename.
-fn write_atomic(path: &Path, bytes: &[u8]) -> Result<()> {
+/// [`write_atomic`], for a producer that would rather write than be read from.
+///
+/// The same temp-then-rename, with `fill` handed the file instead of the bytes
+/// handed to us — so an encoder that is already a `Write` never has to build its
+/// answer in memory first. Buffered, because an encoder writes in small pieces
+/// and a syscall each is the thing `write_atomic`'s single `write_all` was
+/// getting for free.
+fn write_atomic_with(
+    path: &Path,
+    fill: impl FnOnce(&mut dyn Write) -> Result<()>,
+) -> Result<()> {
+    let temp = temp_beside(path);
+    let outcome = (|| {
+        let mut file = io::BufWriter::new(File::create(&temp)?);
+        fill(&mut file)?;
+        let file = file.into_inner().map_err(|e| Error::Io(e.into_error()))?;
+        file.sync_all()?;
+        Ok(())
+    })();
+    if outcome.is_err() {
+        let _ = fs::remove_file(&temp);
+        return outcome;
+    }
+    finish_atomic(&temp, path)
+}
+
+/// A name beside `path` that nothing else in this process or any other will
+/// choose.
+fn temp_beside(path: &Path) -> PathBuf {
     static SEQUENCE: AtomicU64 = AtomicU64::new(0);
-    let temp = path.with_extension(format!(
+    path.with_extension(format!(
         "part{}-{}",
         std::process::id(),
         SEQUENCE.fetch_add(1, Ordering::Relaxed)
-    ));
-    {
-        let mut file = File::create(&temp)?;
-        file.write_all(bytes)?;
-        file.sync_all()?;
-    }
-    match fs::rename(&temp, path) {
+    ))
+}
+
+/// Put the finished temp file where it belongs.
+fn finish_atomic(temp: &Path, path: &Path) -> Result<()> {
+    match fs::rename(temp, path) {
         Ok(()) => Ok(()),
         Err(e) => {
-            let _ = fs::remove_file(&temp);
+            let _ = fs::remove_file(temp);
             // Another process winning the race wrote the same bytes, by
             // definition — the name is the hash of the content.
             if path.is_file() {
@@ -1982,6 +2104,16 @@ fn write_atomic(path: &Path, bytes: &[u8]) -> Result<()> {
             }
         }
     }
+}
+
+fn write_atomic(path: &Path, bytes: &[u8]) -> Result<()> {
+    let temp = temp_beside(path);
+    {
+        let mut file = File::create(&temp)?;
+        file.write_all(bytes)?;
+        file.sync_all()?;
+    }
+    finish_atomic(&temp, path)
 }
 
 /// What the bytes at this path say they are, off their first [`SNIFF_BYTES`].
@@ -3238,47 +3370,89 @@ mod tests {
     }
 
     #[test]
-    fn the_decode_model_predicts_the_nine_pictures_it_was_measured_at() {
+    fn the_decode_model_predicts_the_ten_pictures_it_was_measured_at() {
         // D-57, on the rig D-55 and D-56 used: the real application, one fresh
         // process per file, private bytes sampled at 20 ms. Never under, because
         // a bound that under-predicts is not one.
         //
-        // Width, height, the decoder's bytes per pixel, the file, and the peak
-        // in tenths of a MiB so the numbers read as they were reported.
-        for (w, h, bpp, file, tenths) in [
-            (4_000u64, 4_000u64, 3u64, 258_753u64, 2267u64),
-            (8_000, 8_000, 3, 957_885, 5216),
-            (11_000, 11_000, 3, 1_776_149, 8034),
-            (22_000, 5_500, 3, 1_775_499, 5740),
-            (6_000, 6_000, 4, 730_296, 4037),
-            (3_000, 3_000, 8, 395_056, 2422),
-            (4_500, 4_500, 8, 880_452, 3873),
-            (6_000, 6_000, 8, 1_559_138, 5668),
-            (3_000, 3_000, 6, 303_419, 2125),
+        // Width, height, the decoder's bytes per pixel, whether it has an alpha
+        // channel, the file, and the peak in tenths of a MiB so the numbers read
+        // as they were reported.
+        for (w, h, bpp, alpha, file, tenths) in [
+            (4_000u64, 4_000u64, 3u64, false, 258_753u64, 2266u64),
+            (8_000, 8_000, 3, false, 957_885, 2275),
+            (11_000, 11_000, 3, false, 1_776_149, 3914),
+            (22_000, 5_500, 3, false, 1_775_499, 3631),
+            (14_142, 14_142, 3, false, 2_951_980, 6189),
+            (6_000, 6_000, 4, true, 730_296, 2777),
+            (3_000, 3_000, 8, true, 395_056, 2418),
+            (4_500, 4_500, 8, true, 880_452, 3870),
+            (6_000, 6_000, 8, true, 1_559_138, 4515),
+            (3_000, 3_000, 6, false, 303_419, 2121),
         ] {
             let measured = tenths * 1024 * 1024 / 10;
-            let predicted = decode_peak(file, w, h, bpp);
+            let predicted = decode_peak(file, w, h, bpp, alpha);
             assert!(
                 predicted >= measured,
                 "{w}x{h} at {bpp}: predicted {predicted} under the measured {measured}"
             );
-            // Two per cent, except for the one picture that is not square: the
-            // variant term is the square variant on purpose, so a picture four
-            // times wider than it is tall is over-predicted by the three
-            // quarters of a variant it does not have.
-            let slack = if w == h { measured / 50 } else { measured / 25 };
+            // Tight only where tightness matters. A picture inside 5120 keeps
+            // `resize`, so the model carries an intermediate its peak never
+            // reached and is generous by as much as 60% — which cannot bind,
+            // because a picture that small is nowhere near the ceiling. The
+            // rows that decide the ceiling are the big ones, and those are
+            // within 8%.
+            let slack = if w.max(h) >= u64::from(DISPLAY_MAX_EDGE * BOX_FILTER_FROM) {
+                measured / 10
+            } else {
+                measured
+            };
             assert!(
                 predicted - measured <= slack,
                 "{w}x{h} at {bpp}: predicted {predicted} is too far over {measured}"
             );
         }
 
-        // The two properties the model exists for, stated as the runs that
-        // showed them rather than as the formula that produces them. Both are
-        // pictures of the *same pixel count* costing different amounts, which is
-        // the whole reason a megapixel ceiling was not the answer.
-        assert!(decode_peak(0, 11_000, 11_000, 3) > decode_peak(0, 22_000, 5_500, 3));
-        assert!(decode_peak(0, 6_000, 6_000, 8) > decode_peak(0, 6_000, 6_000, 3));
+        // **The shape has stopped deciding.** These two were 803.4 and 574.0 MiB
+        // of the same 121 megapixels, and the 229 MiB between them was the one
+        // term in here nobody would have guessed. What is left is the variant,
+        // which the square picture has more of.
+        let square = decode_peak(0, 11_000, 11_000, 3, false);
+        let wide = decode_peak(0, 22_000, 5_500, 3, false);
+        assert_eq!(square, wide, "the shape is back in the model");
+
+        // The depth has not, and cannot: it is in the surface.
+        assert!(decode_peak(0, 6_000, 6_000, 8, true) > decode_peak(0, 6_000, 6_000, 3, false));
+
+        // And the 200-megapixel photograph T-310 exists for. It needed about
+        // 1148 MiB and did not fit under any share of this budget.
+        assert!(decode_peak(3_000_000, 14_142, 14_142, 3, false) <= MAX_PICTURE_PEAK);
+    }
+
+    #[test]
+    fn the_box_average_takes_over_exactly_where_it_starts_being_the_right_filter() {
+        // Below a 2x reduction a box block is fractional, the average degenerates
+        // towards nearest-neighbour and it aliases — measured against CatmullRom
+        // on sixty photographs, a 1.2x reduction moves the picture by 4.48 levels
+        // out of 255 against 1.30 at 2x (D-58). So the split is stated here as
+        // the exact edge it happens at rather than left as a comment on a
+        // constant.
+        let strip = |w: u32| DynamicImage::ImageRgb8(RgbImage::from_pixel(w, 4, image::Rgb([9, 8, 7])));
+        let edge = DISPLAY_MAX_EDGE;
+
+        let box_side = strip(edge * BOX_FILTER_FROM);
+        assert_eq!(
+            downscale(&box_side, edge).to_rgb8(),
+            box_side.thumbnail(edge, edge).to_rgb8(),
+            "at exactly the threshold this is no longer the box average"
+        );
+
+        let mild = strip(edge * BOX_FILTER_FROM - 1);
+        assert_eq!(
+            downscale(&mild, edge).to_rgb8(),
+            mild.resize(edge, edge, FilterType::CatmullRom).to_rgb8(),
+            "one pixel under the threshold this is no longer the filter it was"
+        );
     }
 
     #[test]
@@ -3310,34 +3484,42 @@ mod tests {
     }
 
     #[test]
-    fn the_shape_and_the_depth_decide_as_much_as_the_count() {
+    fn the_depth_decides_as_much_as_the_count_and_the_shape_no_longer_does() {
         let (_dir, store) = store();
-        // 225 megapixels arrive and 174 do not, because the resize filters
-        // through a buffer as tall as the variant and as wide as the source's
-        // *short* edge — so the squarer picture is the more expensive one at
-        // fewer pixels. Nothing shaped like a megapixel ceiling can say this.
+        // One count, one shape, two verdicts — on depth alone. Eight bytes a
+        // pixel against three is the same picture costing two and a half times
+        // as much, and it is sitting in the header exactly as the count is.
+        // Nothing shaped like a megapixel ceiling can say this.
         assert!(
             store
-                .ingest_bytes(&claiming(png(8, 8), 30_000, 7_500), None)
+                .ingest_bytes(&claiming(png(8, 8), 11_000, 11_000), None)
                 .is_ok()
         );
         assert!(matches!(
-            store.ingest_bytes(&claiming(png(8, 8), 13_200, 13_200), None),
+            store.ingest_bytes(&claiming(png16(2, 2), 11_000, 11_000), None),
             Err(Error::PictureTooLarge { .. })
         ));
 
-        // And one shape at one count goes both ways on depth alone: eight bytes
-        // a pixel against three is the same picture costing four hundred MiB
-        // more, and it is in the header exactly as the shape is.
-        assert!(
-            store
-                .ingest_bytes(&claiming(png(8, 8), 9_100, 9_100), None)
-                .is_ok()
-        );
-        assert!(matches!(
-            store.ingest_bytes(&claiming(png16(2, 2), 9_100, 9_100), None),
-            Err(Error::PictureTooLarge { .. })
-        ));
+        // And the shape, which used to: 121 megapixels square cost 803 MiB where
+        // the same count at 4:1 cost 574, so a *squarer* picture was refused at
+        // fewer pixels than a wide one was admitted at. T-310 took that term
+        // out, and these two now agree because there is nothing left to
+        // disagree about (D-58).
+        for (w, h) in [(19_000u32, 19_000u32), (38_000, 9_500)] {
+            assert!(
+                matches!(
+                    store.ingest_bytes(&claiming(png(8, 8), w, h), None),
+                    Err(Error::PictureTooLarge { .. })
+                ),
+                "{w} x {h}"
+            );
+        }
+        for (w, h) in [(13_200u32, 13_200u32), (26_400, 6_600)] {
+            assert!(
+                store.ingest_bytes(&claiming(png(8, 8), w, h), None).is_ok(),
+                "{w} x {h}"
+            );
+        }
     }
 
     #[test]
@@ -3346,9 +3528,9 @@ mod tests {
         // bound that overflows into something small is worse than no bound at
         // all — it is a bound that reports success.
         let widest = u64::from(u32::MAX);
-        assert!(decode_peak(0, widest, widest, 8) > MAX_PICTURE_PEAK);
-        assert!(decode_peak(MAX_ASSET_BYTES, widest, 1, 8) > MAX_PICTURE_PEAK);
-        assert_eq!(decode_peak(u64::MAX, 1, 1, 1), u64::MAX);
+        assert!(decode_peak(0, widest, widest, 8, true) > MAX_PICTURE_PEAK);
+        assert!(decode_peak(MAX_ASSET_BYTES, widest, 1, 8, false) > MAX_PICTURE_PEAK);
+        assert_eq!(decode_peak(u64::MAX, 1, 1, 1, true), u64::MAX);
     }
 
     #[test]
@@ -3365,7 +3547,7 @@ mod tests {
         // which is the worst way for a limit to disagree with another one.
         let default = Limits::default().max_alloc.unwrap();
         let (edge, bpp) = (11_700u64, 4u64);
-        assert!(decode_peak(0, edge, edge, bpp) <= MAX_PICTURE_PEAK);
+        assert!(decode_peak(0, edge, edge, bpp, true) <= MAX_PICTURE_PEAK);
         assert!(
             edge * edge * bpp > default,
             "the two rules no longer disagree, so this test is no longer about anything"
