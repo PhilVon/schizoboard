@@ -2436,25 +2436,54 @@ describe("a folder, a tape and a cassette", () => {
     expect(note.querySelector(".paper-bend"), "a note still bends").not.toBeNull();
   });
 
+  /** A tape somebody has had for fifteen years. */
+  const OLD = (): number => 4000;
+
+  /** The item, aged, with the one asset kind asked for. */
+  function aged(kind: AssetFacts["kind"]): HTMLElement {
+    const layer = layerWith(facts({ kind }));
+    layer.setAgeClock(OLD);
+    add("a", { assetId: HASH });
+    layer.sync(scene, dirty, null);
+    return host.firstElementChild as HTMLElement;
+  }
+
   it("ages the paper and leaves the plastic alone", () => {
     // A fifteen-year-old tape is a black tape with a yellowed label, because
     // polystyrene does not go brown. So the wear filter lands on the label of a
     // cassette and on the whole panel of a folder.
-    const old = (): number => 4000;
-
-    const folders = layerWith(facts({ kind: "document" }));
-    folders.setAgeClock(old);
-    add("a", { assetId: HASH });
-    folders.sync(scene, dirty, null);
-    expect(host.querySelector<HTMLElement>(".folder-front")!.style.filter).not.toBe("");
+    expect(aged("document").querySelector<HTMLElement>(".folder-front")!.style.filter).not.toBe("");
 
     again();
-    const tapes = layerWith(facts({ kind: "video" }));
-    tapes.setAgeClock(old);
-    add("a", { assetId: HASH });
-    tapes.sync(scene, dirty, null);
-    expect(host.querySelector<HTMLElement>(".case-label")!.style.filter).not.toBe("");
-    expect(host.querySelector<HTMLElement>(".case-shell")!.style.filter).toBe("");
+    const vhs = aged("video");
+    // The card and the writing, which between them are the label — see
+    // `CaseView.ages`. Not the label element: the ageing goes round the hole a
+    // cassette has in its own, and both plastic kinds are aged the same way.
+    expect(vhs.querySelector<HTMLElement>(".case-paper")!.style.filter).not.toBe("");
+    expect(vhs.querySelector<HTMLElement>(".case-number")!.style.filter).not.toBe("");
+    expect(vhs.querySelector<HTMLElement>(".case-shell")!.style.filter).toBe("");
+  });
+
+  it("never ages the recording, on a cassette whose window is inside its label", () => {
+    // T-272's second sentence, and the one thing about this that was not already
+    // built. A compact cassette's window is a row of the label's own grid, so a
+    // filter on the label reached the spools and the span of tape — and a filter
+    // reaches everything below the node it is on, which is why this asserts on
+    // the whole chain of ancestors rather than on the window alone. Since T-271
+    // the window is also where a transfer draws itself, so a yellowed one is a
+    // yellowed readout.
+    const cassette = aged("audio");
+    expect(cassette.querySelector<HTMLElement>(".case-paper")!.style.filter).not.toBe("");
+    expect(cassette.querySelector<HTMLElement>(".case-title")!.style.filter).not.toBe("");
+    // The window really is inside the label — if that ever stops being true this
+    // test is measuring something else, and T-304 and T-306 both rest on it.
+    expect(cassette.querySelector(".case-label > .case-window")).not.toBeNull();
+    for (const node of ["", " .case-reel", " .case-tape"]) {
+      let el = cassette.querySelector<HTMLElement>(`.case-window${node}`)!;
+      for (; el !== cassette.parentElement; el = el.parentElement!) {
+        expect(el.style.filter, `${el.className} is not aged`).toBe("");
+      }
+    }
   });
 
   it("hands a recycled node back to its own kind", () => {

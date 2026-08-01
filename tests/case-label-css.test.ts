@@ -29,7 +29,7 @@ import { describe, expect, it } from "vitest";
 
 import { objectSizeFor } from "../src/lib/objects";
 
-import { css, declarations } from "./css-declarations";
+import { css, declarations, layers } from "./css-declarations";
 
 /** `9% 7% 12% 7%` and friends, as four numbers in CSS's own order. */
 function sides(shorthand: string): { top: number; right: number; bottom: number; left: number } {
@@ -248,5 +248,44 @@ describe("the writing on a compact cassette's label", () => {
     // literal selector above.
     const unguarded = /\[data-kind="cassette"\][^{,]*\.case-caption(?!:not\(\.item-field\))[^{,]*\{[^}]*-webkit-box/;
     expect(unguarded.test(src)).toBe(false);
+  });
+});
+
+/**
+ * The card the label is printed on, which is a node of its own only because of
+ * the hole — T-272.
+ *
+ * A cassette's window is a row of the label's grid, and a `filter` reaches
+ * everything below the element it is on, so a label that painted its own paper
+ * could only be aged as one node: the spools and the span of tape yellowed with
+ * the writing, and after T-271 so did the readout that says how much of the file
+ * is here. Splitting the card off lets `CaseView.paintAge` go round the hole.
+ *
+ * `render/items/dom.test.ts` asserts the ageing; what it cannot see is that the
+ * card still *lands* where the label's background did. Two of these three
+ * declarations are load-bearing in a way no test on happy-dom can measure — a
+ * negative child paints behind the stacking context it is in, so dropping the
+ * `isolation` sends the paper behind `.case-shell` and leaves a blank label with
+ * writing floating on the plastic.
+ */
+describe("the paper under a label", () => {
+  const label = declarations(".case-label");
+  const paper = declarations(".case-paper");
+
+  it("covers the label's whole box, under the writing and under the hole", () => {
+    expect(paper.get("position")).toBe("absolute");
+    // The label's padding box, which is the area the background used to paint —
+    // the printed rules are percentages down it and would otherwise move.
+    expect(paper.get("inset")).toBe("0");
+    expect(paper.get("z-index")).toBe("-1");
+    expect(label.get("isolation")).toBe("isolate");
+  });
+
+  it("takes the printing with it, and leaves the label painting nothing", () => {
+    // The rules a blank label comes printed with, and the card itself. On the
+    // paper or the split has been undone by putting them back.
+    expect(layers(paper.get("background-image")!)).toHaveLength(2);
+    expect(label.get("background-image")).toBeUndefined();
+    expect(label.get("background")).toBeUndefined();
   });
 });
