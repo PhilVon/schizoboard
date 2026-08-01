@@ -1,5 +1,6 @@
 /**
- * The hole in a compact cassette's label, asserted as a measurement — T-304.
+ * A compact cassette's label, asserted as arithmetic on the stylesheet — the
+ * hole in it (T-304) and what it does with the writing (T-306).
  *
  * A cassette's label is a five-row grid and the window is one of its rows, so
  * that the writing above and below it does not have to know it is there. That
@@ -202,5 +203,98 @@ describe("the hole in a compact cassette's label", () => {
       100 - Number.parseFloat(holes.get("bottom")!) - Number.parseFloat(holes.get("height")!);
     expect(foot).toBeLessThan(cutoutTop);
     expect(foot).toBeGreaterThanOrEqual(82);
+  });
+});
+
+/**
+ * What the label does with the writing — T-306.
+ *
+ * The budget is three lines. Take the hole, the four gaps and the name's own
+ * line out of the label's 59 units and about 22 are left, which is two lines of
+ * the hand at the size these objects write at. Every rule below is that one
+ * allocation stated somewhere, so each of these is a guard on a decision rather
+ * than a restatement of a declaration.
+ */
+describe("the writing on a compact cassette's label", () => {
+  const number = declarations('.item-case[data-kind="cassette"] .case-label > .case-number');
+  const meta = declarations('.item-case[data-kind="cassette"] .case-label > .case-meta');
+  const title = declarations('.item-case[data-kind="cassette"] .case-title');
+  const clamped = declarations('.item-case[data-kind="cassette"] .case-caption:not(.item-field)');
+
+  /**
+   * A filename is longer than a name somebody writes. The label's own override
+   * lets the name wrap onto a second ruled line, which is what a person does on
+   * a real cassette and what put `TEST-B` underneath the spools — the second
+   * line landed in the window's row. The base `.case-number` rule already
+   * ellipsises; this undoes the override for one kind rather than inventing
+   * anything.
+   */
+  it("gives a long filename one line and an ellipsis", () => {
+    expect(number.get("white-space")).toBe("nowrap");
+    expect(number.get("text-overflow")).toBe("ellipsis");
+    // `-webkit-box` is what the label's override switches it to for the clamp,
+    // and `text-overflow` does nothing inside one.
+    expect(number.get("display")).toBe("block");
+  });
+
+  /**
+   * The runtime beside the title rather than on a row of its own, which is four
+   * characters holding a whole line of a label with three.
+   */
+  it("puts the runtime on the title's row rather than a row of its own", () => {
+    expect(title.get("grid-row")).toBe("3");
+    expect(title.get("grid-column")).toBe("1");
+    expect(meta.get("grid-row")).toBe("3");
+    expect(meta.get("grid-column")).toBe("2");
+    // On the writing's baseline: a runtime set to the top of a line of
+    // handwriting reads as floating above it.
+    expect(meta.get("align-self")).toBe("baseline");
+  });
+
+  /**
+   * Clamped, not clipped. An `auto` row squeezed by a label with more in it than
+   * it holds cuts the last line in half, and half a line of handwriting reads as
+   * a rendering fault where an ellipsis reads as a label that ran out of room.
+   */
+  it("truncates the writing by whole lines", () => {
+    expect(title.get("-webkit-line-clamp")).toBe("2");
+    expect(clamped.get("-webkit-line-clamp")).toBe("1");
+    for (const rule of [title, clamped]) {
+      expect(rule.get("display")).toBe("-webkit-box");
+      expect(rule.get("-webkit-box-orient")).toBe("vertical");
+    }
+  });
+
+  /**
+   * And a line box the ink fits inside. `1.15` is tighter than Patrick Hand
+   * descends, so every `g`, `y` and `j` met the `overflow: hidden` these two
+   * carry. Measured: at the size a cassette writes at, the ink wants 1.33 of the
+   * nominal size, and `roomy` in the driven fixture — a title of nothing but
+   * descenders with a whole row to itself — is what settled it.
+   */
+  it("sets the hand on a line the hand's descenders fit inside", () => {
+    expect(Number.parseFloat(title.get("line-height")!)).toBeGreaterThanOrEqual(1.32);
+  });
+
+  /**
+   * **The one that would be a real bug.** The caption is the only line on this
+   * object a caret can reach, and the editor over it is a `<textarea>` wearing
+   * the same class. `display: -webkit-box` on a text field takes the field
+   * apart, so the clamp is written with `:not(.item-field)` — and a selector is
+   * exactly the kind of thing a later tidy-up shortens without noticing.
+   */
+  it("keeps the clamp off the caption's editor, which is a textarea", () => {
+    const src = css.replace(/\/\*[\s\S]*?\*\//g, "");
+    for (const [what, pattern] of [
+      ["the clamp rule", /\.case-caption:not\(\.item-field\)\s*\{[^}]*-webkit-line-clamp/],
+      ["the line-height rule", /\.case-caption:not\(\.item-field\)\s*\{[^}]*line-height/],
+    ] as const) {
+      expect(pattern.test(src), what).toBe(true);
+    }
+    // Nothing may hand the cassette's caption a `-webkit-box` without excluding
+    // the field, which is the shape the guard is protecting rather than the
+    // literal selector above.
+    const unguarded = /\[data-kind="cassette"\][^{,]*\.case-caption(?!:not\(\.item-field\))[^{,]*\{[^}]*-webkit-box/;
+    expect(unguarded.test(src)).toBe(false);
   });
 });

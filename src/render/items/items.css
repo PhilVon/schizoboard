@@ -1982,7 +1982,7 @@ textarea.item-field::-webkit-scrollbar {
    * neither is short of room, and changing how they look is not this task.
    */
   grid-template-rows: auto 36.5% auto auto 1fr;
-  gap: 1.85% 0;
+  gap: 0.9% 0;
 }
 
 /*
@@ -2004,16 +2004,97 @@ textarea.item-field::-webkit-scrollbar {
   border-radius: 999px;
 }
 
+/*
+ * The writing, and what a cassette label will actually hold — T-306.
+ *
+ * **Three lines, and that is the whole budget.** Take the hole, the four gaps
+ * and the name's own line out of 59 units of label and about 22 are left, which
+ * is two lines of the hand at the size these objects write at. So the rules
+ * below are not four independent tweaks; they are one allocation.
+ *
+ * The name gets **one line and an ellipsis**, where it used to wrap onto the
+ * second ruled line the way a person writing on a real cassette does. That was
+ * a nice idea and this is a tape, not a folder: a filename is longer than a
+ * name somebody writes, `LIGHT-ANCHOR-ANIMATION-TEST-B` took both ruled lines,
+ * and the second one was then cut in half by the window. The base `.case-number`
+ * rule already ellipsises — this is the label's override being undone for one
+ * kind, not a new idea.
+ *
+ * The runtime moves **beside the title**, off the row of its own it had at the
+ * foot. Four characters were holding a whole line of a label with three.
+ */
+.item-case[data-kind="cassette"] .case-label > .case-number {
+  display: block;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  /* The ruled line under the name sits closer to it than on a VHS, because here
+     it is one line of a tight label rather than the first of two. */
+  padding-bottom: 0.08em;
+}
+
 .item-case[data-kind="cassette"] .case-title {
   grid-row: 3;
+  grid-column: 1;
+}
+
+.item-case[data-kind="cassette"] .case-label > .case-meta {
+  grid-row: 3;
+  grid-column: 2;
+  justify-self: end;
+  /* On the writing's baseline, not its box: a runtime set to the top of a line
+     of handwriting reads as floating above it. */
+  align-self: baseline;
+  padding-left: 0.7em;
 }
 
 .item-case[data-kind="cassette"] .case-caption {
   grid-row: 4;
 }
 
+/*
+ * And a line box the hand's ink fits inside.
+ *
+ * `line-height: 1.15` is tighter than Patrick Hand descends, so every `g`, `y`
+ * and `j` was shaved off flat by the `overflow: hidden` these two carry — two
+ * units on every cassette on the board, and it predates T-304 by as long as
+ * there has been anything to write. 1.32 is where the ink stops meeting the
+ * edge.
+ *
+ * Clamped rather than clipped, which is the other half. An `auto` row squeezed
+ * by a label with more in it than it holds cuts the *last line in half*, and
+ * half a line of handwriting reads as a rendering fault where an ellipsis reads
+ * as a label that ran out of room — which is what has happened.
+ *
+ * `:not(.item-field)` because the caption is the one line on this object a caret
+ * can reach, and the editor over it is a `<textarea>`: `-webkit-box` would take
+ * a text field apart.
+ */
+.item-case[data-kind="cassette"] .case-title,
+.item-case[data-kind="cassette"] .case-caption:not(.item-field) {
+  line-height: 1.32;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
+
+.item-case[data-kind="cassette"] .case-caption:not(.item-field) {
+  -webkit-line-clamp: 1;
+}
+
+/*
+ * Two of the three lines are the title's when nobody has written on the tape,
+ * and one each when somebody has. The person with the pen wins: a caption is
+ * what *this* board says about the recording, and the title is what the file
+ * came calling itself.
+ */
+.item-case[data-kind="cassette"] .case-label:has(.case-caption:not(.is-empty)) .case-title {
+  -webkit-line-clamp: 1;
+}
+
 /* The runtime is on row 5 and everything above it is content, so the label
-   stretches its rows to the foot rather than packing them at the top. */
+   stretches its rows to the foot rather than packing them at the top. On a
+   cassette the runtime is on row 3 beside the title (above) and row 5 is the
+   blank end of the label, which is what the bottom of a real one is. */
 .case-label {
   grid-template-rows: auto auto auto auto 1fr;
   align-content: stretch;
