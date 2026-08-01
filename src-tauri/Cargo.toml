@@ -163,6 +163,34 @@ getrandom = "0.3"
 # serialised.
 mdns-sd = { version = "0.20.3", default-features = false, features = ["log"] }
 
+# --- the clipboard's file list (T-266, T-303) -------------------------------
+# The paths behind a file copy, so a pasted file takes the same cheap road a
+# dropped one already does — 237 ms against 1069 ms on the same file (D-51).
+#
+# This replaced about seventy lines of hand-written `CF_HDROP`: `OpenClipboard`,
+# a `Drop` guard whose only job was to stop an early return wedging copy and
+# paste for every application on the machine, and `DragQueryFileW` called twice
+# per name. That code worked, and it worked on one platform. `file_list()` is
+# implemented on Windows, macOS, X11 and Wayland and hands back decoded
+# `PathBuf`s on all four — it strips `file://` and percent-decodes itself,
+# which `clipboard-rs`, the other candidate, leaves to every caller (D-59).
+#
+# Q-238's reasoning was about *this* platform rather than the other two: the
+# only clipboard code anyone here can watch run is Windows, so the road worth
+# testing is the road all three take. Two implementations of one answer, with
+# the tested one the only one nobody else runs, is the arrangement that hides a
+# fault rather than the one that finds it.
+#
+# `default-features = false` drops `image-data`, which would pull a second
+# `image` in for a clipboard picture nothing here reads — the paste event
+# already hands the webview those. `wayland-data-control` is kept, because
+# without it a Linux desktop that is not X11 answers nothing, which is the case
+# this dependency exists to close. It is what `tauri-plugin-clipboard-manager`
+# is built on, at the same version and with the same feature.
+arboard = { version = "3.6", default-features = false, features = [
+  "wayland-data-control",
+] }
+
 # --- the clipboard's SourceURL (T-97) ---------------------------------------
 # CF_HTML carries the page a fragment was copied from, in a header the webview
 # strips before the `paste` event ever sees it. Reading it needs the raw Win32
@@ -173,8 +201,6 @@ windows-sys = { version = "0.60", features = [
   "Win32_Foundation",
   "Win32_System_DataExchange",
   "Win32_System_Memory",
-  # `DragQueryFileW`, for the paths behind a `CF_HDROP` file copy (T-266).
-  "Win32_UI_Shell",
 ] }
 
 # --- the PDF export (T-207) -------------------------------------------------

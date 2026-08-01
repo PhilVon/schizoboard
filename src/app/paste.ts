@@ -412,7 +412,7 @@ export class Paste {
    * routes in `resolve` are competing readings of one clipboard and their order
    * is the design; this is asked *inside* the file route, so it can only ever
    * change how a file's bytes reach the store and never which reading wins. Ask
-   * it beside the others instead and a clipboard carrying `CF_HDROP` *and*
+   * it beside the others instead and a clipboard carrying a file list *and*
    * markup — Outlook, some Office copies — would stop being a note and start
    * being a file, which is a different feature.
    *
@@ -437,7 +437,9 @@ export class Paste {
       paths = payload.paths;
     } catch {
       // A shell that cannot answer is not an error — it is the browser, or a
-      // platform this has not been written for. The bytes are right there.
+      // clipboard held for a moment by whoever last wrote it. The bytes are
+      // right there. Since T-303 it is no longer a *platform* that cannot
+      // answer: all three read the file list the same way.
       return none;
     }
     const byName = new Map<string, string[]>();
