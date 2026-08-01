@@ -2272,9 +2272,16 @@ textarea.item-field::-webkit-scrollbar {
 }
 
 /*
- * The label. Paper, on plastic, and the one part of either cassette that ages
- * (T-272 goes further with that): `CaseView.paintAge` puts the wear filter on
- * this node and not on the shell, because polystyrene does not go brown.
+ * The label. Paper, on plastic, and the one part of either cassette that ages:
+ * `CaseView.paintAge` puts the wear filter on the paper and the writing and not
+ * on the shell, because polystyrene does not go brown.
+ *
+ * Which is why this node is a box and a grid and paints nothing (T-272). A
+ * compact cassette's window is a row of this grid, and a filter reaches
+ * everything below the element it is on — so a label that carried its own paper
+ * would have to be aged as one node, and a fifteen-year-old cassette came out
+ * with yellowed spools and a yellowed span of tape. The card moved to
+ * `.case-paper` below so that the ageing can go round the hole.
  */
 .case-label {
   position: absolute;
@@ -2287,6 +2294,30 @@ textarea.item-field::-webkit-scrollbar {
    * wider margin than a compact cassette out of one declaration.
    */
   padding: 4.5% 5% 4%;
+  /*
+   * A stacking context of its own, and it is load-bearing rather than tidiness.
+   * `.case-paper` is behind the writing on `z-index: -1`, and a negative child
+   * paints behind the *stacking context* it is in — so without this the paper
+   * would drop out of the label entirely and land behind `.case-shell`, which is
+   * a blank label with writing floating on the plastic.
+   */
+  isolation: isolate;
+}
+
+/*
+ * And the card the label is printed on: the whole of the label's box, under
+ * everything written on it and under the hole cut through it.
+ *
+ * `inset: 0` on an absolutely positioned child of the label resolves against the
+ * label's *padding* box, which is exactly the area the background used to paint
+ * — so the printed rules below land where they always did rather than inside the
+ * label's own margin of white space.
+ */
+.case-paper {
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  border-radius: inherit;
   /*
    * The rules a blank label comes printed with, under the one the typed row
    * carries — `DATE`, `PROGRAM`, `DETAILS` on the reference. Faint enough to be

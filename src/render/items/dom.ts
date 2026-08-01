@@ -1630,9 +1630,22 @@ class CaseView implements View {
   private readonly tape = new TapeSet();
   /** The object itself. The shadow is outside it; everything else is inside. */
   private readonly body: HTMLDivElement;
-  /** The one part of a tape or a cassette that is paper, and so the one that
-   *  ages. On a folder this is the folder. */
-  private readonly ages: HTMLDivElement;
+  /**
+   * The parts of this object that are paper, and so the parts that age.
+   *
+   * A list rather than one node because **a cassette's label has a hole in it**.
+   * A filter applies to everything below the element it is on, and the window is
+   * a row of the label's own grid — so ageing the label as a single node yellows
+   * the spools and the tape web with the writing, which is the one thing T-272
+   * says never happens. So the label is split: `.case-paper` carries the card and
+   * its printed rules, the four text nodes carry what is written on it, and the
+   * window is left out. Filtering the paper and the ink separately is not an
+   * approximation of filtering them together — every term of [`wearFilter`] is
+   * affine, and an affine function commutes with compositing.
+   *
+   * On a folder this is the folder, which has no hole in it and is one node.
+   */
+  private readonly ages: readonly HTMLElement[];
   private readonly number: HTMLDivElement;
   private readonly meta: HTMLDivElement;
   private readonly title: HTMLDivElement;
@@ -1700,7 +1713,7 @@ class CaseView implements View {
       // put anything in.
       const sheets = div("folder-sheets");
       const front = div("folder-front");
-      this.ages = front;
+      this.ages = [front];
       // No curl. See `setCurl` — this is where refusing it costs nothing.
       this.bend = null;
       this.grain = div("case-grain");
@@ -1727,10 +1740,11 @@ class CaseView implements View {
       const right = div("case-window is-right");
       right.append(div("case-reel"));
       const label = div("case-label");
-      this.ages = label;
+      const paper = div("case-paper");
+      this.ages = [paper, this.number, this.meta, this.title, this.caption];
       this.bend = null;
       this.grain = null;
-      label.append(this.number, this.meta, this.title, this.caption);
+      label.append(paper, this.number, this.meta, this.title, this.caption);
       this.body.append(shell, left, right, label);
     } else {
       // A compact cassette, likewise from the reference, and its window is the
@@ -1743,12 +1757,16 @@ class CaseView implements View {
       // the position readout rather than about the object being drawn.
       const shell = div("case-shell");
       const label = div("case-label");
-      this.ages = label;
+      // The card the label is printed on, as a layer under the writing rather
+      // than as the label's own background — because the window is a child of
+      // the label and the ageing must not reach it. See [`ages`].
+      const paper = div("case-paper");
+      this.ages = [paper, this.number, this.meta, this.title, this.caption];
       this.bend = null;
       this.grain = null;
       const window_ = div("case-window");
       window_.append(div("case-reel"), div("case-tape"), div("case-reel"));
-      label.append(this.number, this.meta, window_, this.title, this.caption);
+      label.append(paper, this.number, this.meta, window_, this.title, this.caption);
       this.body.append(shell, label, div("case-holes"));
     }
 
@@ -1926,14 +1944,29 @@ class CaseView implements View {
    * VHS is a polystyrene shell with a paper label stuck to it, and polystyrene
    * does not go brown: the filter goes on the label alone, so a fifteen-year-old
    * tape is a black tape with a yellowed label, which is what a fifteen-year-old
-   * tape is. `this.ages` is whichever of the two this kind decided in its
-   * constructor, so there is no branch here.
+   * tape is.
+   *
+   * And **the recording is not paper either**, which is the second half of T-272
+   * and the half a compact cassette got wrong. The spools and the span of tape
+   * between them are mylar and polystyrene on exactly the argument the shell is,
+   * and they sit inside the label rather than beside it — so they came out of a
+   * fifteen-year-old cassette yellowed, which no tape has ever done. Worse since
+   * T-271: the window is where a transfer draws itself, so an aged cassette
+   * whose file was still coming reported it through a wear filter.
+   *
+   * `this.ages` is the set this kind decided in its constructor and the window is
+   * not in it, so there is no branch here.
    */
   private paintAge(wear: number): void {
     this.el.classList.toggle(IS_AGED, wear > 0);
     if (wear > 0) this.el.style.setProperty("--age", wear.toFixed(2));
     else this.el.style.removeProperty("--age");
-    this.ages.style.filter = wearFilter(wear);
+    const filter = wearFilter(wear);
+    for (const el of this.ages) el.style.filter = filter;
+    // The caption is in `ages` and the editor's field replaces it, so the field
+    // has to take the same filter or the writing lifts out of its own age for
+    // as long as somebody is typing into it. `adopt` does the other direction.
+    if (this.field) this.field.style.filter = filter;
   }
 
   transform(x: number, y: number, rot: number, w: number, h: number, lift: number): void {
@@ -2007,6 +2040,10 @@ class CaseView implements View {
     this.field = field;
     field.className = "item-field case-caption";
     field.style.fontSize = this.caption.style.fontSize;
+    // Both off the node it stands in for, and for the same reason: the field is
+    // the caption while it is open, so it is written at the caption's size and
+    // has had the caption's years — see `paintAge`.
+    field.style.filter = this.caption.style.filter;
     this.caption.parentNode?.appendChild(field);
   }
 
@@ -2043,7 +2080,7 @@ class CaseView implements View {
     // stopped naming the same set of properties the bind does, which is the drift
     // the comment above is about, caught in the act.
     for (const prop of ["--spill", "--bulk", "--arrived"]) this.el.style.removeProperty(prop);
-    this.ages.style.removeProperty("filter");
+    for (const el of this.ages) el.style.removeProperty("filter");
     for (const prop of [...CURL_PROPS, ...FACE_PROPS]) this.el.style.removeProperty(prop);
     this.tape.release();
     this.shadow.reset();
