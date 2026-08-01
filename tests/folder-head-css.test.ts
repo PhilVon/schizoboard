@@ -47,14 +47,40 @@ function atBulk(expr: string, bulk: number): number {
   return Number.parseFloat(base!) + (sign === "-" ? -step : step);
 }
 
-/** Where the head of the paper is, in percent down the object. */
-const headAt = (bulk: number) => atBulk(sheets.get("top")!, bulk);
+/**
+ * Where the head of the paper stands at this page count if the document is all
+ * here — the T-312 arithmetic on its own, before T-271 slid it.
+ */
+const fullHeadAt = (bulk: number) => atBulk(sheets.get("--head")!, bulk);
+
+/**
+ * And where it actually is, which is that head scaled by how much of the file
+ * has arrived (T-271).
+ *
+ * `arrived` defaults to `1` because that is the *declaration's* fallback: a
+ * folder whose document is present has no `--arrived` at all. Every existing
+ * assertion below therefore reads exactly what it read before that task, which
+ * is the point of testing it this way round rather than trusting the algebra.
+ */
+function headAt(bulk: number, arrived = 1): number {
+  const calc =
+    /^calc\(\s*([\d.]+)%\s*-\s*\(\s*([\d.]+)%\s*-\s*var\(--head\)\s*\)\s*\*\s*var\(--arrived,\s*([\d.]+)\)\s*\)$/.exec(
+      sheets.get("top")!,
+    );
+  expect(calc, `"${sheets.get("top")}" slides --head by --arrived`).not.toBeNull();
+  const [, foot, foot2, fallback] = calc!;
+  expect(foot, "one foot, written twice").toBe(foot2);
+  expect(Number.parseFloat(fallback!), "an absent --arrived is a folder that is here").toBe(1);
+  const at = Number.parseFloat(foot!);
+  return at - (at - fullHeadAt(bulk)) * arrived;
+}
 /** Where its foot is — `bottom` is measured from the object's own foot. */
 const footAt = (bulk: number) => 100 - atBulk(sheets.get("bottom")!, bulk);
 /** The front panel's cut edge, which is what hides the foot. */
 const panelTop = Number.parseFloat(front.get("inset")!.split(" ")[0]!);
 /** What anybody can actually see of the paper. */
-const visibleAt = (bulk: number) => Math.min(footAt(bulk), panelTop) - headAt(bulk);
+const visibleAt = (bulk: number, arrived = 1) =>
+  Math.min(footAt(bulk), panelTop) - headAt(bulk, arrived);
 
 const LADDER = [0, 0.25, 0.5, 0.75, 1];
 
@@ -95,8 +121,47 @@ describe("what a closed folder shows", () => {
    * between a memo and a case dump rather than a detail under a sheet.
    */
   it("still says the page count with the head and with the edges", () => {
-    expect(sheets.get("top")).toMatch(/--bulk/);
+    expect(sheets.get("--head")).toMatch(/--bulk/);
+    expect(sheets.get("top")).toMatch(/--head/);
     expect(edges.get("inset")).toMatch(/--bulk/);
+  });
+
+  /**
+   * **A folder whose document is here is drawn where it was drawn before T-271.**
+   *
+   * Not approximately and not within a pixel — the same number, at every page
+   * count. `--arrived` is absent on an object whose file is present, so the whole
+   * of that task has to disappear into a fallback, and the way that stops being
+   * true is somebody reaching for the obvious `top: calc(... * var(--arrived))`
+   * and shifting the resting pose by a fraction of a per cent nobody would see
+   * in a screenshot. Two multipliers have already been caught this way.
+   */
+  it.each(LADDER)("leaves the resting head exactly where it was at bulk %s", (bulk) => {
+    expect(headAt(bulk)).toBe(fullHeadAt(bulk));
+  });
+
+  /**
+   * And an empty one shows no paper at all: the head slides down onto the foot,
+   * which is itself behind the front panel, so what is at the top of the object
+   * is back-panel kraft. That is the missing-file state (T-271) — a folder with
+   * nothing in it, under a label still saying how many pages it had.
+   */
+  it("shows nothing of the paper before the document arrives", () => {
+    expect(headAt(0.48, 0)).toBeCloseTo(footAt(0.48), 6);
+    expect(visibleAt(0.48, 0)).toBeLessThanOrEqual(0);
+  });
+
+  /**
+   * And it fills from there monotonically, which is what makes the transfer
+   * legible without a bar drawn over the object.
+   */
+  it("fills upward as the document arrives", () => {
+    const seen = [0, 0.25, 0.5, 0.75, 1].map((a) => visibleAt(0.48, a));
+    for (let i = 1; i < seen.length; i++) {
+      expect(seen[i]!, `${i / 4} of the way in shows no more than the step before`).toBeGreaterThan(
+        seen[i - 1]!,
+      );
+    }
   });
 
   /**
@@ -144,7 +209,7 @@ describe("what a closed folder shows", () => {
    * value as a fallback. Two authors for one number, in two languages.
    */
   it("falls back to the same not-knowing value folderBulk does", () => {
-    const fallback = /var\(--bulk,\s*([\d.]+)\)/.exec(sheets.get("top")!)![1]!;
+    const fallback = /var\(--bulk,\s*([\d.]+)\)/.exec(sheets.get("--head")!)![1]!;
     expect(Number.parseFloat(fallback)).toBeCloseTo(folderBulk(null), 2);
   });
 

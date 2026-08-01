@@ -2679,4 +2679,152 @@ describe("a folder, a tape and a cassette", () => {
     expect(caption.textContent).toBe("call 3 - the second one");
     expect(caption.classList.contains("is-empty")).toBe(false);
   });
+
+  // --- T-271: what the object shows when the file is not here ----------------
+
+  describe("an object with no file in it", () => {
+    /** An asset in one phase, and how far through it is. */
+    const phase = (p: AssetView["phase"], fraction = 0): AssetResolver => () => ({
+      url: p === "ready" ? "asset://sha256/x" : "",
+      phase: p,
+      fraction,
+    });
+
+    /** Mount one object of `kind` against a resolver in one phase. */
+    function inPhase(kind: AssetFacts["kind"], resolver: AssetResolver): HTMLElement {
+      const l = new DomItemLayer(host, resolver, facts({ kind }));
+      add("a", { assetId: HASH });
+      l.sync(scene, dirty, null);
+      return host.firstElementChild as HTMLElement;
+    }
+
+    /**
+     * **The one that is a defect rather than a drawing.** `assetUrl` is what
+     * raises a want to `VISIBLE` and marks a hash requesting, and `CaseView`
+     * took the resolver as `_assetUrl` and never called it — so a tape you were
+     * sitting in front of queued behind every photograph on the board, at the
+     * idle priority `reconcileAssets` had asked for it at on boot.
+     */
+    it("asks for the bytes of an object that is on the screen", () => {
+      const asked: string[] = [];
+      inPhase("video", (sha) => {
+        asked.push(sha);
+        return waiting();
+      });
+      expect(asked).toEqual([HASH]);
+    });
+
+    it("wears the waiting state for every phase short of ready", () => {
+      for (const p of ["unknown", "requesting", "transferring", "unavailable"] as const) {
+        again();
+        expect(inPhase("audio", phase(p)).classList.contains("is-waiting"), p).toBe(true);
+      }
+      again();
+      // And nothing at all once it is here. There is no decode gap on a case
+      // object the way there is on a polaroid — the face is CSS, so `ready` is
+      // the whole of it.
+      const here = inPhase("audio", phase("ready"));
+      expect(here.classList.contains("is-waiting")).toBe(false);
+      expect(here.style.getPropertyValue("--arrived")).toBe("");
+    });
+
+    it("winds the tape on as the transfer runs", () => {
+      const el = inPhase("audio", phase("transferring", 0.42));
+      expect(el.classList.contains("is-developing")).toBe(true);
+      expect(el.style.getPropertyValue("--arrived")).toBe("0.42");
+    });
+
+    it("tears when nobody on this board has it, and drops the fraction with it", () => {
+      // Through a transfer that stops, rather than straight into `unavailable`,
+      // because the fraction is only ever *written* by the phase before this
+      // one — the peer holding a 400 MB interview closing its window is exactly
+      // how this is reached. Left set, the tape would be drawn half wound on and
+      // with its ribbon out of the shell at the same time.
+      let view: AssetView = { url: "", phase: "transferring", fraction: 0.5 };
+      const l = new DomItemLayer(host, () => view, facts({ kind: "video" }));
+      add("a", { assetId: HASH });
+      l.sync(scene, dirty, null);
+      const el = host.firstElementChild as HTMLElement;
+      expect(el.style.getPropertyValue("--arrived")).toBe("0.50");
+
+      view = { url: "", phase: "unavailable", fraction: 0 };
+      dirty.item("a");
+      l.sync(scene, dirty, null);
+      expect(el.classList.contains("is-torn")).toBe(true);
+      expect(el.classList.contains("is-developing")).toBe(false);
+      expect(el.style.getPropertyValue("--arrived")).toBe("");
+    });
+
+    /**
+     * The phase is not a document write, so nothing about the item changes when
+     * the bytes land. `CaseView`'s guard was the cold identity and a digest of
+     * the record, and both of those are the same on the frame after a transfer
+     * finishes as on the frame before it.
+     */
+    it("repaints when the bytes arrive, which the document never mentions", () => {
+      let view: AssetView = { url: "", phase: "transferring", fraction: 0.5 };
+      const l = new DomItemLayer(host, () => view, facts({ kind: "document", pages: 142 }));
+      add("a", { assetId: HASH });
+      l.sync(scene, dirty, null);
+      const el = host.firstElementChild as HTMLElement;
+      expect(el.classList.contains("is-developing")).toBe(true);
+
+      view = { url: "asset://sha256/x", phase: "ready", fraction: 0 };
+      dirty.item("a");
+      l.sync(scene, dirty, null);
+      expect(el.classList.contains("is-developing")).toBe(false);
+      expect(el.classList.contains("is-waiting")).toBe(false);
+    });
+
+    /**
+     * And every label is still readable in all four of them — AC-668 does not
+     * get quieter because the file is late. A page count comes off the record,
+     * and the record is a peer's write that arrives long before the bytes.
+     */
+    it("says the case number and the page count in every one of the states", () => {
+      for (const p of ["unknown", "requesting", "transferring", "unavailable", "ready"] as const) {
+        again();
+        const l = new DomItemLayer(
+          host,
+          phase(p, 0.3),
+          facts({ kind: "document", name: "dossier.pdf", pages: 142 }),
+        );
+        add("a", { assetId: HASH });
+        l.sync(scene, dirty, null);
+        expect(host.querySelector(".case-number")!.textContent, p).toBe("dossier");
+        expect(host.querySelector(".case-meta")!.textContent, p).toBe("142 pp.");
+      }
+    });
+
+    /**
+     * A pooled node that was last a torn cassette must not come back as one. The
+     * trap is specific: `paintContents` is guarded on the phase, and a board
+     * joining cold is a wall of objects *all* equally not here — so the item this
+     * node is handed to next is very often in the same phase, and the guard would
+     * correctly decide there was nothing to repaint while the node still wore the
+     * last object's fraction.
+     */
+    it("re-dresses a recycled node that comes back in the state it left in", () => {
+      // The *same* phase on both sides, which is the case the guard gets wrong
+      // and the only one worth a test: `release` strips the classes off the node
+      // and a guard comparing the new phase against the one still recorded would
+      // decide there was nothing to repaint. Two objects equally not here is not
+      // a corner — it is what a board looks like the moment somebody joins it.
+      const l = new DomItemLayer(host, () => waiting(), facts({ kind: "audio" }));
+      add("a", { assetId: HASH });
+      l.sync(scene, dirty, null);
+      const el = host.firstElementChild as HTMLElement;
+      expect(el.classList.contains("is-waiting")).toBe(true);
+
+      scene.removeItem("a");
+      dirty.item("a");
+      l.sync(scene, dirty, null);
+      add("b", { assetId: HASH });
+      l.sync(scene, dirty, null);
+
+      const next = host.firstElementChild as HTMLElement;
+      expect(next, "the same node, out of the pool").toBe(el);
+      expect(next.classList.contains("is-waiting")).toBe(true);
+    });
+  });
 });
