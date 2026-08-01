@@ -1628,11 +1628,34 @@ textarea.item-field::-webkit-scrollbar {
  * The proportions come off the photograph: the front panel's top edge at 8%,
  * the fold's crease at 91%, the darkened lip in the last 3%.
  */
+/*
+ * **Where the folder begins, which is not where its item box does** (T-315).
+ *
+ * The kraft starts a little way down so the paper has the top of the item to
+ * itself. Everything anchored to the *object* has to know that, and one thing
+ * was not: a strip of tape is positioned on the corner of the drawn thing rather
+ * than of the box, through `--edge-*` — "how far in from each edge the silhouette
+ * put it" — which `PaperView` writes from its own torn outline and `CaseView`
+ * never wrote at all. So a folder's top corners fell back to `0px`, the tape was
+ * centred on the box, and at the head it floated a clear 13 board units above
+ * any kraft: stuck to nothing, holding nothing.
+ *
+ * One number with two readers, so the two cannot drift. The bottom corners and
+ * both sides are flush already — the back panel runs to the foot and the full
+ * width — and the VHS and the cassette need none of this, because `.case-shell`
+ * is `inset: 0` and their boxes are their objects.
+ */
+.item-case[data-kind="folder"] {
+  --kraft-top: 3.5%;
+  --edge-tl-y: var(--kraft-top);
+  --edge-tr-y: var(--kraft-top);
+}
+
 .folder-back {
   position: absolute;
   /* Down a little, so the paper has the top of the item to itself and can break
      the board's edge without leaving the item's box. */
-  inset: 3.5% 0 0 0;
+  inset: var(--kraft-top, 3.5%) 0 0 0;
   border-radius: 3px 4px 5px 4px;
   /* The back panel, seen only along the top and down the right where the front
      does not cover it. Darker than the face, because it is behind it — and

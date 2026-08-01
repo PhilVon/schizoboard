@@ -24,6 +24,9 @@ import { bare, declarations, layers } from "./css-declarations";
 const sheets = declarations(".folder-sheets");
 const edges = declarations(".folder-sheets::after");
 const front = declarations(".folder-front");
+const back = declarations(".folder-back");
+const folder = declarations('.item-case[data-kind="folder"]');
+const shell = declarations(".case-shell");
 
 /**
  * A percentage, or `calc(A% ± var(--bulk, F) * B%)`, resolved at one page count.
@@ -206,5 +209,56 @@ describe("what a closed folder shows", () => {
     expect(profile, "a shine and a hairline of board thickness, in that order").toMatch(
       /rgba\(255, 246, 228, .+?\) 0 [\d.]+%,\s*rgba\(96, 70, 40, /,
     );
+  });
+});
+
+/**
+ * Where a folder begins, and the one thing that was anchored to the box instead
+ * — T-315.
+ *
+ * The kraft starts a little way down so the paper can have the top of the item to
+ * itself. A strip of tape is positioned on the corner of the *drawn* thing, not
+ * of the box, through `--edge-*`, which `PaperView` writes from its torn outline
+ * and `CaseView` never wrote at all. So a folder's head corners fell back to
+ * `0px` and the tape floated a clear thirteen board units above any kraft:
+ * stuck to nothing, holding nothing. Phil saw it at the top right.
+ */
+describe("what a folder's tape is stuck to", () => {
+  /**
+   * One number, two readers. The whole fault was two places knowing where the
+   * kraft starts and only one of them being told when it moved — so the test is
+   * that there is only one place, rather than that the two agree today.
+   */
+  it("takes the head inset and the tape's anchor from the same declaration", () => {
+    expect(back.get("inset")).toMatch(/^var\(--kraft-top/);
+    expect(folder.get("--kraft-top"), "the folder's root declares it").toBeDefined();
+    for (const prop of ["--edge-tl-y", "--edge-tr-y"]) {
+      expect(folder.get(prop), `${prop} is the same number`).toBe("var(--kraft-top)");
+    }
+  });
+
+  /**
+   * And only the head. The back panel runs to the foot and the full width, so the
+   * other six are flush and must stay at their `0px` fallback — "completing the
+   * set" would walk the tape *off* the object at three corners out of four.
+   */
+  it.each(["--edge-tl-x", "--edge-tr-x", "--edge-br-x", "--edge-br-y", "--edge-bl-x", "--edge-bl-y"])(
+    "leaves %s alone, because that edge is flush",
+    (prop) => {
+      expect(folder.has(prop)).toBe(false);
+    },
+  );
+
+  /**
+   * The reason this is the folder's problem alone: a VHS and a cassette *are*
+   * their boxes. If a shell is ever inset, its tape needs the same treatment and
+   * this is where that will be noticed.
+   */
+  it("needs none of it for the two plastic ones", () => {
+    expect(shell.get("inset")).toBe("0");
+    for (const prop of ["--edge-tl-y", "--edge-tr-y"]) {
+      expect(declarations('.item-case[data-kind="vhs"]').has(prop)).toBe(false);
+      expect(declarations('.item-case[data-kind="cassette"]').has(prop)).toBe(false);
+    }
   });
 });
