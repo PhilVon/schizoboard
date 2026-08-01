@@ -17,11 +17,43 @@
 
 import { describe, expect, it } from "vitest";
 
+import { folderBulk } from "../src/lib/objects";
+
 import { bare, declarations, layers } from "./css-declarations";
 
 const sheets = declarations(".folder-sheets");
 const edges = declarations(".folder-sheets::after");
 const front = declarations(".folder-front");
+
+/**
+ * A percentage, or `calc(A% ± var(--bulk, F) * B%)`, resolved at one page count.
+ *
+ * Small enough to write out and big enough to be worth it: T-312's fault was
+ * arithmetic between two declarations in different rules, which is exactly the
+ * kind nobody checks by reading.
+ */
+function atBulk(expr: string, bulk: number): number {
+  const plain = /^([\d.]+)%$/.exec(expr.trim());
+  if (plain) return Number.parseFloat(plain[1]!);
+  const calc = /^calc\(\s*([\d.]+)%\s*([+-])\s*var\(--bulk,\s*[\d.]+\)\s*\*\s*([\d.]+)%\s*\)$/.exec(
+    expr.trim(),
+  );
+  expect(calc, `"${expr}" is a percentage or a calc over --bulk`).not.toBeNull();
+  const [, base, sign, span] = calc!;
+  const step = bulk * Number.parseFloat(span!);
+  return Number.parseFloat(base!) + (sign === "-" ? -step : step);
+}
+
+/** Where the head of the paper is, in percent down the object. */
+const headAt = (bulk: number) => atBulk(sheets.get("top")!, bulk);
+/** Where its foot is — `bottom` is measured from the object's own foot. */
+const footAt = (bulk: number) => 100 - atBulk(sheets.get("bottom")!, bulk);
+/** The front panel's cut edge, which is what hides the foot. */
+const panelTop = Number.parseFloat(front.get("inset")!.split(" ")[0]!);
+/** What anybody can actually see of the paper. */
+const visibleAt = (bulk: number) => Math.min(footAt(bulk), panelTop) - headAt(bulk);
+
+const LADDER = [0, 0.25, 0.5, 0.75, 1];
 
 /** The mask spans, as `[start, end]` pairs in percent of the band's width. */
 function spans(): Array<[number, number]> {
@@ -54,14 +86,63 @@ describe("what a closed folder shows", () => {
   });
 
   /**
-   * Both halves of T-269's page count, which the fix must not have quietly cost:
-   * how deep the band is, and how far up it the edges reach. With the top sheet
-   * gone the second one is doing far more work than it was — it is now the
-   * difference between a memo and a case dump rather than a detail under a sheet.
+   * Both halves of T-269's page count, which neither fix may quietly cost: how
+   * high the paper stands, and how far up it the edges reach. With the top sheet
+   * gone the second is doing far more work than it was — it is the difference
+   * between a memo and a case dump rather than a detail under a sheet.
    */
-  it("still says the page count with the band and with the edges", () => {
-    expect(sheets.get("height")).toMatch(/--bulk/);
+  it("still says the page count with the head and with the edges", () => {
+    expect(sheets.get("top")).toMatch(/--bulk/);
     expect(edges.get("inset")).toMatch(/--bulk/);
+  });
+
+  /**
+   * **The fault Phil found on a one-page folder.** The foot of the paper has to
+   * finish *behind* the front panel at every page count, or there is nothing
+   * between the paper and the folder but back-panel kraft and the paper floats
+   * clear of the object it is in. Anchored at the head with a growing height, it
+   * fell short of the panel below about six pages by 1.43% of the object.
+   */
+  it.each(LADDER)("tucks the foot behind the front panel at bulk %s", (bulk) => {
+    expect(footAt(bulk)).toBeGreaterThan(panelTop + 1);
+  });
+
+  /**
+   * **The fault behind that one, which is worse.** Growth below the panel's cut
+   * edge cannot be seen, so a band pinned at the head and grown downward says
+   * nothing: the visible paper measured 11.26%, 11.12% and 11.1% of the object
+   * for eight, forty and two hundred pages. The declaration said how much was in
+   * the folder and the drawing did not. Half again from empty to full is what
+   * T-269 asked for and is roughly what the head-anchored version now gives.
+   */
+  it("grows what can be seen, not what the panel covers", () => {
+    for (let i = 1; i < LADDER.length; i++) {
+      expect(
+        visibleAt(LADDER[i]!),
+        `bulk ${LADDER[i]} shows no more paper than bulk ${LADDER[i - 1]}`,
+      ).toBeGreaterThan(visibleAt(LADDER[i - 1]!));
+    }
+    expect(visibleAt(1) / visibleAt(0)).toBeGreaterThan(1.5);
+  });
+
+  /**
+   * And neither end leaves the item's own box, at any page count — the pins, the
+   * ink, the hit test and the baked shadow all agree about where the object is,
+   * and it is the board's silhouette the paper breaks, not the item's.
+   */
+  it.each(LADDER)("stays inside the item box at bulk %s", (bulk) => {
+    expect(headAt(bulk)).toBeGreaterThanOrEqual(0);
+    expect(footAt(bulk)).toBeLessThanOrEqual(100);
+  });
+
+  /**
+   * The band is drawn before the asset record arrives — which may be a peer's
+   * write and a network away — so the CSS carries `folderBulk`'s own not-knowing
+   * value as a fallback. Two authors for one number, in two languages.
+   */
+  it("falls back to the same not-knowing value folderBulk does", () => {
+    const fallback = /var\(--bulk,\s*([\d.]+)\)/.exec(sheets.get("top")!)![1]!;
+    expect(Number.parseFloat(fallback)).toBeCloseTo(folderBulk(null), 2);
   });
 
   /**

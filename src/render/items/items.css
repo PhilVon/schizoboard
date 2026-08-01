@@ -1604,30 +1604,50 @@ textarea.item-field::-webkit-scrollbar {
  * shows you the *edges* of however many are in it, and that is now all this
  * element is.
  *
- * It still breaks the top of the folder, which is the part that makes the
- * object look used rather than drawn - the kraft starts a little way down and
- * the paper has the top of the item to itself. Nothing goes outside the item's
- * own box, so the pins, the ink, the hit test and the baked shadow all still
- * agree about where the object is; it is the *board's* silhouette that the
- * paper breaks.
+ * A full one still breaks the top of the folder, which is the part that makes
+ * the object look used rather than drawn - the kraft starts a little way down
+ * and the paper has the top of the item to itself. A nearly empty one no longer
+ * does, and that is T-312: the paper sits down inside a thin folder with the
+ * back panel showing above it, and climbs out of a full one. Nothing goes
+ * outside the item's own box at either end, so the pins, the ink, the hit test
+ * and the baked shadow all still agree about where the object is; it is the
+ * *board's* silhouette that the paper breaks.
  */
 .folder-sheets {
   position: absolute;
   left: 2.5%;
   right: 2.5%;
-  top: 0;
   /*
-   * **The height of this band is how much is in the folder** (T-269). `--bulk`
-   * is the page count on a log scale (`folderBulk`), and it is the only thing
-   * about a closed folder that says a three page memo from a four hundred page
-   * dump. It moves about half again from empty to full, which is small on the
-   * object and large beside the folder next to it — which is how the comparison
-   * is actually made, one on a board of them rather than one on its own.
+   * **How high the paper stands is how much is in the folder** (T-269, anchored
+   * the other way up by T-312). `--bulk` is the page count on a log scale
+   * (`folderBulk`), and it is the only thing about a closed folder that says a
+   * three page memo from a four hundred page dump.
    *
-   * The fallback is `folderBulk`'s own not-knowing value and has to stay in
-   * step with it: this element is drawn before the asset record arrives.
+   * The **foot is pinned** and the **head rises**, and which end is nailed down
+   * is the whole of T-312. Written the other way — a head at `top: 0` and a
+   * height that grew — it grew downward, and downward is the one direction the
+   * front panel is already covering: above about six pages every extra unit was
+   * drawn underneath the panel, and the visible paper measured 11.26%, 11.12%
+   * and 11.1% for eight, forty and two hundred pages. Flat. The declaration said
+   * how much was in the folder and the drawing did not.
+   *
+   * Below six pages the same arithmetic left the band's foot *short* of the
+   * panel's cut edge at 11%, with nothing between the paper and the folder but
+   * back-panel kraft — paper floating clear of the folder it is in, which is
+   * what Phil saw on a one-page one.
+   *
+   * So: the foot sits at 13%, two points behind the panel, where it can never
+   * leave a gap and is never seen. The head runs from 4.5% down inside the
+   * folder to 0, the top of the item box. Visible paper goes 6.5% → 11% of the
+   * object, and the growth is in the **silhouette against the cork** rather than
+   * in an edge inside the object — which is the strongest signal there is, and
+   * the one a board of folders is actually compared by.
+   *
+   * The fallback is `folderBulk`'s own not-knowing value and has to stay in step
+   * with it: this element is drawn before the asset record arrives.
    */
-  height: calc(9.5% + var(--bulk, 0.48) * 7%);
+  top: calc(4.5% - var(--bulk, 0.48) * 4.5%);
+  bottom: 87%;
   /*
    * A sheet's corners, softened - not a sweep. The sweep belonged to the
    * version where the paper came out of one end. Softened means about five
