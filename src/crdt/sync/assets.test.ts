@@ -6,6 +6,7 @@
  * which is nearly one does not.
  */
 
+import * as encoding from "lib0/encoding";
 import { describe, expect, it } from "vitest";
 
 import {
@@ -25,7 +26,33 @@ const B = `0123456789abcdef${"b".repeat(48)}`;
 
 describe("the asset sub-protocol", () => {
   it("round-trips a want", () => {
-    expect(decodeAsset(encodeWant(A, 1))).toEqual({ kind: "want", sha256: A, priority: 1 });
+    expect(decodeAsset(encodeWant(A, 1))).toEqual({ kind: "want", sha256: A, priority: 1, from: 0 });
+    expect(decodeAsset(encodeWant(A, 1, 42))).toEqual({
+      kind: "want",
+      sha256: A,
+      priority: 1,
+      from: 42,
+    });
+  });
+
+  it("reads a want from a peer that predates resuming", () => {
+    // T-265 appended `from` rather than inserting it, so the two sides degrade
+    // separately. This is the half that would otherwise be silent and total: a
+    // `WANT` with nothing after the priority must decode as "start at zero" and
+    // not throw, because `decodeAsset` turns a throw into `null` and the
+    // exchange drops a `null` without a word — so an older peer would look like
+    // one that never asks for anything rather than one that cannot resume.
+    const older = encoding.createEncoder();
+    encoding.writeVarUint(older, 1);
+    encoding.writeVarString(older, A);
+    encoding.writeVarUint(older, 1);
+
+    expect(decodeAsset(encoding.toUint8Array(older))).toEqual({
+      kind: "want",
+      sha256: A,
+      priority: 1,
+      from: 0,
+    });
   });
 
   it("round-trips a done and a nack", () => {

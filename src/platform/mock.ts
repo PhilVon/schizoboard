@@ -423,6 +423,27 @@ export class MockPlatform implements Platform {
     return this.assets.get(sha256)?.meta.size ?? 0;
   }
 
+  /**
+   * The dense prefix, counted the long way round.
+   *
+   * Rust asks the filesystem for a length and gets this for nothing, because it
+   * writes chunks at offsets into one file. This side keeps an array of chunks
+   * and so has to walk it — and walking it *stopping at the first gap* is the
+   * point rather than an inconvenience: it is the same number under both
+   * implementations, including when a chunk is missing from the middle, which
+   * is the case the two would otherwise disagree about.
+   */
+  async assetPartial(sha256: string): Promise<number> {
+    const partial = this.partials.get(sha256);
+    if (partial === undefined) return 0;
+    let bytes = 0;
+    for (const chunk of partial.chunks) {
+      if (chunk === undefined) break;
+      bytes += chunk.length;
+    }
+    return bytes;
+  }
+
   async assetChunk(sha256: string, index: number): Promise<Uint8Array> {
     const asset = this.assets.get(sha256);
     if (asset === undefined) return new Uint8Array(0);

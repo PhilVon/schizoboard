@@ -41,7 +41,9 @@ import { freshBoardId, planSync } from "@/app/sync";
 import { openBoardDoc, type BoardDoc } from "@/crdt/doc";
 import { createItems } from "@/crdt/ops";
 import { readItem } from "@/crdt/schema";
+import { decodeAsset, encodeWant } from "@/crdt/sync/assets";
 import { AssetExchange } from "@/crdt/sync/exchange";
+import { encodeAsset } from "@/crdt/sync/protocol";
 import { WireProvider } from "@/crdt/sync/provider";
 import { CHUNK_BYTES } from "@/platform/types";
 import { MockPlatform } from "@/platform/mock";
@@ -320,6 +322,45 @@ describe.each(servers)("against $name", (server) => {
 
     await until(() => catching.stats().wanted === 0, 30_000);
     expect(await late.assetHas([sha256])).toEqual([true]);
+  }, 60_000);
+
+  it("carries where to resume from on the wire, not just in the encoder", async () => {
+    // T-265 added a field to `WANT`, and a codec agrees with itself by
+    // construction. What only this file can prove is that the number survives
+    // the encoder, a real socket, the relay's re-stamp of the sender id, and the
+    // decoder at the other end — so the holder below is real, and the asking
+    // side is a hand-written `WANT` rather than an exchange, because the number
+    // under test is exactly the thing an exchange would compute for itself.
+    //
+    // Which chunks come back is the whole assertion. Whether the exchange picks
+    // the right number is `crdt/sync/exchange.test.ts`'s job.
+    const a = board();
+    const b = board();
+    const holder = new MockPlatform();
+    const bytes = photograph();
+    const { sha256 } = await holder.assetIngestBytes(bytes);
+
+    const seeding = new AssetExchange(a.provider, holder);
+    exchanges.push(seeding);
+    await until(() => a.provider.synced && b.provider.synced);
+    if (!server.routesAssets) return;
+
+    const arrived: number[] = [];
+    let done = false;
+    b.provider.on("asset", ({ tail }) => {
+      const message = decodeAsset(tail);
+      if (message?.kind === "data" && message.sha256 === sha256) arrived.push(message.index);
+      if (message?.kind === "done" && message.sha256 === sha256) done = true;
+    });
+
+    // Two of the three chunks are notionally already on this disk.
+    b.provider.send(encodeAsset(a.board.doc.clientID, encodeWant(sha256, 0, 2)));
+
+    await until(() => done, 30_000);
+    // Only the third crossed. Before T-265 the holder had no way to be told
+    // where to start and this read `[0, 1, 2]` — which is a 400 MB interview
+    // sent again from the beginning every time a LAN hiccuped.
+    expect(arrived).toEqual([2]);
   }, 60_000);
 
   it("tells the room when a board's socket goes", async () => {

@@ -826,6 +826,35 @@ impl AssetStore {
         self.original_path(sha256).with_extension("part-recv")
     }
 
+    /// How many bytes of this asset are already on the disk, from a transfer
+    /// that was interrupted rather than finished.
+    ///
+    /// **A length, not a count of chunks, and the difference is the whole
+    /// reason resuming needs no bookkeeping** (T-265). `receive_chunk` writes at
+    /// offsets, so a file with a hole in it is longer than the bytes it holds
+    /// and this number would be a lie. It is not a lie because of a property
+    /// held on the *other* side of the wire: `serve` sends chunk zero upwards in
+    /// order, and the exchange only ever resumes from a contiguous point, so
+    /// what accumulates here is always dense. Under that, the length is exactly
+    /// the prefix that can be kept.
+    ///
+    /// The store does not enforce that and must not: `receive_chunk` accepts any
+    /// order on purpose, and the hash at commit is what actually decides whether
+    /// a transfer was any good. This is a hint that makes a resume cheap, and
+    /// the failure mode when the hint is wrong is a commit that does not verify
+    /// — the same one a dropped chunk already has.
+    ///
+    /// Zero for no such file, which is also the right answer for a transfer
+    /// whose partial the hour-long `gc` sweep has already taken.
+    pub fn partial_len(&self, sha256: &str) -> u64 {
+        if !valid_hash(sha256) {
+            return 0;
+        }
+        fs::metadata(self.partial_path(sha256))
+            .map(|meta| meta.len())
+            .unwrap_or(0)
+    }
+
     /// File one arriving chunk. Nothing here is trusted yet.
     ///
     /// Written at its own offset rather than appended, so the order chunks
@@ -2430,6 +2459,74 @@ mod tests {
         assert!(!receiver.partial_path(&wanted).is_file());
         // Absent is success: the socket can close before a byte ever arrives.
         assert!(receiver.abort_received(&wanted).is_ok());
+    }
+
+    #[test]
+    fn an_interrupted_transfer_says_how_much_of_it_arrived() {
+        // T-265. The number the exchange resumes from, and it is a length
+        // because `receive_chunk` writes at offsets — there is no chunk count
+        // anywhere in this store to ask for instead.
+        let (_dir, receiver) = store();
+        let wanted = "4".repeat(64);
+        assert_eq!(receiver.partial_len(&wanted), 0);
+
+        receiver
+            .receive_chunk(&wanted, 0, 3, &vec![7u8; CHUNK_BYTES as usize])
+            .unwrap();
+        assert_eq!(receiver.partial_len(&wanted), CHUNK_BYTES);
+
+        receiver
+            .receive_chunk(&wanted, 1, 3, &vec![7u8; CHUNK_BYTES as usize])
+            .unwrap();
+        assert_eq!(receiver.partial_len(&wanted), CHUNK_BYTES * 2);
+
+        // And nothing of a hash that is not one. The name reaches here off the
+        // wire, and `dir_for` slices it at 2 and at 4 to build the path — so a
+        // short one is a panic rather than a miss, and one with `..` in it is a
+        // path outside the store. Both of those are what the guard is for, and
+        // both are what these two lines would do without it.
+        assert_eq!(receiver.partial_len(""), 0);
+        assert_eq!(receiver.partial_len("ab"), 0);
+        assert_eq!(receiver.partial_len("../../../etc/passwd"), 0);
+        assert_eq!(receiver.partial_len(&"z".repeat(64)), 0);
+    }
+
+    #[test]
+    fn what_arrived_survives_until_it_is_committed_or_thrown_away() {
+        // The property the whole of T-265 rests on: the store keeps a partial
+        // until it is told otherwise, so the exchange abandoning a transfer
+        // costs its place in the queue and not its bytes. Only `commit_received`
+        // and `abort_received` remove one.
+        let (_dir, receiver) = store();
+        let wanted = "5".repeat(64);
+        receiver
+            .receive_chunk(&wanted, 0, 4, &vec![3u8; CHUNK_BYTES as usize])
+            .unwrap();
+
+        // Everything an interruption does to this store, which is nothing.
+        assert_eq!(receiver.partial_len(&wanted), CHUNK_BYTES);
+        assert!(receiver.partial_path(&wanted).is_file());
+
+        // A later chunk lands at its own offset in the same file, so resuming
+        // adds to what is there rather than starting a second one.
+        receiver.receive_chunk(&wanted, 1, 4, b"the rest").unwrap();
+        assert_eq!(receiver.partial_len(&wanted), CHUNK_BYTES + 8);
+    }
+
+    #[test]
+    fn a_hole_makes_the_length_longer_than_what_is_held() {
+        // Why `partial_len` is documented as a hint rather than a fact. The
+        // exchange promises to resume from a contiguous point, so this shape
+        // does not arise from it — but the store must not pretend it cannot,
+        // because `receive_chunk` accepts any order on purpose and the hash at
+        // commit is what actually decides.
+        let (_dir, receiver) = store();
+        let wanted = "6".repeat(64);
+        receiver.receive_chunk(&wanted, 2, 4, b"third").unwrap();
+
+        assert_eq!(receiver.partial_len(&wanted), CHUNK_BYTES * 2 + 5);
+        // Which is a file of mostly zeroes, and a commit refuses it.
+        assert!(!receiver.commit_received(&wanted).unwrap());
     }
 
     #[test]

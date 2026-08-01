@@ -654,6 +654,24 @@ async fn asset_size(app: AppHandle, sha256: String) -> Result<u64, String> {
     .await
 }
 
+/// How much of an interrupted transfer is still on the disk, so the exchange can
+/// ask for the rest of it rather than for all of it again (T-265).
+///
+/// Asked of the *receiving* side about its own partial, which is why it is
+/// separate from `asset_size` — that one answers about an asset this machine
+/// holds whole and is what a holder uses to decide how many chunks to send.
+///
+/// Zero covers every way of not having one, including the hour-long `gc` sweep
+/// having taken it, and zero means "start at the beginning" all the way down.
+#[tauri::command]
+async fn asset_partial(app: AppHandle, sha256: String) -> Result<u64, String> {
+    blocking(move || -> assets::Result<u64> {
+        let store = store_of(&app).map_err(assets::Error::Unavailable)?;
+        Ok(store.partial_len(&sha256))
+    })
+    .await
+}
+
 /// What this file says it is called, read off a copy this machine holds.
 ///
 /// **A derived local index and nothing else** — Q-211. The answer never enters
@@ -1306,6 +1324,7 @@ pub fn run() {
             asset_gc,
             peer_have_summary,
             asset_size,
+            asset_partial,
             asset_title,
             asset_chunk,
             asset_receive,

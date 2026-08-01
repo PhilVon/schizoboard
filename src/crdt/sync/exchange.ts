@@ -252,9 +252,12 @@ export class AssetExchange {
     // and a client id is not stable across one. Keeping it would send the next
     // session's WANTs to nobody.
     this.holders.clear();
-    for (const [sha256, live] of this.inFlight) {
+    // The partials stay on the disk. This is the case T-265 is named for: a
+    // connection that drops in the middle of a 400 MB interview is the flaky
+    // LAN, not a peer saying no, and throwing the file away here is what made
+    // the transfer unable to survive one.
+    for (const live of this.inFlight.values()) {
       clearTimeout(live.silence);
-      this.abort(sha256);
     }
     this.inFlight.clear();
   }
@@ -277,7 +280,7 @@ export class AssetExchange {
         return;
 
       case "want":
-        void this.serve(from, message.sha256);
+        void this.serve(from, message.sha256, message.from);
         return;
 
       case "data": {
@@ -315,8 +318,17 @@ export class AssetExchange {
     }
   }
 
-  /** Somebody wants a hash. Send it, or say we do not have it. */
-  private async serve(to: number, sha256: string): Promise<void> {
+  /**
+   * Somebody wants a hash. Send it from where they say they got to, or say we
+   * do not have it.
+   *
+   * `from` is the asker's claim about its own disk and is never checked, because
+   * there is nothing here that could check it: what the asker holds is on the
+   * asker's machine. It cannot cost us anything either — the worst a lying peer
+   * gets is *fewer* bytes than it asked for, and the hash it has to make at the
+   * end is what decides whether any of this was any good.
+   */
+  private async serve(to: number, sha256: string, from = 0): Promise<void> {
     const size = await this.native.assetSize(sha256);
     if (this.destroyed) return;
     if (size <= 0) {
@@ -325,7 +337,12 @@ export class AssetExchange {
     }
 
     const total = Math.max(1, Math.ceil(size / CHUNK_BYTES));
-    for (let index = 0; index < total; index += 1) {
+    // Clamped rather than refused, and to the last chunk rather than to none:
+    // an asker that thinks it holds more of this than exists gets the final
+    // chunk over again and then `DONE`, which is one chunk to put a confused
+    // peer back on a path where its own hash check can speak.
+    const start = Math.min(Math.max(0, Math.floor(from)), total - 1);
+    for (let index = start; index < total; index += 1) {
       const bytes = await this.native.assetChunk(sha256, index);
       if (this.destroyed) return;
       // The socket went, or the asset was collected out from under us. Either
@@ -363,13 +380,27 @@ export class AssetExchange {
     this.pump();
   }
 
-  /** That peer is not going to produce this asset. Try the next one. */
+  /**
+   * That peer is not going to produce this asset. Try the next one, **keeping
+   * what it did send** (T-265).
+   *
+   * The chunks on the disk are not that peer's property. They are bytes at
+   * offsets in a file named for a hash, and the next holder's copy of the same
+   * asset has the same bytes at the same offsets by definition — so the next
+   * peer picks up where this one stopped instead of starting a 400 MB interview
+   * again because one holder went quiet at 380 MB.
+   *
+   * If this peer was lying, or corrupt, the partial is wrong and nothing here
+   * can tell. That is not a new risk and it has always had the same answer: the
+   * hash at commit refuses the file, and `commit_received` deletes the partial
+   * on its way out — so the retry after a failed commit starts at zero, which
+   * is the one case where starting over is the correct thing to do.
+   */
   private giveUpOn(sha256: string, peer: number): void {
     const live = this.inFlight.get(sha256);
     if (live !== undefined) {
       clearTimeout(live.silence);
       this.inFlight.delete(sha256);
-      this.abort(sha256);
     }
     this.wanted.get(sha256)?.tried.add(peer);
     this.pump();
@@ -430,10 +461,45 @@ export class AssetExchange {
         total: 0,
         written: Promise.resolve(),
       };
-      if (!this.provider.send(encodeAsset(peer, encodeWant(sha256, want.priority)))) return;
+      // Reserved *before* the ask, because the ask is no longer synchronous —
+      // it has to look at the disk first — and `ready` above filters on this
+      // map. A pump landing in that window would otherwise start the same
+      // transfer a second time, against the same peer, and the two would race
+      // writing the same offsets.
       this.inFlight.set(sha256, live);
-      this.armSilence(sha256, live);
+      void this.ask(sha256, live);
     }
+  }
+
+  /**
+   * Ask one peer for what we have not got.
+   *
+   * The disk is consulted rather than remembered. A number kept here would be
+   * lost on a reload and would have to be reconciled with the file anyway —
+   * whereas the partial's own length is the answer, is durable for free, and is
+   * already zero in every case that means "start at the beginning": never
+   * asked, just committed, or swept by the store's hour-long tidy.
+   *
+   * That length is only a *chunk* count because of the promise this method
+   * makes: it asks from a contiguous point, and a holder serves from there
+   * upwards in order, so what lands on the disk has no holes in it. `serve` is
+   * the other half of that and `AssetStore::partial_len` documents the same
+   * bargain from the far side.
+   */
+  private async ask(sha256: string, live: InFlight): Promise<void> {
+    const held = await this.native.assetPartial(sha256).catch(() => 0);
+    // Displaced, committed or disconnected while we were asking the disk.
+    if (this.destroyed || this.inFlight.get(sha256) !== live) return;
+
+    const from = Math.floor(held / CHUNK_BYTES);
+    // So the percentage is about the asset rather than about this attempt at
+    // it: a transfer resumed at 90% must not report 0%.
+    live.received = from;
+    if (!this.provider.send(encodeAsset(live.peer, encodeWant(sha256, live.priority, from)))) {
+      this.inFlight.delete(sha256);
+      return;
+    }
+    this.armSilence(sha256, live);
   }
 
   /**
@@ -446,10 +512,12 @@ export class AssetExchange {
    * start immediately and arbitrarily, and the ones the person is actually
    * looking at then wait behind three they cannot see.
    *
-   * Abandoning costs the chunks already received. It cannot cost more than
-   * that: they were written at their own offsets in a file named for the hash,
-   * so re-asking later overwrites the same offsets with the same bytes, and it
-   * is the hash at commit that decides whether any of it was any good.
+   * Abandoning costs the *place in the queue* and not the chunks. They were
+   * written at their own offsets in a file named for the hash, so re-asking
+   * later carries on from where this stopped, and it is the hash at commit that
+   * decides whether any of it was any good. This paragraph described what the
+   * code did not do until T-265: the `abort` two lines below the loop threw the
+   * file away, and a displaced transfer started again from nothing.
    *
    * Strictly greater, so equal priorities never displace each other — that
    * would be a queue of transfers taking turns to be cancelled.
@@ -468,9 +536,8 @@ export class AssetExchange {
     const live = this.inFlight.get(victim);
     if (live !== undefined) clearTimeout(live.silence);
     this.inFlight.delete(victim);
-    this.abort(victim);
     // Still in `wanted` — nothing removes it there until it is committed — so
-    // it comes back round on a later pump.
+    // it comes back round on a later pump, and finds its own bytes waiting.
     return true;
   }
 
