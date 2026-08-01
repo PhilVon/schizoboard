@@ -1609,7 +1609,18 @@ textarea.item-field::-webkit-scrollbar {
   left: 2.5%;
   right: 2.5%;
   top: 0;
-  height: 13%;
+  /*
+   * **The height of this band is how much is in the folder** (T-269). `--bulk`
+   * is the page count on a log scale (`folderBulk`), and it is the only thing
+   * about a closed folder that says a three page memo from a four hundred page
+   * dump. It moves about half again from empty to full, which is small on the
+   * object and large beside the folder next to it — which is how the comparison
+   * is actually made, one on a board of them rather than one on its own.
+   *
+   * The fallback is `folderBulk`'s own not-knowing value and has to stay in
+   * step with it: this element is drawn before the asset record arrives.
+   */
+  height: calc(9.5% + var(--bulk, 0.48) * 7%);
   /*
    * A sheet's corners, softened - not a sweep. The sweep belonged to the
    * version where the paper came out of one end.
@@ -1617,24 +1628,55 @@ textarea.item-field::-webkit-scrollbar {
   border-radius: 6% 5% 2% 2% / 26% 22% 8% 8%;
   transform: rotate(calc(var(--spill, 0) * 0.35deg));
   background:
-    /*
-     * The edges of the sheets below the top one. Three, because a folder with
-     * one sheet in it is a folder nobody has put anything in, and because the
-     * reference's stack shows exactly this - fine lines rather than separate
-     * shapes. They run the width and fade at the left, where the stack is
-     * squarest to us.
-     */
-    linear-gradient(93deg, rgba(126, 116, 96, 0.1) 0%, rgba(126, 116, 96, 0.2) 42%, rgba(126, 116, 96, 0.16) 100%)
-      0 58% / 100% 0.9% no-repeat,
-    linear-gradient(93deg, rgba(126, 116, 96, 0.07) 0%, rgba(126, 116, 96, 0.17) 52%, rgba(126, 116, 96, 0.13) 100%)
-      0 74% / 100% 0.9% no-repeat,
-    linear-gradient(93deg, rgba(126, 116, 96, 0.05) 0%, rgba(126, 116, 96, 0.14) 62%, rgba(126, 116, 96, 0.1) 100%)
-      0 88% / 100% 0.8% no-repeat,
     /* Two creases, because a sheet that has been in and out of a folder has
        them and a flat white band reads as a cut-out. */
     linear-gradient(99deg, rgba(0, 0, 0, 0) 20%, rgba(255, 255, 255, 0.55) 25%, rgba(148, 140, 122, 0.14) 31%, rgba(0, 0, 0, 0) 38%),
     linear-gradient(84deg, rgba(0, 0, 0, 0) 62%, rgba(255, 255, 255, 0.4) 67%, rgba(148, 140, 122, 0.12) 72%, rgba(0, 0, 0, 0) 78%),
     linear-gradient(to bottom, #fcfcf8 0%, #f4f1e8 34%, #e6e1d3 68%, #cdc7b5 100%);
+}
+
+/*
+ * The edges of the sheets below the top one — the stack itself, and the second
+ * half of what `--bulk` says (T-269).
+ *
+ * The reference's stack is fine lines rather than separate shapes, so the pitch
+ * is fixed and the *number of them* is what grows: a hairline every 3.4 board
+ * units, over a run that opens from almost nothing to most of the band. Pitched
+ * in board units rather than in a percentage of this box for exactly that
+ * reason — a percentage would spread three lines further apart as the folder
+ * filled, which is a fan and not a stack.
+ *
+ * It fades at the left, where the stack is squarest to us. That was three
+ * hand-placed gradients before this and is now a mask over the repeat, which is
+ * the same drawing with the count taken out of it.
+ */
+.folder-sheets::after {
+  content: "";
+  position: absolute;
+  /* Grows downward from under the top sheet. The bottom is the fold, and the
+     fold does not move. */
+  inset: calc(46% - var(--bulk, 0.48) * 24%) 0 0 0;
+  background: repeating-linear-gradient(
+    to bottom,
+    rgba(120, 109, 88, 0.24) 0 0.6px,
+    rgba(120, 109, 88, 0.09) 0.6px 1.1px,
+    rgba(0, 0, 0, 0) 1.1px 2.8px
+  );
+  /* Faint when there is little in it, and never quite gone: a folder with one
+     sheet in it still shows the one sheet. */
+  opacity: calc(0.55 + var(--bulk, 0.48) * 0.45);
+  /*
+   * Two masks, and the vertical one is not decoration. The first line of the
+   * repeat would otherwise land hard against the bottom edge of the sheet above
+   * it, and a bright slab with a dark rule under it reads as a separate white
+   * thing floating over the folder rather than as the top of a pile. The stack
+   * has to *emerge* from under that sheet. The horizontal one is the older
+   * drawing: the fade at the left, where the pile is squarest to us.
+   */
+  mask-image:
+    linear-gradient(93deg, rgba(0, 0, 0, 0.62) 0%, rgba(0, 0, 0, 1) 45%, rgba(0, 0, 0, 0.85) 100%),
+    linear-gradient(to bottom, rgba(0, 0, 0, 0) 0%, rgba(0, 0, 0, 1) 26%);
+  mask-composite: intersect;
 }
 
 /*
@@ -1645,10 +1687,29 @@ textarea.item-field::-webkit-scrollbar {
 .folder-sheets::before {
   content: "";
   position: absolute;
-  inset: -1.5% 6% 34% 3%;
+  /*
+   * Over the stack, because it is the sheet on top of it — and `::after` would
+   * otherwise paint above this one for no reason but the order the two are
+   * written in.
+   */
+  z-index: 1;
+  /*
+   * The bottom edge rides up as the folder fills, which is what lets the stack
+   * under it be seen at all: the fold does not move and this sheet is one sheet,
+   * so the only way more paper can show is for the head of the pile to sit
+   * higher in the band. It has to move further than it looks like it should:
+   * this sheet is opaque and the stack under it is not, so every point it does
+   * not give up is a point of stack nobody can see.
+   */
+  inset: -1.5% 6% calc(30% + var(--bulk, 0.48) * 16%) 3%;
   border-radius: 7% 6% 2% 2% / 40% 34% 10% 10%;
   transform: rotate(calc(var(--spill2, 0) * 0.5deg - 0.35deg));
-  background: linear-gradient(to bottom, #ffffff 0%, #f9f6ef 58%, #ece7db 100%);
+  /* Its own edge on the pile below it. Without this the sheet ends on a ruled
+     line and stops being a sheet lying on paper. */
+  box-shadow: 0 0.8px 1.4px rgba(120, 109, 88, 0.4);
+  /* Not white all the way down. The foot of a sheet lying on a stack is in the
+     stack's own shade, and that is the other half of the same edge. */
+  background: linear-gradient(to bottom, #ffffff 0%, #f9f6ef 52%, #eae4d6 86%, #ded7c6 100%);
 }
 
 .folder-front {
