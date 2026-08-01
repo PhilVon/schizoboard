@@ -514,16 +514,41 @@ fn entry<R: Read + io::Seek>(
         Err(zip::result::ZipError::FileNotFound) => return Ok(None),
         Err(e) => return Err(e.into()),
     };
-    let mut bytes = Vec::new();
-    file.by_ref()
-        .take(limit + 1)
-        .read_to_end(&mut bytes)
-        .map_err(Error::Io)?;
-    if bytes.len() as u64 > limit {
+    // The central directory's claim about what this expands to. It is the same
+    // shape of promise the file system makes to `AssetStore::ingest_path`, and
+    // it is held to in the same way and for the same reason: checked against the
+    // limit before a byte is allocated, used to size the buffer so `read_to_end`
+    // never has to double its way up, and then read one byte past to find out
+    // whether the archive was telling the truth.
+    //
+    // Reading it into `Vec::new()` and bounding it afterwards — which is what
+    // this did until T-307 — costs `next_power_of_two(limit) * 1.5`, because the
+    // allocator keeps every outgrown half. That was 768 MiB when the limit was
+    // 448 MiB and it would have become **1536 MiB** the moment the limit moved
+    // to 768, which is over the whole ingest budget: the ceiling would have gone
+    // up here without anybody raising it, on the one road that is reading an
+    // archive somebody else wrote.
+    let claimed = file.size();
+    if claimed > limit {
         return Err(Error::Corrupt(format!(
-            "{name} expands past {limit} bytes"
+            "{name} says it expands past {limit} bytes"
         )));
     }
+    // A lying archive can make this allocate against nothing, since the claim is
+    // read before the bytes are. Bounded and left that way on purpose: the worst
+    // it can ask for is what one honest entry at the ceiling asks for, which is
+    // inside the budget by construction — and a compressible entry could already
+    // reach the same figure by actually expanding to it.
+    //
+    // `SizeMismatch` back from here means the entry expanded past what the
+    // directory said it would, which for an archive is damage rather than a
+    // race — so it is reported as such and not passed on as an asset error.
+    let bytes = assets::read_promised(file.by_ref(), claimed).map_err(|e| match e {
+        assets::Error::SizeMismatch => {
+            Error::Corrupt(format!("{name} expands past the {claimed} bytes it declares"))
+        }
+        other => Error::Asset(other),
+    })?;
     Ok(Some(bytes))
 }
 
@@ -950,7 +975,20 @@ mod tests {
         assert!(matches!(error, Error::Corrupt(_)), "{error}");
         // And the same entry inside its bound is fine, so the refusal is the
         // size and not the entry.
-        assert!(entry(&mut zip, SNAPSHOT, 8 * 1024 * 1024).unwrap().is_some());
+        let taken = entry(&mut zip, SNAPSHOT, 8 * 1024 * 1024).unwrap().unwrap();
+
+        // **Sized from what the entry declares, never from the limit.** Reading
+        // it into a buffer the size of the *bound* would keep every peak in this
+        // file at `MAX_ASSET_BYTES` — three quarters of a gigabyte to open a
+        // bundle holding one photograph — and nothing else here would notice,
+        // because the bytes that come back are identical either way. Capacity is
+        // the only place the difference is visible.
+        assert_eq!(taken.len(), 4 * 1024 * 1024);
+        assert_eq!(
+            taken.capacity(),
+            taken.len(),
+            "the entry was read into a buffer sized from something other than itself"
+        );
     }
 
     #[test]
