@@ -178,6 +178,8 @@ Register an asynchronous URI scheme handler so `<img src="asset://sha256/<hash>?
 
 Base64-ing a 12 MB photograph across the IPC boundary is the obvious first thing to try and roughly the worst available option: it inflates by a third, blocks on serialisation, and pins the whole image in JS heap.
 
+"Streams" describes the traffic and not the implementation, and the difference started to matter when the store began holding films (T-263). Tauri's asynchronous scheme responder takes a `Response<Vec<u8>>` — there is no body to write into, so the whole of one answer is on the heap before the webview sees any of it. The zero-JavaScript-memory claim is unaffected and is the one that was being made; what the handler owes on top of it is a bound on its own answer, because `Range: bytes=0-` is the first thing a `<video>` sends and uncapped that is an allocation the size of the file. `protocol.rs` caps it at 4 MiB and answers wider ranges short, which is what a media element already expects. A request carrying no `Range` at all is still served whole, deliberately; `src-tauri/src/protocol.rs` says why and which task owns the case.
+
 ### 4.4 IPC surface
 
 All thirty, as `generate_handler!` registers them.

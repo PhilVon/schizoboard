@@ -16,6 +16,32 @@
 //! hold. A board with two hundred photographs open costs the JS heap two
 //! hundred `<img>` elements.
 //!
+//! ## What it does *not* do is stream, and it cannot (T-263)
+//!
+//! Tauri 2.11's asynchronous scheme responder takes a `Response<Vec<u8>>`.
+//! There is no body to write into and no handle to hand back — the whole answer
+//! is materialised on the heap before the webview sees a byte of it. So the
+//! word "streams" above describes the *shape* of the traffic, one span after
+//! another, and not the implementation, and the only thing this handler can
+//! control is how big one answer is allowed to be.
+//!
+//! It caps it, at [`MAX_BODY`]. A range wider than that is answered **short** —
+//! a 206 whose `Content-Range` states exactly the span that was actually sent,
+//! which is what a media server does and what a media element already expects,
+//! because it is the same shape as a connection that ended early. This matters
+//! for exactly one reason: `Range: bytes=0-` is the first thing a `<video>`
+//! sends, and uncapped that is an allocation the size of the file. A 400 MB
+//! interview asked to play used to be 400 MB of resident memory before the
+//! first frame.
+//!
+//! **One case is still unbounded, deliberately.** A request carrying *no*
+//! `Range` header at all gets the whole file, because 206 is only a legal
+//! answer to a range request and a truncated 200 is a corrupt one. Nothing in
+//! the application takes that path with a large file — a media element always
+//! sends a range, and an `<img>` is served a bounded variant — so what is left
+//! is a hand-written `fetch` of the original of something enormous, and the
+//! ceiling that would make that impossible is T-264's, not this module's.
+//!
 //! ## Caching, which content addressing makes free
 //!
 //! The name of the thing *is* the hash of the thing, so a response can be
@@ -42,6 +68,16 @@ use crate::assets::{AssetStore, Variant};
 /// A year, which is as long as `max-age` is allowed to mean anything. Paired
 /// with `immutable` so a conditional request is never even made.
 const CACHE_CONTROL: &str = "public, max-age=31536000, immutable";
+
+/// The most bytes one answer will put on the heap (T-263).
+///
+/// Four mebibytes because the number has two jobs and they pull apart: too
+/// small and a film costs a request every few frames, each one a thread hop and
+/// a fresh `open`; too large and the cap has not done anything. Four is about a
+/// second and a half of the 20 Mbit/s a phone records at, which is comfortably
+/// more than a media element reads ahead, and it is a bound a machine does not
+/// notice sixteen items holding at once.
+const MAX_BODY: u64 = 4 * 1024 * 1024;
 
 fn empty(status: StatusCode) -> Response<Vec<u8>> {
     Response::builder()
@@ -78,9 +114,15 @@ fn variant_of(query: Option<&str>) -> Variant {
     Variant::parse(value)
 }
 
-/// A single `bytes=start-end`. Multi-range is answered with the whole file,
-/// which is a legal response to any range request and is not worth more code
-/// for a store that holds still images.
+/// The span a `bytes=` header asks for, clamped to the file.
+///
+/// A multi-range request names several spans, and a conformant answer to one is
+/// a `multipart/byteranges` body. This takes the **first** span and answers a
+/// single 206 saying so — because the alternative it replaced was to fall
+/// through to the whole file, which handed a client the one thing this module
+/// is not allowed to do (T-263): an allocation it chooses the size of. Chromium
+/// never sends a multi-range for media, and a client that did gets bytes it
+/// asked for with a `Content-Range` that does not pretend otherwise.
 fn parse_range(value: &str, len: u64) -> Option<(u64, u64)> {
     // No range of a zero-length file is satisfiable, and every arm below
     // computes `len - 1` — which panics in a debug build, and in a release
@@ -89,10 +131,7 @@ fn parse_range(value: &str, len: u64) -> Option<(u64, u64)> {
     if len == 0 {
         return None;
     }
-    let spec = value.strip_prefix("bytes=")?;
-    if spec.contains(',') {
-        return None;
-    }
+    let spec = value.strip_prefix("bytes=")?.split(',').next()?.trim();
     let (from, to) = spec.split_once('-')?;
     let (start, end) = match (from.trim(), to.trim()) {
         // "bytes=-500" — the last 500 bytes.
@@ -180,7 +219,14 @@ pub fn respond(store: &AssetStore, request: &Request<Vec<u8>>) -> Response<Vec<u
 
     if let Some(spec) = requested {
         match parse_range(spec, len) {
-            Some((start, end)) => {
+            Some((start, requested_end)) => {
+                // Short, when the span is wider than the cap, and every header
+                // below describes what was *sent* rather than what was asked
+                // for. A 206 shorter than the request is ordinary — it is the
+                // same shape as a connection that ended early, and a media
+                // element answers it by asking for the rest. An allocation the
+                // client picked the size of is not ordinary.
+                let end = requested_end.min(start.saturating_add(MAX_BODY - 1));
                 let count = end - start + 1;
                 let mut body = vec![0u8; count as usize];
                 if file.seek(SeekFrom::Start(start)).is_err() || file.read_exact(&mut body).is_err()
@@ -194,7 +240,10 @@ pub fn respond(store: &AssetStore, request: &Request<Vec<u8>>) -> Response<Vec<u
                     .body(body)
                     .expect("range response");
             }
-            None if spec.starts_with("bytes=") && !spec.contains(',') => {
+            // `!spec.contains(',')` used to be here, back when a multi-range
+            // parsed as `None` and had to be kept out of the 416 that would
+            // have been the wrong answer to it. It parses now.
+            None if spec.starts_with("bytes=") => {
                 return Response::builder()
                     .status(StatusCode::RANGE_NOT_SATISFIABLE)
                     .header(header::CONTENT_RANGE, format!("bytes */{len}"))
@@ -415,6 +464,130 @@ mod tests {
             .unwrap();
         let response = respond(&store, &ranged);
         assert_eq!(response.status(), StatusCode::RANGE_NOT_SATISFIABLE);
+    }
+
+    /// A film big enough that the cap is between its ends. Just over two
+    /// `MAX_BODY`s, so a whole-file range is answered in three spans and the
+    /// last one is a short remainder rather than another full chunk.
+    fn long_film(store: &AssetStore) -> String {
+        let mut bytes = vec![0, 0, 0, 0x18];
+        bytes.extend_from_slice(b"ftypisom");
+        bytes.resize(MAX_BODY as usize * 2 + 4096, 0);
+        // Not zeros, or a truncated answer and a correct one look alike.
+        for (i, b) in bytes.iter_mut().enumerate().skip(16) {
+            *b = (i % 251) as u8;
+        }
+        store.ingest_bytes(&bytes, None).unwrap().sha256
+    }
+
+    #[test]
+    fn caps_what_one_answer_puts_on_the_heap() {
+        // AC-698, AC-699. `bytes=0-` is the first thing a <video> sends, and
+        // uncapped it is an allocation the size of the file — 400 MB resident
+        // before the first frame of an interview.
+        let (_dir, store, _) = fixture();
+        let sha = long_film(&store);
+        let request = Request::builder()
+            .uri(format!("asset://localhost/{sha}"))
+            .header(header::RANGE, "bytes=0-")
+            .body(Vec::new())
+            .unwrap();
+        let response = respond(&store, &request);
+
+        assert_eq!(response.status(), StatusCode::PARTIAL_CONTENT);
+        assert_eq!(response.body().len() as u64, MAX_BODY);
+        // The headers describe what was sent, not what was asked for. A
+        // Content-Range naming the whole file beside a body that is not it is
+        // the one failure here that a player would report as a corrupt file.
+        let total = MAX_BODY * 2 + 4096;
+        assert_eq!(
+            response.headers()[header::CONTENT_RANGE],
+            format!("bytes 0-{}/{total}", MAX_BODY - 1)
+        );
+        assert_eq!(
+            response.headers()[header::CONTENT_LENGTH],
+            MAX_BODY.to_string()
+        );
+    }
+
+    #[test]
+    fn a_capped_film_still_plays_through_to_the_end() {
+        // The cap is only correct if the short answers join up. Asking for the
+        // whole of what is left each time is what a player does after a
+        // connection ends early, and it is the loop the cap has to survive.
+        let (_dir, store, _) = fixture();
+        let sha = long_film(&store);
+        let total = MAX_BODY * 2 + 4096;
+
+        let mut played: Vec<u8> = Vec::new();
+        let mut answers = 0;
+        while (played.len() as u64) < total {
+            let request = Request::builder()
+                .uri(format!("asset://localhost/{sha}"))
+                .header(header::RANGE, format!("bytes={}-", played.len()))
+                .body(Vec::new())
+                .unwrap();
+            let response = respond(&store, &request);
+            assert_eq!(response.status(), StatusCode::PARTIAL_CONTENT);
+            assert!(
+                !response.body().is_empty(),
+                "no progress at {}",
+                played.len()
+            );
+            played.extend_from_slice(response.body());
+            answers += 1;
+            assert!(answers <= 8, "the cap is not advancing");
+        }
+        assert_eq!(answers, 3, "two full spans and a remainder");
+        assert_eq!(played.len() as u64, total);
+
+        // And it is the file, not three copies of the head of it.
+        let mut expected = vec![0, 0, 0, 0x18];
+        expected.extend_from_slice(b"ftypisom");
+        expected.resize(total as usize, 0);
+        for (i, b) in expected.iter_mut().enumerate().skip(16) {
+            *b = (i % 251) as u8;
+        }
+        assert_eq!(played, expected);
+    }
+
+    #[test]
+    fn a_short_range_is_answered_in_full() {
+        // The cap is a ceiling, not a chunk size: a player asking for a
+        // kilobyte gets a kilobyte, not four megabytes of read-ahead.
+        let (_dir, store, _) = fixture();
+        let sha = long_film(&store);
+        let request = Request::builder()
+            .uri(format!("asset://localhost/{sha}"))
+            .header(header::RANGE, "bytes=1000-1999")
+            .body(Vec::new())
+            .unwrap();
+        let response = respond(&store, &request);
+        assert_eq!(response.status(), StatusCode::PARTIAL_CONTENT);
+        assert_eq!(response.body().len(), 1000);
+    }
+
+    #[test]
+    fn a_multi_range_takes_the_first_span_rather_than_the_whole_file() {
+        // This used to fall through to a 200 carrying everything, which handed
+        // a client the one thing this module must not do: an allocation it
+        // chooses the size of. Two commas and a large file was the whole
+        // exploit.
+        let (_dir, store, _) = fixture();
+        let sha = long_film(&store);
+        let request = Request::builder()
+            .uri(format!("asset://localhost/{sha}"))
+            .header(header::RANGE, "bytes=100-199,5000-5999")
+            .body(Vec::new())
+            .unwrap();
+        let response = respond(&store, &request);
+        assert_eq!(response.status(), StatusCode::PARTIAL_CONTENT);
+        assert_eq!(response.body().len(), 100);
+        let total = MAX_BODY * 2 + 4096;
+        assert_eq!(
+            response.headers()[header::CONTENT_RANGE],
+            format!("bytes 100-199/{total}")
+        );
     }
 
     /// A file that is a film as far as everything downstream is concerned: the
