@@ -1110,13 +1110,33 @@ textarea.item-field::-webkit-scrollbar {
  * thing under this that would benefit — the ruling — is a line already the right
  * side of the paper's colour.
  */
-.paper-age {
-  background: radial-gradient(
+/*
+ * The colour of old paper, written once for everything on this board that is
+ * made of it (T-316).
+ *
+ * A custom property rather than the stop list repeated, because **a sheet and a
+ * cassette label of the same age have to be the same colour of old**, and two
+ * gradients written out twice are two gradients that can drift. `--age` is
+ * substituted where the property is *used* rather than where it is declared, so
+ * each element brings its own years to it.
+ *
+ * A folder's front panel and both plastic labels take this as the topmost layer
+ * of their own background, where a sheet has a node for it — that is not an
+ * inconsistency but the same choice made twice. A sheet's is a whole extra node
+ * and can be `display: none` on a board that is new; a label's is one more stop
+ * list on a node that was already painting a gradient.
+ */
+.item {
+  --paper-yellowing: radial-gradient(
     ellipse 52% 52% at 50% 50%,
     rgba(178, 138, 74, calc(0.05 * var(--age, 0))) 0%,
     rgba(178, 138, 74, calc(0.11 * var(--age, 0))) 58%,
     rgba(156, 110, 50, calc(0.34 * var(--age, 0))) 100%
   );
+}
+
+.paper-age {
+  background: var(--paper-yellowing);
 }
 
 /*
@@ -1977,6 +1997,13 @@ textarea.item-field::-webkit-scrollbar {
   --edge-off: clamp(0, calc(-1.16 * var(--ly, 0.87)), 1);
   background:
     /*
+     * The years, over everything the panel is and under everything on it
+     * (T-316). Kraft under this goes from #c4a27d to a deeper brown, where the
+     * wear filter it used to carry took it to 194,170,141 — greyer, and lighter
+     * than it started, which is not a thing card does on a shelf.
+     */
+    var(--paper-yellowing),
+    /*
      * The cut edge along the top, twice — a shine over a hairline of board
      * thickness while that edge faces the light, and the profile turned over
      * when it does not. DESIGN 4.3: "the light decides only which way up that
@@ -2089,7 +2116,9 @@ textarea.item-field::-webkit-scrollbar {
   max-width: 62%;
   padding: 0.28em 0.7em 0.34em;
   border-radius: 1px;
-  background: linear-gradient(to bottom, #f6f1e2 0%, #ebe4d0 100%);
+  /* Gummed white card, and it ages like the card it is - the panel's own
+     yellowing stops at the panel, since this is a child painting over it. */
+  background: var(--paper-yellowing), linear-gradient(to bottom, #f6f1e2 0%, #ebe4d0 100%);
 }
 
 /* --- the two cassettes ---------------------------------------------------- */
@@ -2272,16 +2301,17 @@ textarea.item-field::-webkit-scrollbar {
 }
 
 /*
- * The label. Paper, on plastic, and the one part of either cassette that ages:
- * `CaseView.paintAge` puts the wear filter on the paper and the writing and not
- * on the shell, because polystyrene does not go brown.
+ * The label. Paper, on plastic, and the one part of either cassette that ages —
+ * the card by going brown here, the writing on it by a filter in
+ * `CaseView.paintAge`. Not the shell: polystyrene does not go brown.
  *
- * Which is why this node is a box and a grid and paints nothing (T-272). A
- * compact cassette's window is a row of this grid, and a filter reaches
- * everything below the element it is on — so a label that carried its own paper
- * would have to be aged as one node, and a fifteen-year-old cassette came out
- * with yellowed spools and a yellowed span of tape. The card moved to
- * `.case-paper` below so that the ageing can go round the hole.
+ * **The ageing is a background layer and that is what keeps it off the
+ * recording** (T-272, T-316). A compact cassette's window is a row of this
+ * grid — a hole cut through the card — and a background paints under an
+ * element's children, so the spools and the span of tape sit on top of the
+ * yellowing rather than under it however old the tape gets. A `filter` here
+ * would not: it reaches everything below the node it is on, and that is exactly
+ * how a fifteen-year-old cassette came to have yellowed spools.
  */
 .case-label {
   position: absolute;
@@ -2295,36 +2325,17 @@ textarea.item-field::-webkit-scrollbar {
    */
   padding: 4.5% 5% 4%;
   /*
-   * A stacking context of its own, and it is load-bearing rather than tidiness.
-   * `.case-paper` is behind the writing on `z-index: -1`, and a negative child
-   * paints behind the *stacking context* it is in — so without this the paper
-   * would drop out of the label entirely and land behind `.case-shell`, which is
-   * a blank label with writing floating on the plastic.
-   */
-  isolation: isolate;
-}
-
-/*
- * And the card the label is printed on: the whole of the label's box, under
- * everything written on it and under the hole cut through it.
- *
- * `inset: 0` on an absolutely positioned child of the label resolves against the
- * label's *padding* box, which is exactly the area the background used to paint
- * — so the printed rules below land where they always did rather than inside the
- * label's own margin of white space.
- */
-.case-paper {
-  position: absolute;
-  inset: 0;
-  z-index: -1;
-  border-radius: inherit;
-  /*
-   * The rules a blank label comes printed with, under the one the typed row
-   * carries — `DATE`, `PROGRAM`, `DETAILS` on the reference. Faint enough to be
+   * The years, then the rules a blank label comes printed with — `DATE`,
+   * `PROGRAM`, `DETAILS` on the reference — then the card. Faint enough to be
    * paper rather than a form, and anything written in the caption lands on
    * them, which is what they are for.
+   *
+   * The yellowing is over the printing rather than under it, which is the order
+   * `.paper-age` has on a sheet: what ages is the card, and the rules were
+   * printed on the card.
    */
   background-image:
+    var(--paper-yellowing),
     linear-gradient(
       to bottom,
       transparent 0 63%,
