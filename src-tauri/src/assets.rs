@@ -89,13 +89,125 @@ const TRASH_TTL_SECONDS: u64 = 30 * 24 * 60 * 60;
 /// wreckage of an interrupted write rather than a write in progress.
 const TEMP_TTL: Duration = Duration::from_secs(60 * 60);
 
-/// Read in one go rather than streamed, above which the caller is doing
-/// something other than putting a photograph on a corkboard.
+/// The most memory one ingest is allowed to ask this machine for.
+///
+/// **This is the only number below that was chosen.** Both ceilings are what
+/// the measurement says each road can carry inside it, so what is written down
+/// is a budget and a measurement rather than a round number somebody liked.
+///
+/// A gigabyte because the smallest machine this is meant to run on has eight,
+/// and one paste is not entitled to an eighth of it twice over.
+const INGEST_MEMORY_BUDGET: u64 = 1024 * 1024 * 1024;
+
+/// What the IPC road costs, per byte of file. Rounded up from 10.14×, because a
+/// ceiling that rounds the other way is not a ceiling.
+///
+/// Measured at the ceiling, which is the only place it has to hold: a paste of
+/// exactly [`MAX_PASTE_BYTES`] took the shell from 5.2 MiB of private bytes to
+/// **943.8 MiB**, sampled at 20 ms in a fresh process. D-54 measured 10.29× at
+/// a different size and the two agree.
+///
+/// Most of it is not ours: wry reads the raw body 1 KiB at a time into a `Vec`
+/// with no capacity hint, and Tauri forces a clone of the finished buffer on
+/// the way to the command. **This is why the paste road has the low ceiling** —
+/// there is nothing on this side of the boundary to make it cheaper.
+const IPC_INGEST_MULTIPLIER: u64 = 11;
+
+/// How big a file may be to arrive **as a buffer handed across the IPC
+/// boundary** — a paste on a platform with no native pasteboard reader, a data
+/// URL, bytes the shell could not name a path for. About 93 MiB.
+///
+/// Far below [`MAX_ASSET_BYTES`] on purpose, and the reason the board tells a
+/// person to drag a big file in rather than paste it (Q-229). At the ceiling
+/// the *disk* road publishes, this road would ask for about 5 GiB.
+///
+/// **What the check does not do is save the whole peak.** By the time
+/// [`AssetStore::ingest_ipc_bytes`] runs, wry has already built the body — the
+/// refusal saves the clone, the write and the variant pass, but not the buffer
+/// it is measuring. Refusing before the invoke is the only place the rest is
+/// avoided, and that is the frontend's to do.
+pub(crate) const MAX_PASTE_BYTES: u64 = INGEST_MEMORY_BUDGET / IPC_INGEST_MULTIPLIER;
+
+/// What the disk road costs — **and it is a staircase, not a multiple of the
+/// file.** This is the correction T-264's own measurements made to D-54, whose
+/// 1.91× turned out to be one point on one stair (D-55).
+///
+/// [`AssetStore::ingest_path`] reads through a `Take<BufReader<File>>`, which
+/// `read_to_end` cannot size-hint through, so it grows its `Vec` by doubling —
+/// and the allocator keeps the outgrown half rather than handing it back. The
+/// peak is therefore set by the *capacity* the read arrives at, and every file
+/// on one stair costs the same. Four sizes, fresh process each, 20 ms sampling:
+///
+/// | file | peak | what a "multiplier" would have called it |
+/// |---|---|---|
+/// | 260.0 MiB | 774.7 MiB | 2.98× |
+/// | 403.7 MiB | 775.0 MiB | 1.92× |
+/// | 448.0 MiB | 774.9 MiB | 1.73× |
+/// | 512.0 MiB | **1544.2 MiB** | 3.02× |
+///
+/// A 260 MiB file and a 448 MiB file cost the same to within 0.2 MiB. There is
+/// no per-byte figure here to write down; there is a stair to stay on.
+///
+/// One line would flatten it — `ingest_path` knows the size from the metadata
+/// it already read and could hand `Vec::with_capacity` the answer. That is the
+/// shrink-the-multiplier work Q-227 deliberately did not choose, so the ceiling
+/// below is measured with the staircase in place. **Flatten it and this
+/// function is what should change**, not the ceiling by hand.
+const fn disk_ingest_peak(size: u64) -> u64 {
+    // Where the doubling stops. `<=` and not `<`: a read that exactly fills its
+    // buffer grows once more to find out whether the file was really over.
+    let mut capacity = 1;
+    while capacity <= size {
+        capacity *= 2;
+    }
+    // The buffer it arrived at, plus the one it just outgrew.
+    capacity + capacity / 2
+}
+
+/// How big an asset may be **at all** — read in one go rather than streamed,
+/// above which the caller is doing something other than putting a file on a
+/// corkboard.
+///
+/// 448 MiB: the most that stays on the 512 MiB stair, which peaks at about
+/// 775 MiB and leaves a quarter of the budget spare. A byte more than 512 MiB
+/// of file — the number this constant held before anybody measured it — costs
+/// 1544 MiB and does not arrive on an 8 GB machine at all.
+///
+/// It still holds the four-hundred-megabyte interview T-254 exists for, which
+/// is the constraint the number had to clear. This one bounds every road that
+/// starts from a file already on a disk: [`AssetStore::ingest_path`], a peer
+/// transfer landing in [`AssetStore::commit_received`], a bundle entry.
+///
+/// **It cannot bound a photograph, and nothing byte-shaped can.** An 11 MiB
+/// JPEG of 121 megapixels asked for 794 MiB (D-54), because the cost of a
+/// picture is pixels: 363 MB of RGB8 per surface, about two live at once. A
+/// JPEG's compression ratio is a property of the picture — sky against foliage
+/// — so no byte figure predicts it. The pixel count is already read by
+/// `probe_dimensions` before the decode, and nothing reads it back.
 ///
 /// `pub(crate)` for `bundle`, which has to bound a zip entry before it
 /// decompresses it and must bound it at the same number — an asset this store
 /// would refuse to ingest is not one a bundle should be allowed to expand.
-pub(crate) const MAX_ASSET_BYTES: u64 = 512 * 1024 * 1024;
+pub(crate) const MAX_ASSET_BYTES: u64 = 448 * 1024 * 1024;
+
+// Pinned where they are defined and not in a test, because these are
+// comparisons between constants and the build is the right thing to fail: a
+// test asserting one constant equals another has already compiled the wrong
+// number into the binary before it runs.
+//
+// Each road inside the budget at its own ceiling. This is the whole claim the
+// two numbers are making, and the staircase is why the second one is not a
+// division.
+const _: () = assert!(MAX_PASTE_BYTES * IPC_INGEST_MULTIPLIER <= INGEST_MEMORY_BUDGET);
+const _: () = assert!(disk_ingest_peak(MAX_ASSET_BYTES) <= INGEST_MEMORY_BUDGET);
+// And the paste ceiling to the byte, because the 943.8 MiB above is not a
+// figure derived at some other size and scaled — it was sampled at exactly this
+// one. Move the multiplier and the measurement has to be taken again.
+const _: () = assert!(MAX_PASTE_BYTES == 97_612_893);
+// The ordering is the design rather than an accident. The road that costs five
+// times more gets the lower ceiling, or "everything big comes in by path" is
+// not true of anything.
+const _: () = assert!(MAX_PASTE_BYTES < MAX_ASSET_BYTES);
 
 /// How much of an original one chunk of a peer transfer is — ARCHITECTURE
 /// section 5.2, and the same number as `CHUNK_BYTES` in `platform/types.ts`.
@@ -200,6 +312,11 @@ pub enum Error {
     BadHash,
     NotFound,
     TooLarge(u64),
+    /// Too big for the road it came in on, and **not the same refusal** as
+    /// [`Error::TooLarge`]: this board can hold the file, just not handed over
+    /// as one buffer across the IPC boundary. Its own variant so the sentence
+    /// can say the thing worth saying, which is what to do instead.
+    TooLargeToPaste(u64),
     Undecodable(String),
     Fetch(String),
     /// The store itself is not there — the app data directory could not be
@@ -214,6 +331,9 @@ impl std::fmt::Display for Error {
             Error::BadHash => write!(f, "not a sha256"),
             Error::NotFound => write!(f, "no such asset"),
             Error::TooLarge(n) => write!(f, "{n} bytes is too large for one asset"),
+            Error::TooLargeToPaste(n) => {
+                write!(f, "{n} bytes is too much to hand over in one piece — drag the file in instead")
+            }
             Error::Undecodable(why) => write!(f, "could not decode: {why}"),
             Error::Fetch(why) => write!(f, "could not fetch: {why}"),
             Error::Unavailable(why) => write!(f, "{why}"),
@@ -940,11 +1060,35 @@ impl AssetStore {
 
     // --- ingestion ----------------------------------------------------------
 
+    /// [`ingest_bytes`](Self::ingest_bytes), for bytes that crossed the IPC
+    /// boundary as one buffer — which is the expensive road, and the only one
+    /// bounded by [`MAX_PASTE_BYTES`] rather than by [`MAX_ASSET_BYTES`].
+    ///
+    /// A separate entry rather than a flag on the shared one because the other
+    /// callers of `ingest_bytes` are a bundle expanding an entry, a peer
+    /// transfer committing, and this store's own path road — they all start
+    /// from a file on a disk, they all pay the cheap cost, and none of them
+    /// should be refused at a ceiling sized for wry's read loop. A
+    /// four-hundred-megabyte interview is *supposed* to reach the store; it
+    /// just is not supposed to come this way.
+    pub fn ingest_ipc_bytes(&self, bytes: &[u8], mime_hint: Option<&str>) -> Result<AssetMeta> {
+        let size = bytes.len() as u64;
+        if size > MAX_PASTE_BYTES {
+            return Err(Error::TooLargeToPaste(size));
+        }
+        self.ingest_bytes(bytes, mime_hint)
+    }
+
     /// Hash, probe, store. **Returns as soon as the hash and the dimensions are
     /// known** (AC-46); the caller is expected to kick off [`build_variants`]
     /// afterwards and emit `asset:ready` when it finishes.
     ///
     /// `mime_hint` is only consulted when the magic numbers say nothing.
+    ///
+    /// The ceiling here is [`MAX_ASSET_BYTES`] — how big an asset may be at all
+    /// — because every road funnels through this function and only one of them
+    /// is the expensive one. That road checks itself first, in
+    /// [`ingest_ipc_bytes`](Self::ingest_ipc_bytes).
     pub fn ingest_bytes(&self, bytes: &[u8], mime_hint: Option<&str>) -> Result<AssetMeta> {
         let size = bytes.len() as u64;
         if size > MAX_ASSET_BYTES {
@@ -997,6 +1141,12 @@ impl AssetStore {
     /// [`MAX_ASSET_BYTES`] ceiling is for: hashing in a stream and then
     /// re-reading to probe would touch the disk twice to save a buffer that a
     /// background thread is about to allocate anyway.
+    ///
+    /// The read below is the one [`disk_ingest_peak`] models, and the reason the
+    /// ceiling is a stair rather than a quotient: `read_to_end` cannot size-hint
+    /// through the `Take<BufReader<_>>` and so doubles its way up. `size` is
+    /// right there and would flatten it — see that function for why this task
+    /// deliberately measured around it instead.
     pub fn ingest_path(&self, path: &Path) -> Result<AssetMeta> {
         let file = File::open(path)?;
         let size = file.metadata()?.len();
@@ -2543,6 +2693,106 @@ mod tests {
         // And an index outside the total it claims for itself.
         assert!(receiver.receive_chunk(&wanted, 5, 2, b"x").is_err());
         assert!(!receiver.partial_path(&wanted).is_file());
+    }
+
+    #[test]
+    fn the_staircase_predicts_the_four_sizes_it_was_measured_at() {
+        // The model behind `MAX_ASSET_BYTES`, checked against the runs it came
+        // from — real application, one fresh process per file, private bytes
+        // sampled at 20 ms (D-55). Within 2%, which is the process's own 5 MiB
+        // and the probe standing next to it.
+        let mib = |n: u64| n * 1024 * 1024;
+        // Peaks in tenths of a MiB, so the numbers read as they were reported.
+        for (size, tenths) in [
+            (272_629_760u64, 7747u64), // 260.0 MiB of file ->  774.7 MiB
+            (423_338_803, 7750),       // 403.7 MiB         ->  775.0 MiB
+            (469_762_048, 7749),       // 448.0 MiB         ->  774.9 MiB
+            (536_870_912, 15442),      // 512.0 MiB         -> 1544.2 MiB
+        ] {
+            let measured = tenths * 1024 * 1024 / 10;
+            let predicted = disk_ingest_peak(size);
+            assert!(
+                predicted.abs_diff(measured) <= measured / 50,
+                "{size} bytes: predicted {predicted}, measured {measured}"
+            );
+        }
+
+        // The property that makes it a staircase rather than a multiplier, and
+        // the reason a per-byte figure fitted to any one run predicts the others
+        // wrongly: two files far apart in size cost the same, and one step past
+        // them costs twice as much.
+        assert_eq!(disk_ingest_peak(mib(260)), disk_ingest_peak(mib(448)));
+        assert_eq!(disk_ingest_peak(mib(512)), 2 * disk_ingest_peak(mib(448)));
+
+        // Which is why the ceiling is where it is: 448 MiB fits the budget and
+        // the 512 MiB this constant used to hold does not — on an 8 GB machine
+        // a file at the old number did not arrive at all.
+        assert!(disk_ingest_peak(MAX_ASSET_BYTES) <= INGEST_MEMORY_BUDGET);
+        assert!(disk_ingest_peak(mib(512)) > INGEST_MEMORY_BUDGET);
+    }
+
+    #[test]
+    fn the_refusal_from_the_paste_road_names_the_other_road() {
+        // The numbers themselves are pinned beside the constants, where they
+        // fail the build rather than a test. What is left to check at runtime is
+        // the only reason this refusal is a variant of its own: a person told a
+        // number and not what to do with it has been told nothing.
+        let refused = Error::TooLargeToPaste(9).to_string();
+        assert!(refused.contains("drag the file in"), "{refused}");
+        assert!(!Error::TooLarge(9).to_string().contains("drag the file in"));
+    }
+
+    #[test]
+    fn a_file_too_big_to_paste_still_arrives_by_path() {
+        // The shape of Q-229's answer, end to end: one low ceiling on the road
+        // that costs ten times the file, and the four-hundred-megabyte
+        // interview comes in the other way.
+        let (dir, store) = store();
+        // Ninety-three megabytes is not free, so it is allocated once and both
+        // sides of the boundary are read out of the same buffer.
+        let big = vec![7u8; (MAX_PASTE_BYTES + 1) as usize];
+
+        // Exactly at the ceiling is in. A ceiling nobody may reach is a
+        // different number from the one written down.
+        let at = &big[..MAX_PASTE_BYTES as usize];
+        assert!(store.ingest_ipc_bytes(at, None).is_ok());
+        match store.ingest_ipc_bytes(&big, None) {
+            Err(Error::TooLargeToPaste(n)) => assert_eq!(n, MAX_PASTE_BYTES + 1),
+            other => panic!("the IPC road took a file over its ceiling: {other:?}"),
+        }
+
+        // The same bytes off a disk, which is the road this size is meant to
+        // travel and is bounded nearly five times higher.
+        let path = dir.path().join("interview.wav");
+        fs::write(&path, &big).unwrap();
+        drop(big);
+        assert_eq!(store.ingest_path(&path).unwrap().size, MAX_PASTE_BYTES + 1);
+    }
+
+    #[test]
+    fn nothing_reaches_the_store_over_the_ceiling_it_publishes() {
+        let (dir, store) = store();
+
+        // Sized rather than written: `ingest_path` reads the metadata before it
+        // reads a byte, and half a gigabyte of real content to prove one
+        // comparison is a test nobody would run twice.
+        let path = dir.path().join("enormous.bin");
+        File::create(&path).unwrap().set_len(MAX_ASSET_BYTES + 1).unwrap();
+        match store.ingest_path(&path) {
+            Err(Error::TooLarge(n)) => assert_eq!(n, MAX_ASSET_BYTES + 1),
+            other => panic!("the path road took a file over the ceiling: {other:?}"),
+        }
+
+        // And a transfer that assembles to one byte over it. `commit_received`
+        // is not an error path — a peer offering something this store will not
+        // hold is the same "that was not the asset" as a truncated one — so the
+        // tell is the `false` and the wreckage being cleared up.
+        let wanted = "4".repeat(64);
+        fs::create_dir_all(store.dir_for(&wanted)).unwrap();
+        let partial = store.partial_path(&wanted);
+        File::create(&partial).unwrap().set_len(MAX_ASSET_BYTES + 1).unwrap();
+        assert!(!store.commit_received(&wanted).unwrap());
+        assert!(!partial.is_file());
     }
 
     #[test]
