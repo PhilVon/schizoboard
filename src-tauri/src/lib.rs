@@ -24,9 +24,10 @@ mod board;
 mod bundle;
 mod clipboard;
 mod docstore;
-// `pub` for the same reason `sync` is, and now a command as well: `document_title`
-// asks it what a folder is called (T-267). The reading surface (T-275) is what
-// turns the rest of it — the pages themselves — into commands.
+// `pub` for the same reason `sync` is, and now a command as well: `asset_title`
+// asks it what a folder is called (T-267), and asks `media` the same thing about
+// a tape (T-302). The reading surface (T-275) is what turns the rest of it — the
+// pages themselves — into commands.
 pub mod document;
 mod media;
 // `pub` for the reason `document` is: nothing in this file calls it yet. The
@@ -653,29 +654,47 @@ async fn asset_size(app: AppHandle, sha256: String) -> Result<u64, String> {
     .await
 }
 
-/// What a document says it is called, read off a file this machine holds.
+/// What this file says it is called, read off a copy this machine holds.
 ///
 /// **A derived local index and nothing else** — Q-211. The answer never enters
 /// the document, is never sent to a peer and is never written down: a machine
 /// that does not hold the bytes has no title for this asset, and that is the
-/// intended state rather than a gap. So this is asked on demand, once per
-/// document the board actually puts on screen, which is also what makes it the
-/// single path serving a paste, a committed transfer, a board reopened tomorrow
-/// and an opened bundle alike.
+/// intended state rather than a gap. So this is asked on demand, once per object
+/// the board actually puts on screen, which is also what makes it the single
+/// path serving a paste, a committed transfer, a board reopened tomorrow and an
+/// opened bundle alike.
 ///
-/// `None` for four things that are one thing to a folder's tab: no such asset,
-/// not a document, a document this build cannot open (about 6% of real files —
-/// D-47), and a document that declares no title. All four mean the label writes
-/// its filename and stops.
+/// **One question, not three.** A folder, a tape and a cassette all want the
+/// same line under their filename, and which parser answers it is a fact about
+/// the bytes rather than about the label — so the frontend asks once and this
+/// side dispatches on the file's own head, the way [`assets::sniff_path`] says.
+/// Trusting the record's `mime` instead would let a peer decide which parser
+/// this machine runs over its own disk.
 ///
-/// It costs a structure load and reads no page — 3 to 53 ms on the corpus D-47
-/// swept — which is why it is on `blocking` with the rest of the store's work.
+/// `None` for five things that are one thing to a label: no such asset, a kind
+/// that carries no name, a container this build cannot read, a PDF it cannot
+/// open (about 6% of real files — D-47), and a file that simply declares no
+/// title — which is most of them, and overwhelmingly so for video (D-52). All
+/// five mean the label writes its filename and stops.
+///
+/// It costs a structure load for a document — 3 to 53 ms on the corpus D-47
+/// swept — and a handful of bounded reads for anything else, which is why it is
+/// on `blocking` with the rest of the store's work.
 #[tauri::command]
-async fn document_title(app: AppHandle, sha256: String) -> Result<Option<String>, String> {
+async fn asset_title(app: AppHandle, sha256: String) -> Result<Option<String>, String> {
     blocking(move || -> assets::Result<Option<String>> {
         let store = store_of(&app).map_err(assets::Error::Unavailable)?;
         let path = store.original_path(&sha256);
-        Ok(document::probe_path(&path).and_then(|probe| probe.title))
+        let Some(mime) = assets::sniff_path(&path) else {
+            return Ok(None);
+        };
+        if mime == "application/pdf" {
+            return Ok(document::probe_path(&path).and_then(|probe| probe.title));
+        }
+        let Ok(mut file) = std::fs::File::open(&path) else {
+            return Ok(None);
+        };
+        Ok(media::probe_title(&mut file, mime))
     })
     .await
 }
@@ -1287,7 +1306,7 @@ pub fn run() {
             asset_gc,
             peer_have_summary,
             asset_size,
-            document_title,
+            asset_title,
             asset_chunk,
             asset_receive,
             asset_commit,

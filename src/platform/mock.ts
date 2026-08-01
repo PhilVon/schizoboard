@@ -249,17 +249,18 @@ export class MockPlatform implements Platform {
   }
 
   /**
-   * Nothing, for the reason the page count above is nothing: reading `/Info`
-   * `/Title` means walking a cross-reference table, and there is no PDF parser
-   * on this side of the line.
+   * Nothing, for the reason the page count above is nothing: reading a `/Title`
+   * means walking a cross-reference table and reading a film's means parsing its
+   * container, and there is no parser for either on this side of the line.
    *
-   * `null` is a state the folder already draws — it is the same `null` a machine
-   * that does not hold the bytes gets, which under Q-211's answer is an ordinary
-   * and expected condition rather than a fault. So the browser dev loop shows a
-   * folder with its case number and no title, which is a real state of the real
-   * application and not a mock-shaped hole.
+   * `null` is a state every one of the three objects already draws — it is the
+   * same `null` a machine that does not hold the bytes gets, which under Q-211's
+   * answer is an ordinary and expected condition rather than a fault. So the
+   * browser dev loop shows a case number and no title, which is a real state of
+   * the real application and not a mock-shaped hole. D-52 measured it as the
+   * usual state for video besides.
    */
-  async documentTitle(_sha256: string): Promise<string | null> {
+  async assetTitle(_sha256: string): Promise<string | null> {
     return null;
   }
 

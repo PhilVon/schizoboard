@@ -93,9 +93,10 @@ export interface AssetMeta {
    * Here for exactly the reason `duration` is, and the two are read off the
    * same file at the same moment. Its sibling — what the document says it is
    * *called* — is deliberately not here: Q-211 settled that a title is derived
-   * locally and never enters the document, so it is asked for by
-   * `documentTitle` against a file this machine holds rather than carried out
-   * of an ingest to be written down.
+   * locally and never enters the document, so it is asked for by `assetTitle`
+   * against a file this machine holds rather than carried out of an ingest to
+   * be written down. The same is true of a film's and a recording's name, which
+   * come off their containers by the same route (T-302).
    */
   pages: number | null;
 }
@@ -352,7 +353,7 @@ export interface Platform {
   assetUrl(sha256: string, variant?: AssetVariant): string;
 
   /**
-   * What a document says it is called, read off a file this machine holds.
+   * What this file says it is called, read off a copy this machine holds.
    *
    * **A derived local index and nothing else** — Q-211. The answer never enters
    * the document, never crosses the wire and is never written down: a machine
@@ -364,16 +365,24 @@ export interface Platform {
    * tomorrow and a bundle somebody sent — none of which are ingests, and three
    * of which would otherwise each need their own answer.
    *
-   * `null` for four things that are one thing to a label: no such asset, not a
-   * document, a document this build cannot open, and a document that declares
-   * no title. All four mean the folder writes its case number and stops.
+   * **One question for all three objects.** A folder reads a PDF's `/Title`, a
+   * tape and a cassette read their container's own name field — ID3v2, `udta`,
+   * Matroska's `Info`, a Vorbis comment, a RIFF `INFO` list. Which parser
+   * answers is a fact about the bytes rather than about the label, so the shell
+   * decides it from the file's own head and this side never asks.
+   *
+   * `null` for five things that are one thing to a label: no such asset, a kind
+   * that carries no name, a container this build cannot read, a document it
+   * cannot open, and — much the commonest — a file that declares no title at
+   * all. D-52 measured that last one at 1 film in 461. All five mean the label
+   * writes its case number and stops.
    *
    * Reported exactly as the file states it, tidied of whitespace and capped.
    * Whether it is worth *writing* is `titleWorthWriting`'s question and is
    * answered on this side of the line, because it needs the filename and
    * because D-47 measured that most of these strings are not names.
    */
-  documentTitle(sha256: string): Promise<string | null>;
+  assetTitle(sha256: string): Promise<string | null>;
 
   // --- document: an append-only log of opaque frames ----------------------
   docAppendUpdate(bytes: Uint8Array): Promise<void>;

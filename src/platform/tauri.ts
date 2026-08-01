@@ -160,11 +160,13 @@ export class TauriPlatform implements Platform {
   }
 
   /**
-   * A structure load and no page read — 3 to 53 ms on the corpus D-47 swept,
-   * on the blocking pool with the rest of the store's work.
+   * A structure load and no page read for a document — 3 to 53 ms on the corpus
+   * D-47 swept — and a handful of bounded seeks for a film or a recording, which
+   * is why a 400 MB interview costs about what a photograph does. On the
+   * blocking pool with the rest of the store's work.
    */
-  documentTitle(sha256: string): Promise<string | null> {
-    return invoke<string | null>("document_title", { sha256 });
+  assetTitle(sha256: string): Promise<string | null> {
+    return invoke<string | null>("asset_title", { sha256 });
   }
 
   docAppendUpdate(bytes: Uint8Array): Promise<void> {
