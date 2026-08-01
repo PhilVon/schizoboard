@@ -2410,15 +2410,30 @@ describe("a folder, a tape and a cassette", () => {
     expect(shown.length).toBeGreaterThan(0);
   });
 
-  it("curls a folder's corner and refuses to bend a cassette", () => {
-    // Not a special case — the layer offers the curl to all three identically
-    // and each answers for its material. Card bends; polystyrene does not, and
-    // `PolaroidView` already refuses on the same grounds for a print in a frame.
-    expect(mount(facts({ kind: "document" })).querySelector(".paper-bend")).not.toBeNull();
-    again();
-    const cassette = mount(facts({ kind: "audio" }));
-    expect(cassette.querySelector(".paper-bend")).toBeNull();
-    expect(cassette.style.getPropertyValue("--curl-tl")).toBe("");
+  it("refuses to bend any of the three, and still bends a sheet", () => {
+    // Not a special case — the layer offers the curl to every view identically
+    // and each answers for its material. `PolaroidView` already refuses on the
+    // same grounds for a print in a frame.
+    //
+    // The folder took it until T-314. Card does bend, which is why the argument
+    // held for so long, but a corner flap reaches a fixed way in from the corner
+    // and on something 481 by 344 that is most of an edge: what a folder wore
+    // was a dark band down its whole left side, not four flaps. A folder is
+    // 300gsm board folded double and what handling does to one is take its
+    // corners *round*, which is `edge.ts`'s job.
+    for (const kind of ["document", "video", "audio"] as const) {
+      const el = mount(facts({ kind }));
+      expect(el.querySelector(".paper-bend"), `${kind} does not curl`).toBeNull();
+      expect(el.style.getPropertyValue("--curl-tl"), `${kind} is never asked`).toBe("");
+      again();
+    }
+    // And the half that keeps this from passing for the wrong reason: the curl
+    // is refused per material, not quietly deleted. A note is still a sheet.
+    const paper = layerWith(facts());
+    add("note", { type: "note", assetId: null });
+    paper.sync(scene, dirty, null);
+    const note = host.firstElementChild as HTMLElement;
+    expect(note.querySelector(".paper-bend"), "a note still bends").not.toBeNull();
   });
 
   it("ages the paper and leaves the plastic alone", () => {

@@ -1591,12 +1591,15 @@ class PaperView implements View {
  *
  * ## What each material does, which is not the same thing
  *
- * A folder is paper: it curls at a lifted corner and it yellows all over. A
+ * A folder is board: it yellows all over and it does **not** curl (T-314). A
  * cassette is polystyrene: it does neither, and its *label* is the part that
- * ages (T-272 goes further with that). Refusing curl on the two plastic ones is
- * a statement about the object rather than a gap, and it is the same statement
+ * ages (T-272 goes further with that). Refusing curl on all three is a statement
+ * about the objects rather than a gap, and it is the same statement
  * `PolaroidView.setCurl` already makes about a print in a frame — the mechanism
  * is offered to every view identically and each one answers for its material.
+ *
+ * The folder took the curl until T-314, on the argument that a folder is paper.
+ * `setCurl` records what that missed.
  *
  * ## What is written on them, and where it comes from
  *
@@ -1693,7 +1696,8 @@ class CaseView implements View {
       const sheets = div("folder-sheets");
       const front = div("folder-front");
       this.ages = front;
-      this.bend = div("paper-bend");
+      // No curl. See `setCurl` — this is where refusing it costs nothing.
+      this.bend = null;
       this.grain = div("case-grain");
       // One shared tile for every folder on the board, generated once and
       // memoised by stock. `cream` is the fibre nearest to kraft card, and the
@@ -1705,7 +1709,7 @@ class CaseView implements View {
       // folders actually wear and which leaves the spilling paper alone.
       const label = div("folder-label");
       label.append(this.number);
-      front.append(this.grain, label, this.meta, this.title, this.caption, this.bend);
+      front.append(this.grain, label, this.meta, this.title, this.caption);
       this.body.append(back, sheets, front);
     } else if (archetype === "vhs") {
       // A VHS is read from Phil's reference: a ribbed shell, a white label in
@@ -1881,12 +1885,27 @@ class CaseView implements View {
   }
 
   /**
-   * A folder curls and the two cassettes do not.
+   * **No case object curls**, which now includes the folder (T-314, Q-243).
    *
    * Not a special case — it is the same shape as `PolaroidView.setCurl`, which
    * refuses for a print in a frame. A mechanism the layer offers every view
-   * identically, answered by each view for its own material: card bends,
-   * polystyrene does not.
+   * identically, answered by each view for its own material.
+   *
+   * The folder used to take it, on the argument that a folder is paper and card
+   * does bend. What that argument missed is *scale*. A corner flap is drawn to
+   * reach a fixed way in from the corner, which on a sheet is a corner and on
+   * something 481 by 344 is most of an edge: isolated by hiding `.paper-bend`
+   * and shooting the same framing twice, what a folder actually wore was a dark
+   * band down its whole left side and across its top with a broad brightening
+   * opposite. A vignette, not four flaps — and the kraft read as clean board the
+   * moment it was switched off.
+   *
+   * The material argument holds up too, which is why this is the answer rather
+   * than a smaller number. A manilla folder is 300gsm board folded double along
+   * its foot, and the fold is the whole reason it holds a shape: what handling
+   * does to one is take the corners soft and *round*, which is `edge.ts`'s job,
+   * not lift them off the surface. Stiffness is the statement, and refusing curl
+   * is how this class already spells it.
    */
   setCurl(corners: Float32Array, faces: Float32Array): void {
     if (this.bend === null) return;
