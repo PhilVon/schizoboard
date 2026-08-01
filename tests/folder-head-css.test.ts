@@ -267,7 +267,11 @@ describe("what a closed folder shows", () => {
    */
   it("gives the front panel a cut edge rather than a cast shadow", () => {
     expect(front.has("box-shadow")).toBe(false);
-    const profile = layers(front.get("background")!)[0]!;
+    const stack = layers(front.get("background")!);
+    // The years are over the whole panel and so are the topmost layer of it
+    // (T-316); the cut edge is the first thing the panel actually draws.
+    expect(stack[0]).toBe("var(--paper-yellowing)");
+    const profile = stack[1]!;
     // The alphas are expressions since T-313 gave the profile a light to be on
     // the right side of, so this holds the *shape* — the shine, then the hairline
     // of board thickness, in that order — rather than two numbers.

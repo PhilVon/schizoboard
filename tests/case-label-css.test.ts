@@ -29,7 +29,7 @@ import { describe, expect, it } from "vitest";
 
 import { objectSizeFor } from "../src/lib/objects";
 
-import { css, declarations, layers } from "./css-declarations";
+import { bare, css, declarations, layers } from "./css-declarations";
 
 /** `9% 7% 12% 7%` and friends, as four numbers in CSS's own order. */
 function sides(shorthand: string): { top: number; right: number; bottom: number; left: number } {
@@ -252,40 +252,40 @@ describe("the writing on a compact cassette's label", () => {
 });
 
 /**
- * The card the label is printed on, which is a node of its own only because of
- * the hole — T-272.
+ * How the card gets old — T-316, and the half of T-272 that is not in
+ * `render/items/dom.test.ts`.
  *
- * A cassette's window is a row of the label's grid, and a `filter` reaches
- * everything below the element it is on, so a label that painted its own paper
- * could only be aged as one node: the spools and the span of tape yellowed with
- * the writing, and after T-271 so did the readout that says how much of the file
- * is here. Splitting the card off lets `CaseView.paintAge` go round the hole.
+ * The card yellows by a layer of its own background and the writing on it fades
+ * by a filter, which is `wear.ts`'s own division between the two ways a thing
+ * ages. That is not only about what it looks like: **a background paints under
+ * an element's children and a filter paints over them**, and a compact
+ * cassette's window is a child of this label. So the mechanism is what keeps the
+ * spools and the span of tape out of the ageing, and swapping it for a filter
+ * would put them back in — which is exactly the state T-272 found.
  *
- * `render/items/dom.test.ts` asserts the ageing; what it cannot see is that the
- * card still *lands* where the label's background did. Two of these three
- * declarations are load-bearing in a way no test on happy-dom can measure — a
- * negative child paints behind the stacking context it is in, so dropping the
- * `isolation` sends the paper behind `.case-shell` and leaves a blank label with
- * writing floating on the plastic.
+ * happy-dom has no layout and no cascade, so this is arithmetic on the source:
+ * the years are the topmost layer of the label's background, and there is no
+ * `filter` on the label anywhere in the stylesheet.
  */
-describe("the paper under a label", () => {
+describe("how a label gets old", () => {
   const label = declarations(".case-label");
-  const paper = declarations(".case-paper");
 
-  it("covers the label's whole box, under the writing and under the hole", () => {
-    expect(paper.get("position")).toBe("absolute");
-    // The label's padding box, which is the area the background used to paint —
-    // the printed rules are percentages down it and would otherwise move.
-    expect(paper.get("inset")).toBe("0");
-    expect(paper.get("z-index")).toBe("-1");
-    expect(label.get("isolation")).toBe("isolate");
+  it("paints the years over its own printing, as a background layer", () => {
+    const stack = layers(label.get("background-image")!);
+    // Over the printed rules and the card, because what ages is the card and the
+    // rules were printed on it - the order `.paper-age` has on a sheet.
+    expect(stack[0]).toBe("var(--paper-yellowing)");
+    expect(stack).toHaveLength(3);
+    // One declaration for every paper on the board, so a sheet and a label of
+    // the same age are the same colour of old.
+    expect(declarations(".paper-age").get("background")).toBe("var(--paper-yellowing)");
   });
 
-  it("takes the printing with it, and leaves the label painting nothing", () => {
-    // The rules a blank label comes printed with, and the card itself. On the
-    // paper or the split has been undone by putting them back.
-    expect(layers(paper.get("background-image")!)).toHaveLength(2);
-    expect(label.get("background-image")).toBeUndefined();
-    expect(label.get("background")).toBeUndefined();
+  it("never wears a filter, because the window is inside it", () => {
+    expect(label.get("filter")).toBeUndefined();
+    // And nothing else in the stylesheet may hand one to the label either - the
+    // shape being protected rather than this one rule.
+    const guilty = /\.case-label[^{,]*\{[^}]*[^-]filter\s*:/;
+    expect(guilty.test(bare)).toBe(false);
   });
 });

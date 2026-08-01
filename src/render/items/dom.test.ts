@@ -2448,33 +2448,45 @@ describe("a folder, a tape and a cassette", () => {
     return host.firstElementChild as HTMLElement;
   }
 
-  it("ages the paper and leaves the plastic alone", () => {
-    // A fifteen-year-old tape is a black tape with a yellowed label, because
-    // polystyrene does not go brown. So the wear filter lands on the label of a
-    // cassette and on the whole panel of a folder.
-    expect(aged("document").querySelector<HTMLElement>(".folder-front")!.style.filter).not.toBe("");
-
+  it("fades the writing and leaves every surface to the stylesheet", () => {
+    // Two mechanisms and two materials (T-316). Ink ages by going, which is the
+    // filter below; card ages by going brown, which is a background layer and so
+    // is not visible from here at all. A fifteen-year-old tape is a black tape
+    // with a brown label, and polystyrene never goes anywhere.
+    for (const kind of ["document", "video", "audio"] as const) {
+      const el = aged(kind);
+      for (const what of ["case-number", "case-meta", "case-title", "case-caption"]) {
+        expect(el.querySelector<HTMLElement>(`.${what}`)!.style.filter, `${kind} ${what}`).not.toBe(
+          "",
+        );
+      }
+      // The `--age` the stylesheet's yellowing is a function of, and the class it
+      // is gated on. Without these the card cannot age at all.
+      expect(el.style.getPropertyValue("--age"), kind).not.toBe("");
+      expect(el.classList.contains("is-aged"), kind).toBe(true);
+      again();
+    }
+    // And the surfaces themselves, which must carry no filter: a filter reaches
+    // everything below the node it is on, and every one of these has the writing
+    // — or, on a cassette, the recording — somewhere inside it.
+    const cassette = aged("audio");
+    for (const what of [".case-label", ".case-shell", ".case-body"]) {
+      expect(cassette.querySelector<HTMLElement>(what)!.style.filter, what).toBe("");
+    }
     again();
-    const vhs = aged("video");
-    // The card and the writing, which between them are the label — see
-    // `CaseView.ages`. Not the label element: the ageing goes round the hole a
-    // cassette has in its own, and both plastic kinds are aged the same way.
-    expect(vhs.querySelector<HTMLElement>(".case-paper")!.style.filter).not.toBe("");
-    expect(vhs.querySelector<HTMLElement>(".case-number")!.style.filter).not.toBe("");
-    expect(vhs.querySelector<HTMLElement>(".case-shell")!.style.filter).toBe("");
+    expect(aged("document").querySelector<HTMLElement>(".folder-front")!.style.filter).toBe("");
   });
 
   it("never ages the recording, on a cassette whose window is inside its label", () => {
-    // T-272's second sentence, and the one thing about this that was not already
-    // built. A compact cassette's window is a row of the label's own grid, so a
-    // filter on the label reached the spools and the span of tape — and a filter
-    // reaches everything below the node it is on, which is why this asserts on
-    // the whole chain of ancestors rather than on the window alone. Since T-271
-    // the window is also where a transfer draws itself, so a yellowed one is a
-    // yellowed readout.
+    // T-272's second sentence. A compact cassette's window is a row of the
+    // label's own grid, so a filter on the label reached the spools and the span
+    // of tape — measured on the running board at eleven levels of lift on the
+    // darkest thing on the object. Since T-271 the window is also where a
+    // transfer draws itself, so a yellowed one is a yellowed readout.
+    //
+    // The whole chain of ancestors, not the window alone, because that is how a
+    // filter reaches: this fails wherever somebody puts one.
     const cassette = aged("audio");
-    expect(cassette.querySelector<HTMLElement>(".case-paper")!.style.filter).not.toBe("");
-    expect(cassette.querySelector<HTMLElement>(".case-title")!.style.filter).not.toBe("");
     // The window really is inside the label — if that ever stops being true this
     // test is measuring something else, and T-304 and T-306 both rest on it.
     expect(cassette.querySelector(".case-label > .case-window")).not.toBeNull();

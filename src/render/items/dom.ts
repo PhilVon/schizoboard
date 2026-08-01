@@ -1631,19 +1631,21 @@ class CaseView implements View {
   /** The object itself. The shadow is outside it; everything else is inside. */
   private readonly body: HTMLDivElement;
   /**
-   * The parts of this object that are paper, and so the parts that age.
+   * What was written or typed on this object — and so, of the two things that
+   * age here, the half that ages by *losing* something.
    *
-   * A list rather than one node because **a cassette's label has a hole in it**.
-   * A filter applies to everything below the element it is on, and the window is
-   * a row of the label's own grid — so ageing the label as a single node yellows
-   * the spools and the tape web with the writing, which is the one thing T-272
-   * says never happens. So the label is split: `.case-paper` carries the card and
-   * its printed rules, the four text nodes carry what is written on it, and the
-   * window is left out. Filtering the paper and the ink separately is not an
-   * approximation of filtering them together — every term of [`wearFilter`] is
-   * affine, and an affine function commutes with compositing.
+   * `wear.ts` has both mechanisms and says which is which: paper ages by having
+   * things added to it, and ink ages by going. So the card these four sit on
+   * takes `--paper-yellowing` as a layer of its own background in `items.css`,
+   * and only the writing takes [`wearFilter`] (T-316). The same four nodes on
+   * every kind, which is why there is no branch here — a folder's front panel
+   * and a cassette's label are the same object with a different word for it.
    *
-   * On a folder this is the folder, which has no hole in it and is one node.
+   * Splitting the two is also what keeps the ageing off the recording. A filter
+   * reaches everything below the node it is on, and a compact cassette's window
+   * is a row of the label's own grid; a background does not, because it paints
+   * under an element's children. So a fifteen-year-old cassette has a brown
+   * label and the spools it always had (T-272).
    */
   private readonly ages: readonly HTMLElement[];
   private readonly number: HTMLDivElement;
@@ -1696,6 +1698,7 @@ class CaseView implements View {
     this.meta = div("case-meta");
     this.title = div("case-title");
     this.caption = div("case-caption");
+    this.ages = [this.number, this.meta, this.title, this.caption];
 
     // The four text nodes are the same four on every kind; where they sit is
     // not. A folder's case number is typed on the tab and a cassette's is on
@@ -1713,7 +1716,6 @@ class CaseView implements View {
       // put anything in.
       const sheets = div("folder-sheets");
       const front = div("folder-front");
-      this.ages = [front];
       // No curl. See `setCurl` — this is where refusing it costs nothing.
       this.bend = null;
       this.grain = div("case-grain");
@@ -1740,11 +1742,9 @@ class CaseView implements View {
       const right = div("case-window is-right");
       right.append(div("case-reel"));
       const label = div("case-label");
-      const paper = div("case-paper");
-      this.ages = [paper, this.number, this.meta, this.title, this.caption];
       this.bend = null;
       this.grain = null;
-      label.append(paper, this.number, this.meta, this.title, this.caption);
+      label.append(this.number, this.meta, this.title, this.caption);
       this.body.append(shell, left, right, label);
     } else {
       // A compact cassette, likewise from the reference, and its window is the
@@ -1757,16 +1757,11 @@ class CaseView implements View {
       // the position readout rather than about the object being drawn.
       const shell = div("case-shell");
       const label = div("case-label");
-      // The card the label is printed on, as a layer under the writing rather
-      // than as the label's own background — because the window is a child of
-      // the label and the ageing must not reach it. See [`ages`].
-      const paper = div("case-paper");
-      this.ages = [paper, this.number, this.meta, this.title, this.caption];
       this.bend = null;
       this.grain = null;
       const window_ = div("case-window");
       window_.append(div("case-reel"), div("case-tape"), div("case-reel"));
-      label.append(paper, this.number, this.meta, window_, this.title, this.caption);
+      label.append(this.number, this.meta, window_, this.title, this.caption);
       this.body.append(shell, label, div("case-holes"));
     }
 
@@ -1940,22 +1935,22 @@ class CaseView implements View {
    * What the years have taken off it — and off *what* is the whole content of
    * this method.
    *
-   * A folder is paper all the way through, so the filter goes on the folder. A
-   * VHS is a polystyrene shell with a paper label stuck to it, and polystyrene
-   * does not go brown: the filter goes on the label alone, so a fifteen-year-old
-   * tape is a black tape with a yellowed label, which is what a fifteen-year-old
-   * tape is.
+   * Two mechanisms, because there are two materials, and `wear.ts` already draws
+   * the line: what ages by *gaining* is the card, and it gains its years as a
+   * layer of its own background in `items.css`. What ages by *losing* is the
+   * writing, and that is this — [`wearFilter`] on the four text nodes, wherever
+   * this kind put them.
    *
-   * And **the recording is not paper either**, which is the second half of T-272
-   * and the half a compact cassette got wrong. The spools and the span of tape
-   * between them are mylar and polystyrene on exactly the argument the shell is,
-   * and they sit inside the label rather than beside it — so they came out of a
-   * fifteen-year-old cassette yellowed, which no tape has ever done. Worse since
-   * T-271: the window is where a transfer draws itself, so an aged cassette
-   * whose file was still coming reported it through a wear filter.
+   * The card used to take the filter too, and T-316 is what came of measuring
+   * it: on a colour print, lifting the blacks is the effect, and on cream card
+   * the same brightness term is most of what you see. A fifteen-year-old label
+   * came out 239,233,216 against a new one's 246,237,217 — three percent
+   * *brighter* and one percent warmer, which is a label that has been bleached
+   * rather than one that has yellowed, and far too small to notice either way.
+   * Kraft was worse: 196,162,125 to 194,170,141, straight toward grey.
    *
-   * `this.ages` is the set this kind decided in its constructor and the window is
-   * not in it, so there is no branch here.
+   * What is *not* aged is the polystyrene, which does not go brown, and the
+   * recording, which is not ours to damage (T-272).
    */
   private paintAge(wear: number): void {
     this.el.classList.toggle(IS_AGED, wear > 0);
