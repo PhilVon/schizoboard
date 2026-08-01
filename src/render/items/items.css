@@ -1931,17 +1931,27 @@ textarea.item-field::-webkit-scrollbar {
 /*
  * A compact cassette: the label is nearly the whole face.
  *
- * `12%` at the foot rather than the `27%` this had, and that is part of the fix
+ * `18%` at the foot rather than the `27%` this had, and that is part of the fix
  * below rather than a separate opinion about the drawing. The window is 21.6
  * units of hole in a label that had 50 units of room, which leaves 28 for a case
  * number, two lines of writing and a runtime — and those want 41. A label that
- * cannot hold its own contents clips them, so this one runs to where a real
- * cassette's runs: the felt-pad end of the shell is the bottom 10% and the
- * capstan cutouts sit between 91% and 96.5%, so 88% is the last row of the face
- * that is actually label.
+ * cannot hold its own contents clips them, so putting the window in its own row
+ * without moving the foot simply moved the clipping onto the case number and cut
+ * it in half.
+ *
+ * **The number is the shortest label that works, not the tallest that fits**
+ * (Q-228). Measured across 27 / 22 / 18 / 15 / 12: the ordinary cassette — a
+ * name, a title read off the container, a runtime — clips nothing from 18
+ * downwards and loses a line at 22. Going further buys only the fullest label
+ * there is, a long name wrapped to both ruled lines with a title *and* something
+ * written underneath, which shaves the title's ascenders at every height on this
+ * ladder including 12. So 18 is where the gain stops being real.
+ *
+ * There is room below it either way: the felt-pad end of the shell is the bottom
+ * 10% and the capstan cutouts sit between 91% and 96.5%.
  */
 .item-case[data-kind="cassette"] .case-label {
-  inset: 9% 7% 12% 7%;
+  inset: 9% 7% 18% 7%;
   /*
    * The hole is a row of definite height, and this is the whole of T-304.
    *
@@ -1959,8 +1969,10 @@ textarea.item-field::-webkit-scrollbar {
    * `aspect-ratio` to supply the width. One number decides the hole's size
    * instead of two that could disagree, and a percentage track resolves against
    * a definite block size, which this label has because it is inset on all four
-   * sides. 33.15% of the label's 65 units of content box is the reference's
-   * 575-by-135 hole, unchanged.
+   * sides. 36.5% of the label's 59.1 units of content box is the reference's
+   * 575-by-135 hole, unchanged — and it is stated as a fraction of the label, so
+   * moving the foot means moving this with it or the hole stops being the hole.
+   * The test in `tests/case-window-css.test.ts` is what catches that.
    *
    * The row gap is a percentage for a related reason. `0.15em` in the shared
    * rule is 0.15 of *sixteen pixels*, because nothing between here and `body`
@@ -1969,7 +1981,7 @@ textarea.item-field::-webkit-scrollbar {
    * choice. The folder and the VHS have the same accident and are left with it:
    * neither is short of room, and changing how they look is not this task.
    */
-  grid-template-rows: auto 33.15% auto auto 1fr;
+  grid-template-rows: auto 36.5% auto auto 1fr;
   gap: 1.85% 0;
 }
 

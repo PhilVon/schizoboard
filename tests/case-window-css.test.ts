@@ -127,14 +127,21 @@ const UNITS_PER_MM = 1.55;
 describe("the hole in a compact cassette's label", () => {
   /**
    * The numbers a real one gives up to a ruler: the window is a shade under
-   * 60 mm across and a shade under 14 mm deep, on a 100 by 64 mm face. Held to a
-   * quarter of a millimetre, which is finer than anyone drew it and coarse
-   * enough that rounding the object's size to whole units cannot trip it.
+   * 60 mm across and a shade under 14 mm deep, on a 100 by 64 mm face. They are
+   * also the hole this had *before* T-304, when it was `78%` of the label's
+   * content width at a ratio of 4.26 — that is where the two figures come from,
+   * and the point of the test is that turning the declaration round did not move
+   * the hole by so much as a tenth.
+   *
+   * Held to a twentieth of a millimetre, and deliberately: it is the tolerance
+   * that caught the track being written as 36.48% instead of 36.5% when the
+   * label's foot moved on Q-228, which is a hole 0.05 mm narrower than the one
+   * above this comment.
    */
   it("is still the 59 by 14 mm window a compact cassette has", () => {
     const { w, h } = hole();
-    expect(w / UNITS_PER_MM).toBeCloseTo(59.3, 1);
-    expect(h / UNITS_PER_MM).toBeCloseTo(13.9, 1);
+    expect(w / UNITS_PER_MM).toBeCloseTo(59.28, 1);
+    expect(h / UNITS_PER_MM).toBeCloseTo(13.92, 1);
   });
 
   it("fits inside the label it is cut through", () => {
@@ -173,16 +180,27 @@ describe("the hole in a compact cassette's label", () => {
   );
 
   /**
-   * The label runs to where a real cassette's runs. The felt-pad end of the
-   * shell is the bottom 10% and the capstan cutouts sit between 91% and 96.5%,
-   * so anything past about 88% of the face is not label — and the writing needs
-   * every unit above that, which is the whole reason the foot moved on T-304.
+   * The foot of the label, bounded from both sides.
+   *
+   * Below: the shell's own furniture. The felt-pad end is the bottom 10% and the
+   * capstan cutouts sit between 91% and 96.5% — a label over either is a label
+   * printed on a hole.
+   *
+   * Above: the writing. The foot moved on T-304 because putting the window in its
+   * own row without moving it just relocated the clipping onto the case number,
+   * and it stopped at 18% on Q-228 because that is the shortest label at which an
+   * ordinary cassette — a name, a title off the container, a runtime — clips
+   * nothing. 22% loses a line of it. So this holds the foot inside the band the
+   * ladder measured rather than pinning it to one value: the choice inside the
+   * band is taste, and going outside it is a defect in one direction or the
+   * other.
    */
-  it("runs down the face as far as the shell's furniture allows", () => {
-    const inset = sides(label.get("inset")!);
+  it("stops short of the shell's furniture and long of the writing", () => {
+    const foot = 100 - sides(label.get("inset")!).bottom;
     const holes = declarations(".case-holes");
-    const cutoutTop = 100 - Number.parseFloat(holes.get("bottom")!) - Number.parseFloat(holes.get("height")!);
-    expect(100 - inset.bottom).toBeLessThan(cutoutTop);
-    expect(100 - inset.bottom).toBeGreaterThan(85);
+    const cutoutTop =
+      100 - Number.parseFloat(holes.get("bottom")!) - Number.parseFloat(holes.get("height")!);
+    expect(foot).toBeLessThan(cutoutTop);
+    expect(foot).toBeGreaterThanOrEqual(82);
   });
 });
