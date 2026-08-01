@@ -177,6 +177,17 @@ pub enum PageContent {
         runs: Vec<TextRun>,
         figures: Vec<Figure>,
     },
+    /// A page of a document that had no layout to report — one page's worth of
+    /// a text file, cut where [`crate::text`] said to cut it.
+    ///
+    /// A separate variant rather than one `TextRun` covering the page, and the
+    /// difference is the whole of ARCHITECTURE section 4.2. A run carries a box
+    /// in points because a PDF *states* where its text sits; a text file states
+    /// nothing, and manufacturing a box here would be this side of the line
+    /// inventing a layout and then handing it over as if it had been measured.
+    /// What is known is the characters and the order they come in, so that is
+    /// what crosses.
+    Plain(String),
     Image(PageImage),
     Empty,
     /// There is something on this page and this build cannot read it. Carries
@@ -282,11 +293,7 @@ impl std::error::Error for Error {}
 /// the half nobody has asked for yet, and holding the cheap half open is what
 /// makes page-turning affordable.
 pub struct Reader {
-    doc: Document,
-    /// Page numbers and their objects, in reading order. lopdf hands these back
-    /// as a map; the order is the document's own pagination and is the identity
-    /// a quote cites.
-    ids: Vec<(u32, ObjectId)>,
+    inner: Inner,
     /// How many pages this reader has actually produced.
     ///
     /// Here because "a page is read without reading the rest" is a claim about
@@ -297,13 +304,49 @@ pub struct Reader {
     read: std::sync::atomic::AtomicUsize,
 }
 
+/// Which of the two kinds of document is open.
+///
+/// The fork is here and it is the only place it exists. Everything above —
+/// [`Reader::page`], [`crate::pages::PageStore`], and whatever the reading
+/// surface turns out to be — asks for a page by number and is told what is on
+/// it. That is D-46 section 2's rule about the three objects applied one level
+/// down: if reading a document needed a special case anywhere the reader can
+/// see, the model would be wrong.
+enum Inner {
+    Pdf {
+        /// Boxed because a loaded `Document` is two orders of magnitude larger
+        /// than the other variant, and an enum is as big as its widest arm: a
+        /// text file would otherwise carry a PDF-shaped hole around with it.
+        doc: Box<Document>,
+        /// Page numbers and their objects, in reading order. lopdf hands these
+        /// back as a map; the order is the document's own pagination and is the
+        /// identity a quote cites.
+        ids: Vec<(u32, ObjectId)>,
+    },
+    /// A file that stated no pagination, and the one this build gave it. The
+    /// ranges tile `text`, so a page is a place in the file (T-298).
+    Plain {
+        text: String,
+        pages: Vec<std::ops::Range<usize>>,
+    },
+}
+
 impl Reader {
-    /// Open a PDF off the disk.
+    /// Open a document off the disk, whichever kind it turns out to be.
     ///
     /// The path is the store's, not the user's — by the time anything gets here
     /// the bytes have already been ingested and hashed, so this never sees a
-    /// name a person typed.
+    /// name a person typed. Which is also why the kind is decided by
+    /// [`crate::assets::sniff_path`] rather than by an extension: there is no
+    /// extension to read, and the store's answer is the one the ingest gate and
+    /// the asset record already agree on.
     pub fn open(path: &Path) -> Result<Reader> {
+        if crate::assets::sniff_path(path).is_some_and(|mime| mime.starts_with("text/")) {
+            let bytes = std::fs::read(path).map_err(|e| Error::Malformed(e.to_string()))?;
+            let text = crate::text::decode(&bytes)
+                .ok_or_else(|| Error::Malformed("the file is not text after all".into()))?;
+            return Reader::of_text(text);
+        }
         let options = LoadOptions::with_max_decompressed_size(MAX_STRUCTURE_BYTES);
         let doc = Document::load_with_options(path, options)
             .map_err(|e| Error::Malformed(e.to_string()))?;
@@ -312,11 +355,38 @@ impl Reader {
 
     /// Open a PDF already in memory. The tests build their fixtures this way,
     /// and so does anything that has the bytes but no file.
+    ///
+    /// Deliberately not the dispatching door: its callers have already decided
+    /// what they are holding — [`probe`] from the record's mime, the tests from
+    /// the fixture they just built — and a second opinion here could only
+    /// disagree with the first.
     pub fn open_bytes(bytes: &[u8]) -> Result<Reader> {
         let options = LoadOptions::with_max_decompressed_size(MAX_STRUCTURE_BYTES);
         let doc = Document::load_mem_with_options(bytes, options)
             .map_err(|e| Error::Malformed(e.to_string()))?;
         Reader::of(doc)
+    }
+
+    /// Open text already decoded. The in-memory door for the other kind.
+    pub fn open_text(text: String) -> Result<Reader> {
+        Reader::of_text(text)
+    }
+
+    fn of_text(text: String) -> Result<Reader> {
+        let pages = crate::text::paginate(&text);
+        // The same bound as a PDF's, for the same reason and in the same words:
+        // a page tree — or a log file — claiming to be endless is refused
+        // before it is walked rather than trimmed to fit.
+        if pages.len() > MAX_PAGES {
+            return Err(Error::TooLarge(format!(
+                "{} pages is more than this build will read",
+                pages.len()
+            )));
+        }
+        Ok(Reader {
+            inner: Inner::Plain { text, pages },
+            read: std::sync::atomic::AtomicUsize::new(0),
+        })
     }
 
     fn of(doc: Document) -> Result<Reader> {
@@ -336,15 +406,21 @@ impl Reader {
             )));
         }
         Ok(Reader {
-            doc,
-            ids,
+            inner: Inner::Pdf {
+                doc: Box::new(doc),
+                ids,
+            },
             read: std::sync::atomic::AtomicUsize::new(0),
         })
     }
 
-    /// How many pages there are — known from the page tree, without reading one.
+    /// How many pages there are — known from the page tree, or from the rule
+    /// that stood in for one, without reading a page either way.
     pub fn page_count(&self) -> usize {
-        self.ids.len()
+        match &self.inner {
+            Inner::Pdf { ids, .. } => ids.len(),
+            Inner::Plain { pages, .. } => pages.len(),
+        }
     }
 
     /// What the file says it is called, if it says anything.
@@ -359,10 +435,17 @@ impl Reader {
     /// `None` covers three things that are all the same to a label — no `/Info`,
     /// no `/Title`, and a `/Title` that is blank or nothing but space. A folder
     /// with no title writes one line instead of two.
+    ///
+    /// A text file is a fourth, and permanently: it has no dictionary to state
+    /// a name in. Taking the first line instead would be a *reading* of the
+    /// document, which is the thing this comment already refuses.
     pub fn title(&self) -> Option<String> {
-        let info = self.doc.trailer.get(b"Info").ok()?;
+        let Inner::Pdf { doc, .. } = &self.inner else {
+            return None;
+        };
+        let info = doc.trailer.get(b"Info").ok()?;
         let dict = match info {
-            Object::Reference(id) => self.doc.get_object(*id).ok()?.as_dict().ok()?,
+            Object::Reference(id) => doc.get_object(*id).ok()?.as_dict().ok()?,
             other => other.as_dict().ok()?,
         };
         tidy(&text_string(dict.get(b"Title").ok()?.as_str().ok()?))
@@ -379,24 +462,57 @@ impl Reader {
     /// `None` means there is no such page, which is a different thing from a
     /// page that turned out to be [`PageContent::Empty`].
     pub fn page(&self, index: u32) -> Option<Page> {
-        let (index, page_id) = self.ids.iter().copied().find(|(n, _)| *n == index)?;
-        Some(self.produce(index, page_id))
+        match &self.inner {
+            Inner::Pdf { doc, ids } => {
+                let (index, page_id) = ids.iter().copied().find(|(n, _)| *n == index)?;
+                Some(self.produce(doc, index, page_id))
+            }
+            Inner::Plain { text, pages } => {
+                let at = usize::try_from(index).ok()?.checked_sub(1)?;
+                Some(self.cut(text, pages.get(at)?.clone(), index))
+            }
+        }
     }
 
     /// Every page. The whole cost, taken deliberately — an export or a bundle
     /// wants this; somebody turning to page four does not.
     pub fn read_all(&self) -> Reading {
-        let pages = self
-            .ids
-            .iter()
-            .map(|&(index, page_id)| self.produce(index, page_id))
-            .collect();
+        let pages = match &self.inner {
+            Inner::Pdf { doc, ids } => ids
+                .iter()
+                .map(|&(index, page_id)| self.produce(doc, index, page_id))
+                .collect(),
+            Inner::Plain { text, pages } => pages
+                .iter()
+                .enumerate()
+                .map(|(at, range)| self.cut(text, range.clone(), at as u32 + 1))
+                .collect(),
+        };
         Reading { pages }
     }
 
-    fn produce(&self, index: u32, page_id: ObjectId) -> Page {
+    fn produce(&self, doc: &Document, index: u32, page_id: ObjectId) -> Page {
         self.read.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        read_page(&self.doc, index, page_id)
+        read_page(doc, index, page_id)
+    }
+
+    /// One page of a text file.
+    ///
+    /// **`width` and `height` are zero, and that is the honest answer rather
+    /// than a missing one.** They are points, and points are what a PDF states
+    /// about the shape it is meant to be looked at in. A text file states
+    /// nothing, so the sheet it goes on is the board's decision and not the
+    /// file's — which is [`crate::text`]'s whole argument arriving here: the
+    /// reading surface's page is sized to the grid, so a number invented on
+    /// this side could only be one the other side then had to ignore.
+    fn cut(&self, text: &str, range: std::ops::Range<usize>, index: u32) -> Page {
+        self.read.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        Page {
+            index,
+            width: 0.0,
+            height: 0.0,
+            content: PageContent::Plain(text[range].to_owned()),
+        }
     }
 }
 
@@ -447,10 +563,31 @@ pub struct Probe {
 /// this build cannot parse is still a PDF, and it becomes a folder with nothing
 /// written under its filename.
 pub fn probe(bytes: &[u8], mime: &str) -> Option<Probe> {
-    if mime != "application/pdf" {
-        return None;
+    match mime {
+        "application/pdf" => Some(of(&Reader::open_bytes(bytes).ok()?)),
+        // The other kind of document, and it comes through the same door on
+        // purpose: "how many pages has this got" has one answer per file and
+        // should have one place that gives it. What differs is only where the
+        // number comes from — a PDF states its pagination and a text file is
+        // given ours ([`crate::text`]).
+        //
+        // A title is `None` and always will be. A PDF has an information
+        // dictionary in which the file states its own name; a text file has
+        // nothing but its filename, which is already typed on the tab.
+        mime if mime.starts_with("text/") => {
+            let text = crate::text::decode(bytes)?;
+            let pages = crate::text::page_count(&text);
+            // Refused rather than trimmed, and by the same bound for the same
+            // reason: a folder claiming more pages than this build will read is
+            // a folder nobody can open, and one with no thickness is honest
+            // about that where one with a wrong thickness is not.
+            (pages <= MAX_PAGES).then_some(Probe {
+                pages: pages as u32,
+                title: None,
+            })
+        }
+        _ => None,
     }
-    Some(of(&Reader::open_bytes(bytes).ok()?))
 }
 
 /// The same two facts, off a file this machine already holds.
@@ -2894,13 +3031,16 @@ mod tests {
     }
 
     #[test]
-    fn only_a_pdf_is_probed() {
+    fn the_mime_decides_which_kind_of_document_this_is() {
         // The bytes really are a document; the mime is what decides, because it
         // is the store's answer after sniffing and the one thing that has looked
-        // at the file (T-260).
+        // at the file (T-260). It was two kinds of answer before T-298 and is
+        // three now — the middle one being that there is more than one sort of
+        // document, and they are counted differently and labelled the same.
         let bytes = titled(1, None);
         assert_eq!(probe(&bytes, "video/mp4"), None);
         assert_eq!(probe(&bytes, "application/pdf").map(|p| p.pages), Some(1));
+        assert_eq!(probe(b"a memo\n", "text/plain").map(|p| p.pages), Some(1));
     }
 
     #[test]
@@ -2983,5 +3123,127 @@ mod tests {
             .expect("emoji are a title too");
         assert_eq!(capped.chars().count(), MAX_TITLE_CHARS);
         assert!(capped.chars().all(|c| c == '\u{1F600}'));
+    }
+
+    // --- the other kind of document (T-298) ---------------------------------
+
+    /// Two pages' worth of text and a little over, so the count is a rule being
+    /// applied rather than a file that happens to be short.
+    fn statement() -> String {
+        (0..crate::text::ROWS * 2 + 3)
+            .map(|n| format!("line {n} of the statement"))
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    #[test]
+    fn a_text_file_is_probed_for_pages_and_never_for_a_title() {
+        let text = statement();
+        let probe = probe(text.as_bytes(), "text/plain").expect("text is a document");
+        assert_eq!(probe.pages, 3);
+        // Permanently. A text file has no dictionary to state a name in, and
+        // taking its first line instead would be a reading of the evidence.
+        assert_eq!(probe.title, None);
+        // And the record agrees with the reader, which is the whole point of
+        // one door: the thickness a peer draws is the page a reader turns to.
+        let reader = Reader::open_text(text).expect("open");
+        assert_eq!(reader.page_count(), 3);
+        assert_eq!(reader.title(), None);
+    }
+
+    #[test]
+    fn a_probe_still_refuses_anything_that_is_not_a_document() {
+        assert_eq!(probe(b"hello", "image/png"), None);
+        assert_eq!(probe(b"hello", "audio/mpeg"), None);
+        // Called with a mime the bytes contradict, which is the one way this
+        // can be reached: the caller passes the record's mime, not a guess.
+        assert_eq!(probe(&[0xff, 0xd8, 0xff], "text/plain"), None);
+    }
+
+    #[test]
+    fn the_pages_of_a_text_file_are_the_file() {
+        // AC-779 and the property a citation rests on. Reading every page back
+        // in order reproduces the document exactly, so a page is a place in the
+        // file rather than a place in a rendering of it.
+        let text = statement();
+        let reading = Reader::open_text(text.clone()).expect("open").read_all();
+        assert_eq!(reading.pages.len(), 3);
+        let rebuilt: String = reading
+            .pages
+            .iter()
+            .map(|page| match &page.content {
+                PageContent::Plain(text) => text.as_str(),
+                other => panic!("a text file's page is not {other:?}"),
+            })
+            .collect();
+        assert_eq!(rebuilt, text);
+        // One-based and in order, like a PDF's, so a reference does not have to
+        // know which kind of document it came from.
+        assert_eq!(
+            reading.pages.iter().map(|p| p.index).collect::<Vec<_>>(),
+            vec![1, 2, 3]
+        );
+    }
+
+    #[test]
+    fn a_plain_page_declares_no_shape_because_the_sheet_is_the_boards() {
+        let page = Reader::open_text("a memo\n".into())
+            .expect("open")
+            .page(1)
+            .expect("page one");
+        assert_eq!((page.width, page.height), (0.0, 0.0));
+    }
+
+    #[test]
+    fn a_text_page_is_asked_for_by_number_and_only_the_ones_that_exist_answer() {
+        let reader = Reader::open_text(statement()).expect("open");
+        assert_eq!(reader.page(0), None, "there is no page zero");
+        assert!(reader.page(1).is_some());
+        assert!(reader.page(3).is_some());
+        assert_eq!(reader.page(4), None);
+        assert_eq!(reader.pages_read(), 2, "only the pages asked for were cut");
+    }
+
+    #[test]
+    fn opening_a_file_reads_it_as_whatever_its_own_bytes_say_it_is() {
+        let dir = tempfile::tempdir().expect("tempdir");
+
+        // Both under a name that says nothing, because a name is not the
+        // evidence: the store holds originals under their hash.
+        let text_path = dir.path().join("aa");
+        std::fs::write(&text_path, statement()).expect("write");
+        let reader = Reader::open(&text_path).expect("text opens");
+        assert_eq!(reader.page_count(), 3);
+        assert!(matches!(
+            reader.page(1).map(|p| p.content),
+            Some(PageContent::Plain(_))
+        ));
+
+        let pdf_path = dir.path().join("bb");
+        std::fs::write(&pdf_path, titled(2, None)).expect("write");
+        let reader = Reader::open(&pdf_path).expect("a pdf still opens");
+        assert_eq!(reader.page_count(), 2);
+        assert!(!matches!(
+            reader.page(1).map(|p| p.content),
+            Some(PageContent::Plain(_))
+        ));
+
+        // And bytes that are neither are an error rather than an empty document.
+        let junk = dir.path().join("cc");
+        std::fs::write(&junk, [0xff, 0xd8, 0xff, 0x00]).expect("write");
+        assert!(Reader::open(&junk).is_err());
+    }
+
+    #[test]
+    fn a_text_file_with_more_pages_than_this_build_will_read_is_refused() {
+        // The same bound as a page tree's, refused rather than trimmed: a
+        // folder claiming pages nobody can turn to is worse than one with no
+        // thickness written on it at all.
+        let huge = "\n".repeat(crate::text::ROWS * (MAX_PAGES + 1));
+        assert!(matches!(
+            Reader::open_text(huge.clone()),
+            Err(Error::TooLarge(_))
+        ));
+        assert_eq!(probe(huge.as_bytes(), "text/plain"), None);
     }
 }

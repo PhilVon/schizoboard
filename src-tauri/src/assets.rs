@@ -931,6 +931,26 @@ pub fn sniff_mime(bytes: &[u8]) -> Option<&'static str> {
     if bytes.starts_with(b"ID3") || is_mpeg_frame(bytes) {
         return Some("audio/mpeg");
     }
+    // **Last, and it could not be anywhere else.** Every other arm here matches
+    // a signature; text has none, so the only honest form the question can take
+    // is *what is left*. Q-255 chose this over recognising a document by its
+    // extension, which keeps the rule the whole ingest story is built on: an
+    // extension is what somebody typed, and this is the one place the board
+    // decides what it is holding.
+    //
+    // Asked of the sniff window and not of the slice, for the reason the EBML
+    // DocType above is: at ingest this function is handed the *whole file*, and
+    // the answer must not depend on which of the two the caller had.
+    //
+    // Two consequences worth stating rather than discovering. An empty file is
+    // not text — there is no evidence about it at all — so it stays refused at
+    // the gate the way it is today. And a file whose head reads as text while
+    // the rest does not becomes a folder that `text::decode` then declines to
+    // count: a document with nothing written where its thickness goes, which is
+    // the outcome the 6% of real PDFs D-47 measured already have.
+    if crate::text::reads_as_text(&bytes[..bytes.len().min(SNIFF_BYTES)]) {
+        return Some("text/plain");
+    }
     None
 }
 
@@ -988,6 +1008,10 @@ fn extension_for(mime: &str) -> &'static str {
         "audio/wav" => "wav",
         "audio/ogg" => "ogg",
         "audio/flac" => "flac",
+        // One extension for every kind of text, because the sniffer has one
+        // mime for them: a `.md`, a `.csv` and a `.log` are told apart by their
+        // names, and a name is the evidence this store does not keep.
+        "text/plain" => "txt",
         // Reachable now in a way it was not: ingestion no longer decodes
         // everything it commits, so a format the sniffer does not know still
         // gets stored and can still be exported. A store directory is a
@@ -2296,6 +2320,70 @@ mod tests {
     }
 
     #[test]
+    fn text_is_what_is_left_once_every_signature_has_said_no() {
+        assert_eq!(sniff_mime(b"To: the editor\n\nI enclose the transcript.\n"), Some("text/plain"));
+        assert_eq!(sniff_mime("a page\ttabbed\r\nand fed\x0con".as_bytes()), Some("text/plain"));
+        assert_eq!(sniff_mime("naïve, café, £4\n".as_bytes()), Some("text/plain"));
+        assert_eq!(extension_for("text/plain"), "txt");
+
+        // And it is asked last. Every one of these reads perfectly well as text
+        // and is something else, so a text arm anywhere above would take them.
+        assert_eq!(sniff_mime(b"%PDF-1.7\ntrailer\n"), Some("application/pdf"));
+        assert_eq!(sniff_mime(b"RIFF\x24\x00\x00\x00WAVEfmt "), Some("audio/wav"));
+        assert_eq!(sniff_mime(b"ID3\x04and then some words"), Some("audio/mpeg"));
+    }
+
+    #[test]
+    fn bytes_that_would_read_as_gibberish_on_a_page_are_not_text() {
+        assert_eq!(sniff_mime(b""), None, "an empty file is not evidence");
+        assert_eq!(sniff_mime(b"before\0after"), None, "a NUL");
+        assert_eq!(sniff_mime(b"\x1b[31mred\x1b[0m"), None, "terminal escapes");
+        assert_eq!(sniff_mime(b"\x07\x07\x07"), None, "C0 controls");
+        assert_eq!(sniff_mime(&[0xc3, 0x28]), None, "not UTF-8");
+    }
+
+    #[test]
+    fn a_character_the_sniff_window_cut_in_half_is_not_evidence() {
+        // One ASCII character and then two-byte ones, so a character starts at
+        // the last byte of the window and is cut in half by it. That is the
+        // window's doing and not the file's, and accented prose is not binary.
+        // (The odd offset is load-bearing: SNIFF_BYTES is even, so a file of
+        // nothing but two-byte characters would divide it exactly and this test
+        // would assert nothing.)
+        let accented = format!("x{}", "é".repeat(SNIFF_BYTES));
+        assert_eq!(accented.as_bytes()[SNIFF_BYTES - 1], 0xc3, "the window cuts one");
+        assert_eq!(sniff_mime(accented.as_bytes()), Some("text/plain"));
+        assert_eq!(sniff_mime(&accented.as_bytes()[..SNIFF_BYTES]), Some("text/plain"));
+
+        // But a broken sequence *within* the window still refuses the file:
+        // tolerating the tail must not become tolerating everything.
+        let mut broken = vec![0xc3, 0x28];
+        broken.extend_from_slice(&accented.as_bytes()[..SNIFF_BYTES]);
+        assert_eq!(sniff_mime(&broken), None);
+    }
+
+    #[test]
+    fn a_text_file_reads_the_same_from_its_head_and_from_all_of_it() {
+        // The property the table above asserts for every signature, made
+        // separately because that fixture pads with NUL — which is one of the
+        // three things text is refused for.
+        let mut file = b"THE STATEMENT OF A WITNESS\n\n".to_vec();
+        file.extend(std::iter::repeat_n(b'x', SNIFF_BYTES * 8));
+        assert!(file.len() > SNIFF_BYTES);
+        assert_eq!(sniff_mime(&file[..SNIFF_BYTES]), Some("text/plain"), "head");
+        assert_eq!(sniff_mime(&file), Some("text/plain"), "whole");
+
+        // A file whose head reads as text and whose tail does not is still
+        // called text here — the window is the whole evidence, deliberately —
+        // and it is `text::decode` that then declines to count its pages.
+        let mut tailed = file.clone();
+        tailed.push(0);
+        assert_eq!(sniff_mime(&tailed), Some("text/plain"));
+        assert_eq!(crate::text::decode(&tailed), None);
+        assert_eq!(crate::document::probe(&tailed, "text/plain"), None);
+    }
+
+    #[test]
     fn does_not_let_a_matroska_payload_rename_the_file() {
         // The DocType is an element in the header. `webm` appearing later is a
         // coincidence in two gigabytes of video, not a declaration — and at
@@ -2578,7 +2666,12 @@ mod tests {
     fn stores_bytes_it_cannot_decode_rather_than_refusing_them() {
         let (_dir, store) = store();
         // Nothing blocks thinking: a paste the user cannot fix must not fail.
-        let meta = store.ingest_bytes(b"not an image at all", None).unwrap();
+        //
+        // The fixture is binary rather than the sentence it used to be, because
+        // a sentence is a document now (Q-255) and would be testing the arm
+        // above this one. What is wanted here is bytes that place *nowhere*:
+        // no signature matches them and the NUL keeps them out of text.
+        let meta = store.ingest_bytes(&[0x00, 0x01, 0x02, 0x03], None).unwrap();
         assert_eq!((meta.w, meta.h), (0, 0));
         assert_eq!(meta.mime, "application/octet-stream");
         assert!(store.has(&meta.sha256));

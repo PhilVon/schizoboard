@@ -247,6 +247,9 @@ fn weight(page: &Page) -> usize {
                 .sum();
             text + lifted
         }
+        // The whole page, because that is what it is: a page of a text file is
+        // its characters and there is nothing else on it to dominate them.
+        PageContent::Plain(text) => text.len(),
         PageContent::Empty => 0,
         PageContent::Unsupported(why) => why.len(),
     }
@@ -547,6 +550,39 @@ mod tests {
 
         let after = crate::assets::walk_files(&root).expect("walk").len();
         assert_eq!(before, after, "reading pages must write nothing to the store");
+    }
+
+    #[test]
+    fn a_page_reference_into_a_text_file_resolves_the_same_after_everything_derived_is_lost() {
+        // AC-783, and the whole of T-298 in one assertion. A PDF's page
+        // reference is stable because the file states its own pagination; a
+        // text file's is stable because the rule that gave it one reads nothing
+        // but the bytes. Two stores that have never met, over a file with no
+        // pages of its own, agree about what page two is.
+        let text: String = (0..crate::text::ROWS * 2 + 5)
+            .map(|n| format!("paragraph {n}, and what the witness said about it"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let (_dir, path) = on_disk(text.as_bytes());
+
+        let first = PageStore::default();
+        let second = PageStore::default();
+        assert_eq!(first.page_count("aa", &path).unwrap(), 3);
+        for index in 1..=3 {
+            let a = first.page("aa", &path, index).unwrap().expect("page");
+            let b = second.page("aa", &path, index).unwrap().expect("page");
+            assert_eq!(a.as_ref(), b.as_ref(), "page {index}");
+        }
+
+        // Throwing the derived pages away costs time and nothing else — the
+        // same claim AC-694 makes for a scan, now for the kind of document
+        // whose pages this build invented rather than read.
+        first.forget("aa");
+        assert_eq!(first.cached_bytes(), 0);
+        assert_eq!(
+            first.page("aa", &path, 2).unwrap().expect("page"),
+            second.page("aa", &path, 2).unwrap().expect("page")
+        );
     }
 
     #[test]

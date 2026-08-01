@@ -81,6 +81,31 @@ describe("MockPlatform", () => {
     expect(await platform.assetHas([a.sha256, b.sha256])).toEqual([true, false]);
   });
 
+  it("recognises text last, and never at the expense of a signature", async () => {
+    const platform = new MockPlatform();
+    const bytes = (text: string) => new TextEncoder().encode(text);
+
+    const memo = await platform.assetIngestBytes(bytes("A memo, and then a list.\n"));
+    expect(memo.mime).toBe("text/plain");
+    // No page count, deliberately: paginating here would put a second
+    // implementation of `text.rs`'s rule in a second language, and which of
+    // them ingested a file would then decide what its page references mean.
+    expect(memo.pages).toBeNull();
+
+    // A file that reads as text and is something else is still that thing —
+    // the arm is last, so every signature above it has already answered.
+    expect((await platform.assetIngestBytes(bytes("%PDF-1.7\ntrailer\n"))).mime).toBe(
+      "application/pdf",
+    );
+    // And bytes that place nowhere still place nowhere.
+    expect((await platform.assetIngestBytes(Uint8Array.of(0, 1, 2, 3))).mime).toBe(
+      "application/octet-stream",
+    );
+    expect((await platform.assetIngestBytes(new Uint8Array())).mime).toBe(
+      "application/octet-stream",
+    );
+  });
+
   it("says what it cannot do instead of pretending", async () => {
     const platform = new MockPlatform();
     await expect(platform.assetIngestPath()).rejects.toThrow(/native shell/);

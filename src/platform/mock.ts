@@ -70,6 +70,24 @@ function unavailable(what: string): Promise<never> {
  * one feature this list is for would have been untestable in a browser without
  * it, and would have looked like a broken gate rather than a short sniffer.
  */
+function readsAsText(bytes: Uint8Array): boolean {
+  const head = bytes.subarray(0, 64);
+  if (head.length === 0) return false;
+  let text: string;
+  try {
+    // `stream` is what tolerates a multi-byte character the window cut in half:
+    // it holds the incomplete tail back for a continuation that never comes,
+    // rather than treating it as the file being malformed.
+    text = new TextDecoder("utf-8", { fatal: true }).decode(head, { stream: true });
+  } catch {
+    return false;
+  }
+  return (
+    text.length > 0 &&
+    ![...text].some((ch) => ch.charCodeAt(0) < 0x20 && !"\t\n\r\f".includes(ch))
+  );
+}
+
 function sniffMime(bytes: Uint8Array): string {
   if (bytes[0] === 0xff && bytes[1] === 0xd8) return "image/jpeg";
   if (bytes[0] === 0x89 && bytes[1] === 0x50) return "image/png";
@@ -92,6 +110,11 @@ function sniffMime(bytes: Uint8Array): string {
   if (starts(bytes, "OggS")) return "audio/ogg";
   if (starts(bytes, "fLaC")) return "audio/flac";
   if (starts(bytes, "ID3") || (bytes[0] === 0xff && (bytes[1] ?? 0) >= 0xe0)) return "audio/mpeg";
+  // Last, because text has no signature and the only honest form of the
+  // question is what is left (Q-255). Mirrors `text::reads_as_text`: the same
+  // window, the same three refusals, and the same tolerance for a character the
+  // window cut in half.
+  if (readsAsText(bytes)) return "text/plain";
   return "application/octet-stream";
 }
 
@@ -188,6 +211,11 @@ export class MockPlatform implements Platform {
     // files. A folder in the browser showing no thickness is a platform that did
     // not measure it; a folder showing `0 pp.` would be one that measured wrong,
     // and this record is the thing that reaches a peer.
+    //
+    // A text file could be counted here — its pagination is a rule rather than a
+    // parse (T-298) — and is deliberately not. The rule would then have two
+    // implementations in two languages, and every stored page reference would
+    // depend on which of them ingested the file. One writer, in `text.rs`.
     const meta: AssetMeta = {
       sha256,
       w,
