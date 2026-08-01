@@ -14,11 +14,11 @@
  *   node scripts/make-spike-media.mjs
  *
  * Output lands in public/spike/, which is gitignored — this is a test fixture,
- * not source. About 12 MB.
+ * not source. About 60 MB, most of it long1080.mp4.
  */
 
 import { spawn } from "node:child_process";
-import { access, mkdir } from "node:fs/promises";
+import { access, mkdir, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 
 const OUT = join(process.cwd(), "public", "spike");
@@ -68,6 +68,31 @@ async function main() {
     ]);
   }
 
+  // Six copies of the same four seconds, stream-copied through mpegts so the
+  // timestamps restart cleanly. The point is the *size*: 48 MB is a dozen
+  // times `protocol.rs`'s 4 MiB response cap, so playing it is a dozen ranges
+  // rather than one, which is the only way to see the ladder at all (T-263).
+  // The mp4 muxer leaves `moov` at the end by default and that is deliberate
+  // here too — a media element cannot find it in the first 4 MiB, so it has to
+  // read the short 206's `Content-Range` to work out where the tail is. If the
+  // cap were mishandled the film would not load at all rather than stutter.
+  console.log("long1080.mp4 — the same film six times over, 48 MB, moov at the end");
+  const seg = join(OUT, "seg.ts");
+  const list = join(OUT, "concat.txt");
+  await run([
+    "-hide_banner", "-loglevel", "error", "-y",
+    "-i", join(OUT, "pan1080.mp4"),
+    "-c", "copy", "-bsf:v", "h264_mp4toannexb", "-f", "mpegts", seg,
+  ]);
+  await writeFile(list, `file '${seg.replace(/\\/g, "/")}'\n`.repeat(6));
+  await run([
+    "-hide_banner", "-loglevel", "error", "-y",
+    "-f", "concat", "-safe", "0", "-i", list,
+    "-c", "copy", "-fflags", "+genpts",
+    join(OUT, "long1080.mp4"),
+  ]);
+  await Promise.all([rm(seg, { force: true }), rm(list, { force: true })]);
+
   // Band-limited to roughly a voice, because the cassette case (T-277) is an
   // interview and an mp3 of a sine wave is not one.
   console.log("tone.mp3 — sixty seconds of speech-band noise, 192 kbps stereo");
@@ -79,7 +104,7 @@ async function main() {
     join(OUT, "tone.mp3"),
   ]);
 
-  console.log("done — public/spike/pan{360,720,1080}.mp4 and tone.mp3");
+  console.log("done — public/spike/pan{360,720,1080}.mp4, long1080.mp4 and tone.mp3");
 }
 
 main().catch((e) => {
