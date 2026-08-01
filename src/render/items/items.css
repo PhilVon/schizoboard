@@ -1724,7 +1724,26 @@ textarea.item-field::-webkit-scrollbar {
    * The fallback is `folderBulk`'s own not-knowing value and has to stay in step
    * with it: this element is drawn before the asset record arrives.
    */
-  top: calc(4.5% - var(--bulk, 0.48) * 4.5%);
+  /*
+   * And **whether the paper is in it at all** (T-271), which rides on the same
+   * declaration because it is the same edge. `--head` is the T-312 arithmetic
+   * above, unchanged; `--arrived` slides the head from there down to the foot,
+   * where the front panel covers it and the folder is empty.
+   *
+   * At `--arrived: 1` — which is the fallback, and so what every folder whose
+   * document is here draws — this is `13% - 13% + var(--head)`, which is
+   * `var(--head)`. Not approximately: exactly, and `folder-head-css.test.ts`
+   * asserts it by evaluating the declaration at 1 against the head on its own.
+   * A redraw that moves a folder nobody was asking about is the failure this
+   * shape is chosen to make impossible.
+   *
+   * The direction is the point too. An arriving folder fills *upward*, out of
+   * the fold and into the board's own silhouette, which is the signal T-312
+   * established for the page count — so a document landing and a document being
+   * long look the same way round, and one of them stops moving.
+   */
+  --head: calc(4.5% - var(--bulk, 0.48) * 4.5%);
+  top: calc(13% - (13% - var(--head)) * var(--arrived, 1));
   bottom: 87%;
   /*
    * A sheet's corners, softened - not a sweep. The sweep belonged to the
@@ -2178,6 +2197,22 @@ textarea.item-field::-webkit-scrollbar {
   aspect-ratio: 1;
   height: 86%;
   border-radius: 50%;
+  /*
+   * **How far out the tape is wound**, and the whole of what a tape with no
+   * recording in it looks like (T-271). `--arrived` is `0` when the bytes are
+   * not here, the transfer's own fraction while they come, and *absent* once
+   * they have — so the fallback below is the resting pack and this declaration
+   * evaluates to a plain `100%` on every object whose file is present. That is
+   * deliberate and it is tested: nothing about a tape that is here may change
+   * because this task happened.
+   *
+   * The three bands below hold their proportions as it winds, and they are
+   * written as the spans they are — 19 and 37 out of 47 — rather than as
+   * decimals, so `--arrived: 1` gives back 72% and 90% *exactly* rather than
+   * 71.988% and 89.996%. A resting pose that is nearly where it was is the
+   * failure this whole section is arranged to avoid.
+   */
+  --pack: calc(53% + 47% * var(--arrived, 1));
   background:
     radial-gradient(
       circle at 50% 50%,
@@ -2188,9 +2223,15 @@ textarea.item-field::-webkit-scrollbar {
       /* Most of the disc is the tape wound on it, which is why the pale part
          stops at half the radius. The first version ran the hub out to 60% and
          the two reels read as a pair of eyes looking out of the shell. */
-      #2b241d 53% 72%,
-      #1d1811 72% 90%,
-      #120e0a 90% 100%
+      #2b241d 53% calc(53% + (var(--pack) - 53%) * 19 / 47),
+      #1d1811 calc(53% + (var(--pack) - 53%) * 19 / 47) calc(53% + (var(--pack) - 53%) * 37 / 47),
+      #120e0a calc(53% + (var(--pack) - 53%) * 37 / 47) var(--pack),
+      /* Past the pack is the inside of the shell, which is the window's own
+         black rather than transparency: the teeth are a conic *under* this
+         gradient and are masked by it being opaque, so a hole here would put a
+         ring of spool teeth out where the tape should be. At rest this band is
+         100% to 100% and draws nothing. */
+      #0a0908 var(--pack) 100%
     ),
     repeating-conic-gradient(from 22deg, #b9bfc0 0 26deg, #838b8f 26deg 45deg);
 }
@@ -2204,6 +2245,14 @@ textarea.item-field::-webkit-scrollbar {
   height: 34%;
   margin: 0 -4%;
   background: linear-gradient(to bottom, #1d1409 0%, #3b2a19 40%, #2b1d11 72%, #140d07 100%);
+  /*
+   * There is no span of tape between two bare spools (T-271). Unlike the pack,
+   * which grows, this one simply is or is not — a threaded cassette has the same
+   * width of ribbon across it at either end of the reel — so it fades in with
+   * the first chunk rather than widening. Absent once the file is here, which
+   * resolves to the `1` this element has always drawn at.
+   */
+  opacity: var(--arrived, 1);
 }
 
 /*
@@ -2457,6 +2506,134 @@ textarea.item-field::-webkit-scrollbar {
 
 .item-case[data-kind="cassette"] .item-field.case-caption {
   grid-row: 4;
+}
+
+/* --- an object with no file in it. T-271, DESIGN 7.5 ---------------------- */
+
+/*
+ * The three objects' answer to undeveloped film.
+ *
+ * A photograph with no bytes has nothing to show at all, so its whole window
+ * becomes emulsion. None of these three is like that — the shell, the label, the
+ * case number and the runtime are drawn from the *document* and are legible on a
+ * machine that will never hold a byte of the file (AC-668). So the missing thing
+ * is the only thing that is genuinely missing: **the recording**. Bare spools,
+ * and an empty folder.
+ *
+ * Which makes the transfer draw itself, and in the object's own terms. There is
+ * no bar and no percentage anywhere below: the tape winds back on and the paper
+ * rises in the folder, so a four hundred megabyte interview arriving is a thing
+ * filling up. That is T-268's argument about the counter, reached from the other
+ * end — position is a property of the object, and so is how much of it is here.
+ *
+ * ## One variable, and it is absent at rest
+ *
+ * `--arrived` is `0` here, the transfer's own fraction inline while it runs
+ * (`CaseView.paintContents`), and **not set at all** once the file is present —
+ * so every rule that reads it falls back to `1` and evaluates to the declaration
+ * that was there before this section existed. An object whose file is here is
+ * drawn identically to how it was drawn before T-271, and that is asserted
+ * rather than assumed: `folder-head-css.test.ts` and `case-contents-css.test.ts`
+ * both evaluate the parameterised declarations at 1 against the originals.
+ *
+ * ## Why `is-torn` reaches further down than `is-waiting` does
+ *
+ * The pack, the tape web and the folder's paper are all detail the LOD tier
+ * switches off below 35% (see the block after this one), so a transfer in flight
+ * is invisible on a fitted board — which is right, and is the same bargain every
+ * other piece of furniture on these objects takes.
+ *
+ * A file that **is not coming** is not detail. It is a fact about the board, and
+ * it is the one a person is scanning the whole wall for; a torn photograph reads
+ * at 20% and a tape whose ribbon is out has to as well. So that one is drawn on
+ * `.case-body::after`, which no tier hides.
+ */
+
+.item-case.is-waiting {
+  --arrived: 0;
+}
+
+/*
+ * What has come out of the object, when nobody on this board has the file.
+ *
+ * > a tape with the ribbon pulled out and spooled loose on the cork, a folder
+ * > that opens on nothing but a compliments slip — I-17, the idea this task is
+ *
+ * Deliberately outside the shell on the two plastic ones. Every other drawing on
+ * these objects stays inside the item's box because the box is what the pins,
+ * the ink and the hit test agree about — but this is the one state where the
+ * object has failed, and a mess that stopped politely at the edge would not be
+ * one. Nothing here is hit-tested or measured; it is paint over the cork, and
+ * `.item` has never clipped (the tape strips have always overhung the corners).
+ */
+.item-case.is-torn .case-body::after {
+  content: "";
+  position: absolute;
+  pointer-events: none;
+}
+
+/*
+ * Loose tape: three loops of ribbon, falling out of the bottom right of the
+ * shell and lying on the cork.
+ *
+ * Each loop is one ring gradient rather than a bordered element, so the three
+ * overlap and interleave the way spilled tape does instead of stacking as three
+ * flat discs. The ring is thin — a fourteenth of its own ellipse — because
+ * quarter-inch tape at this scale is about two board units, and a loop drawn any
+ * heavier reads as a rubber band.
+ *
+ * Two browns, not one: `#3b2a19` where a loop turns its face to the light and
+ * `#1d1409` where it turns away, which is the same two colours `.case-tape`
+ * already carries across its own width.
+ */
+.item-case[data-kind="vhs"] .case-body::after,
+.item-case[data-kind="cassette"] .case-body::after {
+  left: 18%;
+  right: -20%;
+  top: 66%;
+  bottom: -46%;
+  background:
+    radial-gradient(
+      ellipse 30% 34% at 26% 30%,
+      rgba(0, 0, 0, 0) 0 86%,
+      #3b2a19 86% 93%,
+      rgba(0, 0, 0, 0) 93%
+    ),
+    radial-gradient(
+      ellipse 26% 30% at 58% 58%,
+      rgba(0, 0, 0, 0) 0 86%,
+      #1d1409 86% 93%,
+      rgba(0, 0, 0, 0) 93%
+    ),
+    radial-gradient(
+      ellipse 34% 22% at 44% 82%,
+      rgba(0, 0, 0, 0) 0 88%,
+      #2b1d11 88% 94%,
+      rgba(0, 0, 0, 0) 94%
+    );
+}
+
+/*
+ * A folder that opens on nothing: one slip of paper where a document should be.
+ *
+ * It is whiter than the stack it replaces and much shorter, and both of those
+ * are the reading. `.folder-sheets` is already collapsed behind the front panel
+ * by `--arrived: 0`, so what is left at the head of the object is kraft — and
+ * against kraft a single pale band, two thirds of the width and a fifth of the
+ * depth a full folder shows, is a folder somebody has emptied and left a note
+ * in. The label above it still says how many pages it had, which is the point.
+ *
+ * At the left, and short of the right-hand edge, because that is where the
+ * spilling paper sits on a full one (`--spill`) and a slip that spanned the
+ * object would read as a thin document rather than as a different object.
+ */
+.item-case[data-kind="folder"] .case-body::after {
+  left: 6.5%;
+  width: 58%;
+  top: 8.6%;
+  bottom: 87%;
+  border-radius: 2.5% 2% 2% 2% / 22% 20% 12% 12%;
+  background: linear-gradient(to bottom, #f7f4ec 0%, #efeadd 46%, #ded7c6 100%);
 }
 
 /* --- LOD: the flat card, DESIGN 6.6 --------------------------------------- */

@@ -1654,6 +1654,11 @@ class CaseView implements View {
   private boundFacts = "";
   private boundWear = -1;
   private boundPlain = false;
+  /** What `paintContents` last drew. `null` is "nothing yet", not a phase. */
+  private boundPhase: AssetPhase | null = null;
+  /** Its `--arrived`, in whole percent, so a fraction that has not moved a
+   *  hundredth of the way is not a repaint. */
+  private boundArrived = -1;
   /** The width the per-item type sizes were written for. */
   private sizedFor = -1;
   private field: HTMLTextAreaElement | null = null;
@@ -1754,8 +1759,8 @@ class CaseView implements View {
   bind(
     cold: ItemCold,
     facts: AssetFacts,
-    _assetUrl: AssetResolver,
-    _screenPx: number,
+    assetUrl: AssetResolver,
+    screenPx: number,
     wear: number,
     plain: boolean,
   ): void {
@@ -1764,14 +1769,40 @@ class CaseView implements View {
       this.boundWear = worn;
       this.paintAge(worn / 100);
     }
+    // Ahead of the guard, and it is the one call in this method that has to
+    // happen whether or not there is anything to draw (T-271). Resolving an
+    // asset is what tells the exchange somebody is *looking* at it — `assetUrl`
+    // raises the want to `VISIBLE` and marks the hash requesting — and until
+    // this task no case object ever asked. `reconcileAssets` swept them up at
+    // idle priority on boot and on every reconnect, so the bytes did arrive; the
+    // tape you were sitting in front of simply queued behind every photograph on
+    // the board rather than ahead of them.
+    //
+    // The URL itself is thrown away, and that is not waste: what this reads is
+    // the *phase*, and a folder's face is CSS all the way down. There is no
+    // `<img>` here to point at anything, which is also why there is no decode
+    // gap and no `arrive()` — see `paintContents`.
+    const asset = cold.assetId ? assetUrl(cold.assetId, screenPx) : NO_ASSET;
+    const arrived = Math.round(asset.fraction * 100);
+    const sameContents = asset.phase === this.boundPhase && arrived === this.boundArrived;
     // The asset record is the fourth input and it is the one that is *not* the
     // cold item: a page count arrives when a peer writes the record, and the
     // title arrives later still and from this machine's own disk (Q-211), and
     // neither of those is a write to the item. Guarding on the cold identity
     // alone would leave a folder saying nothing for the rest of the session.
     const digest = `${facts.kind} ${facts.name} ${facts.title} ${facts.duration} ${facts.pages}`;
-    if (this.boundCold === cold && digest === this.boundFacts && plain === this.boundPlain) {
+    if (
+      this.boundCold === cold &&
+      digest === this.boundFacts &&
+      plain === this.boundPlain &&
+      sameContents
+    ) {
       return;
+    }
+    if (!sameContents) {
+      this.boundPhase = asset.phase;
+      this.boundArrived = arrived;
+      this.paintContents(asset.phase, arrived);
     }
     this.boundCold = cold;
     this.boundFacts = digest;
@@ -1839,6 +1870,52 @@ class CaseView implements View {
         ? fitLabel(this.number.textContent ?? "", w * LABEL_WIDTH, base)
         : base;
     this.number.style.fontSize = `${Math.max(5, size).toFixed(1)}px`;
+  }
+
+  /**
+   * What is *in* the object, which is the only part of one of these three that
+   * a missing file can take away (T-271, DESIGN section 7.5).
+   *
+   * A photograph with no bytes has nothing to show at all, so the whole window
+   * becomes film. None of these three is like that: the shell, the label, the
+   * case number, the runtime and the page count are all drawn from the document
+   * and are legible on a machine that will never hold a byte of the file, which
+   * is AC-668 and is not up for renegotiation here. So what says the file is not
+   * here is the one thing that genuinely is not: **the recording**. A tape with
+   * no ribbon on its spools, and a folder with nothing in it.
+   *
+   * That gives the transfer a readout for free, and the right one. `--arrived`
+   * winds the tape back on and raises the paper in the folder as the chunks
+   * land, so a four hundred megabyte interview arriving is an object filling up
+   * rather than a bar drawn over it — which is the same argument T-268 makes
+   * about the counter, arrived at from the other end.
+   *
+   * Three departures from `PolaroidView.paintFilm`, each one a real difference
+   * rather than a divergence:
+   *
+   *  - **No decode gap.** A polaroid keeps its film on past `ready` until an
+   *    `<img>` fires `load`, because there is a decode between bytes on the disk
+   *    and pixels in the window. These objects are CSS, so `ready` is the whole
+   *    of it and `is-waiting` comes off here.
+   *  - **`--arrived` is unitless where `--develop` is a percentage.** A folder's
+   *    head is a `calc()` that multiplies a length by it (`items.css`), and CSS
+   *    cannot multiply by a percentage. The stylesheet spells `100%` where it
+   *    wants one.
+   *  - **It is written only while a transfer is running**, so an object at rest
+   *    has no `--arrived` at all and every rule falls back to `1`. That is what
+   *    makes "a file that is here is drawn exactly as it was before this task"
+   *    a thing a test can assert rather than a thing to hope for.
+   */
+  private paintContents(phase: AssetPhase, arrived: number): void {
+    this.el.classList.remove(...FILM_CLASSES);
+    const film = filmClass(phase);
+    if (film) this.el.classList.add(film);
+    this.el.classList.toggle("is-waiting", phase !== "ready");
+    if (phase === "transferring") {
+      this.el.style.setProperty("--arrived", (arrived / 100).toFixed(2));
+    } else {
+      this.el.style.removeProperty("--arrived");
+    }
   }
 
   /**
@@ -1946,12 +2023,26 @@ class CaseView implements View {
     // how a pooled node comes back wearing the last object's case number.
     this.boundFacts = "";
     this.boundWear = -1;
+    // The two that are not belt and braces. `paintContents` is guarded on the
+    // phase, and the item this node is handed to next is very often in the
+    // *same* one — a board joining cold is a wall of objects all equally not
+    // here — so a node released while waiting and rebound while waiting would
+    // never be repainted, and would keep a stale `--arrived` from an object it
+    // is no longer. Exactly `PolaroidView.release`'s reason for forgetting the
+    // phase, and the same trap.
+    this.boundPhase = null;
+    this.boundArrived = -1;
     this.written.fill(-9);
     this.number.textContent = "";
     this.meta.textContent = "";
-    this.el.classList.remove("is-lifted", IS_AGED);
+    this.el.classList.remove("is-lifted", IS_AGED, "is-waiting", ...FILM_CLASSES);
     this.el.style.removeProperty("--age");
-    this.el.style.removeProperty("--tab");
+    // `--spill` and `--bulk` are the folder's, `--arrived` is every kind's, and
+    // all three are written by `bind`. What was here instead was `--tab`, which
+    // nothing has written since the tab became a gummed label — so the reset had
+    // stopped naming the same set of properties the bind does, which is the drift
+    // the comment above is about, caught in the act.
+    for (const prop of ["--spill", "--bulk", "--arrived"]) this.el.style.removeProperty(prop);
     this.ages.style.removeProperty("filter");
     for (const prop of [...CURL_PROPS, ...FACE_PROPS]) this.el.style.removeProperty(prop);
     this.tape.release();

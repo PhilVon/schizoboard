@@ -49,6 +49,20 @@ import type { AssetPhase } from "@/state/assets";
  * yet" and "I have asked and am waiting" are the same blank sheet of film to
  * anyone looking at the board, and separating them would be drawing the network
  * rather than drawing the photograph.
+ *
+ * ## Three classes, four faces
+ *
+ * `CaseView` wears these too (T-271), and it is the same three names rather than
+ * a parallel set. The *state* is one state — five phases of one hash, out of
+ * `state/assets.ts` — and what differs between a photograph and a cassette is
+ * only what the missing thing looks like, which is a stylesheet's question. A
+ * second vocabulary would be two spellings of one fact, and the release paths
+ * would have to strip both.
+ *
+ * What is not shared is the drawing or the variable that drives it: a polaroid's
+ * `--develop` is a percentage up the film and a case object's `--arrived` is a
+ * unitless fraction of its own contents. `paintContents` says why they cannot be
+ * one property.
  */
 export function filmClass(phase: AssetPhase): string {
   if (phase === "transferring") return "is-developing";
