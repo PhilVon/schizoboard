@@ -188,9 +188,9 @@ All thirty, as `generate_handler!` registers them.
 // commands (all async)
 app_info()                 → { name, version, os, arch }
 
-asset_ingest_bytes(bytes)  → { sha256, w, h, mime, size }
-asset_ingest_path(path)    → same
-asset_ingest_url(url)      → same
+asset_ingest_bytes(bytes)  → { sha256, w, h, mime, size, duration, pages }
+asset_ingest_path(path)    → same   // these three, alone on this list, reject
+asset_ingest_url(url)      → same   // with { holdsNowhere, say } (T-309)
 asset_has(hashes[])        → bool[]
 asset_export(sha256, name?) → saved  // no dest: a native save dialog supplies it
 asset_gc(keepSet[])        → { freedBytes }
@@ -231,6 +231,16 @@ asset_abort(sha256)
 // events (Rust → frontend). Four, and these four are all of them:
 asset:ready · files:dropped · deeplink:open · sync:peer-found
 ```
+
+**Every command but three rejects with a string, and those three reject with a
+record.** An ingest is the only failure on this boundary that is a *sentence
+somebody reads* rather than a line in a log — a picture refused for its pixels, a
+file too big to hand over in one piece — and the sentence has to be written on
+the side holding the numbers. `holdsNowhere` is the one fact the frontend cannot
+work out for itself and must not guess: "nothing here can hold it" is a claim
+about the board, true of a four-hundred-megapixel scan and false of a file that
+is one drag away from working. The alternative was matching on the prose of an
+error message, which is not a contract (T-309).
 
 **Three events in earlier drafts of this list have no producer and never had one** — `asset:progress`, `sync:peer-joined` and `sync:peer-left`. They are declared in `platform/types.ts` and emitted by nobody, which is a different and worse thing than being unbuilt: a listener for one of them is code that compiles, runs and waits forever. `doc:persist-error` was a fourth until T-220, which found the missing hop was not the event at all — `doc_append_update` awaits the disk and a failure already rejects to a caller, so the surface was wired the wrong way round rather than unwired. The declarations are kept for now because removing an entry from a public-looking interface is its own change; what has been removed is the impression that anything emits them.
 

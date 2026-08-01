@@ -536,6 +536,89 @@ impl std::fmt::Display for Error {
     }
 }
 
+impl Error {
+    /// Whether the board will refuse this file **however it arrives**.
+    ///
+    /// The one thing the frontend cannot work out for itself and must not
+    /// guess, because *nothing here can hold it* is a claim about the board:
+    /// true of a four-hundred-megapixel scan, and a lie about a file that is
+    /// merely too big to hand across the IPC boundary — that one has another
+    /// road and the sentence has to offer it.
+    fn holds_nowhere(&self) -> bool {
+        matches!(
+            self,
+            Error::TooLarge(_)
+                | Error::PictureTooLarge { .. }
+                | Error::SizeMismatch
+                | Error::Undecodable(_)
+        )
+    }
+
+    /// The sentence for a person, which is deliberately **not** the same string
+    /// as [`Display`]'s.
+    ///
+    /// That one goes in a log next to a hash and has to stand alone. This one
+    /// goes on a corkboard after a file's name, so it is a verb phrase with the
+    /// file as its subject — the same register the frontend's own refusals are
+    /// already written in ("is not a picture, a film, a recording or a
+    /// document"). Both live here because here is where the numbers are.
+    fn sentence(&self) -> String {
+        match self {
+            Error::PictureTooLarge { w, h } => format!(
+                "is {w} × {h}, which is more picture than this board can open — the pixels rather than the size of the file"
+            ),
+            Error::TooLargeToPaste(_) => {
+                "is too big to hand over in one piece — drag it in from a window instead".into()
+            }
+            Error::TooLarge(_) => "is bigger than this board will take".into(),
+            Error::SizeMismatch => "is not the size it said it was".into(),
+            Error::Undecodable(_) => "says it is a picture and will not open as one".into(),
+            // A path that went stale, a fetch that failed, a store that never
+            // opened. The person is told the attempt failed and nothing about
+            // the board, because nothing about the board has been established.
+            _ => "could not be read".into(),
+        }
+    }
+}
+
+/// An ingest that did not happen, in a shape the webview can act on.
+///
+/// The three `asset_ingest_*` commands reject with this rather than with a
+/// string, and deliberately alone in that: this is the only boundary where the
+/// failure is a sentence somebody reads rather than a line in a log, so it is
+/// the only one that has to carry it as data. Matching on the prose of a message
+/// would have been the alternative, and prose is not a contract (T-309).
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Refusal {
+    /// Whether to say that nothing here can hold it. See [`Error::holds_nowhere`].
+    pub holds_nowhere: bool,
+    /// A verb phrase with the file as its subject.
+    pub say: String,
+}
+
+impl Refusal {
+    /// Something that went wrong on this side of the store — the blocking job
+    /// panicked, the store never opened, the body arrived in the wrong shape.
+    /// Never a claim about the board: nothing about the file was established.
+    pub fn failed(why: String) -> Self {
+        eprintln!("assets: an ingest failed before it began: {why}");
+        Self {
+            holds_nowhere: false,
+            say: "could not be read".into(),
+        }
+    }
+}
+
+impl From<Error> for Refusal {
+    fn from(error: Error) -> Self {
+        Self {
+            holds_nowhere: error.holds_nowhere(),
+            say: error.sentence(),
+        }
+    }
+}
+
 impl std::error::Error for Error {}
 
 impl From<io::Error> for Error {
@@ -3369,6 +3452,46 @@ mod tests {
         let refused = Error::TooLargeToPaste(9).to_string();
         assert!(refused.contains("drag the file in"), "{refused}");
         assert!(!Error::TooLarge(9).to_string().contains("drag the file in"));
+    }
+
+    #[test]
+    fn a_refusal_crosses_the_boundary_as_two_facts_and_not_as_prose() {
+        // T-309. What the frontend could not work out for itself: whether the
+        // board will refuse this file *however it arrives*. Everything else it
+        // can do — it has the file's name and it writes the frame — but this one
+        // is a claim about the board, and the only alternative to carrying it was
+        // matching on the wording of a message.
+        let nowhere = Refusal::from(Error::PictureTooLarge {
+            w: 16_000,
+            h: 16_000,
+        });
+        assert!(nowhere.holds_nowhere);
+        // A verb phrase with the file as its subject, so it reads after a name.
+        assert!(nowhere.say.starts_with("is 16000 × 16000"), "{}", nowhere.say);
+        assert!(nowhere.say.contains("pixels"), "{}", nowhere.say);
+
+        // And the one that is *not* a claim about the board. A four-hundred
+        // megabyte interview refused by the paste road is one drag from working,
+        // so being told nothing here can hold it would be false in the direction
+        // that stops somebody trying (Q-229 put it on the other road on purpose).
+        let elsewhere = Refusal::from(Error::TooLargeToPaste(9));
+        assert!(!elsewhere.holds_nowhere);
+        assert!(elsewhere.say.contains("drag it in"), "{}", elsewhere.say);
+
+        // A read that broke establishes nothing about the board and says nothing
+        // about it. This is the arm a stale clipboard entry takes.
+        let broke = Refusal::from(Error::Io(io::Error::other("gone")));
+        assert!(!broke.holds_nowhere);
+        assert_eq!(broke.say, "could not be read");
+
+        // The sentence for a person is not `Display`'s, on purpose: that one
+        // goes in a log beside a hash and has to stand up alone.
+        let picture = Error::PictureTooLarge {
+            w: 16_000,
+            h: 16_000,
+        };
+        assert_ne!(picture.sentence(), picture.to_string());
+        assert!(picture.to_string().starts_with("16000 × 16000"));
     }
 
     #[test]
