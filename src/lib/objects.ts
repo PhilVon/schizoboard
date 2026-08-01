@@ -79,6 +79,26 @@ export function carriesItsOwnName(kind: AssetKind): boolean {
   return kind === "document" || kind === "video" || kind === "audio";
 }
 
+/**
+ * Whether this kind has something inside it to be opened — read, watched or
+ * heard (T-274, Q-257).
+ *
+ * The same three as {@link carriesItsOwnName}, today, and written out again
+ * rather than aliased because **they are two facts that happen to agree**. One
+ * is about a container having a name in it; this one is about a container
+ * having *content* in it. A photograph could earn an open — D-46 refuses it a
+ * name from its EXIF and says nothing at all about a lightbox — and the day one
+ * of the two moves, an alias would move the other with it silently.
+ *
+ * `unknown` is not on the list and cannot be: this build does not know what the
+ * file is, so it has nothing to open it *as*. An object that offers to open and
+ * then cannot is the failure D-46 section 6 names about embedded players — "an
+ * object that lies about being playable is worse than not supporting the site".
+ */
+export function canBeOpened(kind: AssetKind): boolean {
+  return kind === "document" || kind === "video" || kind === "audio";
+}
+
 // --- how big each one is ----------------------------------------------------
 
 /**

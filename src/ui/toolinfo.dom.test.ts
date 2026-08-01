@@ -89,6 +89,7 @@ describe("the tool info bar", () => {
     expect(toolRows().map((r) => r.querySelector(".toolinfo-keys")?.textContent)).toEqual([
       "R+drag",
       "double-click a pin",
+      "Enter",
       "wheel",
       "1-9",
     ]);
@@ -190,6 +191,7 @@ describe("the tool info bar", () => {
       expect(toolRows().map((r) => r.querySelector(".toolinfo-keys")?.textContent)).toEqual([
         "R+drag",
         "double-click a pin",
+        "Enter",
         "wheel",
         "1-9",
       ]);

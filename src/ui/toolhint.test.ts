@@ -91,11 +91,12 @@ describe("rows", () => {
 describe("the resting split", () => {
   it("rests on the rows no key could ever reveal", () => {
     expect(restingRows(TOY).map((r) => r.keys)).toEqual(["click"]);
-    // Select's four: none of them is behind a modifier, so none of them has a
+    // Select's five: none of them is behind a modifier, so none of them has a
     // key to bring it back.
     expect(restingRows(SELECT).map((r) => r.keys)).toEqual([
       "R+drag",
       "double-click a pin",
+      "Enter",
       "wheel",
       "1-9",
     ]);
@@ -233,10 +234,10 @@ describe("the tool line", () => {
   });
 
   /** The real one, not the toy — the eight tools' copy reaching the bar. */
-  it("reads select's own nine rows before the ambient three", () => {
+  it("reads select's own ten rows before the ambient three", () => {
     const line = toolLine(SELECT);
     expect(line.lead).toBe(`Select (V) — ${SELECT.verb}`);
-    expect(line.rows.slice(0, 9).map((r) => r.keys)).toEqual(SELECT.rows.map((r) => r.keys));
-    expect(line.rows.slice(9)).toEqual(AMBIENT);
+    expect(line.rows.slice(0, 10).map((r) => r.keys)).toEqual(SELECT.rows.map((r) => r.keys));
+    expect(line.rows.slice(10)).toEqual(AMBIENT);
   });
 });

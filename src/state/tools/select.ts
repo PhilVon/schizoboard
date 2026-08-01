@@ -316,6 +316,10 @@ export class SelectTool implements Tool {
       { keys: "R+drag", does: "rotate without the handle" },
       { keys: "Ctrl+drag a pin", does: "keep it in its own item", holds: ["Control"] },
       { keys: "double-click a pin", does: "follow the whole thread" },
+      // The gesture nothing else on the board suggests, which is this readout's
+      // whole reason for existing: a case file offers *Open* on its menu and
+      // there is no other sign that the key exists.
+      { keys: "Enter", does: "open a case file, a tape or a cassette" },
       { keys: "wheel", does: "sag one gap, selected string" },
       { keys: "Alt+wheel", does: "sag every gap at once", holds: ["Alt"] },
       { keys: "1-9", does: "slack presets, taut to slack" },
@@ -1494,6 +1498,34 @@ export class SelectTool implements Tool {
         // `state/erase.ts`, because `Ctrl+X` is the same delete behind a copy
         // (T-227) and two of them would drift.
         for (const id of eraseSelection(ctx, input.shift)) this.animating.delete(id);
+        return;
+      }
+
+      case "Enter":
+      case "NumpadEnter": {
+        /**
+         * > Open is either a different gesture, or a double-click that means
+         * > open on the kinds that have something to open — which is a rule
+         * > nobody can predict. A context menu row plus `Enter` on the
+         * > selection is the honest version. — T-274, answered as Q-257
+         *
+         * `Enter` was spent twice before this and both were modal, which is
+         * what leaves it free here: it ends a string run (`tools/string.ts`,
+         * and that tool owns the input while the run is live), and it steps the
+         * search — inside the field, which `machine.ts` never forwards from
+         * because the target is a text field.
+         *
+         * **Exactly one, or nothing.** Not the first of several and not all of
+         * them: D-46 has one thing playing at a time, and a key that opened an
+         * arbitrary member of a selection of four would be a coin toss the
+         * board could not explain. Modifiers are refused for the same reason —
+         * `Shift`+`Enter` is search's *previous match* and must not quietly
+         * mean something else out here.
+         */
+        if (this.gesturing || input.ctrl || input.alt || input.shift) return;
+        if (ctx.selection.size !== 1) return;
+        const [only] = ctx.selection.toArray();
+        if (only !== undefined) ctx.open(only);
         return;
       }
 

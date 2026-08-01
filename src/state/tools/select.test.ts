@@ -61,6 +61,7 @@ let stringSettles: Array<Map<string, WritePose>>;
 let held: Set<string>;
 /** Items the tool asked to put a caret in — `ToolContext.edit` (T-179). */
 let edits: string[];
+let opens: string[];
 let ctx: ToolContext;
 
 /** Insertion order is paint order, as it is in the real layer for equal z. */
@@ -246,6 +247,7 @@ beforeEach(() => {
   stringSettles = [];
   held = new Set<string>();
   edits = [];
+  opens = [];
   ctx = {
     scene,
     dirty,
@@ -256,6 +258,7 @@ beforeEach(() => {
     hitPin,
     hitString,
     edit: (itemId) => edits.push(itemId),
+    open: (itemId) => opens.push(itemId),
     held,
     write: {
       setPoses: (poses, phase) => writes.push({ kind: "poses", phase, poses: new Map(poses) }),
@@ -398,6 +401,57 @@ describe("selecting", () => {
 
     down(400, 400);
     expect(selection.isEmpty).toBe(true);
+  });
+
+  /**
+   * T-274, Q-257. The key half of *open*; the menu half is `ui/boardmenu.ts`,
+   * and they are the same function so that neither can learn a rule the other
+   * does not.
+   */
+  it("opens the selection on Enter, and only when it is exactly one thing", () => {
+    put("folder", 100, 100);
+    put("other", 300, 100);
+
+    selection.replace(["folder"]);
+    key("Enter");
+    expect(opens).toEqual(["folder"]);
+
+    // Not the first of several. One thing plays at a time (D-46), and picking a
+    // member of a selection of two is a coin toss the board cannot explain.
+    opens.length = 0;
+    selection.replace(["folder", "other"]);
+    key("Enter");
+    expect(opens).toEqual([]);
+
+    selection.clear();
+    key("Enter");
+    expect(opens).toEqual([]);
+  });
+
+  it("leaves Enter alone when a modifier is on it", () => {
+    put("folder", 100, 100);
+    selection.replace(["folder"]);
+    // Shift+Enter is search's *previous match*. It must not quietly mean
+    // something else out here, and neither must the other two.
+    key("Enter", { shift: true });
+    key("Enter", { ctrl: true });
+    key("Enter", { alt: true });
+    expect(opens).toEqual([]);
+    // The unmodified one still works, so this is a test about modifiers rather
+    // than about Enter having been switched off.
+    key("Enter");
+    expect(opens).toEqual(["folder"]);
+  });
+
+  it("asks the caller what is openable rather than deciding for itself", () => {
+    // The tool calls `open` for whatever is selected and never inspects it: a
+    // note has no asset and is not openable, and that is `lib/objects.ts`'s
+    // answer to give and `app/main.ts`'s to ask. A tool that filtered here
+    // would be a second opinion about what a folder is.
+    put("a note", 100, 100);
+    selection.replace(["a note"]);
+    key("Enter");
+    expect(opens).toEqual(["a note"]);
   });
 
   it("takes what is on screen for Ctrl+A, not the whole board", () => {

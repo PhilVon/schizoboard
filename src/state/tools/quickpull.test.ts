@@ -105,6 +105,7 @@ beforeEach(() => {
     hitPin,
     hitString: () => null,
     edit: () => undefined,
+    open: () => undefined,
     held: new Set<string>(),
     write: {
       setPoses: () => {},
