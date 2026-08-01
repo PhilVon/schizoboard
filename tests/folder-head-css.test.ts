@@ -200,8 +200,11 @@ describe("what a closed folder shows", () => {
   it("gives the front panel a cut edge rather than a cast shadow", () => {
     expect(front.has("box-shadow")).toBe(false);
     const profile = layers(front.get("background")!)[0]!;
+    // The alphas are expressions since T-313 gave the profile a light to be on
+    // the right side of, so this holds the *shape* — the shine, then the hairline
+    // of board thickness, in that order — rather than two numbers.
     expect(profile, "a shine and a hairline of board thickness, in that order").toMatch(
-      /rgba\(255, 246, 228, [\d.]+\) 0 [\d.]+%,\s*rgba\(96, 70, 40, [\d.]+\)/,
+      /rgba\(255, 246, 228, .+?\) 0 [\d.]+%,\s*rgba\(96, 70, 40, /,
     );
   });
 });

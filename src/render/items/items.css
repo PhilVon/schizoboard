@@ -1554,6 +1554,59 @@ textarea.item-field::-webkit-scrollbar {
   grid-column: 1 / -1;
 }
 
+/*
+ * --- how a case object is lit (T-313) ---------------------------------------
+ *
+ * These three objects are drawn almost entirely in CSS gradients, and a gradient
+ * is declared in its element's frame — so without this, every crease, cut edge
+ * and wash on a folder turns with the folder. Phil turned one upside down and
+ * its creases were lit from below, which is DESIGN 4.1's "one element lit from
+ * the wrong side" and the thing it says breaks a surface faster than anything.
+ *
+ * `dom.ts`'s `writeLight` publishes the board's one light **in this object's own
+ * frame** as `--lx` / `--ly`, and the counter-turn as `--turn`. Both readings
+ * below are taken from those, and they are two different answers because there
+ * are two different kinds of thing to draw:
+ *
+ *   A **wash** is not a feature of the object at all, it is the light falling
+ *   across it, so its angle is counter-turned back into board space and it stays
+ *   put while the object moves under it.
+ *
+ *   A **crease or a cut edge** is a feature: its line has to turn with the
+ *   object, and only its polarity may change. Counter-turning one of those would
+ *   slide the fold across the kraft. So each carries the normal of its own line,
+ *   written literally beside it, and takes its own dot product with the light —
+ *   which is `wear.ts`'s `creaseFace` moved into the stylesheet, and it is
+ *   subject to the same trap `creaseFace` records: CSS measures a gradient
+ *   clockwise from *to top*, so a line at `a` degrees has normal `(sin a, -cos a)`
+ *   and reading it as a maths angle puts every highlight on the wrong flank.
+ *
+ * ## The clamp, and why it is not a sign
+ *
+ * `clamp(0, calc(M * <dot>), 1)` is the strength of the arrangement drawn for an
+ * object lying square, and the same expression with `M` negated is the strength
+ * of the flipped one. Negative alphas clamp to zero rather than invalidating the
+ * declaration (`curl.ts` checked that in this webview), so the two layers are a
+ * shine on whichever flank faces the light and a shade on the other.
+ *
+ * `M` is **the reciprocal of that feature's own dot product at rest**, and it is
+ * written out beside each one rather than shared. That is what makes this change
+ * invisible on a board of squarely-lying folders: at rest every dot reaches its
+ * own `1`, so every crease and every edge keeps *exactly* the alpha it was tuned
+ * at, and the clamp holds it there — none of them can ever be stronger than it is
+ * today, only weaker as it turns toward running along the light. One shared
+ * constant cannot do that, because a crease whose fold runs at 84° is at 66° to
+ * the light where one at 152° is square to it, and dividing them by the same
+ * number dims the first by a ninth on a board nobody has touched.
+ *
+ * It is also a fade rather than a switch: a hard sign would snap the bright
+ * flank of every crease over mid-drag.
+ *
+ * The fallbacks are the light at rest — `0.5` and `0.87`, which is 30° off
+ * vertical — so an object that has not been through `writeLight` yet, or one
+ * being drawn into an export, looks exactly as it did before this existed.
+ */
+
 /* --- the manilla folder --------------------------------------------------- */
 
 /*
@@ -1582,8 +1635,10 @@ textarea.item-field::-webkit-scrollbar {
   inset: 3.5% 0 0 0;
   border-radius: 3px 4px 5px 4px;
   /* The back panel, seen only along the top and down the right where the front
-     does not cover it. Darker than the face, because it is behind it. */
-  background: linear-gradient(168deg, #c3a077 0%, #b08a62 62%, #9d7852 100%);
+     does not cover it. Darker than the face, because it is behind it — and
+     counter-turned, because this ramp is the light on the board and not anything
+     the panel has on it (T-313). */
+  background: linear-gradient(calc(168deg + var(--turn, 0deg)), #c3a077 0%, #b08a62 62%, #9d7852 100%);
 }
 
 /*
@@ -1670,23 +1725,71 @@ textarea.item-field::-webkit-scrollbar {
    * Taking it away is the whole of the fix. What is left is a pile seen at its
    * head, which is what a closed folder shows.
    */
+  /*
+   * The same reading the kraft takes, for this band's own two creases (T-313).
+   * `sin 99 = 0.988`, `-cos 99 = 0.156`, resting at `0.630`; `sin 84 = 0.995`,
+   * `-cos 84 = -0.105`, resting at `0.406` — the shallowest of the four, because
+   * a fold running at 84° lies at 66° to the light where the kraft's 152° one is
+   * square to it. `1.59` and `2.46` are their reciprocals.
+   */
+  --crease-c: calc(0.988 * var(--lx, 0.5) + 0.156 * var(--ly, 0.87));
+  --crease-d: calc(0.995 * var(--lx, 0.5) - 0.105 * var(--ly, 0.87));
+  --head-lit: clamp(0, calc(1.16 * var(--ly, 0.87)), 1);
+  --head-off: clamp(0, calc(-1.16 * var(--ly, 0.87)), 1);
   background:
     /* Two creases, because a sheet that has been in and out of a folder has
-       them and a flat white band reads as a cut-out. */
-    linear-gradient(99deg, rgba(0, 0, 0, 0) 20%, rgba(255, 255, 255, 0.55) 25%, rgba(148, 140, 122, 0.14) 31%, rgba(0, 0, 0, 0) 38%),
-    linear-gradient(84deg, rgba(0, 0, 0, 0) 62%, rgba(255, 255, 255, 0.4) 67%, rgba(148, 140, 122, 0.12) 72%, rgba(0, 0, 0, 0) 78%),
+       them and a flat white band reads as a cut-out. Twice each, so the bright
+       flank is the one facing the light rather than the one at the top of the
+       declaration. */
+    linear-gradient(
+      99deg,
+      rgba(0, 0, 0, 0) 20%,
+      rgba(255, 255, 255, calc(0.55 * clamp(0, calc(1.59 * var(--crease-c)), 1))) 25%,
+      rgba(148, 140, 122, calc(0.14 * clamp(0, calc(1.59 * var(--crease-c)), 1))) 31%,
+      rgba(0, 0, 0, 0) 38%
+    ),
+    linear-gradient(
+      99deg,
+      rgba(0, 0, 0, 0) 20%,
+      rgba(148, 140, 122, calc(0.14 * clamp(0, calc(-1.59 * var(--crease-c)), 1))) 25%,
+      rgba(255, 255, 255, calc(0.55 * clamp(0, calc(-1.59 * var(--crease-c)), 1))) 31%,
+      rgba(0, 0, 0, 0) 38%
+    ),
+    linear-gradient(
+      84deg,
+      rgba(0, 0, 0, 0) 62%,
+      rgba(255, 255, 255, calc(0.4 * clamp(0, calc(2.46 * var(--crease-d)), 1))) 67%,
+      rgba(148, 140, 122, calc(0.12 * clamp(0, calc(2.46 * var(--crease-d)), 1))) 72%,
+      rgba(0, 0, 0, 0) 78%
+    ),
+    linear-gradient(
+      84deg,
+      rgba(0, 0, 0, 0) 62%,
+      rgba(148, 140, 122, calc(0.12 * clamp(0, calc(-2.46 * var(--crease-d)), 1))) 67%,
+      rgba(255, 255, 255, calc(0.4 * clamp(0, calc(-2.46 * var(--crease-d)), 1))) 72%,
+      rgba(0, 0, 0, 0) 78%
+    ),
     /*
      * The head of the pile, as a **cross-section** rather than as a lit face —
      * DESIGN 4.3's rule for tape, which failed here in exactly the way it failed
      * there: drawn as a surface with a shadow under it, it read as a plank. A
      * shine along the edge nearer the light, a hairline of its own thickness
      * under it, and then nothing.
+     *
+     * And drawn twice, because 4.3's last sentence is the whole of T-313: "the
+     * light decides only which way up that profile is drawn."
      */
     linear-gradient(
       to bottom,
-      rgba(255, 252, 243, 0.85) 0 1.2%,
-      rgba(126, 114, 92, 0.22) 1.2% 2.6%,
+      rgba(255, 252, 243, calc(0.85 * var(--head-lit))) 0 1.2%,
+      rgba(126, 114, 92, calc(0.22 * var(--head-lit))) 1.2% 2.6%,
       rgba(0, 0, 0, 0) 2.6% 100%
+    ),
+    linear-gradient(
+      to bottom,
+      rgba(126, 114, 92, calc(0.26 * var(--head-off))) 0 1.4%,
+      rgba(255, 252, 243, calc(0.3 * var(--head-off))) 1.4% 2.8%,
+      rgba(0, 0, 0, 0) 2.8% 100%
     ),
     linear-gradient(to bottom, #e9e4d6 0%, #e3ddcd 34%, #dad3c1 68%, #c6bfab 100%);
   /*
@@ -1817,25 +1920,104 @@ textarea.item-field::-webkit-scrollbar {
    * cross-section, a shine and a hairline of board thickness under it, drawn on
    * this panel where it belongs.
    */
+  /*
+   * The two handling creases, at 101° and 152°, as their own normals dotted with
+   * the light (T-313). `sin 101 = 0.982`, `-cos 101 = 0.191`; `sin 152 = 0.469`,
+   * `-cos 152 = 0.883`. At rest they come out at `0.656` and `1.000` — hence the
+   * `1.53` and `1.01` below, each the reciprocal of its own — and the sign says
+   * the far flank is the dark one, which is why the pair drawn first is the pair
+   * that was already here: light flank before dark, along the gradient.
+   */
+  --crease-a: calc(0.982 * var(--lx, 0.5) + 0.191 * var(--ly, 0.87));
+  --crease-b: calc(0.469 * var(--lx, 0.5) + 0.883 * var(--ly, 0.87));
+  /* And the top edge, whose normal is straight up: `-(0 * lx + -1 * ly)`. */
+  --edge-lit: clamp(0, calc(1.16 * var(--ly, 0.87)), 1);
+  --edge-off: clamp(0, calc(-1.16 * var(--ly, 0.87)), 1);
   background:
+    /*
+     * The cut edge along the top, twice — a shine over a hairline of board
+     * thickness while that edge faces the light, and the profile turned over
+     * when it does not. DESIGN 4.3: "the light decides only which way up that
+     * profile is drawn."
+     */
     linear-gradient(
       to bottom,
-      rgba(255, 246, 228, 0.6) 0 0.45%,
-      rgba(96, 70, 40, 0.3) 0.45% 1%,
-      rgba(0, 0, 0, 0) 1% 90.4%,
-      rgba(96, 70, 40, 0.28) 90.4% 91%,
-      rgba(0, 0, 0, 0) 91% 96.5%,
-      rgba(72, 52, 30, 0.22) 96.5% 100%
+      rgba(255, 246, 228, calc(0.6 * var(--edge-lit))) 0 0.45%,
+      rgba(96, 70, 40, calc(0.3 * var(--edge-lit))) 0.45% 1%,
+      rgba(0, 0, 0, 0) 1% 100%
     ),
-    linear-gradient(101deg, rgba(255, 246, 228, 0) 24%, rgba(255, 246, 228, 0.22) 30%, rgba(120, 92, 56, 0.09) 35%, rgba(0, 0, 0, 0) 42%),
-    linear-gradient(152deg, rgba(255, 246, 228, 0) 62%, rgba(255, 246, 228, 0.16) 68%, rgba(110, 84, 50, 0.08) 73%, rgba(0, 0, 0, 0) 80%),
+    linear-gradient(
+      to bottom,
+      rgba(96, 70, 40, calc(0.34 * var(--edge-off))) 0 0.55%,
+      rgba(255, 246, 228, calc(0.2 * var(--edge-off))) 0.55% 1.1%,
+      rgba(0, 0, 0, 0) 1.1% 100%
+    ),
     /*
+     * The fold, unsigned, and that is DESIGN 4.4's rule rather than an omission:
+     * the fibres along a fold are broken, and broken fibres are darker than the
+     * sized face whichever way they point. The *lip* below it is a face turned
+     * away from the light and is signed like any other, so a folder lying on its
+     * head has a lit lip rather than a shaded one.
+     */
+    linear-gradient(
+      to bottom,
+      rgba(0, 0, 0, 0) 0 90.4%,
+      rgba(96, 70, 40, 0.28) 90.4% 91%,
+      rgba(0, 0, 0, 0) 91% 100%
+    ),
+    linear-gradient(
+      to bottom,
+      rgba(0, 0, 0, 0) 0 96.5%,
+      rgba(72, 52, 30, calc(0.22 * var(--edge-lit))) 96.5% 100%
+    ),
+    linear-gradient(
+      to bottom,
+      rgba(0, 0, 0, 0) 0 96.5%,
+      rgba(255, 246, 228, calc(0.16 * var(--edge-off))) 96.5% 100%
+    ),
+    /* Crease at 101°, and the same crease with its flanks the other way up. */
+    linear-gradient(
+      101deg,
+      rgba(255, 246, 228, 0) 24%,
+      rgba(255, 246, 228, calc(0.22 * clamp(0, calc(1.53 * var(--crease-a)), 1))) 30%,
+      rgba(120, 92, 56, calc(0.09 * clamp(0, calc(1.53 * var(--crease-a)), 1))) 35%,
+      rgba(0, 0, 0, 0) 42%
+    ),
+    linear-gradient(
+      101deg,
+      rgba(120, 92, 56, 0) 24%,
+      rgba(120, 92, 56, calc(0.09 * clamp(0, calc(-1.53 * var(--crease-a)), 1))) 30%,
+      rgba(255, 246, 228, calc(0.22 * clamp(0, calc(-1.53 * var(--crease-a)), 1))) 35%,
+      rgba(0, 0, 0, 0) 42%
+    ),
+    /* And at 152°. */
+    linear-gradient(
+      152deg,
+      rgba(255, 246, 228, 0) 62%,
+      rgba(255, 246, 228, calc(0.16 * clamp(0, calc(1.01 * var(--crease-b)), 1))) 68%,
+      rgba(110, 84, 50, calc(0.08 * clamp(0, calc(1.01 * var(--crease-b)), 1))) 73%,
+      rgba(0, 0, 0, 0) 80%
+    ),
+    linear-gradient(
+      152deg,
+      rgba(110, 84, 50, 0) 62%,
+      rgba(110, 84, 50, calc(0.08 * clamp(0, calc(-1.01 * var(--crease-b)), 1))) 68%,
+      rgba(255, 246, 228, calc(0.16 * clamp(0, calc(-1.01 * var(--crease-b)), 1))) 73%,
+      rgba(0, 0, 0, 0) 80%
+    ),
+    /*
+     * The board itself, **counter-turned**. This is the light falling across the
+     * panel rather than anything the panel has on it — the fold's own darkening
+     * is two layers above and stays where the fold is — so its angle goes back
+     * into board space and the kraft keeps its lit end uphill however the folder
+     * is lying.
+     *
      * Measured rather than eyeballed. The reference's face reads a mean of 204
      * in red with a standard deviation of 6.7 — the creases are *quiet*, and the
      * first version of this looked shouty only because the board under them was
      * 165 and far too dark. Same spread, forty levels lighter.
      */
-    linear-gradient(166deg, #eccea6 0%, #e0bf94 34%, #d5b285 68%, #c49f71 100%);
+    linear-gradient(calc(166deg + var(--turn, 0deg)), #eccea6 0%, #e0bf94 34%, #d5b285 68%, #c49f71 100%);
 }
 
 /* The fibre. One shared tile, offset per folder by the view, so a filing
@@ -1901,7 +2083,10 @@ textarea.item-field::-webkit-scrollbar {
       rgba(255, 255, 255, 0.035) 0 1px,
       rgba(0, 0, 0, 0.05) 1px 3px
     ),
-    linear-gradient(158deg, #453e3a 0%, #2b2724 34%, #1f1c1a 70%, #171413 100%);
+    /* Counter-turned (T-313): the ramp down a polystyrene shell is the light on
+       it, and a cassette stood on its end must not carry its own highlight
+       round with it. The moulding ribs above are the object's and stay put. */
+    linear-gradient(calc(158deg + var(--turn, 0deg)), #453e3a 0%, #2b2724 34%, #1f1c1a 70%, #171413 100%);
 }
 
 /*
