@@ -564,6 +564,12 @@ fn store_of(app: &AppHandle) -> Result<tauri::State<'_, AssetStore>, String> {
 /// The mime hint rides on a header of our own rather than `Content-Type`,
 /// which Tauri uses itself to decide that this payload is raw in the first
 /// place. It is only a hint: `sniff_mime` trusts the magic numbers first.
+///
+/// **This is the road with the low ceiling** (`assets::MAX_PASTE_BYTES`, about
+/// 93 MiB against `asset_ingest_path`'s 448 MiB). Measured at its own ceiling it
+/// peaks at 943.8 MiB, where the path road at *its* ceiling peaks at 774.9 MiB
+/// for nearly five times the file — so anything big is meant to arrive as a
+/// path, and the refusal here says so rather than only reporting a number.
 #[tauri::command]
 async fn asset_ingest_bytes(
     app: AppHandle,
@@ -583,7 +589,7 @@ async fn asset_ingest_bytes(
     let meta = blocking(move || {
         store_of(&handle)
             .map_err(assets::Error::Unavailable)?
-            .ingest_bytes(&bytes, mime.as_deref())
+            .ingest_ipc_bytes(&bytes, mime.as_deref())
     })
     .await?;
 
