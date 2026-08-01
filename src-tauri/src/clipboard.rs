@@ -27,22 +27,37 @@
 //! That was worth measuring before implementing, and the measurement did not
 //! agree: on Windows and WebView2 an Explorer copy of three files reaches the
 //! web `paste` event as three `File`s with their real MIME types and real byte
-//! lengths. There is nothing for a native fallback to add there, so this
-//! reports honestly that it has nothing rather than duplicating a path that
-//! already works — and the frontend keeps the fallback ordering, so the day a
-//! platform *does* need it, the only thing missing is the answer below.
+//! lengths. **That finding still stands** — nothing below contradicts it, and
+//! the web route is not broken on this platform.
 //!
-//! **The measurement was Windows only.** This answers for macOS and Linux too,
-//! where nobody has checked, so if a Finder copy really is invisible to the web
-//! event there, paste does nothing there and says so only to the console. That
-//! is a known hole with a task on it rather than an oversight — but it is a
-//! hole, and writing NSPasteboard code on the strength of a guess that has
-//! already been wrong once would not close it.
+//! What it did not weigh is what the web route *costs*, because it was written
+//! when this meant photographs. A `File` has to be read into the JS heap and
+//! pushed back across the IPC boundary as a raw body, and that boundary was
+//! measured at about **55 MiB/s** (T-266, D-51) — four times slower than the
+//! SHA-256 it feeds. A 12 MB photograph pays 220 ms for it and nobody notices.
+//! A 46.5 MiB film pays 832 ms, and half a gigabyte of interview pays nine
+//! seconds. `asset_ingest_path` crosses nothing: the same work on the same file
+//! is 237 ms against 1069 ms.
 //!
-//! What a native reader would genuinely add on Windows is the `SourceURL:`
-//! header of `CF_HTML`, which the webview strips — it is the only way to
-//! resolve a relative `<img src>` copied out of a page. That is a real gap and
-//! it has its own task.
+//! So the conclusion aged out from under the finding. A dropped file already
+//! took the cheap route and a pasted one could not, and the two were about five
+//! times apart for no reason anybody chose. This reads `CF_HDROP` so they are
+//! not.
+//!
+//! It reports **only paths that are files**. A copied *folder* is a real
+//! `CF_HDROP` entry, and expanding it the way [`expand`] does for a drop would
+//! be a new gesture rather than a cheaper road to an old one — so a folder is
+//! reported as nothing here, falls through to the web route, and behaves
+//! exactly as it did before.
+//!
+//! **Windows only, and deliberately.** macOS and Linux still answer nothing,
+//! because nobody has checked whether a Finder copy reaches the web event there
+//! and writing NSPasteboard code on the strength of a guess that has already
+//! been wrong once would not close that hole.
+//!
+//! The other thing a native reader adds on Windows is the `SourceURL:` header
+//! of `CF_HTML`, which the webview strips — the only way to resolve a relative
+//! `<img src>` copied out of a page. That is [`clipboard_source_url`], below.
 
 use std::fs;
 use std::path::PathBuf;
@@ -56,16 +71,118 @@ pub struct ClipboardManifest {
 }
 
 /// What the shell can see on the clipboard that the webview cannot.
+///
+/// "Cannot" is doing less work than it looks: on Windows the webview sees a
+/// file copy perfectly well, and what it cannot see is the *path*. See the
+/// module comment for why that is worth a round trip.
 #[tauri::command]
 pub async fn clipboard_read_manifest() -> ClipboardManifest {
-    ClipboardManifest { kinds: Vec::new() }
+    let kinds = if clipboard_files().is_empty() {
+        Vec::new()
+    } else {
+        vec!["files".to_string()]
+    };
+    ClipboardManifest { kinds }
 }
 
-/// Nothing yet — see the module comment. Present rather than absent so the
-/// frontend's fallback is ordinary control flow instead of a caught exception.
+/// The paths behind a file copy, or `None`.
+///
+/// `None` rather than an empty list for everything else, including a `kind`
+/// this does not answer for: the frontend's fallback is then ordinary control
+/// flow rather than a caught exception, which is what it was when this was a
+/// stub and is what the four-case ladder in `paste.ts` is written against.
 #[tauri::command]
-pub async fn clipboard_read_item(_kind: String) -> Option<serde_json::Value> {
-    None
+pub async fn clipboard_read_item(kind: String) -> Option<serde_json::Value> {
+    if kind != "files" {
+        return None;
+    }
+    let paths = clipboard_files();
+    if paths.is_empty() {
+        return None;
+    }
+    Some(serde_json::json!({ "kind": "files", "paths": paths }))
+}
+
+/// Files named by a `CF_HDROP` on the clipboard. Empty on every other platform,
+/// and empty whenever the clipboard is carrying anything else.
+#[cfg(not(windows))]
+fn clipboard_files() -> Vec<String> {
+    Vec::new()
+}
+
+#[cfg(windows)]
+fn clipboard_files() -> Vec<String> {
+    use std::os::windows::ffi::OsStringExt;
+
+    use windows_sys::Win32::System::DataExchange::{
+        CloseClipboard, GetClipboardData, IsClipboardFormatAvailable, OpenClipboard,
+    };
+    use windows_sys::Win32::UI::Shell::DragQueryFileW;
+
+    /// `CF_HDROP`. Spelled out rather than imported: the constant lives behind
+    /// the `Win32_System_Ole` feature, which is a whole module to pull in for a
+    /// number that has meant this since Windows 3.1.
+    const CF_HDROP: u32 = 15;
+    /// Longer than `MAX_PATH`, because a path from the shell may be an extended
+    /// one. `DragQueryFileW` truncates rather than failing if this is short, so
+    /// being generous here is the difference between a wrong path and a right
+    /// one.
+    const MAX_CHARS: usize = 32 * 1024;
+
+    /// Closes the clipboard however this function leaves — the same reason
+    /// `read_source_url` has one. It is a single global lock held across the
+    /// whole session, so an early return that skipped `CloseClipboard` would
+    /// stop every other application on the machine copying or pasting until
+    /// this one exited.
+    struct Guard;
+    impl Drop for Guard {
+        fn drop(&mut self) {
+            // SAFETY: only constructed after OpenClipboard returned success.
+            unsafe { CloseClipboard() };
+        }
+    }
+
+    // SAFETY: the clipboard is opened before it is read and closed by `Guard` on
+    // every path. The handle from `GetClipboardData` is owned by the clipboard
+    // and stays valid while it is open, which is the rest of this scope.
+    // `DragQueryFileW` is asked for the count with `0xFFFF_FFFF` first and then
+    // for each name into a buffer whose length it is told, so it cannot write
+    // past the end.
+    unsafe {
+        if IsClipboardFormatAvailable(CF_HDROP) == 0 {
+            return Vec::new();
+        }
+        // A null owner means "this task". A failure is ordinary rather than
+        // exceptional: the clipboard is routinely held for a few milliseconds
+        // by whoever last wrote it.
+        if OpenClipboard(std::ptr::null_mut()) == 0 {
+            return Vec::new();
+        }
+        let _guard = Guard;
+
+        let handle = GetClipboardData(CF_HDROP);
+        if handle.is_null() {
+            return Vec::new();
+        }
+        let count = DragQueryFileW(handle, 0xFFFF_FFFF, std::ptr::null_mut(), 0);
+        let mut out = Vec::new();
+        let mut buf = vec![0u16; MAX_CHARS];
+        for index in 0..count {
+            let len = DragQueryFileW(handle, index, buf.as_mut_ptr(), buf.len() as u32);
+            if len == 0 {
+                continue;
+            }
+            let path = PathBuf::from(std::ffi::OsString::from_wide(&buf[..len as usize]));
+            // Files only. A copied folder is a real entry here, and expanding it
+            // would be a new gesture rather than a cheaper road to an old one —
+            // so it is reported as nothing and the web route handles the paste
+            // exactly as it did before.
+            if path.is_file() {
+                out.push(path.to_string_lossy().into_owned());
+            }
+        }
+        out
+    }
 }
 
 /// The page a copied fragment came from, if the clipboard says.
