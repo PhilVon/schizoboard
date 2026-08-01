@@ -15,69 +15,21 @@
  *
  * `render/items/dom.test.ts` asserts `textContent`, which was correct and said
  * nothing about what was on top of what — the writing was in the DOM and legible
- * there the whole time. The suite runs on happy-dom, which has no layout engine,
- * so no test in `src/` can measure a grid track. What *can* be checked without a
- * browser is that the stylesheet still describes the hole it is supposed to:
- * every length involved is a percentage of an object whose size is settled in
- * `lib/objects.ts`, so the geometry is arithmetic on the source.
+ * there the whole time. No test in `src/` can measure a grid track, for the
+ * reason `css-declarations.ts` gives, and the scan that reads the stylesheet
+ * lives there because the folder's head (T-311) needs the same thing.
  *
  * That makes this a guard against the fix being undone rather than a re-test of
  * Chromium. The specific undoing it is written for is the tempting one: giving
  * the window back a `width`, so that two declarations state the size of one hole
  * and a later change to either can silently disagree with the other.
- *
- * In `tests/` rather than beside the stylesheet because it reads a file, and
- * `tsconfig.json` deliberately withholds Node's types from `src/`.
  */
-
-import { readFileSync } from "node:fs";
-import { fileURLToPath } from "node:url";
 
 import { describe, expect, it } from "vitest";
 
 import { objectSizeFor } from "../src/lib/objects";
 
-const css = readFileSync(
-  fileURLToPath(new URL("../src/render/items/items.css", import.meta.url)),
-  "utf8",
-);
-
-/**
- * Every declaration under a selector, merged in source order.
- *
- * A hand-rolled scan rather than a regex because `@keyframes` nests, and rather
- * than a CSS parser because pulling one in to read five numbers is a dependency
- * for the sake of a dependency. Only top-level rules are collected, which is
- * exactly where these five live.
- */
-function declarations(selector: string): Map<string, string> {
-  const src = css.replace(/\/\*[\s\S]*?\*\//g, "");
-  const out = new Map<string, string>();
-  let i = 0;
-  while (i < src.length) {
-    const open = src.indexOf("{", i);
-    if (open === -1) break;
-    const head = src.slice(i, open).trim();
-    // Walk to the matching brace, so a nested `@keyframes` block is stepped
-    // over whole rather than mistaken for the end of a rule.
-    let depth = 1;
-    let j = open + 1;
-    while (j < src.length && depth > 0) {
-      if (src[j] === "{") depth++;
-      else if (src[j] === "}") depth--;
-      j++;
-    }
-    if (head.split(",").some((s) => s.trim() === selector)) {
-      for (const decl of src.slice(open + 1, j - 1).split(";")) {
-        const at = decl.indexOf(":");
-        if (at === -1) continue;
-        out.set(decl.slice(0, at).trim(), decl.slice(at + 1).trim());
-      }
-    }
-    i = j;
-  }
-  return out;
-}
+import { css, declarations } from "./css-declarations";
 
 /** `9% 7% 12% 7%` and friends, as four numbers in CSS's own order. */
 function sides(shorthand: string): { top: number; right: number; bottom: number; left: number } {
