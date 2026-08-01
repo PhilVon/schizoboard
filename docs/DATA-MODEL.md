@@ -310,13 +310,17 @@ Anything durable. Awareness is dropped on disconnect by design, so anything that
 
 ```js
 assets: {
-  [sha256]: Y.Map { w, h, mime, size, origName, addedBy, addedAt }
+  [sha256]: Y.Map { w, h, mime, size, origName, addedBy, addedAt, duration?, pages? }
 }
 ```
 
 **Metadata only. Bytes never enter the document.**
 
-Because `w` and `h` are here, an item renders at its correct size — frame, caption, tape, pins, shadow — from the instant it exists. Nothing reflows when the bytes arrive.
+Because the measurements are here, an item renders at its correct size — frame, caption, tape, pins, shadow — from the instant it exists. Nothing reflows when the bytes arrive. *Which* measurement does that work depends on what the file is: a photograph's size is `w`/`h`, and a cassette has no pixel box at all — the object on the wall is a cassette, and what its J-card needs from this record is `duration`. So `readAsset` requires a box only of the kinds that are supposed to have one, and a boxless record that is not a photograph is a usable record rather than an absent one.
+
+`duration` (seconds — a film or a cassette) and `pages` (a document) are written **only when the machine that ingested the file could measure one**. An absent key and a key holding `null` read identically, so nothing writes the null: a photograph costs no bytes on the wire to say it has no running time, and a later build that learns to measure something this one could not fills the key in without touching anything beside it, because `Y.Map` is per-property LWW. A stored zero reads back as nothing, deliberately — a J-card reading `0:00` claims the tape is empty, which is worse than saying nothing.
+
+**There is no `kind` key.** Which of the objects a record becomes — photograph, case file, tape, cassette, or none of them — is derived from `mime` on read and never stored. Every record already on every board was written before any of this existed, so a record without a kind has to be classifiable anyway; storing one as well would be a second statement of a fact the mime already makes, and two writers of one fact can disagree where a derivation cannot. The cost, stated plainly: a mime this build has never heard of is unfamiliar here permanently, and a later peer knowing what it is buys this one nothing.
 
 Local per-asset state, **never** in the document:
 
