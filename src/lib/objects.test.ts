@@ -19,6 +19,17 @@ describe("what a file is", () => {
     expect(assetKind("application/pdf")).toBe("document");
   });
 
+  it("makes a folder of text as well, whichever sort of text it is", () => {
+    // Q-255. The shell has one mime for all of it, because telling a `.md` from
+    // a `.csv` means reading the name and a name is not evidence the store
+    // keeps — so the prefix is the whole rule and the folder does not care.
+    expect(assetKind("text/plain")).toBe("document");
+    expect(assetKind("text/markdown")).toBe("document");
+    // And it is still a face chosen from a mime rather than a second list: the
+    // thing that decides is the same call every other object goes through.
+    expect(carriesItsOwnName(assetKind("text/plain"))).toBe(true);
+  });
+
   it("calls a mime it has never heard of unknown rather than guessing", () => {
     // Not a face. It is the state `readAsset` needs to tell "a record we do not
     // understand" from "a record describing a cassette", and it is permanent:

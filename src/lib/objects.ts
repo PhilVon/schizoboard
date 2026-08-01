@@ -50,6 +50,12 @@ export function assetKind(mime: string): AssetKind {
   if (mime.startsWith("video/")) return "video";
   if (mime.startsWith("audio/")) return "audio";
   if (mime === "application/pdf") return "document";
+  // The other kind of document, and the same object on the wall (Q-255). The
+  // shell has one mime for all of it — a `.md`, a `.csv` and a `.log` are told
+  // apart by their names and a name is not evidence the store keeps — so this
+  // is a prefix for the same reason the three above are, and the folder does
+  // not care which sort of text it is holding.
+  if (mime.startsWith("text/")) return "document";
   return "unknown";
 }
 

@@ -36,6 +36,11 @@ pub mod pages;
 mod print;
 mod protocol;
 pub mod sync;
+// The other half of `document`: the rule that gives a file with no pages of its
+// own some anyway, so that a page reference means the same thing on both kinds
+// (T-298). `pub` because ingest asks it for a count and the reading surface
+// (T-275) will ask it for a page.
+pub mod text;
 
 use std::collections::HashSet;
 use std::path::PathBuf;

@@ -57,7 +57,7 @@ class FakeNative {
       mime,
       size,
       duration: mime === "video/mp4" || mime.startsWith("audio/") ? 92 : null,
-      pages: mime === "application/pdf" ? 14 : null,
+      pages: mime === "application/pdf" ? 14 : mime.startsWith("text/") ? 3 : null,
     };
   }
 
@@ -690,6 +690,24 @@ describe("what the board will take", () => {
     // derived locally and never enters the document (Q-211); this asserts the
     // absence, because the whole of that answer is that the key is not there.
     expect(records.some((asset) => asset.has("title"))).toBe(false);
+  });
+
+  it("takes a text file as the other kind of case file", async () => {
+    // Q-255. Until T-298 this was the sentence a dropped .txt got — "it is not
+    // a picture, a film, a recording or a document" — and it was the gate in
+    // front of half of D-46 section 1, because a text file has no magic number
+    // for the sniffer to find.
+    await firePaste({ files: [named("statement.txt", "text/plain", 4096)] });
+
+    const items = itemsOnBoard();
+    expect(items).toHaveLength(1);
+    const record = [...board.assets.values()][0];
+    expect(record.get("mime")).toBe("text/plain");
+    // A thickness, from a rule rather than from a page tree, and it reaches a
+    // peer the same way a PDF's does.
+    expect(record.get("pages")).toBe(3);
+    expect(record.has("duration")).toBe(false);
+    expect(said).toEqual([]);
   });
 
   it("puts a case file on the board even though it has no pixel box", async () => {
