@@ -53,6 +53,26 @@ export function assetKind(mime: string): AssetKind {
   return "unknown";
 }
 
+/**
+ * Whether a file of this kind can be carrying a name of its own.
+ *
+ * The gate in front of the title probe (Q-211), and it is a gate rather than a
+ * shrug because the probe is a round trip to the shell and a read off the disk:
+ * a board of three hundred photographs would otherwise ask three hundred times
+ * and be told nothing three hundred times.
+ *
+ * A **photograph is not on the list.** What a JPEG carries is EXIF, which says
+ * what took it and when rather than what it is, and D-46 gives a polaroid a
+ * caption in the person's own hand instead — a name somebody wrote beats one a
+ * camera generated. `unknown` is not on it either: there is no container to ask.
+ *
+ * The three that are on it each have a field for it and each want it on a label:
+ * a folder's tab, a spine, a J-card.
+ */
+export function carriesItsOwnName(kind: AssetKind): boolean {
+  return kind === "document" || kind === "video" || kind === "audio";
+}
+
 // --- how big each one is ----------------------------------------------------
 
 /**

@@ -2502,6 +2502,35 @@ describe("a folder, a tape and a cassette", () => {
     }
   });
 
+  it("writes a spine and a J-card out of the container's own name", () => {
+    // The same line as a folder's, off a different field: T-302 reads it out of
+    // ID3v2, `udta`, Matroska's `Info` and a Vorbis comment.
+    const tape = mount(facts({ kind: "video", name: "S03E04.1080p.x265.mkv", title: "Silo" }));
+    expect(tape.querySelector<HTMLElement>(".case-title")!.textContent).toBe("Silo");
+
+    again();
+    const cassette = mount(facts({ kind: "audio", name: "track03.mp3", title: "Interview" }));
+    expect(cassette.querySelector<HTMLElement>(".case-title")!.textContent).toBe("Interview");
+  });
+
+  it("is a tape with only its filename on it when the container says nothing", () => {
+    // AC-697, and it is not the unhappy path — it is the usual one. D-52 swept
+    // 4,502 real media files and found a title on 1 of 461 `.mp4`s. So the
+    // spine that says only its case number is what most tapes look like, and it
+    // has to look deliberate rather than broken.
+    const el = mount(facts({ kind: "video", name: "holiday.mp4", title: "" }));
+    expect(el.querySelector(".case-number")!.textContent).toBe("holiday");
+    expect(el.querySelector(".case-title")!.textContent).toBe("");
+  });
+
+  it("refuses a container title that is only the filename again", () => {
+    // 85 of the 186 titled `.mp3`s on D-52's corpus. `titleWorthWriting` was
+    // written for PDFs and this is the same junk shape in another format, which
+    // is the argument for one filter rather than one per container.
+    const el = mount(facts({ kind: "audio", name: "Chemical Static.mp3", title: "Chemical Static" }));
+    expect(el.querySelector(".case-title")!.textContent).toBe("");
+  });
+
   it("says the runtime and the page count before a byte of the file has arrived", () => {
     // AC-668, and the point of it: every number on these labels comes off the
     // *record*. The resolver below hands back no URL at all and never will.

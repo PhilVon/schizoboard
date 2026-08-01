@@ -479,7 +479,12 @@ fn of(reader: &Reader) -> Probe {
 /// template had a field, and with nothing but spaces where a template had none.
 /// All three are the same thing to a label, and doing this once here means the
 /// frontend never has to wonder whether a title it was given is really a title.
-fn tidy(text: &str) -> Option<String> {
+///
+/// Shared with [`crate::media::probe_title`], which reads the same kind of field
+/// out of a different kind of container. One cap, because there is one label:
+/// a tape whose name was cut at a different length from a folder's would be a
+/// difference the board cannot explain.
+pub(crate) fn tidy(text: &str) -> Option<String> {
     let mut out = String::new();
     for word in text.split_whitespace() {
         if !out.is_empty() {

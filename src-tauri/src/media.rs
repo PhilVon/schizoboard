@@ -1,4 +1,5 @@
-//! How long a film or a cassette runs, read out of the container.
+//! What a film or a cassette says about itself: how long it runs, and what it
+//! is called.
 //!
 //! > | Video | VHS cassette | Title and **runtime** on the spine |
 //! > | Audio | Compact cassette | Title and **duration** on the J-card |
@@ -48,6 +49,19 @@
 //! straight out of a header and is where one would come from. It falls out
 //! through the same gate as everything else — see [`plausible`], which is the
 //! single place any of these become a `None`.
+//!
+//! ## The two questions are asked at different times, of different things
+//!
+//! [`probe_duration`] is asked once, at ingest, of bytes that are already in
+//! memory, and its answer travels in the asset record — because a peer holding
+//! no bytes still has a cassette on its wall that has to say something.
+//!
+//! [`probe_title`] is asked of a **file on this disk**, whenever the object
+//! comes on screen, and its answer goes nowhere: Q-211 settled that a title is
+//! derived locally the way a document's is, so it never enters the record and
+//! never crosses the wire. That is why one takes a slice and the other seeks.
+
+use std::io::{Read, Seek, SeekFrom};
 
 /// Seconds. The unit the whole module speaks in, and the unit that crosses to
 /// the frontend.
@@ -775,7 +789,625 @@ const SAMPLE_RATES: [[u32; 3]; 3] = [
     [11025, 12000, 8000],
 ];
 
+// ---------------------------------------------------------------------------
+// What it is called
+// ---------------------------------------------------------------------------
+
+/// Bytes of one tag block this build will hold at once.
+///
+/// An ID3v2 tag or a Vorbis comment list carries the cover art, which is why
+/// this is megabytes rather than kilobytes — the title is often written after
+/// the picture and there is no index to skip it by. Past this a tag is not a tag,
+/// and the file gets no answer rather than a large read.
+const MAX_TAG_BYTES: usize = 4 * 1024 * 1024;
+
+/// Bytes of one field's value.
+///
+/// A hundred and twenty characters survive [`crate::document::tidy`], so this is
+/// three orders of magnitude of headroom for the encoding, and exists only to
+/// bound a length field somebody else wrote.
+const MAX_FIELD_BYTES: usize = 64 * 1024;
+
+/// What this file says it is called, if the container carries a name and this
+/// build can read it.
+///
+/// The other half of a label. A spine says "title and runtime" and a J-card
+/// "title and duration" (D-46 section 1), and the runtime half already arrives
+/// with the asset record — but the title does **not**, and deliberately: Q-211
+/// settled that a title is derived locally by whichever machine holds the file,
+/// exactly as a document's is. So this is asked of a file on this disk, once the
+/// bytes are here, and a peer that never receives them never learns the name.
+///
+/// ## Why this one seeks where [`probe_duration`] takes a slice
+///
+/// `probe_duration` is handed the whole file because ingestion is holding it
+/// anyway: it has just hashed it. Nothing is holding it here. A title is asked
+/// for when a cassette comes on screen, which is minutes or days after the
+/// paste, and reading a 400 MB interview back off the disk to find sixteen bytes
+/// of name would cost more than the label is worth — D-49 measured this
+/// application's byte path at about ten times the file in resident memory.
+///
+/// So every reader below works in bounded windows. Four of the five families
+/// keep their tag in the header and stop as soon as they have it; ISO is the one
+/// that genuinely seeks, because `moov` sits at the end of a file as readily as
+/// at the front and a prefix read would miss every camera roll on the disk.
+///
+/// ## What is actually out there
+///
+/// D-52 swept 4,026 real media files on the machine this was written on, with
+/// ffprobe as a second opinion. The short version is that a container title is
+/// an **audio** thing: 186 of 483 `.mp3`s carry one, against 1 of 461 `.mp4`s
+/// and 1 of 9 `.mkv`s. A spine will nearly always say only the filename, and
+/// that is the file's fault rather than this function's — which is worth writing
+/// down here, because the alternative reading is that the parser is broken.
+///
+/// `mime` is the store's sniff, not the caller's word for it, for the same
+/// reason [`probe_duration`] insists on it: dispatch is on evidence.
+pub fn probe_title<R: Read + Seek>(source: &mut R, mime: &str) -> Option<String> {
+    let end = source.seek(SeekFrom::End(0)).ok()?;
+    let raw = match mime {
+        "video/mp4" | "audio/mp4" | "video/quicktime" => iso_title(source, end),
+        "video/x-matroska" | "video/webm" => ebml_title(source, end),
+        "audio/ogg" | "video/ogg" => ogg_title(source, end),
+        "audio/flac" => flac_title(source, end),
+        "audio/mpeg" => id3v2_title(source, end),
+        // Not one of the four families AC-695 names, and in scope because the
+        // sweep put it there: a `.wav` is a cassette on this board exactly as an
+        // `.mp3` is, and 23 of the 927 on that disk carry an `INAM`. Leaving it
+        // out would make one cassette behave differently from another for a
+        // reason nothing on the board can see.
+        "audio/wav" | "video/x-msvideo" => riff_title(source, end),
+        _ => None,
+    }?;
+    crate::document::tidy(&raw)
+}
+
+/// One window of a file, or `None` if it could not be read.
+///
+/// Short reads are ordinary — the last window of a file is one — so this returns
+/// what it got rather than insisting on the length it asked for, and every
+/// caller reads its fields out of a slice that may be shorter than it wanted.
+/// The clamp is the backstop that makes a length field somebody else wrote
+/// unable to ask for an allocation: every caller bounds its own request too, and
+/// this is what makes forgetting to safe.
+fn read_at<R: Read + Seek>(source: &mut R, at: u64, len: usize) -> Option<Vec<u8>> {
+    let len = len.min(MAX_TAG_BYTES);
+    if len == 0 {
+        return Some(Vec::new());
+    }
+    source.seek(SeekFrom::Start(at)).ok()?;
+    let mut buf = vec![0u8; len];
+    let mut filled = 0usize;
+    while filled < len {
+        match source.read(&mut buf[filled..]) {
+            Ok(0) => break,
+            Ok(n) => filled += n,
+            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(_) => return None,
+        }
+    }
+    buf.truncate(filled);
+    Some(buf)
+}
+
+// --- ISO base media: .mp4, .m4a, .mov ---------------------------------------
+
+/// The name in `moov/udta`, in whichever of the two dialects wrote it.
+///
+/// `udta` is where both live and that is the only thing they agree on. iTunes —
+/// and every tool that followed it, which is nearly all of them — writes
+/// `meta/ilst/©nam/data` with a typed payload. QuickTime writes `©nam` straight
+/// into `udta` as a length-prefixed string. Both are tried, in that order,
+/// because the second is what a camera and an old `.mov` produce and the first
+/// is what everything else does.
+fn iso_title<R: Read + Seek>(source: &mut R, end: u64) -> Option<String> {
+    let (moov, moov_len) = iso_find(source, 0, end, b"moov")?;
+    let (udta, udta_len) = iso_find(source, moov, moov.checked_add(moov_len)?, b"udta")?;
+    let udta_end = udta.checked_add(udta_len)?;
+
+    if let Some((meta, meta_len)) = iso_find(source, udta, udta_end, b"meta") {
+        let meta_end = meta.checked_add(meta_len)?;
+        // `meta` is a full box in MP4 — a version and three flag bytes before its
+        // children — and a plain container in QuickTime. Four bytes is the entire
+        // difference and no field anywhere says which this is, so both starts are
+        // tried rather than inferred from the brand.
+        for skip in [4u64, 0] {
+            let Some(from) = meta.checked_add(skip).filter(|from| *from <= meta_end) else {
+                continue;
+            };
+            let Some((ilst, ilst_len)) = iso_find(source, from, meta_end, b"ilst") else {
+                continue;
+            };
+            let name = iso_find(source, ilst, ilst.checked_add(ilst_len)?, b"\xA9nam");
+            let Some((nam, nam_len)) = name else { continue };
+            let Some((data, data_len)) = iso_find(source, nam, nam.checked_add(nam_len)?, b"data")
+            else {
+                continue;
+            };
+            let body = read_at(source, data, usize::try_from(data_len).ok()?.min(MAX_FIELD_BYTES))?;
+            if let Some(text) = ilst_text(&body) {
+                return Some(text);
+            }
+        }
+    }
+
+    let (nam, nam_len) = iso_find(source, udta, udta_end, b"\xA9nam")?;
+    let body = read_at(source, nam, usize::try_from(nam_len).ok()?.min(MAX_FIELD_BYTES))?;
+    quicktime_text(&body)
+}
+
+/// The payload offset and length of the first box of this type in this range.
+///
+/// The seeking twin of [`find_box`], and separate from it rather than sharing an
+/// implementation because the slice that one walks would here be the film. Same
+/// two escapes from the size field, same clamp at the end for the same truncated
+/// download.
+fn iso_find<R: Read + Seek>(
+    source: &mut R,
+    from: u64,
+    to: u64,
+    want: &[u8; 4],
+) -> Option<(u64, u64)> {
+    let mut pos = from;
+    for _ in 0..MAX_RECORDS {
+        if pos.checked_add(8)? > to {
+            return None;
+        }
+        // Sixteen, because that is a 64-bit size header — the short read that
+        // comes back at the end of a file fails the field reads below on its own.
+        let header = read_at(source, pos, 16)?;
+        let kind: [u8; 4] = header.get(4..8)?.try_into().ok()?;
+        let (head, size) = match be32(&header, 0)? {
+            1 => (16u64, be64(&header, 8)?),
+            0 => (8u64, to.checked_sub(pos)?),
+            n => (8u64, u64::from(n)),
+        };
+        if size < head {
+            return None;
+        }
+        let body = pos.checked_add(head)?;
+        let stop = pos.checked_add(size)?.min(to);
+        if body > stop {
+            return None;
+        }
+        if &kind == want {
+            return Some((body, stop - body));
+        }
+        pos = pos.checked_add(size)?;
+    }
+    None
+}
+
+/// The text out of an iTunes-style `data` box.
+///
+/// The first four bytes are a full box's version and flags read as one number,
+/// which is how this format states the type of what follows: 1 is UTF-8 and 2 is
+/// UTF-16BE. Everything else — 0 for binary, 21 for an integer — is a payload
+/// that is not a name, and gets no answer rather than a mojibake one.
+fn ilst_text(body: &[u8]) -> Option<String> {
+    // Version and flags, then four bytes of locale that nothing here reads.
+    let value = body.get(8..)?;
+    match be32(body, 0)? {
+        1 => Some(String::from_utf8_lossy(value).into_owned()),
+        2 => Some(utf16be(value)),
+        _ => None,
+    }
+}
+
+/// The text out of a QuickTime user-data atom: a 16-bit length, a 16-bit
+/// language, and the bytes.
+///
+/// Language codes below `0x400` are Macintosh ones and declare the text to be
+/// MacRoman, which is not Latin-1 above `0x7F` and would need its own table.
+/// This does not carry one: valid UTF-8 is taken as UTF-8 and anything else is
+/// read as Latin-1, so an accent in an old `.mov`'s title may come out wrong
+/// where the rest of the name is right. A table for the fallback of a fallback
+/// is not worth the bytes until something on the corpus needs it.
+fn quicktime_text(body: &[u8]) -> Option<String> {
+    let len = u16::from_be_bytes(body.get(0..2)?.try_into().ok()?) as usize;
+    let text = body.get(4..4 + len)?;
+    Some(match std::str::from_utf8(text) {
+        Ok(valid) => valid.to_string(),
+        Err(_) => text.iter().map(|&b| b as char).collect(),
+    })
+}
+
+// --- EBML: .mkv, .webm ------------------------------------------------------
+
+/// `Segment/Info/Title`, which is the name of the film rather than the name of
+/// a track.
+///
+/// A track's `Name` is a sibling of this in `Tracks` and is not read: it says
+/// "English" or "Commentary", which is a fact about one stream and not what goes
+/// on a spine. The sweep found four files whose only title-shaped string was one
+/// of those.
+fn ebml_title<R: Read + Seek>(source: &mut R, end: u64) -> Option<String> {
+    let (segment, segment_len) = ebml_find(source, 0, end, 0x1853_8067)?;
+    let (info, info_len) = ebml_find(source, segment, segment.checked_add(segment_len)?, 0x1549_A966)?;
+    let body = read_at(source, info, usize::try_from(info_len).ok()?.min(MAX_TAG_BYTES))?;
+    let title = ebml_child(&body, 0x7BA9)?;
+    // UTF-8 by the specification, and lossy rather than refused because a
+    // producer's stray byte should cost one character rather than the name.
+    Some(String::from_utf8_lossy(title).into_owned())
+}
+
+/// The payload offset and length of the first element with this id in this
+/// range. The seeking twin of [`ebml_child`].
+fn ebml_find<R: Read + Seek>(source: &mut R, from: u64, to: u64, want: u64) -> Option<(u64, u64)> {
+    let mut pos = from;
+    for _ in 0..MAX_RECORDS {
+        // Twelve is the widest an id and a size can be together; sixteen is the
+        // same round number the ISO walk reads.
+        let header = read_at(source, pos, 16)?;
+        let (id, id_len) = ebml_vint(&header, 0, true)?;
+        let (size, size_len) = ebml_vint(&header, id_len, false)?;
+        let body = pos.checked_add((id_len + size_len) as u64)?;
+        let stop = match size {
+            UNKNOWN_SIZE => to,
+            n => body.checked_add(n)?.min(to),
+        };
+        if body > stop {
+            return None;
+        }
+        if id == want {
+            return Some((body, stop - body));
+        }
+        // A `Cluster` is where the film starts, and `Info` is written before the
+        // first one by every muxer there is. Without this, a file that has no
+        // title at all is a walk over gigabytes of frames, one seek per cluster,
+        // to find that out.
+        if id == 0x1F43_B675 || size == UNKNOWN_SIZE {
+            return None;
+        }
+        pos = stop;
+    }
+    None
+}
+
+// --- Ogg and FLAC: the Vorbis comment ---------------------------------------
+
+/// `TITLE=` out of the comment header, which in an Ogg stream is the second
+/// packet whatever the codec is.
+///
+/// The identification header is required to be alone in the first page, so the
+/// comment begins at the start of the second page belonging to the stream. It
+/// may run over several pages and this concatenates them, bounded by the window
+/// it read — a comment list with a cover picture in it is the usual reason there
+/// is more than one.
+fn ogg_title<R: Read + Seek>(source: &mut R, end: u64) -> Option<String> {
+    let window = read_at(source, 0, usize::try_from(end).ok()?.min(MAX_TAG_BYTES))?;
+    let first = ogg_page(&window, 0)?;
+    let serial = first.serial;
+
+    let mut packet: Vec<u8> = Vec::new();
+    let mut pos = 27 + *window.get(26)? as usize + first.payload.len();
+    for _ in 0..MAX_RECORDS {
+        let Some(page) = ogg_page(&window, pos) else {
+            break;
+        };
+        let segments = *window.get(pos + 26)? as usize;
+        if page.serial == serial {
+            packet.extend_from_slice(page.payload);
+            // A packet ends on a segment shorter than 255. The comment header is
+            // the only one being assembled, so the first such page ends it.
+            if window.get(pos + 27..pos + 27 + segments)?.last() != Some(&255) {
+                break;
+            }
+        }
+        pos += 27 + segments + page.payload.len();
+    }
+
+    // Three codecs, three ways of saying "the comments start here", and the
+    // list itself is identical in all of them.
+    let comments = if let Some(rest) = packet.strip_prefix(b"\x03vorbis") {
+        rest
+    } else if let Some(rest) = packet.strip_prefix(b"OpusTags") {
+        rest
+    } else if packet.first().map(|byte| byte & 0x7F) == Some(4) {
+        // FLAC-in-Ogg wraps its native metadata blocks, so this is a block
+        // header — a last-block flag and a type — and then the same list.
+        packet.get(4..)?
+    } else {
+        return None;
+    };
+    vorbis_title(comments)
+}
+
+/// `TITLE=` out of a native FLAC file's `VORBIS_COMMENT` block.
+///
+/// The blocks are a linked list at the head of the file, each one four bytes of
+/// header and then its body, so this steps over the picture rather than reading
+/// it: only the block it wants is ever pulled off the disk.
+fn flac_title<R: Read + Seek>(source: &mut R, end: u64) -> Option<String> {
+    if read_at(source, 0, 4)? != b"fLaC" {
+        return None;
+    }
+    let mut pos = 4u64;
+    for _ in 0..MAX_RECORDS {
+        let header = read_at(source, pos, 4)?;
+        let first = *header.first()?;
+        let len = (u32::from(*header.get(1)?) << 16)
+            | (u32::from(*header.get(2)?) << 8)
+            | u32::from(*header.get(3)?);
+        let body = pos.checked_add(4)?;
+        if first & 0x7F == 4 {
+            let want = usize::try_from(len).ok()?.min(MAX_TAG_BYTES);
+            return vorbis_title(&read_at(source, body, want)?);
+        }
+        // The last-block flag. Without it a file whose comment block is absent
+        // walks off the end into the audio and reads frames as headers.
+        if first & 0x80 != 0 {
+            return None;
+        }
+        pos = body.checked_add(u64::from(len))?;
+        if pos >= end {
+            return None;
+        }
+    }
+    None
+}
+
+/// The `TITLE` entry of a Vorbis comment list.
+///
+/// A vendor string, a count, and then that many length-prefixed `KEY=value`
+/// entries in UTF-8, all little-endian — the one format in this module that is.
+/// The key is case-insensitive by the specification and is written both ways in
+/// the wild.
+fn vorbis_title(data: &[u8]) -> Option<String> {
+    let vendor = usize::try_from(u32::from_le_bytes(data.get(0..4)?.try_into().ok()?)).ok()?;
+    let mut pos = 4usize.checked_add(vendor)?;
+    let count = u32::from_le_bytes(data.get(pos..pos + 4)?.try_into().ok()?);
+    pos += 4;
+    for _ in 0..count.min(MAX_RECORDS as u32) {
+        let len = usize::try_from(u32::from_le_bytes(data.get(pos..pos + 4)?.try_into().ok()?)).ok()?;
+        let entry = data.get(pos + 4..pos + 4 + len)?;
+        pos = pos.checked_add(4)?.checked_add(len)?;
+        let Some(equals) = entry.iter().position(|&byte| byte == b'=') else {
+            continue;
+        };
+        if entry[..equals].eq_ignore_ascii_case(b"TITLE") {
+            return Some(String::from_utf8_lossy(entry.get(equals + 1..)?).into_owned());
+        }
+    }
+    None
+}
+
+// --- ID3v2: .mp3 ------------------------------------------------------------
+
+/// The `TIT2` frame — `TT2` before version 2.3 — out of the tag at the front of
+/// the file.
+///
+/// The whole tag is read rather than walked with seeks, and that is the one place
+/// in this module that holds something it does not strictly need: the frames are
+/// a flat list with no index, the cover art is one of them, and a tag with
+/// *unsynchronisation* set has had bytes inserted throughout it, which moves
+/// every frame after the first and makes a seeking walk impossible anyway. Four
+/// megabytes is the bound, and an ID3 tag past that is not a tag.
+fn id3v2_title<R: Read + Seek>(source: &mut R, _end: u64) -> Option<String> {
+    let header = read_at(source, 0, 10)?;
+    let size = id3v2_declared_size(&header)?;
+    let body = read_at(source, 10, size.min(MAX_TAG_BYTES))?;
+    id3v2_frames_title(&header, body)
+}
+
+/// The same tag, whole and already in memory — which is how a `.wav` carries
+/// one. See [`riff_title`].
+fn id3v2_tag_title(tag: &[u8]) -> Option<String> {
+    let header = tag.get(..10)?;
+    let size = id3v2_declared_size(header)?;
+    let end = 10usize.checked_add(size)?.min(tag.len());
+    id3v2_frames_title(header, tag.get(10..end)?.to_vec())
+}
+
+/// The length the tag header states, which is *syncsafe* — seven bits per byte,
+/// so that a tag length can never contain a run of bits a decoder would mistake
+/// for a frame sync. `None` when this is not an ID3v2 tag at all.
+fn id3v2_declared_size(header: &[u8]) -> Option<usize> {
+    if header.get(0..3)? != b"ID3" {
+        return None;
+    }
+    Some(
+        header
+            .get(6..10)?
+            .iter()
+            .fold(0usize, |acc, &byte| (acc << 7) | (byte & 0x7F) as usize),
+    )
+}
+
+fn id3v2_frames_title(header: &[u8], body: Vec<u8>) -> Option<String> {
+    let version = *header.get(3)?;
+    let flags = *header.get(5)?;
+    let mut body = body;
+
+    // Unsynchronisation, which is a whole-tag property up to version 2.3 and a
+    // per-frame one after it: every `0xFF 0x00` in the tag is a `0xFF` that was
+    // padded so a decoder hunting for a frame sync could not find one in here.
+    if flags & 0x80 != 0 && version < 4 {
+        body = desynchronise(&body);
+    }
+    if flags & 0x40 != 0 {
+        body = skip_extended_header(&body, version)?;
+    }
+
+    // Three layouts. Before 2.3 an id is three characters and a size three
+    // bytes; from 2.3 both are four with two flag bytes after; and 2.4 alone
+    // writes that size syncsafe, the way the tag's own is.
+    let (id_len, head_len) = if version < 3 { (3usize, 6usize) } else { (4usize, 10usize) };
+    let want: &[u8] = if version < 3 { b"TT2" } else { b"TIT2" };
+
+    let mut pos = 0usize;
+    for _ in 0..MAX_RECORDS {
+        let id = body.get(pos..pos + id_len)?;
+        // Padding. A tagger leaves room to grow and fills it with zeros, and
+        // this is where every well-formed tag without the frame ends.
+        if id.iter().all(|&byte| byte == 0) {
+            return None;
+        }
+        let raw = body.get(pos + id_len..pos + head_len - if version < 3 { 0 } else { 2 })?;
+        let mut len = raw
+            .iter()
+            .fold(0usize, |acc, &byte| (acc << 8) | usize::from(byte));
+        if version >= 4 {
+            len = raw
+                .iter()
+                .fold(0usize, |acc, &byte| (acc << 7) | (byte & 0x7F) as usize);
+        }
+        let frame_flags = if version < 3 { 0u8 } else { *body.get(pos + head_len - 1)? };
+        let start = pos.checked_add(head_len)?;
+        if id == want {
+            let mut value = body.get(start..start + len.min(MAX_FIELD_BYTES))?.to_vec();
+            // A data length indicator sits in front of the frame when 2.4 says
+            // the frame was compressed or unsynchronised, and is four more bytes
+            // of length that are not the text.
+            if version >= 4 && frame_flags & 0x01 != 0 {
+                value = value.get(4..)?.to_vec();
+            }
+            if version >= 4 && frame_flags & 0x02 != 0 {
+                value = desynchronise(&value);
+            }
+            return id3v2_text(&value);
+        }
+        pos = start.checked_add(len)?;
+    }
+    None
+}
+
+/// Take out the `0x00` that follows every `0xFF` an unsynchronised tag carries.
+fn desynchronise(data: &[u8]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(data.len());
+    let mut skip = false;
+    for &byte in data {
+        if skip && byte == 0x00 {
+            skip = false;
+            continue;
+        }
+        skip = byte == 0xFF;
+        out.push(byte);
+    }
+    out
+}
+
+/// Step over the extended header, whose size field is one of the two things
+/// version 2.4 changed about this format: it counts itself where 2.3's does not.
+fn skip_extended_header(body: &[u8], version: u8) -> Option<Vec<u8>> {
+    let raw = body.get(0..4)?;
+    let size = if version >= 4 {
+        raw.iter().fold(0usize, |acc, &b| (acc << 7) | (b & 0x7F) as usize)
+    } else {
+        raw.iter().fold(0usize, |acc, &b| (acc << 8) | usize::from(b)) + 4
+    };
+    Some(body.get(size..)?.to_vec())
+}
+
+/// The text of an ID3v2 text frame, which declares its own encoding in its first
+/// byte.
+///
+/// Guessing wrong here is not subtle: a UTF-16 title read as bytes is every
+/// other character a NUL, which is the same trap `document::text_string`
+/// documents for a PDF string. A trailing terminator is ordinary and is trimmed
+/// by [`crate::document::tidy`] only if it is whitespace, so it comes off here.
+fn id3v2_text(frame: &[u8]) -> Option<String> {
+    let text = frame.get(1..)?;
+    let decoded = match *frame.first()? {
+        0 => text.iter().map(|&byte| byte as char).collect(),
+        1 => match text.get(0..2) {
+            Some([0xFF, 0xFE]) => utf16le(text.get(2..)?),
+            Some([0xFE, 0xFF]) => utf16be(text.get(2..)?),
+            // A byte order mark is required and is sometimes missing. Big-endian
+            // is the format's own default and the commoner of the two here.
+            _ => utf16be(text),
+        },
+        2 => utf16be(text),
+        3 => String::from_utf8_lossy(text).into_owned(),
+        _ => return None,
+    };
+    Some(decoded.trim_end_matches('\0').to_string())
+}
+
+// --- RIFF: .wav, .avi -------------------------------------------------------
+
+/// `INAM` out of the `LIST INFO` chunk — or, failing that, the `TIT2` of a whole
+/// ID3v2 tag sitting in a chunk of its own.
+///
+/// The second is not a curiosity. Fifteen of the twenty-seven titled RIFF files
+/// on the corpus D-52 swept keep their name in an `id3 ` chunk after the audio
+/// and have no `INFO` list at all, which is what a Python audio stack writes.
+/// Reading only the RIFF-native field would have found under half of them.
+///
+/// `INAM` wins when a file has both, because it is the container's own field and
+/// the tag is a guest in it — and both are looked for in the one walk, because
+/// the reason this seeks at all is not to read a 900 MB `.wav` twice.
+fn riff_title<R: Read + Seek>(source: &mut R, end: u64) -> Option<String> {
+    let mut pos = 12u64;
+    // Held rather than returned, because the walk may still meet an `INAM`. Every
+    // way out of this loop hands it back: a chunk header that does not add up is
+    // the end of the file's structure, not the loss of what was already found.
+    let mut tagged: Option<String> = None;
+    for _ in 0..MAX_RECORDS {
+        let Some(header) = read_at(source, pos, 12) else {
+            return tagged;
+        };
+        let (Some(id), Some(size)) = (header.get(0..4), le32(&header, 4)) else {
+            return tagged;
+        };
+        let size = u64::from(size);
+        let Some(body) = pos.checked_add(8) else {
+            return tagged;
+        };
+        if id == b"LIST" && header.get(8..12) == Some(b"INFO".as_slice()) {
+            let want = usize::try_from(size.saturating_sub(4))
+                .unwrap_or(0)
+                .min(MAX_TAG_BYTES);
+            let list = body
+                .checked_add(4)
+                .and_then(|at| read_at(source, at, want))
+                .unwrap_or_default();
+            if let Some(name) = riff_chunk(&list, b"INAM") {
+                // A `Z-string`: the declared size counts the terminator, and
+                // some writers pad past it.
+                let text = name.split(|&byte| byte == 0).next().unwrap_or_default();
+                return Some(match std::str::from_utf8(text) {
+                    Ok(valid) => valid.to_string(),
+                    // Windows-1252 in practice, and Latin-1 is right for
+                    // everything in it a name is likely to use.
+                    Err(_) => text.iter().map(|&byte| byte as char).collect(),
+                });
+            }
+        }
+        if tagged.is_none() && id.eq_ignore_ascii_case(b"id3 ") {
+            let want = usize::try_from(size).unwrap_or(0).min(MAX_TAG_BYTES);
+            tagged = read_at(source, body, want).as_deref().and_then(id3v2_tag_title);
+        }
+        // The same pad byte `riff_find` steps over, and for the same reason.
+        let Some(next) = body.checked_add(size + (size & 1)) else {
+            return tagged;
+        };
+        pos = next;
+        if pos >= end {
+            return tagged;
+        }
+    }
+    tagged
+}
+
 // --- reading numbers out of somebody else's file ----------------------------
+
+/// UTF-16, lossy, in whichever order the caller has established.
+fn utf16be(data: &[u8]) -> String {
+    let units: Vec<u16> = data
+        .chunks_exact(2)
+        .map(|pair| u16::from_be_bytes([pair[0], pair[1]]))
+        .collect();
+    String::from_utf16_lossy(&units)
+}
+
+fn utf16le(data: &[u8]) -> String {
+    let units: Vec<u16> = data
+        .chunks_exact(2)
+        .map(|pair| u16::from_le_bytes([pair[0], pair[1]]))
+        .collect();
+    String::from_utf16_lossy(&units)
+}
 
 fn be32(data: &[u8], at: usize) -> Option<u32> {
     Some(u32::from_be_bytes(data.get(at..at + 4)?.try_into().ok()?))
@@ -1424,6 +2056,534 @@ mod tests {
                 assert_eq!(probe_duration(bytes, mime), None, "{mime} on {bytes:02x?}");
             }
         }
+    }
+
+    // --- what it is called --------------------------------------------------
+
+    fn title(bytes: &[u8], mime: &str) -> Option<String> {
+        probe_title(&mut std::io::Cursor::new(bytes.to_vec()), mime)
+    }
+
+    /// An iTunes-style name: `©nam` holding a `data` box that declares its own
+    /// type — 1 for UTF-8, 2 for UTF-16BE.
+    fn ilst_name(kind: u32, value: &[u8]) -> Vec<u8> {
+        let mut data = kind.to_be_bytes().to_vec();
+        data.extend_from_slice(&0u32.to_be_bytes());
+        data.extend_from_slice(value);
+        iso_box(b"\xA9nam", &iso_box(b"data", &data))
+    }
+
+    /// `udta/meta/ilst/…`, with `meta` written either way round.
+    fn itunes_udta(name: &[u8], full_box: bool) -> Vec<u8> {
+        let ilst = iso_box(b"ilst", name);
+        let mut meta = if full_box { vec![0u8; 4] } else { Vec::new() };
+        meta.extend_from_slice(&ilst);
+        iso_box(b"udta", &iso_box(b"meta", &meta))
+    }
+
+    #[test]
+    fn a_film_is_named_by_its_ilst_even_with_the_movie_box_last() {
+        let file = mp4(&itunes_udta(&ilst_name(1, "The Interview".as_bytes()), true));
+        assert_eq!(title(&file, "video/mp4"), Some("The Interview".to_string()));
+    }
+
+    #[test]
+    fn an_ilst_that_says_utf16_is_read_as_utf16() {
+        let utf16: Vec<u8> = "Naïve"
+            .encode_utf16()
+            .flat_map(|unit| unit.to_be_bytes())
+            .collect();
+        let file = mp4(&itunes_udta(&ilst_name(2, &utf16), true));
+        assert_eq!(title(&file, "video/mp4"), Some("Naïve".to_string()));
+    }
+
+    #[test]
+    fn a_meta_written_as_a_plain_container_is_read_too() {
+        // QuickTime's `meta` has no version and flags. Guessing one way would
+        // lose every `.mov` on the disk, and guessing the other every `.mp4`.
+        let file = mp4(&itunes_udta(&ilst_name(1, b"Rushes"), false));
+        assert_eq!(title(&file, "video/quicktime"), Some("Rushes".to_string()));
+    }
+
+    #[test]
+    fn a_data_box_of_a_type_that_is_not_text_is_not_a_name() {
+        // Type 0 is binary and type 21 an integer. A cover picture lives under
+        // its own key, but a `©nam` holding one is a file saying nothing.
+        let file = mp4(&itunes_udta(&ilst_name(0, &[0xFF, 0xD8, 0xFF]), true));
+        assert_eq!(title(&file, "video/mp4"), None);
+    }
+
+    #[test]
+    fn a_quicktime_user_data_atom_is_a_name_without_any_ilst() {
+        let mut body = 5u16.to_be_bytes().to_vec();
+        body.extend_from_slice(&0u16.to_be_bytes());
+        body.extend_from_slice(b"Tape1");
+        // Trailing bytes the length field does not claim, which is ordinary.
+        body.extend_from_slice(&[0u8; 4]);
+        let file = mp4(&iso_box(b"udta", &iso_box(b"\xA9nam", &body)));
+        assert_eq!(title(&file, "video/quicktime"), Some("Tape1".to_string()));
+    }
+
+    #[test]
+    fn a_film_with_no_user_data_at_all_says_nothing() {
+        let file = mp4(&iso_box(b"mvhd", &mvhd_v0(600, 6000)));
+        assert_eq!(title(&file, "video/mp4"), None);
+    }
+
+    #[test]
+    fn matroska_is_named_by_its_segment_info() {
+        let file = mkv(&ebml_elem(&[0x7B, 0xA9], "Silo S03E04".as_bytes()));
+        assert_eq!(title(&file, "video/x-matroska"), Some("Silo S03E04".to_string()));
+    }
+
+    #[test]
+    fn a_track_name_is_not_the_name_of_the_film() {
+        // `Tracks/TrackEntry/Name` is `0x536E` and says "English" or
+        // "Commentary". Four files on D-52's corpus had one and no title.
+        let mut segment = ebml_elem(&[0x15, 0x49, 0xA9, 0x66], &[]);
+        let entry = ebml_elem(&[0x53, 0x6E], b"Commentary");
+        segment.extend_from_slice(&ebml_elem(&[0x16, 0x54, 0xAE, 0x6B], &entry));
+        let mut file = ebml_elem(&[0x1A, 0x45, 0xDF, 0xA3], b"\x42\x86\x81\x01");
+        file.extend_from_slice(&ebml_elem(&[0x18, 0x53, 0x80, 0x67], &segment));
+        assert_eq!(title(&file, "video/x-matroska"), None);
+    }
+
+    #[test]
+    fn the_walk_stops_where_the_film_starts() {
+        // An `Info` written after the first `Cluster` is not looked for, which
+        // is the whole reason a titleless four gigabyte film costs nothing.
+        let mut segment = ebml_elem(&[0x1F, 0x43, 0xB6, 0x75], &[0u8; 64]);
+        segment.extend_from_slice(&ebml_elem(
+            &[0x15, 0x49, 0xA9, 0x66],
+            &ebml_elem(&[0x7B, 0xA9], b"Late"),
+        ));
+        let mut file = ebml_elem(&[0x1A, 0x45, 0xDF, 0xA3], b"\x42\x86\x81\x01");
+        file.extend_from_slice(&ebml_elem(&[0x18, 0x53, 0x80, 0x67], &segment));
+        assert_eq!(title(&file, "video/x-matroska"), None);
+    }
+
+    fn vorbis_comment(entries: &[&str]) -> Vec<u8> {
+        let vendor = b"a test";
+        let mut out = (vendor.len() as u32).to_le_bytes().to_vec();
+        out.extend_from_slice(vendor);
+        out.extend_from_slice(&(entries.len() as u32).to_le_bytes());
+        for entry in entries {
+            out.extend_from_slice(&(entry.len() as u32).to_le_bytes());
+            out.extend_from_slice(entry.as_bytes());
+        }
+        out
+    }
+
+    #[test]
+    fn an_ogg_is_named_by_its_comment_header() {
+        let mut packet = b"\x03vorbis".to_vec();
+        packet.extend_from_slice(&vorbis_comment(&["ARTIST=Nobody", "TITLE=Cobalt"]));
+        let mut file = ogg_page_bytes(0, 7, 0, &vorbis_id(44_100));
+        file.extend_from_slice(&ogg_page_bytes(0, 7, 1, &packet));
+        assert_eq!(title(&file, "audio/ogg"), Some("Cobalt".to_string()));
+    }
+
+    #[test]
+    fn opus_says_it_in_the_same_list_behind_a_different_word() {
+        let mut packet = b"OpusTags".to_vec();
+        packet.extend_from_slice(&vorbis_comment(&["title=Quiet Room"]));
+        let mut file = ogg_page_bytes(0, 7, 0, &opus_head(312));
+        file.extend_from_slice(&ogg_page_bytes(0, 7, 1, &packet));
+        // The key is case insensitive by the specification and is written both
+        // ways in the wild.
+        assert_eq!(title(&file, "audio/ogg"), Some("Quiet Room".to_string()));
+    }
+
+    #[test]
+    fn a_comment_that_runs_over_a_page_is_put_back_together() {
+        let mut packet = b"\x03vorbis".to_vec();
+        // A picture ahead of the title, which is why the packet is long enough
+        // to need two pages in the first place.
+        let picture = format!("METADATA_BLOCK_PICTURE={}", "x".repeat(700));
+        packet.extend_from_slice(&vorbis_comment(&[&picture, "TITLE=Split"]));
+
+        let mut file = ogg_page_bytes(0, 7, 0, &vorbis_id(44_100));
+        // A page whose lacing table ends at 255 does not end its packet.
+        let (head, tail) = packet.split_at(510);
+        let mut page = b"OggS".to_vec();
+        page.extend_from_slice(&[0, 0x04]);
+        page.extend_from_slice(&0u64.to_le_bytes());
+        page.extend_from_slice(&7u32.to_le_bytes());
+        page.extend_from_slice(&1u32.to_le_bytes());
+        page.extend_from_slice(&0u32.to_le_bytes());
+        page.push(2);
+        page.extend_from_slice(&[255, 255]);
+        page.extend_from_slice(head);
+        file.extend_from_slice(&page);
+        file.extend_from_slice(&ogg_page_bytes(0, 7, 2, tail));
+
+        assert_eq!(title(&file, "audio/ogg"), Some("Split".to_string()));
+    }
+
+    #[test]
+    fn a_page_belonging_to_another_stream_is_not_this_one_s_comment() {
+        let mut ours = b"\x03vorbis".to_vec();
+        ours.extend_from_slice(&vorbis_comment(&["TITLE=Ours"]));
+        let mut theirs = b"\x03vorbis".to_vec();
+        theirs.extend_from_slice(&vorbis_comment(&["TITLE=Theirs"]));
+
+        let mut file = ogg_page_bytes(0, 7, 0, &vorbis_id(44_100));
+        file.extend_from_slice(&ogg_page_bytes(0, 9, 1, &theirs));
+        file.extend_from_slice(&ogg_page_bytes(0, 7, 1, &ours));
+        assert_eq!(title(&file, "audio/ogg"), Some("Ours".to_string()));
+    }
+
+    fn flac_block(kind: u8, last: bool, body: &[u8]) -> Vec<u8> {
+        let mut out = vec![kind | if last { 0x80 } else { 0 }];
+        let len = body.len() as u32;
+        out.extend_from_slice(&len.to_be_bytes()[1..]);
+        out.extend_from_slice(body);
+        out
+    }
+
+    #[test]
+    fn a_flac_is_named_by_its_comment_block_past_its_picture() {
+        let mut file = b"fLaC".to_vec();
+        file.extend_from_slice(&flac_block(0, false, &streaminfo(44_100, 44_100)));
+        // A hundred kilobytes of cover art the reader must step over rather
+        // than read: this is what makes the walk worth seeking.
+        file.extend_from_slice(&flac_block(6, false, &vec![0xAB; 100_000]));
+        file.extend_from_slice(&flac_block(4, true, &vorbis_comment(&["TITLE=Track One"])));
+        assert_eq!(title(&file, "audio/flac"), Some("Track One".to_string()));
+    }
+
+    #[test]
+    fn a_flac_whose_blocks_end_without_a_comment_says_nothing() {
+        // The last-block flag is what stops the walk at the end of the metadata,
+        // and the audio after it is bytes that can look like anything. Here they
+        // look exactly like a comment block, which is the case that separates
+        // reading the flag from ignoring it — a walk that runs on finds a title
+        // in the sound.
+        let mut file = b"fLaC".to_vec();
+        file.extend_from_slice(&flac_block(0, true, &streaminfo(44_100, 44_100)));
+        file.extend_from_slice(&flac_block(4, true, &vorbis_comment(&["TITLE=in the audio"])));
+        file.extend_from_slice(&vec![0xFF; 4096]);
+        assert_eq!(title(&file, "audio/flac"), None);
+    }
+
+    fn text_frame(id: &[u8; 4], encoding: u8, text: &[u8]) -> Vec<u8> {
+        let mut body = vec![encoding];
+        body.extend_from_slice(text);
+        let mut out = id.to_vec();
+        out.extend_from_slice(&(body.len() as u32).to_be_bytes());
+        out.extend_from_slice(&[0, 0]);
+        out.extend_from_slice(&body);
+        out
+    }
+
+    #[test]
+    fn an_mp3_is_named_by_its_tit2() {
+        let mut frames = text_frame(b"TPE1", 0, b"Nobody");
+        frames.extend_from_slice(&text_frame(b"TIT2", 0, b"Interview, part two"));
+        assert_eq!(
+            title(&id3(&frames), "audio/mpeg"),
+            Some("Interview, part two".to_string())
+        );
+    }
+
+    #[test]
+    fn a_picture_ahead_of_the_title_does_not_hide_it() {
+        let mut apic = b"APIC".to_vec();
+        apic.extend_from_slice(&300_000u32.to_be_bytes());
+        apic.extend_from_slice(&[0, 0]);
+        apic.extend_from_slice(&vec![0x55; 300_000]);
+        apic.extend_from_slice(&text_frame(b"TIT2", 0, b"Behind the art"));
+        assert_eq!(
+            title(&id3(&apic), "audio/mpeg"),
+            Some("Behind the art".to_string())
+        );
+    }
+
+    #[test]
+    fn padding_is_the_end_of_the_frames_and_not_a_gap_between_them() {
+        // A tagger leaves room to grow and fills it with zeros. Those zeros read
+        // as frames of no name and no length, so a walk that does not stop steps
+        // ten bytes at a time straight through them and into whatever is on the
+        // far side — which the specification says is not a frame, whatever it
+        // looks like.
+        let mut frames = text_frame(b"TPE1", 0, b"Nobody");
+        frames.extend_from_slice(&[0u8; 20]);
+        frames.extend_from_slice(&text_frame(b"TIT2", 0, b"past the padding"));
+        assert_eq!(title(&id3(&frames), "audio/mpeg"), None);
+    }
+
+    #[test]
+    fn a_utf16_title_is_not_read_as_bytes() {
+        let mut text = vec![0xFF, 0xFE];
+        text.extend("Zoë".encode_utf16().flat_map(|unit| unit.to_le_bytes()));
+        let frame = text_frame(b"TIT2", 1, &text);
+        assert_eq!(title(&id3(&frame), "audio/mpeg"), Some("Zoë".to_string()));
+    }
+
+    #[test]
+    fn a_version_four_frame_states_its_length_seven_bits_to_the_byte() {
+        // The one thing 2.4 changed about a frame, and reading it as a plain
+        // integer overshoots into the middle of the next frame.
+        let text = b"\x03A name past the hundred and twenty-eighth byte of this frame, which is where the two readings of the size begin to differ from one another entirely";
+        let mut frame = b"TIT2".to_vec();
+        let size = text.len();
+        frame.extend_from_slice(&[
+            ((size >> 21) & 0x7F) as u8,
+            ((size >> 14) & 0x7F) as u8,
+            ((size >> 7) & 0x7F) as u8,
+            (size & 0x7F) as u8,
+        ]);
+        frame.extend_from_slice(&[0, 0]);
+        frame.extend_from_slice(text);
+
+        let mut file = b"ID3".to_vec();
+        file.extend_from_slice(&[4, 0, 0]);
+        let total = frame.len();
+        file.extend_from_slice(&[
+            ((total >> 21) & 0x7F) as u8,
+            ((total >> 14) & 0x7F) as u8,
+            ((total >> 7) & 0x7F) as u8,
+            (total & 0x7F) as u8,
+        ]);
+        file.extend_from_slice(&frame);
+        assert!(title(&file, "audio/mpeg").unwrap().starts_with("A name past"));
+    }
+
+    #[test]
+    fn a_version_two_tag_has_shorter_names_and_shorter_headers() {
+        let mut frame = b"TT2".to_vec();
+        let body = b"\x00An old tag";
+        frame.extend_from_slice(&(body.len() as u32).to_be_bytes()[1..]);
+        frame.extend_from_slice(body);
+        let mut file = b"ID3".to_vec();
+        file.extend_from_slice(&[2, 0, 0]);
+        let size = frame.len();
+        file.extend_from_slice(&[0, 0, (size >> 7) as u8, (size & 0x7F) as u8]);
+        file.extend_from_slice(&frame);
+        assert_eq!(title(&file, "audio/mpeg"), Some("An old tag".to_string()));
+    }
+
+    #[test]
+    fn an_unsynchronised_tag_has_its_padding_taken_back_out() {
+        let mut frames = text_frame(b"TIT2", 0, b"Sync\xFFtest");
+        // What a writer does to every `0xFF` in the tag so that nothing in here
+        // can look like a frame sync — and it moves every byte after it.
+        let mut padded = Vec::new();
+        for byte in frames.drain(..) {
+            padded.push(byte);
+            if byte == 0xFF {
+                padded.push(0x00);
+            }
+        }
+        let mut file = b"ID3".to_vec();
+        file.extend_from_slice(&[3, 0, 0x80]);
+        let size = padded.len();
+        file.extend_from_slice(&[
+            ((size >> 21) & 0x7F) as u8,
+            ((size >> 14) & 0x7F) as u8,
+            ((size >> 7) & 0x7F) as u8,
+            (size & 0x7F) as u8,
+        ]);
+        file.extend_from_slice(&padded);
+        assert_eq!(title(&file, "audio/mpeg"), Some("Sync\u{ff}test".to_string()));
+    }
+
+    /// A `.wav` carrying one of the two things it can carry, or both.
+    fn riff_with(form: &[u8; 4], chunks: &[Vec<u8>]) -> Vec<u8> {
+        let mut body = form.to_vec();
+        body.extend_from_slice(b"fmt ");
+        body.extend_from_slice(&16u32.to_le_bytes());
+        body.extend_from_slice(&[0u8; 16]);
+        body.extend_from_slice(b"data");
+        body.extend_from_slice(&64u32.to_le_bytes());
+        body.extend_from_slice(&[0u8; 64]);
+        for chunk in chunks {
+            body.extend_from_slice(chunk);
+        }
+        let mut out = b"RIFF".to_vec();
+        out.extend_from_slice(&(body.len() as u32).to_le_bytes());
+        out.extend_from_slice(&body);
+        out
+    }
+
+    fn info_list(name: &[u8]) -> Vec<u8> {
+        let mut inner = b"INFO".to_vec();
+        inner.extend_from_slice(b"INAM");
+        let mut value = name.to_vec();
+        value.push(0);
+        if value.len() % 2 == 1 {
+            value.push(0);
+        }
+        inner.extend_from_slice(&(value.len() as u32).to_le_bytes());
+        inner.extend_from_slice(&value);
+        let mut out = b"LIST".to_vec();
+        out.extend_from_slice(&(inner.len() as u32).to_le_bytes());
+        out.extend_from_slice(&inner);
+        out
+    }
+
+    fn id3_chunk(frames: &[u8]) -> Vec<u8> {
+        let tag = id3(frames);
+        let mut out = b"id3 ".to_vec();
+        out.extend_from_slice(&(tag.len() as u32).to_le_bytes());
+        out.extend_from_slice(&tag);
+        if tag.len() % 2 == 1 {
+            out.push(0);
+        }
+        out
+    }
+
+    #[test]
+    fn a_wav_is_named_by_its_info_list() {
+        let file = riff_with(b"WAVE", &[info_list(b"hello land!")]);
+        assert_eq!(title(&file, "audio/wav"), Some("hello land!".to_string()));
+    }
+
+    #[test]
+    fn a_wav_can_keep_its_name_in_a_whole_id3_tag_after_the_sound() {
+        // Fifteen of the twenty-seven titled RIFF files on D-52's corpus. A
+        // reader that only knows `INAM` finds under half of them.
+        let file = riff_with(b"WAVE", &[id3_chunk(&text_frame(b"TIT2", 0, b"Bark output"))]);
+        assert_eq!(title(&file, "audio/wav"), Some("Bark output".to_string()));
+    }
+
+    #[test]
+    fn the_containers_own_field_wins_over_the_tag_that_is_a_guest_in_it() {
+        let file = riff_with(
+            b"WAVE",
+            &[
+                id3_chunk(&text_frame(b"TIT2", 0, b"the guest")),
+                info_list(b"the native field"),
+            ],
+        );
+        assert_eq!(title(&file, "audio/wav"), Some("the native field".to_string()));
+    }
+
+    #[test]
+    fn an_avi_reads_the_same_two_places_a_wav_does() {
+        let file = riff_with(b"AVI ", &[info_list(b"Holiday 1998")]);
+        assert_eq!(title(&file, "video/x-msvideo"), Some("Holiday 1998".to_string()));
+    }
+
+    #[test]
+    fn a_title_is_collapsed_and_capped_the_way_a_document_s_is() {
+        let sprawling = format!("  a\ttitle\nwith\r\nwhitespace {}  ", "long ".repeat(64));
+        let file = id3(&text_frame(b"TIT2", 3, sprawling.as_bytes()));
+        let got = title(&file, "audio/mpeg").expect("a title");
+        assert!(got.starts_with("a title with whitespace long"));
+        assert!(got.chars().count() <= 120, "{} characters", got.chars().count());
+    }
+
+    #[test]
+    fn a_title_that_is_nothing_but_space_is_no_title() {
+        // The difference that matters: `Some("")` would have a label writing a
+        // blank line under the filename rather than writing nothing.
+        let file = id3(&text_frame(b"TIT2", 0, b"   \t  "));
+        assert_eq!(title(&file, "audio/mpeg"), None);
+    }
+
+    #[test]
+    fn a_kind_that_carries_no_name_is_not_asked() {
+        for mime in ["image/jpeg", "application/pdf", "application/octet-stream"] {
+            assert_eq!(title(&id3(&text_frame(b"TIT2", 0, b"x")), mime), None, "{mime}");
+        }
+    }
+
+    #[test]
+    fn a_container_this_build_cannot_read_says_nothing_rather_than_something() {
+        // AC-697. Every one of these is a tape with only its filename on it.
+        for mime in [
+            "video/mp4",
+            "video/x-matroska",
+            "audio/ogg",
+            "audio/flac",
+            "audio/wav",
+            "video/x-msvideo",
+            "audio/mpeg",
+        ] {
+            for bytes in [
+                b"".as_slice(),
+                b"\x00".as_slice(),
+                b"RIFF".as_slice(),
+                b"OggS".as_slice(),
+                b"ID3".as_slice(),
+                b"fLaC".as_slice(),
+                b"\xff\xff\xff\xff\xff\xff\xff\xff".as_slice(),
+                &[0x1A, 0x45, 0xDF, 0xA3, 0xFF, 0xFF],
+                &[0u8; 512],
+                &[0xFFu8; 512],
+            ] {
+                assert_eq!(title(bytes, mime), None, "{mime} on {bytes:02x?}");
+            }
+        }
+    }
+
+    // --- against a second opinion, on real files ----------------------------
+
+    /// Every title on a real corpus, against ffprobe's reading of the same file.
+    ///
+    /// Ignored, because it needs a disk full of somebody's media and a sweep
+    /// already taken. It is kept rather than deleted for the reason `scripts/`
+    /// keeps its spike rigs: D-52's numbers are only worth what re-running them
+    /// is, and the finding this test exists to prevent is one nothing else can
+    /// catch — **fixtures I write agree with the parser I wrote**. On T-300 that
+    /// was not a hypothetical: hand-built duration fixtures all passed and 59
+    /// real files disagreed inside a minute.
+    ///
+    /// ```text
+    /// node scripts/sweep-media-titles.mjs D:/ C:/Users/you
+    /// SCHIZO_MEDIA_CORPUS=... cargo test --lib -- --ignored --nocapture
+    /// ```
+    ///
+    /// The sweep writes one `path<TAB>title` line per file, which is the whole
+    /// contract between the two halves — a tab-separated pair rather than the
+    /// JSON ffprobe emits, so that nothing here has to be a JSON reader.
+    #[test]
+    #[ignore = "needs a real corpus; see SCHIZO_MEDIA_CORPUS"]
+    fn agrees_with_ffprobe_on_a_real_corpus() {
+        let corpus = std::env::var("SCHIZO_MEDIA_CORPUS")
+            .expect("set SCHIZO_MEDIA_CORPUS to the sweep's corpus.tsv");
+        let lines = std::fs::read_to_string(&corpus).expect("corpus");
+
+        let (mut agreed, mut ours_only, mut theirs_only, mut differed, mut skipped) =
+            (0u32, 0u32, 0u32, 0u32, 0u32);
+        for line in lines.lines().filter(|line| !line.is_empty()) {
+            let (path, theirs) = line.split_once('\t').unwrap_or((line, ""));
+
+            let Ok(mut file) = std::fs::File::open(path) else {
+                skipped += 1;
+                continue;
+            };
+            let mut head = [0u8; crate::assets::SNIFF_BYTES];
+            let read = std::io::Read::read(&mut file, &mut head).unwrap_or(0);
+            let Some(mime) = crate::assets::sniff_mime(&head[..read]) else {
+                skipped += 1;
+                continue;
+            };
+            let ours = probe_title(&mut file, mime);
+            let theirs = crate::document::tidy(theirs);
+
+            match (&ours, &theirs) {
+                (Some(a), Some(b)) if a == b => agreed += 1,
+                (None, None) => agreed += 1,
+                (Some(a), None) => {
+                    ours_only += 1;
+                    println!("  ONLY OURS   {path}\n              {a:?}");
+                }
+                (None, Some(b)) => {
+                    theirs_only += 1;
+                    println!("  ONLY THEIRS {path}\n              {b:?}");
+                }
+                (Some(a), Some(b)) => {
+                    differed += 1;
+                    println!("  DIFFERENT   {path}\n         ours {a:?}\n       theirs {b:?}");
+                }
+            }
+        }
+        println!(
+            "agreed {agreed}  only-ours {ours_only}  only-theirs {theirs_only}  differed {differed}  skipped {skipped}"
+        );
+        assert_eq!(differed, 0, "a title read two ways is a title read wrong");
     }
 }
 

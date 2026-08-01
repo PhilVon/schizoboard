@@ -1182,10 +1182,7 @@ impl AssetStore {
         }
         // Sniffed rather than remembered, because remembering it would mean
         // keeping metadata this side of the boundary.
-        let mime = read_head(&original, SNIFF_BYTES)
-            .ok()
-            .and_then(|head| sniff_mime(&head))
-            .unwrap_or("application/octet-stream");
+        let mime = sniff_path(&original).unwrap_or("application/octet-stream");
         Some(Resolved {
             path: original,
             // The original standing in for a variant is only a *temporary*
@@ -1415,6 +1412,19 @@ fn write_atomic(path: &Path, bytes: &[u8]) -> Result<()> {
             }
         }
     }
+}
+
+/// What the bytes at this path say they are, off their first [`SNIFF_BYTES`].
+///
+/// The same evidence [`sniff_mime`] is given at ingest, asked of a file the
+/// store already holds — so a caller that has a hash and needs to know what to
+/// do with it dispatches on the file rather than on a record some other machine
+/// wrote. `None` for a file that is not there, and for one whose head matches
+/// nothing this build knows.
+pub(crate) fn sniff_path(path: &Path) -> Option<&'static str> {
+    read_head(path, SNIFF_BYTES)
+        .ok()
+        .and_then(|head| sniff_mime(&head))
 }
 
 fn read_head(path: &Path, n: usize) -> io::Result<Vec<u8>> {
@@ -1702,6 +1712,43 @@ mod tests {
             serde_json::to_value(&picture).unwrap()["duration"],
             serde_json::Value::Null
         );
+    }
+
+    #[test]
+    fn what_a_cassette_is_called_does_not_cross_with_it() {
+        // AC-696, and the reason it is a test rather than a note: `AssetMeta` is
+        // what the frontend writes into the document, so a `title` field added
+        // here later — for the best of reasons, beside `duration`, which came
+        // off the same file at the same moment — would put a name on the wire
+        // and undo Q-211 without anything else in the build noticing.
+        //
+        // Both halves are asserted together on purpose. That the record has no
+        // title is worth nothing on its own: a fixture that simply has no title
+        // in it would pass that and prove nothing. So the same bytes are read
+        // the other way, through the path a label really uses, and do have one.
+        let (_dir, store) = store();
+        let mut titled = wav(1);
+        let mut info = b"INFO".to_vec();
+        info.extend_from_slice(b"INAM");
+        info.extend_from_slice(&12u32.to_le_bytes());
+        info.extend_from_slice(b"Interview\0\0\0");
+        let mut list = b"LIST".to_vec();
+        list.extend_from_slice(&(info.len() as u32).to_le_bytes());
+        list.extend_from_slice(&info);
+        titled.extend_from_slice(&list);
+        let riff = (titled.len() - 8) as u32;
+        titled[4..8].copy_from_slice(&riff.to_le_bytes());
+
+        let meta = store.ingest_bytes(&titled, None).unwrap();
+        let crossed = serde_json::to_value(&meta).unwrap();
+        let keys: Vec<&String> = crossed.as_object().unwrap().keys().collect();
+        assert!(
+            !keys.iter().any(|key| key.contains("title") || key.contains("name")),
+            "a title reached the record: {keys:?}"
+        );
+
+        let read = crate::media::probe_title(&mut std::io::Cursor::new(titled), "audio/wav");
+        assert_eq!(read, Some("Interview".to_string()));
     }
 
     /// A document of `count` blank pages, written with lopdf so the fixture is

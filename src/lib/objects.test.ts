@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   assetKind,
+  carriesItsOwnName,
   caseNumber,
   objectSizeFor,
   pagesLabel,
@@ -96,6 +97,25 @@ describe("a page count, as a folder says it", () => {
     // rather than a folder claiming to be empty.
     expect(pagesLabel(null)).toBe("");
     expect(pagesLabel(Number.NaN)).toBe("");
+  });
+});
+
+describe("which files are asked what they are called", () => {
+  it("asks the three that have a field for it", () => {
+    // A PDF's /Title, a container's own name field. Each of the three has a
+    // label with a line for it: a tab, a spine, a J-card.
+    expect(carriesItsOwnName("document")).toBe(true);
+    expect(carriesItsOwnName("video")).toBe(true);
+    expect(carriesItsOwnName("audio")).toBe(true);
+  });
+
+  it("does not ask a photograph, and does not ask what it cannot name", () => {
+    // Not a nicety. The probe is a round trip to the shell and a read off the
+    // disk, so a board of three hundred photographs would ask three hundred
+    // times to be told nothing. What a JPEG carries is EXIF — what took it,
+    // not what it is — and a polaroid gets a caption in somebody's own hand.
+    expect(carriesItsOwnName("image")).toBe(false);
+    expect(carriesItsOwnName("unknown")).toBe(false);
   });
 });
 

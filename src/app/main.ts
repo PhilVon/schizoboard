@@ -72,6 +72,7 @@ import { formatInvite, inviteSearch, openingPlan, parseInvite } from "@/app/invi
 import * as prefs from "@/app/prefs";
 import { dialAddress, freshBoardId, identityFor } from "@/app/sync";
 import { DEFAULT_ERASER_SIZE, type InkSurface, type WetStroke } from "@/lib/ink";
+import { carriesItsOwnName } from "@/lib/objects";
 import { initPlatform } from "@/platform";
 import { variantFor } from "@/platform/types";
 import { Cork } from "@/render/cork";
@@ -395,7 +396,7 @@ async function boot(): Promise<void> {
     return { url: "", phase: assets.phase(sha256), fraction: assets.fraction(sha256) };
   };
   /**
-   * What a document says it is called — the derived local index of Q-211.
+   * What a file says it is called — the derived local index of Q-211.
    *
    * Local because that is the answer: a title never enters the document, never
    * crosses the wire and is never written down, so a machine holding no bytes
@@ -403,9 +404,9 @@ async function boot(): Promise<void> {
    * one; absent means not yet asked.
    *
    * In memory only. It is rebuilt by asking the shell again on the next boot,
-   * which costs one structure load per case file the person actually looks at —
-   * and is what makes this the same code path for a paste, a transfer that has
-   * just committed, a board reopened tomorrow and an opened bundle.
+   * which costs one read per object the person actually looks at — and is what
+   * makes this the same code path for a paste, a transfer that has just
+   * committed, a board reopened tomorrow and an opened bundle.
    */
   const titles = new Map<string, string>();
   /**
@@ -429,10 +430,10 @@ async function boot(): Promise<void> {
     const record = map ? readAsset(sha256, map) : null;
     if (record === null) return NO_FACTS;
     const title = titles.get(sha256);
-    if (title === undefined && record.kind === "document" && assets.isReady(sha256)) {
+    if (title === undefined && carriesItsOwnName(record.kind) && assets.isReady(sha256)) {
       titles.set(sha256, "");
       void native
-        .documentTitle(sha256)
+        .assetTitle(sha256)
         .then((found) => {
           if (!found) return;
           titles.set(sha256, found);
@@ -440,8 +441,9 @@ async function boot(): Promise<void> {
           refreshAsset(sha256);
         })
         .catch(() => {
-          // A shell that cannot answer is a folder with no title on it, which
-          // is already three quarters of them (D-47). Nothing to report.
+          // A shell that cannot answer is an object with no title on it, which
+          // is already three quarters of the folders (D-47) and all but one of
+          // the films (D-52). Nothing to report.
         });
     }
     return {
