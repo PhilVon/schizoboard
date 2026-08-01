@@ -2531,6 +2531,139 @@ textarea.item-field::-webkit-scrollbar {
 }
 
 /*
+ * The still, clipped to the tape — T-270, and a VHS's only.
+ *
+ * ## Where it goes, and what it is allowed to cover
+ *
+ * The face is fully spoken for by the time this arrives: two windows at the
+ * ends, a label between them, a counter under that, and the pin at top centre.
+ * The one bare strip is the moulded lip along the top, so the print sits on
+ * that — left of the pin, lapping onto the top corner of the near window and
+ * stopping *above the reel*.
+ *
+ * That last clause is the geometry the numbers below are chosen for, and it is
+ * not a preference. The window runs 27% to 79% and the reel is the middle 74%
+ * of it, so the disc starts at 33.8%.
+ *
+ * **The frame that decides it is 4:3, not 16:9**, and that is worth stating
+ * because 16:9 is what this was drawn against and it is the wrong case. A print
+ * keeps the shape of the film it came off — a forced box would crop somebody's
+ * face out of the one frame the object gets to show — so the *tallest* film is
+ * what the clearance has to hold for, and a VHS on this board is for exactly
+ * the thing that arrives 4:3: an interview off a camcorder. At 19% wide and
+ * 1.4% padding, that print is 30.7% of the object tall and reaches 32.2% from a
+ * top of 1.5%. The tilt then puts one corner 0.8% lower. 33.0% against 33.8%,
+ * and `tests/case-print-css.test.ts` is what keeps it there — the first
+ * numbers here cleared by a comfortable margin at 16:9 and covered the disc at
+ * 4:3, and every screenshot taken of them was of a 16:9 clip.
+ *
+ * Covering part of a reel would be taking the transport reading T-268 built off
+ * the object to make room for a picture of what is on it.
+ *
+ * ## Why it is a print and not printed
+ *
+ * A white border, a clip over its head and a shadow of its own — a *thing* on
+ * the tape rather than artwork on the sleeve. The distinction is the whole of
+ * I-14: a rental sleeve puts the picture under the writing and makes the object
+ * a poster, and this board is somebody's shelf rather than a shop's. It is also
+ * what keeps the still off the two things that identify the tape, which are the
+ * hand-written label and the case number.
+ */
+.item-case[data-kind="vhs"] .case-print {
+  position: absolute;
+  left: var(--print-left, 3.5%);
+  top: var(--print-top, 1.5%);
+  width: var(--print-w, 19%);
+  /* The border of a machine print: even on three sides and deeper at the foot,
+     which is where a hand holds one. Percentages, so they resolve against the
+     object's width like everything else here and the print keeps its
+     proportions at every zoom and every item size. */
+  padding: var(--print-pad, 1.4%) var(--print-pad, 1.4%) calc(var(--print-pad, 1.4%) * 2.4);
+  border-radius: 1px;
+  /* Photographic paper, and not the same white as the label — a print is
+     brighter and cooler than the cream card somebody wrote on, which is what
+     stops the two reading as one piece of stationery. */
+  background: linear-gradient(calc(160deg + var(--turn, 0deg)), #fbfaf6 0%, #eae7df 100%);
+  /* Nobody lines a print up with the edge of a tape. The seed drives the sign
+     and the size, so two tapes side by side are not the same gesture twice. */
+  transform: rotate(calc(var(--print-tilt, 0) * 2.5deg));
+  /* About the clip, because the clip is what holds it and a print hanging off
+     one swings from there rather than from its own middle. */
+  transform-origin: 50% 4%;
+  /* Sitting on the shell rather than in it. Small and tight: the print is a
+     third of a millimetre of paper, not a card standing off the surface. */
+  box-shadow:
+    0 1px 1.5px rgba(0, 0, 0, 0.45),
+    0 0.5px 0 rgba(255, 255, 255, 0.1) inset;
+}
+
+/*
+ * No poster, no print. See `paintPrint` — a tape with no still is a tape, and
+ * this is `display` rather than an opacity so that a board of films nobody has
+ * the frames of costs no image decode and no compositing layer.
+ */
+.item-case[data-kind="vhs"] .case-print.is-empty {
+  display: none;
+}
+
+.case-still {
+  display: block;
+  width: 100%;
+  /* Its own shape, whatever the film's is — a 4:3 interview and a 16:9 clip are
+     different prints, and forcing one box would crop somebody's face out of the
+     one frame this object gets to show. */
+  height: auto;
+  border-radius: 0.5px;
+  /* The frame is a photograph and takes the light on it like every other one on
+     this board (DESIGN 4.1): a slight sheen off the top left, counter-turned so
+     a tape stood on its end does not carry the highlight round with it. */
+  box-shadow: inset 0 0 0 0.5px rgba(0, 0, 0, 0.22);
+}
+
+/*
+ * What holds it on: a paperclip over the head of the print.
+ *
+ * Two halves of one loop of wire — the near arm across the face and the far one
+ * behind, which is why the second is a shade darker and inset. A single flat
+ * rectangle reads as a strip of tape, and there is already tape on this object.
+ */
+.case-clip {
+  position: absolute;
+  /* A third of the loop above the paper's edge and two thirds lying on it,
+     which is where a clip pushed onto a print actually sits. All of it above
+     would be a ring hanging over nothing, which is what the first version drew
+     and what made it read as a floating hoop rather than as a fastener. */
+  top: -3.5%;
+  left: 46%;
+  width: 15%;
+  height: 34%;
+  transform: translateX(-50%);
+  border-radius: 999px;
+  border: 1.1px solid;
+  /* Nickel: bright along the top of the wire and dark underneath it, one
+     gradient doing the whole of the roundness. */
+  border-color: rgba(226, 226, 230, 0.95) rgba(126, 126, 134, 0.92) rgba(96, 96, 104, 0.9)
+    rgba(178, 178, 188, 0.92);
+  box-shadow: 0 0.5px 1px rgba(0, 0, 0, 0.35);
+}
+
+/*
+ * The inner arm — the second bend of the same piece of wire, shorter and
+ * inside the first. It is what makes the shape a paperclip rather than an
+ * elastic band, and it is the reason the clip survives being drawn eight
+ * pixels wide on a wall: two concentric loops read as metal where one reads as
+ * a smudge.
+ */
+.case-clip::before {
+  content: "";
+  position: absolute;
+  inset: 30% 27% 12%;
+  border-radius: 999px;
+  border: 1px solid rgba(150, 150, 158, 0.85);
+  border-top-color: rgba(214, 214, 220, 0.9);
+}
+
+/*
  * A compact cassette: the label is nearly the whole face.
  *
  * `18%` at the foot rather than the `27%` this had, and that is part of the fix

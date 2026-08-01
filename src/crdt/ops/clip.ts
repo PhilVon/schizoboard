@@ -485,5 +485,13 @@ function assetInput(board: BoardDoc, sha256: string): AssetInput | null {
     // of the record is that it travels ahead of them.
     ...(asset.duration !== null ? { duration: asset.duration } : {}),
     ...(asset.pages !== null ? { pages: asset.pages } : {}),
+    // And the still, on the same argument with one wrinkle: this carries a
+    // hash whose *record* is a second asset that does not travel in a clip.
+    // On this board it is already there and the copy costs nothing. On another
+    // one it is a promise that side may not be able to keep — which is why the
+    // grab in `app/poster.ts` is keyed on whether the bytes are here rather
+    // than on whether the field is set, so a tape that arrives naming a still
+    // nobody has grabs the same frame to the same hash and repairs it.
+    ...(asset.poster !== null ? { poster: asset.poster } : {}),
   };
 }

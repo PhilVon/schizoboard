@@ -234,7 +234,22 @@ export function referencedAssets(board: BoardDoc): string[] {
   const referenced = new Set<string>();
   for (const [id, map] of board.items) {
     const asset = readItem(id, map)?.assetId;
-    if (asset) referenced.add(asset);
+    if (!asset) continue;
+    referenced.add(asset);
+    // And whatever that asset itself names. A film's poster frame is a picture
+    // no item on this board wears (T-270): it hangs off the film's record and
+    // nothing else points at it, so a sweep reading item hashes alone collects
+    // it the first time it runs and every tape on the board loses its still.
+    //
+    // I-72 saw this coming and T-292 is where it is meant to be dealt with,
+    // for a set that will grow — sidecar subtitles and lifted page images are
+    // the same shape. It is here now because the hazard arrives with the first
+    // poster rather than with the task that generalises it, and a keep-set
+    // that is one hash short is silent, permanent and on the wrong side of the
+    // sweep's own comment about what a bundle embeds.
+    const record = board.assets.get(asset);
+    const poster = record ? readAsset(asset, record)?.poster : null;
+    if (poster) referenced.add(poster);
   }
   return [...referenced];
 }

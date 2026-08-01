@@ -27,6 +27,7 @@
 
 import * as Y from "yjs";
 
+import { isHash } from "@/crdt/sync/assets";
 import { assetKind, type AssetKind } from "@/lib/objects";
 import {
   isItemFace,
@@ -186,6 +187,25 @@ export interface AssetFields {
   duration: number | null;
   /** Pages, for a document. `null` when it is not one or nobody has counted. */
   pages: number | null;
+  /**
+   * The still that stands for a film — itself an asset, named by its own hash
+   * (T-270). `null` for every other kind, and for a film nobody has grabbed one
+   * off yet.
+   *
+   * A hash rather than the bytes, so a poster dedupes, transfers and is
+   * collected on the one path every other picture on this board already uses:
+   * two people pasting the same interview grab the same frame and produce the
+   * same hash, and a wall of tapes costs one thumbnail each rather than one
+   * film each (I-70).
+   *
+   * Unlike `duration` and `pages` this is *not* read at ingest. It cannot be:
+   * the frame comes out of a decoder, the only decoder here is the webview's,
+   * and D-48 section 7 measured that a media element inside an item is paused
+   * by the culler the moment it goes off screen. So it is grabbed lazily by
+   * whichever machine holds the bytes, once, and lands on an existing record —
+   * which is the per-property fill-in `registerAsset`'s comment anticipates.
+   */
+  poster: string | null;
 }
 
 // --- coercion -------------------------------------------------------------
@@ -443,7 +463,26 @@ export function readAsset(sha256: string, map: YMap): AssetFields | null {
     kind,
     duration: positive(map.get("duration")),
     pages: positive(map.get("pages")),
+    poster: hash(map.get("poster"), sha256),
   };
+}
+
+/**
+ * A hash we are willing to act on, or nothing.
+ *
+ * `isHash`'s argument, one layer further in: this value arrived in a `Y.Map`
+ * that any peer can write, and what it becomes on this side is a path in the
+ * content store and a key in the exchange. A poster naming `../../etc` is the
+ * one thing an asset record can carry that is worse than a wrong number.
+ *
+ * It also refuses a film that names *itself* as its own still. Nothing here
+ * writes that, and the loop it makes is not an obvious one to spot from the
+ * outside: `posterOf` would resolve the film's hash, raise a want on the film's
+ * bytes and hand an `<img>` a video to decode.
+ */
+function hash(value: unknown, self?: string): string | null {
+  if (typeof value !== "string" || !isHash(value)) return null;
+  return value === self ? null : value;
 }
 
 /**
