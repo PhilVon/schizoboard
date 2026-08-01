@@ -2498,6 +2498,46 @@ describe("a folder, a tape and a cassette", () => {
     }
   });
 
+  it("gives every tape a supply spool and a take-up spool", () => {
+    // Which spool is which is a fact about the object, not about the order they
+    // were appended in — a VHS keeps its two in separate windows at opposite
+    // ends of the face, so there is no DOM order to read it off (T-268).
+    for (const kind of ["video", "audio"] as const) {
+      const el = mount(facts({ kind }));
+      expect(el.querySelectorAll(".case-reel").length, kind).toBe(2);
+      expect(el.querySelectorAll(".case-reel.is-supply").length, kind).toBe(1);
+      expect(el.querySelectorAll(".case-reel.is-takeup").length, kind).toBe(1);
+      again();
+    }
+    // And on a VHS the supply is the left window, which is where a rewound
+    // tape's ribbon is on Phil's reference.
+    const vhs = mount(facts({ kind: "video" }));
+    expect(vhs.querySelector(".case-window.is-left .case-reel.is-supply")).not.toBeNull();
+    expect(vhs.querySelector(".case-window.is-right .case-reel.is-takeup")).not.toBeNull();
+  });
+
+  it("puts a four digit counter on a VHS and on nothing else", () => {
+    // A cassette shows both hubs in one window an inch apart, so the balance
+    // between them is the readout. A VHS has its windows at opposite ends of a
+    // nine inch face with a label between, and the eye will not make that
+    // comparison — so it gets digits, and they are four wheels rather than one
+    // string because a mechanical counter is four wheels.
+    const vhs = mount(facts({ kind: "video" }));
+    const counter = vhs.querySelector(".case-counter")!;
+    expect(counter).not.toBeNull();
+    const digits = [...counter.querySelectorAll(".case-digit")];
+    expect(digits.map((d) => d.textContent).join("")).toBe("0000");
+    // On the shell, not on the label: it is read off the transport rather than
+    // written by anybody, and a filter or a fold that finds the label must not
+    // find this.
+    expect(vhs.querySelector(".case-label .case-counter")).toBeNull();
+
+    for (const kind of ["audio", "document"] as const) {
+      again();
+      expect(mount(facts({ kind })).querySelector(".case-counter"), kind).toBeNull();
+    }
+  });
+
   it("hands a recycled node back to its own kind", () => {
     // Three pools, not one. A cassette dressed out of a folder's subtree would
     // be a tab and no window, because the constructor is the only place the
