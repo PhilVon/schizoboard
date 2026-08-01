@@ -2326,6 +2326,13 @@ mod tests {
         assert_eq!(sniff_mime("naïve, café, £4\n".as_bytes()), Some("text/plain"));
         assert_eq!(extension_for("text/plain"), "txt");
 
+        // However short. There is no floor under this and there should not be:
+        // a signature is a fixed number of bytes and *this* arm is a property
+        // of all of them, so "too small to be sure" would be a rule about
+        // confidence rather than about evidence.
+        assert_eq!(sniff_mime(b"a"), Some("text/plain"));
+        assert_eq!(sniff_mime(b"no."), Some("text/plain"));
+
         // And it is asked last. Every one of these reads perfectly well as text
         // and is something else, so a text arm anywhere above would take them.
         assert_eq!(sniff_mime(b"%PDF-1.7\ntrailer\n"), Some("application/pdf"));
