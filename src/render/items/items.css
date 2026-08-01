@@ -1928,23 +1928,64 @@ textarea.item-field::-webkit-scrollbar {
   height: 74%;
 }
 
-/* A compact cassette: the label is nearly the whole face. */
+/*
+ * A compact cassette: the label is nearly the whole face.
+ *
+ * `12%` at the foot rather than the `27%` this had, and that is part of the fix
+ * below rather than a separate opinion about the drawing. The window is 21.6
+ * units of hole in a label that had 50 units of room, which leaves 28 for a case
+ * number, two lines of writing and a runtime — and those want 41. A label that
+ * cannot hold its own contents clips them, so this one runs to where a real
+ * cassette's runs: the felt-pad end of the shell is the bottom 10% and the
+ * capstan cutouts sit between 91% and 96.5%, so 88% is the last row of the face
+ * that is actually label.
+ */
 .item-case[data-kind="cassette"] .case-label {
-  inset: 9% 7% 27% 7%;
+  inset: 9% 7% 12% 7%;
+  /*
+   * The hole is a row of definite height, and this is the whole of T-304.
+   *
+   * It used to be an `auto` row holding a box with `aspect-ratio` and a width,
+   * on the reasonable assumption that a ratio and a width make a height. They do
+   * — for the box. They did not for the *row*: Chromium sized the track from the
+   * window's contents, about 15 units of reel, so the window rendered its full
+   * 21.6 and overflowed the track by six, and rows 3 and 4 were drawn underneath
+   * the spools. It was invisible until T-302 because a cassette had nothing to
+   * write on those rows, so the overflow landed on nothing.
+   *
+   * So the dependency is turned round: the track states how tall the hole is —
+   * as a fraction of the label, which is the same kind of statement as every
+   * other length in this block — and the window takes the whole of it, leaving
+   * `aspect-ratio` to supply the width. One number decides the hole's size
+   * instead of two that could disagree, and a percentage track resolves against
+   * a definite block size, which this label has because it is inset on all four
+   * sides. 33.15% of the label's 65 units of content box is the reference's
+   * 575-by-135 hole, unchanged.
+   *
+   * The row gap is a percentage for a related reason. `0.15em` in the shared
+   * rule is 0.15 of *sixteen pixels*, because nothing between here and `body`
+   * sets a font size — 2.4 board units of gap on an object whose own writing is
+   * 7.4, four times over, entirely by inheritance rather than by anyone's
+   * choice. The folder and the VHS have the same accident and are left with it:
+   * neither is short of room, and changing how they look is not this task.
+   */
+  grid-template-rows: auto 33.15% auto auto 1fr;
+  gap: 1.85% 0;
 }
 
 /*
- * And the window is a row of it. `76%` and the aspect together are the
- * reference's 575 by 135 hole, and putting it in the flow is what stops the
- * writing above and the writing below from having to know it is there.
+ * And the window is that row, filled.
+ *
+ * No `width`, and no vertical margin: both used to be part of how the hole was
+ * sized and both are now the track's business. The margin was `0.25em` — eight
+ * units of the label spent on the same inherited sixteen pixels as the gap.
  */
 .item-case[data-kind="cassette"] .case-window {
   grid-row: 2;
   grid-column: 1 / -1;
   justify-self: center;
-  width: 78%;
+  height: 100%;
   aspect-ratio: 4.26;
-  margin: 0.25em 0;
   padding: 0 4%;
   /* A pill, as the reference's hole is - a rounded rectangle reads as a screen
      and this reads as something cut with a router. */
