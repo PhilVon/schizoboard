@@ -1715,9 +1715,10 @@ class CaseView implements View {
     // How the paper inside this one is sitting. A signed nudge rather than three
     // cuts, because what varies between two folders on a real desk is not a
     // manufacturing option — it is that nobody squares up what they put in.
+    // There was a second one of these for the top sheet's own lean; it went with
+    // the top sheet on T-311.
     if (this.archetype === "folder") {
       this.el.style.setProperty("--spill", (valueAt(cold.seed, "tab", 0) * 2 - 1).toFixed(2));
-      this.el.style.setProperty("--spill2", (valueAt(cold.seed, "tab", 1) * 2 - 1).toFixed(2));
       // And how much is in it. Set here rather than at ingest because it is a
       // *drawing* and not a fact about the item: the page count arrives with
       // the asset record, which may be a peer's write and a network away, and
