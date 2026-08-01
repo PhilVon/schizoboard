@@ -2279,6 +2279,8 @@ describe("where a polaroid's caption sits", () => {
  */
 describe("a folder, a tape and a cassette", () => {
   const HASH = "4f2a9c1b".padEnd(64, "0");
+  /** The still — a second asset, hashed like any other picture (T-270). */
+  const POSTER = "9e10c73d".padEnd(64, "1");
 
   /** What the document says about an asset — the reader in `app/main.ts`, faked. */
   function facts(over: Partial<AssetFacts> = {}): AssetLookup {
@@ -2536,6 +2538,101 @@ describe("a folder, a tape and a cassette", () => {
       again();
       expect(mount(facts({ kind })).querySelector(".case-counter"), kind).toBeNull();
     }
+  });
+
+  // --- T-270: the still clipped to the tape ---------------------------------
+
+  it("clips a print to a tape and to neither of the other two", () => {
+    // There is no frame to take off a sound recording, and a document's first
+    // page is a page — it belongs to the spread T-279 mounts rather than to a
+    // thumbnail lifted early. So this is a VHS's furniture, decided in the
+    // constructor like every other difference between the three.
+    const vhs = mount(facts({ kind: "video", poster: POSTER }));
+    expect(vhs.querySelector(".case-print")).not.toBeNull();
+    expect(vhs.querySelector(".case-still")).not.toBeNull();
+    // Held on by a clip, which is what makes it a thing stuck to the tape
+    // rather than artwork printed on the sleeve.
+    expect(vhs.querySelector(".case-print .case-clip")).not.toBeNull();
+
+    for (const kind of ["audio", "document"] as const) {
+      again();
+      expect(mount(facts({ kind, poster: POSTER })).querySelector(".case-print"), kind).toBeNull();
+    }
+  });
+
+  it("draws no print at all until there is a still to put in it", () => {
+    // A tape with no still is a tape — the shell, the label, the case number
+    // and the runtime are all there and all legible (T-271). A print saying
+    // "the still is on its way" would be furniture explaining the absence of
+    // furniture, so there is no third state here: the class is what keeps the
+    // node out of the box model, and out of the decode.
+    const vhs = mount(facts({ kind: "video" }));
+    expect(vhs.querySelector(".case-print")!.classList.contains("is-empty")).toBe(true);
+    expect(vhs.querySelector(".case-still")!.getAttribute("src")).toBeNull();
+  });
+
+  it("points the print at the poster hash and never at the film", () => {
+    const layer = new DomItemLayer(
+      host,
+      (sha) => ready(`asset://sha256/${sha}`),
+      facts({ kind: "video", poster: POSTER }),
+    );
+    add("a", { assetId: HASH });
+    layer.sync(scene, dirty, null);
+    const still = host.querySelector(".case-still") as HTMLImageElement;
+    expect(still.getAttribute("src")).toContain(POSTER);
+    expect(still.getAttribute("src")).not.toContain(HASH);
+  });
+
+  it("paints the still when its bytes land, with nothing else about the record changed", () => {
+    // The guard this defends is the bind's digest. The poster *hash* is on the
+    // record from the moment it is grabbed and never changes again; what
+    // changes afterwards is whether this machine can show it. A digest naming
+    // the hash compares equal across the transfer committing, and the tape you
+    // were looking at when the bytes landed is the one that never gets a
+    // picture.
+    let here = false;
+    const layer = new DomItemLayer(
+      host,
+      (sha) => (sha === POSTER && !here ? waiting() : ready(`asset://sha256/${sha}`)),
+      facts({ kind: "video", poster: POSTER }),
+    );
+    add("a", { assetId: HASH });
+    layer.sync(scene, dirty, null);
+    const print = host.querySelector(".case-print")!;
+    expect(print.classList.contains("is-empty")).toBe(true);
+
+    here = true;
+    dirty.item("a");
+    layer.sync(scene, dirty, null);
+    expect(print.classList.contains("is-empty")).toBe(false);
+    expect((host.querySelector(".case-still") as HTMLImageElement).getAttribute("src")).toContain(
+      POSTER,
+    );
+  });
+
+  it("takes the last film's frame off a recycled print", () => {
+    // Views are pooled, so the node this tape gives back is the node the next
+    // one mounts on. An `<img>` still pointing at the last film's still would
+    // show it for the frame between mounting and binding — a tape wearing
+    // somebody else's picture, which is the one failure a wall of stills
+    // cannot survive.
+    let poster: string = POSTER;
+    const layer = new DomItemLayer(
+      host,
+      (sha) => ready(`asset://sha256/${sha}`),
+      () => ({ ...NO_FACTS, kind: "video" as const, poster }),
+    );
+    add("a", { assetId: HASH });
+    layer.sync(scene, dirty, null);
+    expect((host.querySelector(".case-still") as HTMLImageElement).getAttribute("src")).toContain(
+      POSTER,
+    );
+
+    poster = "";
+    dirty.item("a");
+    layer.sync(scene, dirty, null);
+    expect((host.querySelector(".case-still") as HTMLImageElement).getAttribute("src")).toBeNull();
   });
 
   it("hands a recycled node back to its own kind", () => {

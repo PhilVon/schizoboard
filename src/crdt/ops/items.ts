@@ -68,6 +68,15 @@ export interface AssetInput {
   duration?: number | null;
   /** Pages, for a document. Same rule. */
   pages?: number | null;
+  /**
+   * The hash of the still that stands for a film (T-270). Same rule again, and
+   * one difference: a paste never has one, because the frame has to be decoded
+   * off bytes that are only in the store once this has run. It is here for the
+   * route that *does* — `pasteClip` copying a film that already carries one, so
+   * the still crosses to the other board with the tape instead of being grabbed
+   * a second time off the same frame to the same hash.
+   */
+  poster?: string | null;
 }
 
 export interface CreatedItem {
@@ -120,9 +129,52 @@ export function registerAsset(
   // in without touching anything beside it.
   if (typeof input.duration === "number") asset.set("duration", input.duration);
   if (typeof input.pages === "number") asset.set("pages", input.pages);
+  if (typeof input.poster === "string") asset.set("poster", input.poster);
   asset.set("addedBy", board.doc.clientID);
   asset.set("addedAt", now);
   board.assets.set(sha256, asset);
+}
+
+/**
+ * Register a still and say which film it stands for — one transaction (T-270).
+ *
+ * The one field of an asset record that is written *after* the record is, and
+ * it has to be: `registerAsset` runs on the paste, and there is no frame to
+ * grab until the bytes are in the store — which for a 400 MB interview arriving
+ * over the wire is minutes later and on a different machine (T-265). So this is
+ * the per-property fill-in `registerAsset`'s own comment describes, and the
+ * reason it is a second op rather than a relaxation of that guard is that
+ * re-registering would rewrite eight keys to say one thing, and `w`, `h`,
+ * `mime` and `size` are not this caller's to restate.
+ *
+ * Two writes and not one, because a poster is an asset in its own right: the
+ * still needs a record of its own or no peer can be asked for it and nothing
+ * knows its size, and the film needs to point at it or nothing knows it is a
+ * poster rather than a photograph somebody pasted. Together, so a peer never
+ * sees a film naming a still it has no record for.
+ *
+ * **Silent on a film that is not there.** That is an object deleted while its
+ * own frame was being decoded, and writing either half would resurrect an asset
+ * the sweep is on its way to collect. `Y.Map` is per-property LWW, so two
+ * machines that both grab a poster off the same film write the same hash and
+ * the loser of the race changes nothing.
+ */
+export function attachPoster(
+  board: BoardDoc,
+  film: string,
+  poster: string,
+  input: AssetInput,
+): void {
+  const record = board.assets.get(film);
+  if (record === undefined) return;
+  if (record.get("poster") === poster) return;
+  // Its own clock, like `createItems`. The caller is an async grab that started
+  // whenever the tape came on screen, so a time threaded in from there would be
+  // the moment somebody looked at it rather than the moment it was stored.
+  mutate(board, Origin.POSTER, () => {
+    registerAsset(board, poster, input, Date.now());
+    record.set("poster", poster);
+  });
 }
 
 /**

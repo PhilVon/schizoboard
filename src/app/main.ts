@@ -10,6 +10,7 @@
  */
 
 import { ASSET_SWEEP_DELAY_MS, sweepAssets } from "@/app/assetgc";
+import { PosterGrabber } from "@/app/poster";
 import { Binding } from "@/crdt/binding";
 import {
   assetOrigName,
@@ -27,6 +28,7 @@ import {
 import * as ops from "@/crdt/ops";
 import { readAsset, SCHEMA_VERSION } from "@/crdt/schema";
 import {
+  attachPoster,
   bringToFront,
   commitStrokes,
   createItems,
@@ -446,12 +448,21 @@ async function boot(): Promise<void> {
           // the films (D-52). Nothing to report.
         });
     }
+    // The still, on the same argument the title probe is made on and from the
+    // same place: the layer that already decided to mount this object is a
+    // better answer to "which films are worth decoding a frame off" than any
+    // second opinion about the viewport. It says what the record currently
+    // holds, which may be a hash whose bytes are not here — `PosterGrabber`
+    // treats that as *not done* rather than as done, so a tape that arrives
+    // naming a still nobody transferred grabs the same frame back.
+    if (record.kind === "video") posters.wants(sha256, record.poster);
     return {
       kind: record.kind,
       name: record.origName,
       title: title ?? "",
       duration: record.duration,
       pages: record.pages,
+      poster: record.poster ?? "",
     };
   };
   /** Phase 3, after the torsion: the note being written on, laid flat (T-178). */
@@ -531,17 +542,60 @@ async function boot(): Promise<void> {
    *  (T-61). Nothing else on this board draws below the items. */
   const boardInk = new BoardInkLayer(world.layers.boardInk);
 
-  /** Re-bind every item wearing this asset. A walk, on a once-per-photograph
-   *  event. */
+  /**
+   * Re-bind every item wearing this asset. A walk, on a once-per-photograph
+   * event.
+   *
+   * Or *naming* it: a poster frame is an asset no item wears (T-270) — it hangs
+   * off a film's record — so a still landing on this disk would redraw nothing
+   * and the tape would keep its blank print until something else dirtied it.
+   * Asked of the document rather than of the scene, because the scene mirrors
+   * items and this is a fact about a record.
+   */
   const refreshAsset = (sha256: string): void => {
     for (const id of scene.itemIds()) {
-      if (scene.cold(id)?.assetId === sha256) dirty.item(id);
+      const worn = scene.cold(id)?.assetId;
+      if (!worn) continue;
+      if (worn === sha256) {
+        dirty.item(id);
+        continue;
+      }
+      const map = board.assets.get(worn);
+      if (map && readAsset(worn, map)?.poster === sha256) dirty.item(id);
     }
   };
   // One subscription rather than a `refreshAsset` beside every transition. A
   // state that changed and did not redraw is the bug this makes impossible, and
   // there are five places that change one.
   assets.onChange(refreshAsset);
+
+  /**
+   * The still that stands for a film (T-270), grabbed off bytes this machine
+   * holds and never more than one at a time — D-48 section 8 measured the
+   * *second* decoding video taking the board from 144 Hz to 72, and a board of
+   * tapes mounting at once would otherwise start one decode each.
+   */
+  const posters = new PosterGrabber({
+    // The original, not a variant: `variantFor` picks a *stored* size and there
+    // is no downscale of a film in the store — the shell only makes those for
+    // pictures (`assets.rs`).
+    url: (sha256) => native.assetUrl(sha256, "original"),
+    isReady: (sha256) => assets.isReady(sha256),
+    ingest: (bytes, mime) => native.assetIngestBytes(bytes, mime),
+    record: (film, poster) => {
+      attachPoster(board, film, poster.sha256, {
+        w: poster.w,
+        h: poster.h,
+        mime: poster.mime,
+        size: poster.size,
+      });
+      // The bytes went into this store a moment ago, so this machine is a
+      // holder — say so rather than waiting for `reconcileAssets` to notice at
+      // idle priority, which is a still that appears on the next boot.
+      holdsAsset(poster.sha256);
+      refreshAsset(poster.sha256);
+    },
+  });
 
   // Awaited, not fired and forgotten: `listen` is itself a round trip, and an
   // `asset:ready` emitted before it resolves is simply lost — which would

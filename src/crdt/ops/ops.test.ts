@@ -9,6 +9,7 @@ import * as Y from "yjs";
 import { initialiseBoard, openBoardDoc, type BoardDoc } from "@/crdt/doc";
 import { Origin, TRACKED_ORIGINS, isTracked } from "@/crdt/origins";
 import {
+  attachPoster,
   bringToFront,
   createItems,
   createPin,
@@ -21,7 +22,7 @@ import {
   setItemPoses,
   resizeItems,
 } from "@/crdt/ops";
-import { readItem, readPin, SCHEMA_VERSION } from "@/crdt/schema";
+import { readAsset, readItem, readPin, SCHEMA_VERSION } from "@/crdt/schema";
 import { compareOrder } from "@/crdt/zindex";
 import { SCATTER_DEGREES } from "@/lib/seed";
 
@@ -156,6 +157,92 @@ describe("createItems", () => {
     ])[0]!;
     expect(pinId).toBeNull();
     expect(b.pins.size).toBe(0);
+  });
+});
+
+/**
+ * The still a film points at — T-270, and the one field of an asset record
+ * written *after* the record is.
+ */
+describe("attachPoster", () => {
+  const FILM = "f".repeat(64);
+  const STILL = "5".repeat(64);
+  const still = { w: 640, h: 360, mime: "image/webp", size: 4096 };
+
+  function withFilm(): BoardDoc {
+    const b = board();
+    createItems(b, [
+      {
+        type: "polaroid",
+        x: 0,
+        y: 0,
+        w: 300,
+        h: 180,
+        assetId: FILM,
+        asset: { w: 1920, h: 1080, mime: "video/mp4", size: 9_000_000, duration: 61 },
+      },
+    ]);
+    return b;
+  }
+
+  it("registers the still and points the film at it", () => {
+    const b = withFilm();
+    attachPoster(b, FILM, STILL, still);
+
+    expect(readAsset(FILM, b.assets.get(FILM)!)!.poster).toBe(STILL);
+    const record = readAsset(STILL, b.assets.get(STILL)!)!;
+    expect(record.mime).toBe("image/webp");
+    expect(record.kind).toBe("image");
+    expect(record.w).toBe(640);
+  });
+
+  it("leaves everything else on the film's record exactly as it was", () => {
+    // The reason this is a second op rather than a relaxation of
+    // `registerAsset`'s write-once guard: `w`, `h`, `mime` and `size` are not
+    // this caller's to restate, and the record is what reaches a peer ahead of
+    // the bytes.
+    const b = withFilm();
+    const before = readAsset(FILM, b.assets.get(FILM)!)!;
+    attachPoster(b, FILM, STILL, still);
+    const after = readAsset(FILM, b.assets.get(FILM)!)!;
+    expect({ ...after, poster: null }).toEqual({ ...before, poster: null });
+  });
+
+  it("writes nothing at all for a film this board no longer has", () => {
+    // An object deleted while its own frame was being decoded. Writing either
+    // half would resurrect an asset the sweep is on its way to collect — and
+    // the still's record would be an orphan nothing ever points at.
+    const b = board();
+    attachPoster(b, FILM, STILL, still);
+    expect(b.assets.has(FILM)).toBe(false);
+    expect(b.assets.has(STILL)).toBe(false);
+  });
+
+  it("is silent when it is asked for the answer that is already there", () => {
+    // Two machines that both grab a poster off the same film write the same
+    // hash, so the loser of the race must change nothing — an update on the
+    // wire per peer per tape, saying what everybody already agrees on.
+    const b = withFilm();
+    attachPoster(b, FILM, STILL, still);
+    let updates = 0;
+    b.doc.on("update", () => (updates += 1));
+    attachPoster(b, FILM, STILL, still);
+    expect(updates).toBe(0);
+  });
+
+  it("is not a thing Ctrl+Z can take off a tape", () => {
+    // It lands seconds after the paste and nobody pressed anything. Tracked, it
+    // would sit on top of the paste in the undo stack — so the first Ctrl+Z
+    // after dropping a tape on the board would take the picture off it and the
+    // second would take the tape.
+    expect(isTracked(Origin.POSTER)).toBe(false);
+
+    const b = withFilm();
+    const undo = new Y.UndoManager([b.items, b.assets], {
+      trackedOrigins: new Set(TRACKED_ORIGINS),
+    });
+    attachPoster(b, FILM, STILL, still);
+    expect(undo.canUndo()).toBe(false);
   });
 });
 

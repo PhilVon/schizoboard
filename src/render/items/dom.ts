@@ -233,6 +233,15 @@ export interface AssetFacts {
   readonly duration: number | null;
   /** Pages, for a document. */
   readonly pages: number | null;
+  /**
+   * The hash of the still that stands for a film, or `""` (T-270).
+   *
+   * A second asset, so it is resolved through the same `AssetResolver` as the
+   * item's own — which is what raises the want on it and gives the tape a
+   * picture the moment the bytes land, without this layer knowing anything
+   * about transfers.
+   */
+  readonly poster: string;
 }
 
 /** An item naming no asset, and a hash no record was ever written for. */
@@ -242,6 +251,7 @@ export const NO_FACTS: AssetFacts = {
   title: "",
   duration: null,
   pages: null,
+  poster: "",
 };
 
 /** What the document says about an asset. Pure — see [`AssetFacts`]. */
@@ -1658,15 +1668,26 @@ class CaseView implements View {
   private readonly grain: HTMLDivElement | null;
   /** The four digit counter, which only a VHS wears — see the constructor. */
   private readonly counter: HTMLDivElement | null;
+  /**
+   * The still, clipped to the tape — a VHS's only (T-270).
+   *
+   * Not the cassette's and not the folder's, and neither is an omission. There
+   * is no frame to take off a sound recording, and a document's first page is a
+   * *page* — it belongs to the spread T-279 mounts and to the spilling of T-288,
+   * and lifting one here would be answering that question early with a
+   * thumbnail.
+   */
+  private readonly print: HTMLDivElement | null;
+  private readonly still: HTMLImageElement | null;
 
   private boundCold: ItemCold | null = null;
   /**
    * Everything off the asset record that reaches a label, as one string.
    *
-   * A digest rather than five compared fields, because the guard runs on every
+   * A digest rather than six compared fields, because the guard runs on every
    * bind and the record changes about as often as never. `""` is the sentinel
-   * and cannot collide: a digest is five values joined by spaces, so the
-   * shortest one this can ever hold is four spaces.
+   * and cannot collide: a digest is six values joined by spaces, so the
+   * shortest one this can ever hold is five spaces.
    */
   private boundFacts = "";
   private boundWear = -1;
@@ -1733,6 +1754,8 @@ class CaseView implements View {
       const label = div("folder-label");
       label.append(this.number);
       front.append(this.grain, label, this.meta, this.title, this.caption);
+      this.print = null;
+      this.still = null;
       this.body.append(back, sheets, front);
     } else if (archetype === "vhs") {
       // A VHS is read from Phil's reference: a ribbed shell, a white label in
@@ -1764,7 +1787,29 @@ class CaseView implements View {
         counter.append(wheel);
       }
       this.counter = counter;
-      this.body.append(shell, left, right, label, counter);
+      // The still, and it is an object stuck to the tape rather than a picture
+      // printed on it — a print with a white border and a clip over its head,
+      // sitting proud of the shell with its own small shadow. Which is the
+      // whole argument for it being here at all: a rental sleeve would put the
+      // picture *under* the writing and make the tape a poster, and this board
+      // is somebody's shelf rather than a shop's (I-14).
+      //
+      // Last in the body, so it is over the shell and the window it laps onto
+      // and under the tape at the corners, which is where a strip of tape put
+      // on afterwards would be.
+      const print = div("case-print");
+      const still = document.createElement("img");
+      still.className = "case-still";
+      // Empty rather than descriptive. It is decoration on an object whose name
+      // is already written on it twice, and a screen reader announcing the
+      // filename a third time is noise.
+      still.alt = "";
+      still.decoding = "async";
+      still.draggable = false;
+      print.append(still, div("case-clip"));
+      this.print = print;
+      this.still = still;
+      this.body.append(shell, left, right, label, counter, print);
     } else {
       // A compact cassette, likewise from the reference, and its window is the
       // structural surprise: it is a hole *through the label*, with writing
@@ -1782,6 +1827,8 @@ class CaseView implements View {
       const window_ = div("case-window");
       window_.append(div("case-reel is-supply"), div("case-tape"), div("case-reel is-takeup"));
       label.append(this.number, this.meta, window_, this.title, this.caption);
+      this.print = null;
+      this.still = null;
       this.body.append(shell, label, div("case-holes"));
     }
 
@@ -1818,12 +1865,28 @@ class CaseView implements View {
     const asset = cold.assetId ? assetUrl(cold.assetId, screenPx) : NO_ASSET;
     const arrived = Math.round(asset.fraction * 100);
     const sameContents = asset.phase === this.boundPhase && arrived === this.boundArrived;
+    // The still is a second asset and gets the same call for the same reason —
+    // it is a want raised by somebody looking at the tape, and it is the *only*
+    // want that will ever be raised on a poster, because no item wears one.
+    //
+    // Asked for at the print's own size and not the item's: `variantFor` picks
+    // a stored variant off how many pixels the thing will actually occupy, and
+    // the print is a fraction of the tape's width. Passing `screenPx` would
+    // fetch the display variant of a picture being drawn a third that wide.
+    const still = this.still && facts.poster ? assetUrl(facts.poster, screenPx * PRINT_W) : NO_ASSET;
     // The asset record is the fourth input and it is the one that is *not* the
     // cold item: a page count arrives when a peer writes the record, and the
     // title arrives later still and from this machine's own disk (Q-211), and
     // neither of those is a write to the item. Guarding on the cold identity
     // alone would leave a folder saying nothing for the rest of the session.
-    const digest = `${facts.kind} ${facts.name} ${facts.title} ${facts.duration} ${facts.pages}`;
+    // The still's *url* rather than its hash, and that is the load-bearing
+    // half: the hash is on the record from the moment it is grabbed, and what
+    // changes afterwards is whether this machine can show it. A digest naming
+    // the hash would compare equal across the transfer committing and the print
+    // would stay blank until something else dirtied the item, and the tape you
+    // were looking at when the bytes landed would be the one that never got a
+    // picture. A url covers both halves: it is `""` until the phase is ready.
+    const digest = `${facts.kind} ${facts.name} ${facts.title} ${facts.duration} ${facts.pages} ${still.url}`;
     if (
       this.boundCold === cold &&
       digest === this.boundFacts &&
@@ -1840,6 +1903,8 @@ class CaseView implements View {
     this.boundCold = cold;
     this.boundFacts = digest;
     this.boundPlain = plain;
+
+    this.paintPrint(still.url, cold.seed);
 
     // Typed, and never in the hand: this is the name on the file, which is a
     // thing that was printed rather than written. `caseNumber` says why the
@@ -1939,6 +2004,44 @@ class CaseView implements View {
    *    makes "a file that is here is drawn exactly as it was before this task"
    *    a thing a test can assert rather than a thing to hope for.
    */
+  /**
+   * The still, or the absence of one.
+   *
+   * There is no third state here and that is the decision worth recording. A
+   * photograph has five (`state/assets.ts`) and draws every one of them, because
+   * a photograph with no bytes is an *item with nothing in it* and the person is
+   * owed an account of why. A tape with no still is a tape — the shell, the
+   * label, the case number and the runtime are all there and all legible, which
+   * is the whole of T-271's argument — so a print showing "this still is
+   * transferring" would be furniture explaining the absence of furniture.
+   *
+   * So: the clip and the print exist only while there is something on them, and
+   * a tape whose poster has not been grabbed, or whose still is somewhere else
+   * on the LAN, is drawn exactly as it was before this task. That is a thing a
+   * test can assert, and `.case-print` being absent from the box model is what
+   * makes it cheap — no image decode and no compositing layer on a board of
+   * tapes nobody has bytes for.
+   *
+   * `src` is cleared rather than left stale, because views are pooled: the node
+   * this tape gives back is the node the next one mounts on, and an `<img>`
+   * still pointing at the last film's frame would show it for the frame between
+   * mounting and binding.
+   */
+  private paintPrint(url: string, seed: number): void {
+    if (this.print === null || this.still === null) return;
+    const has = url.length > 0;
+    this.print.classList.toggle("is-empty", !has);
+    if (!has) {
+      if (this.still.getAttribute("src") !== null) this.still.removeAttribute("src");
+      return;
+    }
+    if (this.still.getAttribute("src") !== url) this.still.src = url;
+    // Which way it was clipped on, and how far down. Nobody lines a print up
+    // with the edge of a tape, and two tapes side by side with theirs at
+    // identical angles is the tell that this is drawn rather than done.
+    this.print.style.setProperty("--print-tilt", `${(valueAt(seed, "print", 0) * 2 - 1).toFixed(2)}`);
+  }
+
   private paintContents(phase: AssetPhase, arrived: number): void {
     this.el.classList.remove(...FILM_CLASSES);
     const film = filmClass(phase);
@@ -2137,6 +2240,18 @@ const CASE_TEXT_SIZE = 0.048;
  *  padding — the number `items.css` writes, here as well because `fitLabel`
  *  needs the box the name has to fit in. */
 const LABEL_WIDTH = 0.4;
+/**
+ * How much of a VHS's width the clipped print takes, border and all — the
+ * number `items.css` writes, here as well because the still is asked for at the
+ * size it will be *drawn*, and `variantFor` reads a pixel count.
+ *
+ * Two authors for one number is what the folder's `--kraft-top` was written to
+ * stop, and this is the case that cannot use that fix: the stylesheet needs it
+ * as a percentage of an element and the resolver needs it as a fraction of a
+ * screen width, which is one value asked for in two languages. The stylesheet
+ * test asserts they agree.
+ */
+export const PRINT_W = 0.19;
 
 export class DomItemLayer implements ItemLayer {
   private readonly host: HTMLElement;

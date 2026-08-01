@@ -23,12 +23,14 @@ import {
   SealedBoardError,
 } from "@/crdt/doc";
 import { applyPersisted } from "@/crdt/ops/load";
-import { createItems, deleteItems } from "@/crdt/ops/items";
+import { attachPoster, createItems, deleteItems } from "@/crdt/ops/items";
 import { readAsset, SCHEMA_VERSION } from "@/crdt/schema";
 import { assetKind } from "@/lib/objects";
 
 const PHOTO = "a".repeat(64);
 const OTHER = "b".repeat(64);
+/** A film's poster frame — an asset of its own, hashed like any other picture. */
+const STILL = "c".repeat(64);
 
 const meta = (sha256: string) => ({
   w: 10,
@@ -122,6 +124,35 @@ describe("which photographs a board references", () => {
     // The metadata is still there — collection is the janitor's, on its own
     // clock, and this must be right before it runs.
     expect(doc.assets.has(PHOTO)).toBe(true);
+    expect(referencedAssets(doc)).toEqual([]);
+  });
+
+  /**
+   * The hazard I-72 saw coming, arriving with the first poster rather than with
+   * T-292, which is the task meant to generalise it.
+   *
+   * A film's still is a picture **no item on this board wears**. It hangs off
+   * the film's asset record and nothing else points at it, so a keep-set read
+   * off item hashes alone is one hash short — and one hash short is silent,
+   * permanent, and on the wrong side of this function's own contract that what
+   * survives collection is what a bundle embeds. Every tape on the board would
+   * lose its still the first time the sweep ran.
+   */
+  it("names the still a film points at, which no item wears", () => {
+    const doc = board();
+    const [item] = createItems(doc, [polaroid(PHOTO)]);
+    expect(item).toBeDefined();
+    attachPoster(doc, PHOTO, STILL, meta(STILL));
+    expect(referencedAssets(doc).sort()).toEqual([PHOTO, STILL].sort());
+  });
+
+  it("forgets a still as soon as the film wearing it goes", () => {
+    // Both halves in one step, because the poster is reached *through* the
+    // item's own asset. Nothing has to know that a poster is a poster.
+    const doc = board();
+    const [item] = createItems(doc, [polaroid(PHOTO)]);
+    attachPoster(doc, PHOTO, STILL, meta(STILL));
+    deleteItems(doc, [item!.itemId]);
     expect(referencedAssets(doc)).toEqual([]);
   });
 
@@ -488,10 +519,12 @@ describe("a record written by a build that knows more than this one", () => {
     map.set("mime", "image/png");
     map.set("size", 1234);
     map.set("origName", "holiday.png");
-    // Four keys from a build that measures more than this one does.
-    map.set("poster", "c".repeat(64));
+    // Four keys from a build that measures more than this one does. `poster`
+    // was one of them until T-270; it is deliberately not one now, because a
+    // key this build has learned proves nothing about the ones it has not.
     map.set("chapters", 12);
     map.set("transcript", "d".repeat(64));
+    map.set("loudness", -14.2);
     map.set("kind", "photograph-of-a-kind-we-do-not-have");
     doc.assets.set(PHOTO, map);
 
@@ -503,6 +536,40 @@ describe("a record written by a build that knows more than this one", () => {
     // wrote down — which is what "derived rather than stored" means when the
     // two would disagree.
     expect(asset!.kind).toBe("image");
+  });
+
+  /**
+   * The still, which is the first field of an asset record that is also a
+   * *reference* — and so the first one a peer can use to point this machine at
+   * something.
+   *
+   * What it becomes on this side is a path in the content store and a key in
+   * the exchange, which is `isHash`'s whole argument one layer further in. A
+   * poster naming `../../etc` is the one thing an asset record can carry that
+   * is worse than a wrong number.
+   */
+  it("refuses a still that is not a hash, and one a film names as itself", () => {
+    const doc = board();
+    const map = new Y.Map<unknown>();
+    map.set("w", 800);
+    map.set("h", 600);
+    map.set("mime", "video/mp4");
+    doc.assets.set(PHOTO, map);
+    const poster = (): string | null => readAsset(PHOTO, doc.assets.get(PHOTO)!)!.poster;
+
+    map.set("poster", "c".repeat(64));
+    expect(poster()).toBe("c".repeat(64));
+
+    for (const bad of ["../../etc/passwd", "C".repeat(64), "c".repeat(63), "", 7, null]) {
+      map.set("poster", bad);
+      expect(poster(), String(bad)).toBeNull();
+    }
+
+    // A film naming itself is a loop nothing here writes and nothing outside
+    // would spot: the resolver would raise a want on the film's own bytes and
+    // hand an `<img>` a video to decode.
+    map.set("poster", PHOTO);
+    expect(poster()).toBeNull();
   });
 
   /**
@@ -533,6 +600,7 @@ describe("a record written by a build that knows more than this one", () => {
       kind: "image",
       duration: null,
       pages: null,
+      poster: null,
     });
   });
 });

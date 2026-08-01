@@ -21,7 +21,13 @@ import { beforeEach, describe, expect, it } from "vitest";
 import { openBoardDoc, type BoardDoc } from "@/crdt/doc";
 import { copySubgraph, pasteClip, type BoardClip } from "@/crdt/ops/clip";
 import { commitStroke } from "@/crdt/ops/ink";
-import { createItems, deleteItems, setItemStyle, setItemText } from "@/crdt/ops/items";
+import {
+  attachPoster,
+  createItems,
+  deleteItems,
+  setItemStyle,
+  setItemText,
+} from "@/crdt/ops/items";
 import { createPin } from "@/crdt/ops/pins";
 import { createString } from "@/crdt/ops/strings";
 import { readAsset, readItem, readPin, readString, readStroke, type YMap } from "@/crdt/schema";
@@ -167,6 +173,44 @@ describe("what a copy takes", () => {
     const asset = readAsset("tape01", elsewhere.assets.get("tape01")!)!;
     expect(asset.kind).toBe("audio");
     expect(asset.duration).toBeCloseTo(1606.139, 3);
+  });
+
+  /**
+   * T-270, and it is the same argument with one wrinkle worth writing down.
+   *
+   * A copied tape is the same film, so it names the same still. What travels is
+   * a *hash*, and the still's own record is a second asset that does not go in
+   * a clip — so on another board this is a promise that side may not be able to
+   * keep. That is why the grab in `app/poster.ts` is keyed on whether the bytes
+   * are on this disk rather than on whether the field is set: a tape that
+   * arrives naming a still nobody has grabs the same frame off the same film to
+   * the same hash and repairs it. Dropping the field here would instead mean a
+   * copy on *this* board — the common case, Ctrl+C and Ctrl+V — losing a still
+   * that is sitting right there.
+   */
+  it("carries the still a film names, so a copied tape is not a blank one", () => {
+    const [made] = createItems(board, [
+      {
+        type: "polaroid",
+        x: 0,
+        y: 0,
+        w: 300,
+        h: 180,
+        assetId: "film01",
+        asset: { w: 1920, h: 1080, mime: "video/mp4", size: 4096 },
+      },
+    ]);
+    // A real hash, because `readAsset` will not hand back a poster that is not
+    // one — this is the first field of a record that becomes a path in the
+    // content store, so it is validated on the way out.
+    const still = "5".repeat(64);
+    attachPoster(board, "film01", still, { w: 640, h: 360, mime: "image/webp", size: 512 });
+
+    const clip = copySubgraph(board, { items: [made!.itemId], pins: [] })!;
+    const elsewhere = openBoardDoc();
+    pasteClip(elsewhere, clip, { x: 0, y: 0 });
+
+    expect(readAsset("film01", elsewhere.assets.get("film01")!)!.poster).toBe(still);
   });
 });
 

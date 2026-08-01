@@ -43,6 +43,17 @@ export const Origin = {
    */
   JANITOR: "schizo/janitor",
   ASSET_GC: "schizo/asset-gc",
+  /**
+   * Naming the still that stands for a film (T-270), once it has been decoded
+   * off bytes this machine holds.
+   *
+   * Maintenance rather than an edit, for the reason the list above is: nobody
+   * pressed anything. It lands seconds after a paste and would otherwise sit on
+   * top of it in the undo stack, so the first Ctrl+Z after dropping a tape on
+   * the board would take the picture off it and the second would take the tape
+   * — which is one press of a key to undo one action, twice.
+   */
+  POSTER: "schizo/poster",
 } as const;
 
 export type OriginTag = (typeof Origin)[keyof typeof Origin];
