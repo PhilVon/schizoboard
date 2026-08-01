@@ -359,7 +359,14 @@ export class Paste {
       } catch (error) {
         // One unreadable file must not take the rest of the paste with it. The
         // clipboard's copy of a file can be gone by the time it is asked for.
-        console.warn(`could not read ${file.name || "a clipboard file"}:`, error);
+        //
+        // Refused rather than only logged, because this is the *end* of the road
+        // for this file — the path attempt above falls through on purpose and is
+        // the one place a failure here is not final. A file that reaches this
+        // line and says nothing is indistinguishable from a paste that never
+        // happened, which is the state AC-651 exists to prevent, and it is how a
+        // picture refused for its pixels would have vanished (T-308).
+        this.refuse(file.name || "a clipboard file", `would not read: ${String(error)}`);
       }
     }
     return out;
@@ -505,7 +512,10 @@ export class Paste {
         this.tried.add(path);
         this.accept(out, await this.options.native.assetIngestPath(path), path, baseName(path));
       } catch (error) {
-        console.warn(`could not read ${path}:`, error);
+        // Said rather than swallowed, on the same argument as `fromFiles`: this
+        // road has no fallback behind it, so a file that fails here is a file
+        // the person watched disappear.
+        this.refuse(path, `would not read: ${String(error)}`);
       }
     }
     return out;

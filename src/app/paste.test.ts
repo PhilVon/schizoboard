@@ -515,6 +515,24 @@ describe("a handful at once", () => {
     native.refuse.add("C:/broken.png");
     await firePaste({});
     expect(itemsOnBoard()).toHaveLength(2);
+    // And says which one. Two of three arriving with no mention of the third
+    // reads as a paste that only ever had two things in it.
+    expect(said).toEqual(["Nothing here can hold C:/broken.png"]);
+  });
+
+  /** T-308. An ingest the shell throws on used to be a console line and no more. */
+  it("says so when the shell refuses a file outright", async () => {
+    // The case this was written for is a picture refused on its *pixels* — a
+    // small file and an enormous photograph, which the shell alone can see. This
+    // road has no fallback behind it, so before T-308 the file simply vanished:
+    // no item, no line, nothing to distinguish it from a paste that never
+    // happened, which is the state AC-651 exists to prevent.
+    native.refuse.add("C:/enormous-scan.png");
+    native.drop(["C:/enormous-scan.png"], 0, 0);
+    await settle();
+
+    expect(itemsOnBoard()).toEqual([]);
+    expect(said).toEqual(["Nothing here can hold C:/enormous-scan.png"]);
   });
 
   it("says so rather than silently dropping half of a very large paste", async () => {

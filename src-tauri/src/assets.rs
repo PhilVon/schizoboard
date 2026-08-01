@@ -52,7 +52,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, SystemTime};
 
 use image::imageops::FilterType;
-use image::{DynamicImage, ImageReader};
+use image::{DynamicImage, ImageDecoder, ImageReader, Limits};
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 // `unversioned` is ureq's own word for "this API does not follow semver yet".
@@ -235,15 +235,126 @@ const OVERHEAD: u64 = 8 * 1024 * 1024;
 ///
 /// **It cannot bound a photograph, and nothing byte-shaped can.** An 11 MiB
 /// JPEG of 121 megapixels asked for 794 MiB (D-54), because the cost of a
-/// picture is pixels: 363 MB of RGB8 per surface, about two live at once. A
-/// JPEG's compression ratio is a property of the picture — sky against foliage
-/// — so no byte figure predicts it. The pixel count is already read by
-/// `probe_dimensions` before the decode, and nothing reads it back.
+/// picture is its pixels rather than its bytes. A JPEG's compression ratio is a
+/// property of the picture — sky against foliage — so no byte figure predicts
+/// it. That is [`decode_peak`]'s job, and [`MAX_PICTURE_PEAK`] is the ceiling
+/// it stands behind; this constant bounds only what is read off a disk.
 ///
 /// `pub(crate)` for `bundle`, which has to bound a zip entry before it
 /// decompresses it and must bound it at the same number — an asset this store
 /// would refuse to ingest is not one a bundle should be allowed to expand.
 pub(crate) const MAX_ASSET_BYTES: u64 = 768 * 1024 * 1024;
+
+/// What one pixel costs in the buffer a downscale is filtered through: four
+/// `f32` channels, whatever depth the picture itself is.
+///
+/// `imageops::resize` runs vertically into an `Rgba32FImage` and then
+/// horizontally back out of it, so the middle of every downscale is sixteen
+/// bytes a pixel even for a JPEG that is three. It is not a rounding error: at
+/// 121 megapixels this term is 430 MiB against the decoded surface's 346, which
+/// makes it the **largest** thing in [`decode_peak`] for any photograph anybody
+/// is realistically going to paste.
+const RESAMPLE_BYTES_PER_PIXEL: u64 = 16;
+
+/// What building an asset's variants asks the machine for — the other half of
+/// the ingest road, and the half [`disk_ingest_peak`] cannot see.
+///
+/// **Three terms, and none of them is the file.** D-57 measured nine pictures
+/// on the rig D-55 and D-56 used — the real application, one fresh process per
+/// file, private bytes at 20 ms — and this predicts every one of them from
+/// above, by between 0.9 and 2.3 MiB:
+///
+/// | picture | depth | measured | this says |
+/// |---|---|---|---|
+/// | 4000 × 4000 | 8-bit | 226.7 MiB | 229.0 |
+/// | 8000 × 8000 | 8-bit | 521.6 | 523.3 |
+/// | 11000 × 11000 | 8-bit | 803.4 | 804.3 |
+/// | 22000 × 5500 | 8-bit | 574.0 | 589.5 |
+/// | 6000 × 6000 | 8-bit + alpha | 403.7 | 405.4 |
+/// | 3000 × 3000 | 16-bit + alpha | 242.2 | 244.2 |
+/// | 4500 × 4500 | 16-bit + alpha | 387.3 | 389.1 |
+/// | 6000 × 6000 | 16-bit + alpha | 566.8 | 568.5 |
+/// | 3000 × 3000 | 16-bit | 212.5 | 214.5 |
+///
+/// The 4:1 row is the exception at 15.5 MiB over, and deliberately: the variant
+/// term below is the *square* variant, which is the largest one, and a picture
+/// four times wider than it is tall gets a variant a quarter of that size. A
+/// bound may be generous about a shape; it may not be short about one.
+///
+///   - **the surface** is `w × h ×` the decoder's own bytes per pixel, and the
+///     depth in there is why a *megapixel* ceiling would not have held either:
+///     36 megapixels at sixteen bits costs 567 MiB where 121 megapixels at
+///     eight costs 574. The depth is a property of the picture in exactly the
+///     way the compression ratio is.
+///   - **the intermediate** is the *short* edge times the display variant's
+///     edge, because `resize` filters vertically first into a buffer as wide as
+///     the source and as tall as the variant. The same 121 megapixels cost
+///     803 MiB square and 574 MiB at 4:1 — so the shape decides as well as the
+///     count, and neither of them is a number a person would have guessed.
+///   - **the variant** is the display downscale, in the source's own depth. Its
+///     *encode* is not a term: by the time it runs the intermediate has been
+///     dropped and the encoder writes into the pages it just freed. That only
+///     became true when the PNG road stopped encoding at sixteen bits (see
+///     `write_variant`); before that it cost a fixed 337 MiB and was the peak
+///     of the whole road.
+///
+/// The thumb pass is absent for the same reason: it filters through 256 rather
+/// than 2560, a tenth of the intermediate, against a surface that has not moved.
+///
+/// Saturating throughout, because two of the three terms are a product of
+/// numbers a *file* chose. A bound that wraps to something small is worse than
+/// no bound at all.
+const fn decode_peak(file: u64, w: u64, h: u64, bytes_per_pixel: u64) -> u64 {
+    let surface = w.saturating_mul(h).saturating_mul(bytes_per_pixel);
+    let short_edge = if w < h { w } else { h };
+    let intermediate = short_edge
+        .saturating_mul(DISPLAY_MAX_EDGE as u64)
+        .saturating_mul(RESAMPLE_BYTES_PER_PIXEL);
+    let variant = (DISPLAY_MAX_EDGE as u64)
+        .saturating_mul(DISPLAY_MAX_EDGE as u64)
+        .saturating_mul(bytes_per_pixel);
+    file.saturating_add(surface)
+        .saturating_add(intermediate)
+        .saturating_add(variant)
+        .saturating_add(OVERHEAD)
+}
+
+/// How much of [`INGEST_MEMORY_BUDGET`] one picture may ask for.
+///
+/// **This stands where a ceiling would stand, and it is not a ceiling**, because
+/// a picture's cost is three numbers and a ceiling is one. There is no
+/// megapixel figure to write down here: the count, the shape and the depth all
+/// move it, and the two runs that prove it are 121 megapixels costing 803 MiB
+/// one way round and 574 the other, and 36 megapixels costing more than either
+/// at sixteen bits.
+///
+/// **The whole budget, and deliberately not the four fifths [`MAX_ASSET_BYTES`]
+/// holds itself to** (Q-234). The margin on the disk road is there because that
+/// road's ceiling is one number that has to cover every file; this one is
+/// computed per picture from the picture's own three, so there is nothing for a
+/// margin to absorb that the model is not already looking at. It is the more
+/// generous of the two answers and it was chosen knowing that.
+///
+/// What it admits, for a square picture and a small file:
+///
+/// | depth | admitted |
+/// |---|---|
+/// | 8-bit, no alpha — a photograph | about 170 megapixels |
+/// | 8-bit with alpha | about 139 |
+/// | 16-bit with alpha | about 81 |
+///
+/// **Two of those three rows are past the 512 MiB `image` allows a decode by
+/// default**, which is why [`decode_limits`] exists rather than being tidiness:
+/// without it the crate would quietly refuse a 139-megapixel PNG that this
+/// number admits, after the file was stored and the item was on the board.
+///
+/// A 200-megapixel phone photograph still does **not** fit, and would not have
+/// fitted under any share of this budget: it needs about 1148 MiB, of which 552
+/// is [`RESAMPLE_BYTES_PER_PIXEL`] rather than the picture. Taking that term out
+/// is the next thing to do here and would bring the same photograph to about
+/// 650 MiB (T-310) — the same shape of finding as D-56's, which is that the
+/// number moves when the code does and not before.
+const MAX_PICTURE_PEAK: u64 = INGEST_MEMORY_BUDGET;
 
 // Pinned where they are defined and not in a test, because these are
 // comparisons between constants and the build is the right thing to fail: a
@@ -386,6 +497,16 @@ pub enum Error {
     /// from the promised length and stops the read there, so all this store ever
     /// learns is that there was more.
     SizeMismatch,
+    /// A small file and an enormous photograph.
+    ///
+    /// **Not an [`Error::TooLarge`]**, and the distinction is the whole of
+    /// T-308: that one is about the file, and an 11 MiB JPEG of 121 megapixels
+    /// asks for 803 MiB. No byte figure predicts a picture, because what a
+    /// picture costs is its pixels and their depth (D-54, D-57) — so what this
+    /// carries is the picture's own numbers, and what it says is about the
+    /// picture. Somebody told the file is too big when the file is 11 MiB will
+    /// go and look at the file.
+    PictureTooLarge { w: u32, h: u32 },
     Undecodable(String),
     Fetch(String),
     /// The store itself is not there — the app data directory could not be
@@ -404,6 +525,10 @@ impl std::fmt::Display for Error {
                 write!(f, "{n} bytes is too much to hand over in one piece — drag the file in instead")
             }
             Error::SizeMismatch => write!(f, "that file is not the size it said it was"),
+            Error::PictureTooLarge { w, h } => write!(
+                f,
+                "{w} × {h} is more picture than this board can open — it is the pixels rather than the size of the file"
+            ),
             Error::Undecodable(why) => write!(f, "could not decode: {why}"),
             Error::Fetch(why) => write!(f, "could not fetch: {why}"),
             Error::Unavailable(why) => write!(f, "{why}"),
@@ -840,28 +965,96 @@ fn apply_orientation(image: DynamicImage, orientation: u32) -> DynamicImage {
         2 => image.fliph(),
         3 => image.rotate180(),
         4 => image.flipv(),
-        5 => image.rotate90().fliph(),
+        // The `drop` is not tidiness. Chained, `rotate90().fliph()` holds three
+        // whole surfaces at once — the argument, the turn and the flip — where
+        // every other arm here holds two. Measured on the same rig as the rest
+        // of D-57: a 121-megapixel picture marked orientation 5 peaked at
+        // **1047.5 MiB, over the whole ingest budget**, against 803.3 for the
+        // identical picture marked 1. Letting the original go between the two
+        // passes costs nothing and takes it to 803.3 as well — which is what
+        // lets [`decode_peak`] be one expression rather than a maximum over
+        // where in the road the picture happens to be.
+        5 => {
+            let turned = image.rotate90();
+            drop(image);
+            turned.fliph()
+        }
         6 => image.rotate90(),
-        7 => image.rotate270().fliph(),
+        7 => {
+            let turned = image.rotate270();
+            drop(image);
+            turned.fliph()
+        }
         8 => image.rotate270(),
         _ => image,
     }
 }
 
-/// Dimensions without decoding. Every format here carries its size in a header
-/// a few dozen bytes long.
-fn probe_dimensions(bytes: &[u8]) -> Result<(u32, u32)> {
-    let reader = ImageReader::new(io::Cursor::new(bytes))
+/// What a header says a picture is: the shape it will be stored at, and what
+/// one pixel of it costs the moment it is decoded.
+struct Probed {
+    w: u32,
+    h: u32,
+    /// What the decoder says it will produce, per pixel — three for a JPEG,
+    /// four for a PNG with an alpha channel, eight for a sixteen-bit one.
+    ///
+    /// **This is why a megapixel ceiling would not have held.** Depth is a
+    /// property of the picture in exactly the way a JPEG's compression ratio is
+    /// a property of the picture, and it moves the cost by nearly three times at
+    /// the same pixel count (D-57).
+    bytes_per_pixel: u64,
+}
+
+/// Dimensions and depth without decoding. Every format here carries both in a
+/// header a few dozen bytes long.
+///
+/// Building the decoder and asking it, rather than asking for dimensions, costs
+/// nothing: `into_dimensions` builds one, reads two numbers off it and throws
+/// it away. It is the only way to be told the colour type before the pixels
+/// arrive, and the colour type is half of what [`decode_peak`] needs.
+///
+/// It does not reserve anything, which is what makes it safe to call on a
+/// picture this store is about to refuse: `ImageReader::decode` is where the
+/// crate checks its own allocation limit, and that is on the far side of the
+/// gate in [`AssetStore::ingest_bytes`].
+fn probe_picture(bytes: &[u8]) -> Result<Probed> {
+    let decoder = ImageReader::new(io::Cursor::new(bytes))
         .with_guessed_format()
-        .map_err(Error::Io)?;
-    let (w, h) = reader
-        .into_dimensions()
+        .map_err(Error::Io)?
+        .into_decoder()
         .map_err(|e| Error::Undecodable(e.to_string()))?;
-    Ok(if swaps_axes(exif_orientation(bytes)) {
+    let (w, h) = decoder.dimensions();
+    let bytes_per_pixel = u64::from(decoder.color_type().bytes_per_pixel());
+    let (w, h) = if swaps_axes(exif_orientation(bytes)) {
         (h, w)
     } else {
         (w, h)
+    };
+    Ok(Probed {
+        w,
+        h,
+        bytes_per_pixel,
     })
+}
+
+/// The allocation ceiling handed to every decode, so that the crate's rule and
+/// this store's rule are the same rule.
+///
+/// `image` ships a default of 512 MiB and this codebase never wrote it down —
+/// which is why a 256-megapixel scan was *already* refused before T-308, with
+/// "Memory limit exceeded" on stderr, after the file had been stored and the
+/// item was on the board. Two rules about the same memory, one of them
+/// invisible and neither of them ours.
+///
+/// Setting it to [`MAX_PICTURE_PEAK`] makes it a backstop rather than a second
+/// opinion: nothing [`AssetStore::ingest_bytes`] admitted can be refused here,
+/// because every term in [`decode_peak`] is at least as big as this one, and
+/// anything that reached a decode without passing that gate still cannot take
+/// the process past the budget.
+fn decode_limits() -> Limits {
+    let mut limits = Limits::no_limits();
+    limits.max_alloc = Some(MAX_PICTURE_PEAK);
+    limits
 }
 
 fn hex(digest: &[u8]) -> String {
@@ -1159,6 +1352,13 @@ impl AssetStore {
     /// — because every road funnels through this function and only one of them
     /// is the expensive one. That road checks itself first, in
     /// [`ingest_ipc_bytes`](Self::ingest_ipc_bytes).
+    ///
+    /// **And the second bound, which is not about bytes at all**, is here for
+    /// the same reason the first one is: a picture costs its pixels and their
+    /// depth, both are in the header, and every road that can put a picture on
+    /// this board comes through this function — a paste, a drop, a peer
+    /// transfer committing, a bundle expanding an entry. One gate, before the
+    /// write, and long before the decode that would pay for it.
     pub fn ingest_bytes(&self, bytes: &[u8], mime_hint: Option<&str>) -> Result<AssetMeta> {
         let size = bytes.len() as u64;
         if size > MAX_ASSET_BYTES {
@@ -1175,7 +1375,33 @@ impl AssetStore {
         // still stored — a board can hold a PDF one day, and refusing a paste
         // over a file the user cannot do anything about would break "nothing
         // blocks thinking".
-        let (w, h) = probe_dimensions(bytes).unwrap_or((0, 0));
+        let (w, h) = match probe_picture(bytes) {
+            Ok(picture) => {
+                // The one refusal on this road that is about the picture rather
+                // than about the file, and it has to be here rather than in
+                // `build_variants` where the memory is actually spent. By then
+                // the bytes are on the disk, the item is on the board, and the
+                // failure is a line on stderr — which is what a 256-megapixel
+                // scan did before T-308, leaving the webview to decode it.
+                let asked = decode_peak(
+                    size,
+                    u64::from(picture.w),
+                    u64::from(picture.h),
+                    picture.bytes_per_pixel,
+                );
+                if asked > MAX_PICTURE_PEAK {
+                    return Err(Error::PictureTooLarge {
+                        w: picture.w,
+                        h: picture.h,
+                    });
+                }
+                (picture.w, picture.h)
+            }
+            // Not a picture, or not one this build can read. Both are stored:
+            // the second is a photograph the board shows a tear for rather than
+            // one it throws away.
+            Err(_) => (0, 0),
+        };
         // Read here, from the whole file, once — and *before* the write, so a
         // received asset gets the number by the same path a pasted one does.
         // `commit_received` routes through this function for exactly that
@@ -1334,9 +1560,11 @@ impl AssetStore {
         }
 
         let orientation = exif_orientation(&bytes);
-        let decoded = ImageReader::new(io::Cursor::new(&bytes))
+        let mut reader = ImageReader::new(io::Cursor::new(&bytes))
             .with_guessed_format()
-            .map_err(Error::Io)?
+            .map_err(Error::Io)?;
+        reader.limits(decode_limits());
+        let decoded = reader
             .decode()
             .map_err(|e| Error::Undecodable(e.to_string()))?;
         let image = apply_orientation(decoded, orientation);
@@ -1373,7 +1601,19 @@ impl AssetStore {
         fs::create_dir_all(self.dir_for(sha256))?;
         let mut encoded = Vec::new();
         let ext = if uses_alpha(image) {
+            // **Eight bits a channel whatever the original was.** A variant
+            // exists to be shown, a webview shows eight, and the original is
+            // still on disk untouched for anything that wants the rest.
+            //
+            // It is here for the memory rather than for the pixels. Encoding a
+            // 2560-square variant *at sixteen* cost 337 MiB, against fifty for
+            // the variant itself and against nothing measurable on the same
+            // road at eight (D-57) — a fixed cost, the same at every source
+            // size, and it is the one road where the peak of the whole decode
+            // was not the resize. Eight bits takes the branch out of the model
+            // as well as out of the measurement.
             image
+                .to_rgba8()
                 .write_to(&mut io::Cursor::new(&mut encoded), image::ImageFormat::Png)
                 .map_err(|e| Error::Undecodable(e.to_string()))?;
             ".png"
@@ -2870,6 +3110,254 @@ mod tests {
         let said = Error::SizeMismatch.to_string();
         assert!(said.contains("not the size it said it was"), "{said}");
         assert!(!said.contains("too large"), "{said}");
+    }
+
+    /// The same picture with its header rewritten to claim a size it does not
+    /// have.
+    ///
+    /// Not a trick, and not a hostile file: it is what *every* large photograph
+    /// looks like to a probe. A PNG carries its shape in the first chunk, so the
+    /// two numbers the bound turns on are known thirty-three bytes in, and the
+    /// pixels are still on the far side of a decode nobody has paid for. That is
+    /// the whole reason this can be refused before the write.
+    fn claiming(mut bytes: Vec<u8>, w: u32, h: u32) -> Vec<u8> {
+        bytes[16..20].copy_from_slice(&w.to_be_bytes());
+        bytes[20..24].copy_from_slice(&h.to_be_bytes());
+        // The `png` crate checks chunk CRCs, so the header has to be honest
+        // about being dishonest.
+        let mut crc = 0xffff_ffffu32;
+        for byte in &bytes[12..29] {
+            crc ^= u32::from(*byte);
+            for _ in 0..8 {
+                crc = if crc & 1 == 1 {
+                    0xedb8_8320 ^ (crc >> 1)
+                } else {
+                    crc >> 1
+                };
+            }
+        }
+        bytes[29..33].copy_from_slice(&(!crc).to_be_bytes());
+        bytes
+    }
+
+    /// Sixteen bits a channel and an alpha channel that is doing something —
+    /// eight bytes a pixel, the most expensive thing this build can be handed.
+    fn png16(w: u32, h: u32) -> Vec<u8> {
+        let mut out = Vec::new();
+        DynamicImage::ImageRgba16(image::ImageBuffer::from_pixel(
+            w,
+            h,
+            image::Rgba([9u16, 8, 7, 6]),
+        ))
+        .write_to(&mut io::Cursor::new(&mut out), ImageFormat::Png)
+        .unwrap();
+        out
+    }
+
+    #[test]
+    fn the_decode_model_predicts_the_nine_pictures_it_was_measured_at() {
+        // D-57, on the rig D-55 and D-56 used: the real application, one fresh
+        // process per file, private bytes sampled at 20 ms. Never under, because
+        // a bound that under-predicts is not one.
+        //
+        // Width, height, the decoder's bytes per pixel, the file, and the peak
+        // in tenths of a MiB so the numbers read as they were reported.
+        for (w, h, bpp, file, tenths) in [
+            (4_000u64, 4_000u64, 3u64, 258_753u64, 2267u64),
+            (8_000, 8_000, 3, 957_885, 5216),
+            (11_000, 11_000, 3, 1_776_149, 8034),
+            (22_000, 5_500, 3, 1_775_499, 5740),
+            (6_000, 6_000, 4, 730_296, 4037),
+            (3_000, 3_000, 8, 395_056, 2422),
+            (4_500, 4_500, 8, 880_452, 3873),
+            (6_000, 6_000, 8, 1_559_138, 5668),
+            (3_000, 3_000, 6, 303_419, 2125),
+        ] {
+            let measured = tenths * 1024 * 1024 / 10;
+            let predicted = decode_peak(file, w, h, bpp);
+            assert!(
+                predicted >= measured,
+                "{w}x{h} at {bpp}: predicted {predicted} under the measured {measured}"
+            );
+            // Two per cent, except for the one picture that is not square: the
+            // variant term is the square variant on purpose, so a picture four
+            // times wider than it is tall is over-predicted by the three
+            // quarters of a variant it does not have.
+            let slack = if w == h { measured / 50 } else { measured / 25 };
+            assert!(
+                predicted - measured <= slack,
+                "{w}x{h} at {bpp}: predicted {predicted} is too far over {measured}"
+            );
+        }
+
+        // The two properties the model exists for, stated as the runs that
+        // showed them rather than as the formula that produces them. Both are
+        // pictures of the *same pixel count* costing different amounts, which is
+        // the whole reason a megapixel ceiling was not the answer.
+        assert!(decode_peak(0, 11_000, 11_000, 3) > decode_peak(0, 22_000, 5_500, 3));
+        assert!(decode_peak(0, 6_000, 6_000, 8) > decode_peak(0, 6_000, 6_000, 3));
+    }
+
+    #[test]
+    fn a_picture_is_refused_on_its_pixels_and_never_on_its_bytes() {
+        let (_dir, store) = store();
+        // Under a kilobyte of file, four hundred megapixels of picture. The byte
+        // ceiling is 768 MiB and nothing here comes within a thousandth of it.
+        let enormous = claiming(png(8, 8), 20_000, 20_000);
+        assert!((enormous.len() as u64) < MAX_ASSET_BYTES / 1000);
+
+        match store.ingest_bytes(&enormous, None) {
+            Err(Error::PictureTooLarge { w, h }) => assert_eq!((w, h), (20_000, 20_000)),
+            other => panic!("four hundred megapixels was not refused: {other:?}"),
+        }
+        // And nothing was written on the way to saying no — the refusal is
+        // before the write, not a tidy-up after it.
+        assert!(walk_files(store.root.as_path()).unwrap().is_empty());
+
+        // The sentence is about the picture. Somebody told their 700-byte file
+        // is too large will go and look at the file.
+        let said = Error::PictureTooLarge {
+            w: 20_000,
+            h: 20_000,
+        }
+        .to_string();
+        assert!(said.contains("20000 × 20000"), "{said}");
+        assert!(said.contains("pixels"), "{said}");
+        assert!(!said.contains("bytes"), "{said}");
+    }
+
+    #[test]
+    fn the_shape_and_the_depth_decide_as_much_as_the_count() {
+        let (_dir, store) = store();
+        // 225 megapixels arrive and 174 do not, because the resize filters
+        // through a buffer as tall as the variant and as wide as the source's
+        // *short* edge — so the squarer picture is the more expensive one at
+        // fewer pixels. Nothing shaped like a megapixel ceiling can say this.
+        assert!(
+            store
+                .ingest_bytes(&claiming(png(8, 8), 30_000, 7_500), None)
+                .is_ok()
+        );
+        assert!(matches!(
+            store.ingest_bytes(&claiming(png(8, 8), 13_200, 13_200), None),
+            Err(Error::PictureTooLarge { .. })
+        ));
+
+        // And one shape at one count goes both ways on depth alone: eight bytes
+        // a pixel against three is the same picture costing four hundred MiB
+        // more, and it is in the header exactly as the shape is.
+        assert!(
+            store
+                .ingest_bytes(&claiming(png(8, 8), 9_100, 9_100), None)
+                .is_ok()
+        );
+        assert!(matches!(
+            store.ingest_bytes(&claiming(png16(2, 2), 9_100, 9_100), None),
+            Err(Error::PictureTooLarge { .. })
+        ));
+    }
+
+    #[test]
+    fn nothing_a_header_can_claim_wraps_the_model_round() {
+        // Two of the three terms are a product of numbers a *file* chose, and a
+        // bound that overflows into something small is worse than no bound at
+        // all — it is a bound that reports success.
+        let widest = u64::from(u32::MAX);
+        assert!(decode_peak(0, widest, widest, 8) > MAX_PICTURE_PEAK);
+        assert!(decode_peak(MAX_ASSET_BYTES, widest, 1, 8) > MAX_PICTURE_PEAK);
+        assert_eq!(decode_peak(u64::MAX, 1, 1, 1), u64::MAX);
+    }
+
+    #[test]
+    fn the_crates_own_limit_cannot_overrule_this_one() {
+        // `image` refuses an allocation over 512 MiB by default, and this
+        // codebase never wrote that down. Before T-308 it was what actually
+        // refused a 256-megapixel scan — from inside `build_variants`, after the
+        // file had been stored and the item was on the board, with the reason on
+        // stderr.
+        //
+        // The budget Q-234 chose admits pictures whose surface is past that
+        // default, so leaving it in place would have meant the crate quietly
+        // overruling the answer — and only on the alpha and sixteen-bit roads,
+        // which is the worst way for a limit to disagree with another one.
+        let default = Limits::default().max_alloc.unwrap();
+        let (edge, bpp) = (11_700u64, 4u64);
+        assert!(decode_peak(0, edge, edge, bpp) <= MAX_PICTURE_PEAK);
+        assert!(
+            edge * edge * bpp > default,
+            "the two rules no longer disagree, so this test is no longer about anything"
+        );
+        assert_eq!(decode_limits().max_alloc, Some(MAX_PICTURE_PEAK));
+    }
+
+    #[test]
+    fn a_variant_is_eight_bits_a_channel_whatever_the_original_was() {
+        // A variant exists to be shown and a webview shows eight. Encoding one
+        // at sixteen cost a fixed 337 MiB — the one place in the decode road
+        // where the peak was not the resize — and the original is still on disk
+        // for anything that wants the rest of the depth.
+        let (_dir, store) = store();
+        let meta = store.ingest_bytes(&png16(320, 240), None).unwrap();
+        store.build_variants(&meta.sha256).unwrap();
+
+        let thumb = store.resolve(&meta.sha256, Variant::Thumb).unwrap();
+        let bytes = fs::read(&thumb.path).unwrap();
+        let decoder = ImageReader::new(io::Cursor::new(&bytes))
+            .with_guessed_format()
+            .unwrap()
+            .into_decoder()
+            .unwrap();
+        assert_eq!(
+            decoder.color_type().bytes_per_pixel(),
+            4,
+            "a sixteen-bit original produced a sixteen-bit variant"
+        );
+    }
+
+    #[test]
+    fn every_exif_orientation_puts_the_pixels_where_the_tag_says() {
+        // Only orientation 6 was covered here, and T-308 restructured 5 and 7 —
+        // the two arms nothing was watching — to stop them holding a third whole
+        // surface while they worked. Written as the mapping the Exif tag defines
+        // rather than as "the same as it was", so it tests the specification and
+        // not the code that is supposed to implement it.
+        let (w, h) = (3u32, 2u32);
+        let mut pixels = RgbImage::new(w, h);
+        for (x, y, pixel) in pixels.enumerate_pixels_mut() {
+            *pixel = image::Rgb([x as u8, y as u8, 0]);
+        }
+        let source = DynamicImage::ImageRgb8(pixels);
+
+        for orientation in 1..=8u32 {
+            let out = apply_orientation(source.clone(), orientation).to_rgb8();
+            let (ow, oh) = if swaps_axes(orientation) {
+                (h, w)
+            } else {
+                (w, h)
+            };
+            assert_eq!((out.width(), out.height()), (ow, oh), "{orientation}");
+
+            for v in 0..oh {
+                for u in 0..ow {
+                    let want = match orientation {
+                        1 => (u, v),
+                        2 => (w - 1 - u, v),
+                        3 => (w - 1 - u, h - 1 - v),
+                        4 => (u, h - 1 - v),
+                        5 => (v, u),
+                        6 => (v, h - 1 - u),
+                        7 => (w - 1 - v, h - 1 - u),
+                        _ => (w - 1 - v, u),
+                    };
+                    let got = out.get_pixel(u, v);
+                    assert_eq!(
+                        (u32::from(got.0[0]), u32::from(got.0[1])),
+                        want,
+                        "orientation {orientation} at ({u}, {v})"
+                    );
+                }
+            }
+        }
     }
 
     #[test]
