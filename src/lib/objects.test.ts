@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   assetKind,
+  canBeOpened,
   carriesItsOwnName,
   caseNumber,
   folderBulk,
@@ -28,6 +29,18 @@ describe("what a file is", () => {
     // And it is still a face chosen from a mime rather than a second list: the
     // thing that decides is the same call every other object goes through.
     expect(carriesItsOwnName(assetKind("text/plain"))).toBe(true);
+  });
+
+  /** T-274, Q-257. */
+  it("says which kinds have an inside worth opening", () => {
+    expect(canBeOpened("document")).toBe(true);
+    expect(canBeOpened("video")).toBe(true);
+    expect(canBeOpened("audio")).toBe(true);
+    expect(canBeOpened("image")).toBe(false);
+    // The one that cannot change: this build does not know what the file is, so
+    // it has nothing to open it *as*, and an object that offers to open and
+    // then cannot is what D-46 section 6 refuses about embedded players.
+    expect(canBeOpened("unknown")).toBe(false);
   });
 
   it("calls a mime it has never heard of unknown rather than guessing", () => {

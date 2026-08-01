@@ -269,6 +269,25 @@ export function itemMenuRows(
     gone(sha256: string): boolean;
     save(sha256: string): void;
   },
+  /**
+   * Reading a document, watching a tape, hearing a cassette — T-274, and the
+   * menu half of Q-257's answer.
+   *
+   * Two members for the same reason `photo` has two, and the split falls in the
+   * same place: whether this item is one of the three that *has* something
+   * inside it is a question about the asset record, which this file cannot
+   * reach — a menu is a pure function of ids. So the caller answers it, and
+   * this file decides only where the row goes.
+   *
+   * The key half of the same answer is `ToolContext.open`, and it is the *same
+   * function* rather than a second one that agrees: two entry points to one
+   * verb is how the pointer and the keyboard start disagreeing about what is
+   * openable.
+   */
+  open?: {
+    can(itemId: string): boolean;
+    run(itemId: string): void;
+  },
 ): MenuEntry[] {
   const live = targets.filter((id) => scene.slotOf(id) !== undefined);
   if (live.length === 0) return [];
@@ -287,6 +306,24 @@ export function itemMenuRows(
    * caret, and a menu opened over four selected notes cannot put it in all of
    * them. Absent when no editor is wired up, which is every headless caller.
    */
+  /**
+   * Above *Edit text*, because on the one kind of item that has both it is the
+   * thing you came for — and because a case file's text is a label written
+   * from its filename rather than a caption anybody typed into it.
+   *
+   * `clicked` alone, like the two rows below, and here the reason is D-46's
+   * rather than the caret's: **one thing plays at a time**, so a menu opened
+   * over four tapes has no honest way to mean all four.
+   *
+   * Absent rather than greyed when this item has nothing to open, which is this
+   * file's standing rule for a row that does not apply — a photograph and a
+   * note simply do not have it.
+   */
+  if (open?.can(clicked) === true) {
+    const target = clicked;
+    rows.push({ label: "Open", run: () => open.run(target) });
+  }
+
   if (edit) {
     const target = clicked;
     rows.push({ label: "Edit text", run: () => edit(target) });

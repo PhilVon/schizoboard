@@ -74,7 +74,7 @@ import { formatInvite, inviteSearch, openingPlan, parseInvite } from "@/app/invi
 import * as prefs from "@/app/prefs";
 import { dialAddress, freshBoardId, identityFor } from "@/app/sync";
 import { DEFAULT_ERASER_SIZE, type InkSurface, type WetStroke } from "@/lib/ink";
-import { carriesItsOwnName } from "@/lib/objects";
+import { canBeOpened, carriesItsOwnName } from "@/lib/objects";
 import { initPlatform } from "@/platform";
 import { variantFor } from "@/platform/types";
 import { Cork } from "@/render/cork";
@@ -1097,6 +1097,57 @@ async function boot(): Promise<void> {
     flight.toBox(camera, box, undefined, READING_ZOOM);
     foundPending = id;
   };
+  /**
+   * Is there anything inside this item to open? — T-274, Q-257.
+   *
+   * Three hops and no shortcut: the item wears an asset, the asset record says
+   * what its bytes are, and `lib/objects.ts` says whether that kind of thing has
+   * an inside. Every one of those is already how something else on this board
+   * decides what an item is, and re-deriving beats a fourth statement of it.
+   *
+   * Deliberately **not** gated on the bytes having arrived. A folder whose
+   * transfer has not finished is still a folder with pages in it, and hiding
+   * the row until then would make the verb flicker in and out of the menu while
+   * a peer sends a file. What a half-arrived document does when you open it is
+   * the reading surface's answer to give (T-275), not this predicate's.
+   */
+  const openable = (itemId: string): boolean => {
+    const sha256 = scene.cold(itemId)?.assetId ?? null;
+    if (sha256 === null) return false;
+    const map = board.assets.get(sha256);
+    const record = map ? readAsset(sha256, map) : null;
+    return record !== null && canBeOpened(record.kind);
+  };
+
+  /**
+   * Open an item — for now, take the camera to it.
+   *
+   * **This is half the verb and the half that exists.** The in-place open
+   * (T-273), the reading surface (T-275) and the CRT overlay (T-276) are what
+   * turn arriving into reading; until they land, opening a case file carries
+   * you to it and stops. That is a real thing rather than a stub — it is D-46
+   * section 4's "the camera flies to it the way search already flies to a
+   * match" — and it is what makes the gesture something a person can press and
+   * a test can watch.
+   *
+   * The flight rather than `F`'s frame, and the difference is not decoration.
+   * `F` jumps and *fits*, which fills the viewport with whatever you had
+   * selected; this eases, and its zoom is a floor rather than a target, so
+   * opening from 100% changes no zoom at all. The eased half is DESIGN section
+   * 3.7's argument about spending spatial memory, and it is why search is the
+   * only camera move on this board that animates.
+   *
+   * No flash. The amber belongs to search and means *this is the match you
+   * asked for among the others*; there is nothing to disambiguate here, and the
+   * thing that will say "it is open" is the folder opening.
+   */
+  const openItem = (itemId: string): void => {
+    if (!openable(itemId)) return;
+    const box = scene.boundsOf(itemId, 0, foundBox);
+    if (box === null) return;
+    flight.toBox(camera, box, undefined, READING_ZOOM);
+  };
+
   const searchField = new SearchField(world.layers.ui, {
     typed: (query) => {
       flyTo(search.run(scene, query));
@@ -1320,6 +1371,8 @@ async function boot(): Promise<void> {
     hitString,
     /** A double-click on paper puts a caret in it (Q-92). */
     edit: startEditing,
+    /** `Enter` on a selection of exactly one opens it (T-274, Q-257). */
+    open: openItem,
     // Space+drag and middle-drag belong to the camera, not to the board.
     suppressed: () => navigation.panReady,
     readOnly: () => readOnly,
@@ -2108,6 +2161,10 @@ async function boot(): Promise<void> {
                 save: (sha256: string) => void savePhoto(sha256),
               }
             : undefined,
+          // Not gated on the shell, unlike the row above it: opening happens on
+          // this board rather than through a file dialog, so a plain browser
+          // can do it exactly as well as the app can.
+          { can: openable, run: openItem },
         ),
         held ? undefined : () => selection.replace([itemId]),
       );

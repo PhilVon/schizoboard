@@ -466,6 +466,58 @@ describe("the item context menu", () => {
   });
 
   /**
+   * T-274, Q-257. Double-click was already the text editor, so open is a row
+   * plus Enter on the selection - and the row and the key are one function, so
+   * these assertions and select.test.ts's are about the same rule.
+   */
+  describe("open", () => {
+    const opener = (openable: readonly string[], opened: string[]) => ({
+      can: (id: string) => openable.includes(id),
+      run: (id: string) => opened.push(id),
+    });
+
+    it("opens the item that was right-clicked, not the selection", () => {
+      put("i0", { x: 0, y: 0 });
+      put("i1", { x: 400, y: 0 });
+      const opened: string[] = [];
+      pick(
+        itemMenuRows(scene, write, "i1", ["i0", "i1"], 400, 0, undefined, undefined,
+          opener(["i0", "i1"], opened)),
+        "Open",
+      );
+      expect(opened).toEqual(["i1"]);
+      // Opening is not a write. Nothing about the document changed and nothing
+      // a peer can see did either.
+      expect(writes).toEqual([]);
+    });
+
+    it("is absent for an item with nothing inside it", () => {
+      put("i", { x: 0, y: 0 });
+      const rows = itemMenuRows(scene, write, "i", ["i"], 0, 0, undefined, undefined,
+        opener([], []));
+      expect(rows.map((r) => r.label)).not.toContain("Open");
+      // Absent rather than present and inert, which is this menu's standing
+      // rule for a row that does not apply.
+      expect(rows.length).toBeGreaterThan(0);
+    });
+
+    it("is absent when nothing can open anything at all", () => {
+      put("i", { x: 0, y: 0 });
+      const rows = itemMenuRows(scene, write, "i", ["i"], 0, 0).map((r) => r.label);
+      expect(rows).not.toContain("Open");
+    });
+
+    it("comes above Edit text, because on a case file it is what you came for", () => {
+      put("i", { x: 0, y: 0 });
+      const rows = itemMenuRows(
+        scene, write, "i", ["i"], 0, 0, () => {}, undefined, opener(["i"], []),
+      ).map((r) => r.label);
+      expect(rows.indexOf("Open")).toBeGreaterThanOrEqual(0);
+      expect(rows.indexOf("Open")).toBeLessThan(rows.indexOf("Edit text"));
+    });
+  });
+
+  /**
    * T-181. Q-92 made writing on a note a double-click, which is the fastest way
    * in and the least discoverable - nothing on the board says the gesture is
    * there. This row is what says it.

@@ -553,6 +553,22 @@ export interface ToolContext {
    * through the ordinary character-level writes afterwards.
    */
   edit(itemId: string): void;
+  /**
+   * Open what is inside an item — read a document, watch a tape, hear a
+   * cassette (T-274, Q-257).
+   *
+   * Injected exactly like {@link edit}, and not a write for the same reason:
+   * opening a folder changes nothing about the document and nothing a peer can
+   * see. It is a statement about where this person's attention is.
+   *
+   * **The tool does not decide what is openable.** It knows which item the
+   * selection meant and nothing else; whether that item is one of D-46's three
+   * objects is a question about the asset record, which a tool has no business
+   * reading. So this is safe to call on anything, and does nothing for a note.
+   * The same function backs the menu's *Open* row (`ui/boardmenu.ts`), which is
+   * what stops the pointer and the keyboard forming two opinions.
+   */
+  open(itemId: string): void;
 }
 
 /**

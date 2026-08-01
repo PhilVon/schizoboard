@@ -348,6 +348,7 @@ Undo: text edits are character-level and merge into sensible entries by typing p
 | Search | `Ctrl+F` — flies the camera to a match. **Never filters or hides.** |
 | Next / previous match | `Enter` / `Shift+Enter` while the field is open |
 | Close the search | `Escape` |
+| Open a case file | `Enter` on a selection of exactly one, or the item menu's *Open* — flies the camera the way search does |
 
 Zoom range is **15% to 400%**. The board is unbounded in every direction.
 
@@ -391,6 +392,7 @@ Modifiers       Ctrl+drag keep a pin in its item · Alt+drag pull string · Alt+
 Strings         1–9 slack presets · Alt+wheel whole-string slack · Enter/Esc end run
                 Ctrl+Alt+click a string cuts it, in any tool — the scissors; the pointer says so
 Search          Ctrl+F find · Enter next match · Shift+Enter previous · Esc close
+Case files      Enter opens the selected document, tape or cassette · item menu → Open
 ```
 
 ### 3.10 The tool drawer and the tool info bar
