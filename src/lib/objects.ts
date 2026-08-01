@@ -179,6 +179,44 @@ export function pagesLabel(pages: number | null): string {
   return whole === 1 ? "1 p." : `${whole} pp.`;
 }
 
+/**
+ * How much paper a folder is holding, `0` to `1`, from how many pages it holds.
+ *
+ * **Logarithmic, because paper is thin and reading is not.** A sheet is about a
+ * tenth of a millimetre, so three pages and thirty are three millimetres apart
+ * on a desk — a difference nobody could point to across a room, and this object
+ * is looked at across a board. Three hundred is not that: it is a different
+ * thing to pick up. What a person actually reads off a closed folder is the
+ * *order* of magnitude, so that is what is drawn.
+ *
+ * {@link BULK_FULL} is where it stops. Past about five hundred sheets a manilla
+ * folder is not fuller, it is failing — the fold has run out and the paper is
+ * holding the shape. Drawing more would mean drawing a folder that cannot be
+ * closed, and the object stops being the one it is.
+ */
+export function folderBulk(pages: number | null): number {
+  // Not knowing is its own reading, and it is common: `pages` arrives with the
+  // asset record, which is a peer's write and may be a network away (Q-211), and
+  // a document this build cannot count pages in has none at all. A folder in
+  // that state is drawn as a folder with something in it, because that is the
+  // one thing that is certainly true of it.
+  if (pages === null || !Number.isFinite(pages) || pages < 1) return BULK_UNKNOWN;
+  return Math.min(1, Math.log(pages) / Math.log(BULK_FULL));
+}
+
+/** The page count that fills a folder. Past it, the fold has run out. */
+const BULK_FULL = 500;
+
+/**
+ * What a folder looks like when nobody has said how many pages are in it.
+ *
+ * Deliberately not `0`: an empty folder is a *statement* — nobody has put
+ * anything in this — and it is the wrong thing to say about a document that is
+ * simply still being counted. Around twenty pages, which is where a folder
+ * reads as holding something without reading as holding much.
+ */
+const BULK_UNKNOWN = 0.48;
+
 /** Everything after the last dot, lowercased, or `""`. */
 function extension(name: string): string {
   const dot = name.lastIndexOf(".");

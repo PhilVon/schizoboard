@@ -2481,6 +2481,36 @@ describe("a folder, a tape and a cassette", () => {
     expect(size.w).toBeGreaterThan(size.h);
   });
 
+  it("is as thick as the document it holds", () => {
+    // The one thing a closed folder can say about what is in it. Read off the
+    // element rather than off `folderBulk`, because the point of this task is
+    // that the number reaches the drawing.
+    const memo = mount(facts({ kind: "document", pages: 3 }));
+    const thin = Number(memo.style.getPropertyValue("--bulk"));
+    again();
+    const dump = mount(facts({ kind: "document", pages: 400 }));
+    const fat = Number(dump.style.getPropertyValue("--bulk"));
+    expect(thin).toBeGreaterThan(0);
+    expect(fat).toBeGreaterThan(thin * 2);
+  });
+
+  it("thickens when the page count arrives after the item has been drawn", () => {
+    // The case the digest exists for: `pages` comes with the asset record,
+    // which may be a peer's write and a network away, and a folder drawn
+    // before it landed must not stay the shape it guessed.
+    let pages: number | null = null;
+    const layer = layerWith(() => ({ ...NO_FACTS, kind: "document", pages }));
+    add("a", { assetId: HASH });
+    layer.sync(scene, dirty, null);
+    const el = host.firstElementChild as HTMLElement;
+    const guessed = Number(el.style.getPropertyValue("--bulk"));
+
+    pages = 480;
+    dirty.item("a");
+    layer.sync(scene, dirty, null);
+    expect(Number(el.style.getPropertyValue("--bulk"))).toBeGreaterThan(guessed);
+  });
+
   it("writes the extracted title under it, in the hand the notes use", () => {
     const el = mount(
       facts({ kind: "document", name: "configure-vhosts.pdf", title: "Configure Virtual Hosts" }),

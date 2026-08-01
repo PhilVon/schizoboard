@@ -45,6 +45,7 @@ import {
 import {
   caseNumber,
   fitLabel,
+  folderBulk,
   pagesLabel,
   runtimeLabel,
   titleWorthWriting,
@@ -1717,6 +1718,12 @@ class CaseView implements View {
     if (this.archetype === "folder") {
       this.el.style.setProperty("--spill", (valueAt(cold.seed, "tab", 0) * 2 - 1).toFixed(2));
       this.el.style.setProperty("--spill2", (valueAt(cold.seed, "tab", 1) * 2 - 1).toFixed(2));
+      // And how much is in it. Set here rather than at ingest because it is a
+      // *drawing* and not a fact about the item: the page count arrives with
+      // the asset record, which may be a peer's write and a network away, and
+      // an item whose box moved when that landed would be a document write
+      // nobody made — and would move the pins, the ink and the strings with it.
+      this.el.style.setProperty("--bulk", folderBulk(facts.pages).toFixed(3));
     }
     // The name has just changed, and the size it is written at is a function of
     // it — see `sizeLabels`. `sizedFor` is the width and has not moved.

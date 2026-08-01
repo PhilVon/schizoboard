@@ -4,6 +4,7 @@ import {
   assetKind,
   carriesItsOwnName,
   caseNumber,
+  folderBulk,
   objectSizeFor,
   pagesLabel,
   runtimeLabel,
@@ -97,6 +98,48 @@ describe("a page count, as a folder says it", () => {
     // rather than a folder claiming to be empty.
     expect(pagesLabel(null)).toBe("");
     expect(pagesLabel(Number.NaN)).toBe("");
+  });
+});
+
+describe("how full a folder looks", () => {
+  it("reads the order of magnitude rather than the count", () => {
+    // The claim the log scale is making: the gap a person can see is between a
+    // memo and a report, not between a memo and a slightly longer memo. So 3
+    // to 30 has to move it further than 300 to 330 does — and by a lot.
+    const memoToReport = folderBulk(30) - folderBulk(3);
+    const reportToSlightlyLonger = folderBulk(330) - folderBulk(300);
+    expect(memoToReport).toBeGreaterThan(reportToSlightlyLonger * 10);
+  });
+
+  it("fills up and stops", () => {
+    // Past about five hundred sheets the fold has run out. A thousand-page
+    // dump is drawn as a full folder rather than as an impossible one.
+    expect(folderBulk(500)).toBe(1);
+    expect(folderBulk(5_000)).toBe(1);
+    expect(folderBulk(1)).toBe(0);
+  });
+
+  it("never goes backwards", () => {
+    let last = -1;
+    for (const pages of [1, 2, 5, 12, 40, 100, 250, 499, 500, 900]) {
+      const bulk = folderBulk(pages);
+      expect(bulk).toBeGreaterThanOrEqual(last);
+      last = bulk;
+    }
+  });
+
+  it("draws a folder with something in it when nobody has said what", () => {
+    // Not zero. An empty folder is a statement — nobody has put anything in
+    // this — and it is the wrong thing to say about a document that is still
+    // being counted, or one whose record is still crossing the network.
+    const unknown = folderBulk(null);
+    expect(unknown).toBeGreaterThan(folderBulk(2));
+    expect(unknown).toBeLessThan(folderBulk(100));
+    // The three shapes of not knowing all arrive here, and a negative count is
+    // not a thinner folder than none at all.
+    expect(folderBulk(Number.NaN)).toBe(unknown);
+    expect(folderBulk(0)).toBe(unknown);
+    expect(folderBulk(-3)).toBe(unknown);
   });
 });
 
