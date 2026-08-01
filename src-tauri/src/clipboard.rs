@@ -41,19 +41,42 @@
 //!
 //! So the conclusion aged out from under the finding. A dropped file already
 //! took the cheap route and a pasted one could not, and the two were about five
-//! times apart for no reason anybody chose. This reads `CF_HDROP` so they are
-//! not.
+//! times apart for no reason anybody chose. This reads the clipboard's file
+//! list so they are not.
 //!
-//! It reports **only paths that are files**. A copied *folder* is a real
-//! `CF_HDROP` entry, and expanding it the way [`expand`] does for a drop would
-//! be a new gesture rather than a cheaper road to an old one — so a folder is
+//! It reports **only paths that are files**. A copied *folder* is a real entry
+//! on that list, and expanding it the way [`expand`] does for a drop would be a
+//! new gesture rather than a cheaper road to an old one — so a folder is
 //! reported as nothing here, falls through to the web route, and behaves
 //! exactly as it did before.
 //!
-//! **Windows only, and deliberately.** macOS and Linux still answer nothing,
-//! because nobody has checked whether a Finder copy reaches the web event there
-//! and writing NSPasteboard code on the strength of a guess that has already
-//! been wrong once would not close that hole.
+//! ## All three platforms, which took a fact rather than a decision
+//!
+//! This was Windows-only until T-303, and deliberately: nobody had checked
+//! whether a Finder copy even *reaches* the web `paste` event on the other two,
+//! and writing `NSPasteboard` code on the strength of a guess that had already
+//! been wrong once would not have closed that hole.
+//!
+//! It does reach it, on both, as a real `File` with bytes — read out of
+//! WebKit's own source rather than guessed at, in D-59. So the web route there
+//! was never broken, only slow, and since T-264 capped the road it takes, the
+//! whole of what those platforms were missing is a file between `MAX_PASTE_BYTES`
+//! and `MAX_ASSET_BYTES`: too big to hand over in one piece, small enough for
+//! the board to hold, and reachable only by dragging it.
+//!
+//! `arboard::Get::file_list` closes that on all four backends — Windows,
+//! `NSPasteboard`, X11 and Wayland — and Q-238 took it here too, replacing the
+//! `CF_HDROP` this file used to spell out by hand. The argument was about *this*
+//! platform: the only clipboard anyone on this project can watch run is the
+//! Windows one, so the road worth testing is the road all three take.
+//!
+//! **These commands are synchronous, and that is load-bearing.** Tauri runs an
+//! `async` command on a runtime worker and a plain one inline on the thread that
+//! took the IPC message, which is the main thread. `NSPasteboard` is main-thread
+//! only, and WebKit's own pasteboard proxy is on it too — reading the clipboard
+//! off a worker segfaults on macOS (`tauri-apps/plugins-workspace#3205`). A
+//! clipboard read is microseconds, so the main thread is both the correct place
+//! and the cheap one. Do not make these `async` for symmetry.
 //!
 //! The other thing a native reader adds on Windows is the `SourceURL:` header
 //! of `CF_HTML`, which the webview strips — the only way to resolve a relative
@@ -76,7 +99,7 @@ pub struct ClipboardManifest {
 /// file copy perfectly well, and what it cannot see is the *path*. See the
 /// module comment for why that is worth a round trip.
 #[tauri::command]
-pub async fn clipboard_read_manifest() -> ClipboardManifest {
+pub fn clipboard_read_manifest() -> ClipboardManifest {
     let kinds = if clipboard_files().is_empty() {
         Vec::new()
     } else {
@@ -92,7 +115,7 @@ pub async fn clipboard_read_manifest() -> ClipboardManifest {
 /// flow rather than a caught exception, which is what it was when this was a
 /// stub and is what the four-case ladder in `paste.ts` is written against.
 #[tauri::command]
-pub async fn clipboard_read_item(kind: String) -> Option<serde_json::Value> {
+pub fn clipboard_read_item(kind: String) -> Option<serde_json::Value> {
     if kind != "files" {
         return None;
     }
@@ -103,86 +126,43 @@ pub async fn clipboard_read_item(kind: String) -> Option<serde_json::Value> {
     Some(serde_json::json!({ "kind": "files", "paths": paths }))
 }
 
-/// Files named by a `CF_HDROP` on the clipboard. Empty on every other platform,
-/// and empty whenever the clipboard is carrying anything else.
-#[cfg(not(windows))]
+/// Files named by a file copy on the clipboard. Empty whenever the clipboard is
+/// carrying anything else, and empty rather than an error when it cannot be
+/// read at all.
+///
+/// Empty is not a failure to report. The clipboard is a single global lock that
+/// whoever last wrote it holds for a few milliseconds, and a display server may
+/// hand over nothing for reasons of its own; every one of those means the same
+/// thing here, which is that there is no path to be had and the web route takes
+/// the paste — the behaviour this had before it could read a path at all.
 fn clipboard_files() -> Vec<String> {
-    Vec::new()
+    let Ok(mut clipboard) = arboard::Clipboard::new() else {
+        return Vec::new();
+    };
+    let Ok(paths) = clipboard.get().file_list() else {
+        return Vec::new();
+    };
+    files_only(&paths)
 }
 
-#[cfg(windows)]
-fn clipboard_files() -> Vec<String> {
-    use std::os::windows::ffi::OsStringExt;
-
-    use windows_sys::Win32::System::DataExchange::{
-        CloseClipboard, GetClipboardData, IsClipboardFormatAvailable, OpenClipboard,
-    };
-    use windows_sys::Win32::UI::Shell::DragQueryFileW;
-
-    /// `CF_HDROP`. Spelled out rather than imported: the constant lives behind
-    /// the `Win32_System_Ole` feature, which is a whole module to pull in for a
-    /// number that has meant this since Windows 3.1.
-    const CF_HDROP: u32 = 15;
-    /// Longer than `MAX_PATH`, because a path from the shell may be an extended
-    /// one. `DragQueryFileW` truncates rather than failing if this is short, so
-    /// being generous here is the difference between a wrong path and a right
-    /// one.
-    const MAX_CHARS: usize = 32 * 1024;
-
-    /// Closes the clipboard however this function leaves — the same reason
-    /// `read_source_url` has one. It is a single global lock held across the
-    /// whole session, so an early return that skipped `CloseClipboard` would
-    /// stop every other application on the machine copying or pasting until
-    /// this one exited.
-    struct Guard;
-    impl Drop for Guard {
-        fn drop(&mut self) {
-            // SAFETY: only constructed after OpenClipboard returned success.
-            unsafe { CloseClipboard() };
-        }
-    }
-
-    // SAFETY: the clipboard is opened before it is read and closed by `Guard` on
-    // every path. The handle from `GetClipboardData` is owned by the clipboard
-    // and stays valid while it is open, which is the rest of this scope.
-    // `DragQueryFileW` is asked for the count with `0xFFFF_FFFF` first and then
-    // for each name into a buffer whose length it is told, so it cannot write
-    // past the end.
-    unsafe {
-        if IsClipboardFormatAvailable(CF_HDROP) == 0 {
-            return Vec::new();
-        }
-        // A null owner means "this task". A failure is ordinary rather than
-        // exceptional: the clipboard is routinely held for a few milliseconds
-        // by whoever last wrote it.
-        if OpenClipboard(std::ptr::null_mut()) == 0 {
-            return Vec::new();
-        }
-        let _guard = Guard;
-
-        let handle = GetClipboardData(CF_HDROP);
-        if handle.is_null() {
-            return Vec::new();
-        }
-        let count = DragQueryFileW(handle, 0xFFFF_FFFF, std::ptr::null_mut(), 0);
-        let mut out = Vec::new();
-        let mut buf = vec![0u16; MAX_CHARS];
-        for index in 0..count {
-            let len = DragQueryFileW(handle, index, buf.as_mut_ptr(), buf.len() as u32);
-            if len == 0 {
-                continue;
-            }
-            let path = PathBuf::from(std::ffi::OsString::from_wide(&buf[..len as usize]));
-            // Files only. A copied folder is a real entry here, and expanding it
-            // would be a new gesture rather than a cheaper road to an old one —
-            // so it is reported as nothing and the web route handles the paste
-            // exactly as it did before.
-            if path.is_file() {
-                out.push(path.to_string_lossy().into_owned());
-            }
-        }
-        out
-    }
+/// The entries of a clipboard file list that are files, as strings.
+///
+/// Separate from the read for the reason [`source_url_of`] is: this is the part
+/// with a decision in it, and it is the part a test can stand up. The clipboard
+/// itself cannot be — on any platform, and least of all on the two where nobody
+/// here can run a binary at all.
+///
+/// A copied *folder* is a real entry on the list, and expanding it would be a
+/// new gesture rather than a cheaper road to an old one, so it is dropped and
+/// the paste falls through to the web route exactly as it did before this file
+/// could read a path. A path that has gone since it was copied is dropped for
+/// the same reason and lands in the same place.
+fn files_only(paths: &[PathBuf]) -> Vec<String> {
+    paths
+        .iter()
+        .filter(|path| path.is_file())
+        .map(|path| path.to_string_lossy().into_owned())
+        .collect()
 }
 
 /// The page a copied fragment came from, if the clipboard says.
@@ -199,7 +179,7 @@ fn clipboard_files() -> Vec<String> {
 /// is not a page. Never an error: a paste without a base URL is the behaviour
 /// that was there before this existed.
 #[tauri::command]
-pub async fn clipboard_source_url() -> Option<String> {
+pub fn clipboard_source_url() -> Option<String> {
     read_source_url()
 }
 
@@ -441,6 +421,40 @@ mod tests {
     fn says_nothing_when_there_is_no_header_at_all() {
         assert_eq!(source_url_of(""), None);
         assert_eq!(source_url_of("Version:0.9\r\nStartHTML:00000097\r\n"), None);
+    }
+
+    #[test]
+    fn reports_only_the_entries_of_a_file_copy_that_are_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("interview.wav");
+        let folder = dir.path().join("holiday");
+        fs::write(&file, b"x").unwrap();
+        fs::create_dir(&folder).unwrap();
+
+        // A folder copied alongside a file is dropped rather than expanded, and
+        // the file beside it still goes by path.
+        assert_eq!(
+            files_only(&[folder, file.clone()]),
+            vec![file.to_string_lossy().into_owned()]
+        );
+    }
+
+    #[test]
+    fn reports_nothing_for_a_folder_on_its_own() {
+        let dir = tempfile::tempdir().unwrap();
+        // Not an empty list for the sake of it: `clipboard_read_item` answers
+        // `None` for this, which is what puts the paste back on the web route.
+        assert!(files_only(&[dir.path().to_path_buf()]).is_empty());
+    }
+
+    #[test]
+    fn drops_a_path_that_is_no_longer_there() {
+        // The opposite of what `expand` does with one, and deliberately. A drop
+        // names what the shell had in its hand a moment ago; a clipboard can
+        // name something copied an hour and a delete ago, and reporting it
+        // would refuse the paste on this side over a file the web route may
+        // still be holding perfectly good bytes for.
+        assert!(files_only(&[PathBuf::from("D:/nothing/here.png")]).is_empty());
     }
 
     #[test]
