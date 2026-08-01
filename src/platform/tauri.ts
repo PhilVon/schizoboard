@@ -294,6 +294,10 @@ export class TauriPlatform implements Platform {
     return invoke<number>("asset_size", { sha256 });
   }
 
+  assetPartial(sha256: string): Promise<number> {
+    return invoke<number>("asset_partial", { sha256 });
+  }
+
   // Raw both ways, for the same reason `assetIngestBytes` is: a 256 KB chunk as
   // a JSON array of numbers is about six times the bytes and a parse stall on
   // every one of them. Tauri hands a raw response back as an ArrayBuffer.

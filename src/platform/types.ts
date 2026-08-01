@@ -556,6 +556,22 @@ export interface Platform {
   assetSize(sha256: string): Promise<number>;
 
   /**
+   * How many bytes of an interrupted transfer are still on this disk, so the
+   * exchange can ask for the rest rather than for all of it again (T-265).
+   *
+   * A **length**, not a count of chunks, and it is only a resume point because
+   * of a promise the exchange keeps: it asks from a contiguous point and a
+   * holder serves in order, so a partial is always dense. Divide by
+   * `CHUNK_BYTES` for the chunk to start at.
+   *
+   * `0` for every way of not having one — never transferred, already committed,
+   * or swept by the store's own hour-long tidy of abandoned temporaries. Zero
+   * means "from the beginning" the whole way down, so nothing has to special
+   * case it.
+   */
+  assetPartial(sha256: string): Promise<number>;
+
+  /**
    * One `CHUNK_BYTES` chunk of an original, to put on the wire.
    *
    * Empty when the asset has gone — collected, or never here — which the caller

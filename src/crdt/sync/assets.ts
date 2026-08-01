@@ -3,7 +3,7 @@
  *
  * > ```
  * > HAVE(hashPrefixes)                          // periodic, compact
- * > WANT(sha256, priority)
+ * > WANT(sha256, priority, from)                // `from` is the chunk to start at
  * > DATA(sha256, chunkIdx, totalChunks, bytes)  // 256 KB chunks
  * > DONE(sha256)                                // full hash verified before CAS commit
  * > NACK(sha256)                                // "I don't have it"
@@ -42,7 +42,7 @@ const NACK = 4;
 
 export type AssetMessage =
   | { kind: "have"; prefixes: string[] }
-  | { kind: "want"; sha256: string; priority: number }
+  | { kind: "want"; sha256: string; priority: number; from: number }
   | { kind: "data"; sha256: string; index: number; total: number; bytes: Uint8Array }
   | { kind: "done"; sha256: string }
   | { kind: "nack"; sha256: string };
@@ -77,11 +77,24 @@ export function encodeHave(hashes: readonly string[]): Uint8Array {
   return encoding.toUint8Array(encoder);
 }
 
-export function encodeWant(sha256: string, priority: number): Uint8Array {
+/**
+ * `from` is the chunk to start at — what the asker already holds (T-265).
+ *
+ * Appended rather than inserted, and read back only if there are bytes left to
+ * read it from, so the two directions degrade separately and neither is a flag
+ * day. An older holder reads the sha and the priority, never looks further, and
+ * sends from zero: a transfer that does not resume, which is exactly today. A
+ * newer holder reading an older asker's `WANT` finds nothing after the priority
+ * and defaults to zero, which is the same thing. Without the guard that second
+ * case throws inside `decodeAsset`, and a dropped `WANT` is not a slower
+ * transfer — it is a peer that never answers at all.
+ */
+export function encodeWant(sha256: string, priority: number, from = 0): Uint8Array {
   const encoder = encoding.createEncoder();
   encoding.writeVarUint(encoder, WANT);
   encoding.writeVarString(encoder, sha256);
   encoding.writeVarUint(encoder, priority);
+  encoding.writeVarUint(encoder, from);
   return encoding.toUint8Array(encoder);
 }
 
@@ -148,7 +161,10 @@ export function decodeAsset(tail: Uint8Array): AssetMessage | null {
       case WANT: {
         const sha256 = decoding.readVarString(decoder);
         const priority = decoding.readVarUint(decoder);
-        return isHash(sha256) ? { kind: "want", sha256, priority } : null;
+        // See `encodeWant`: absent means an asker that predates resuming, and
+        // zero is what that asker meant.
+        const from = decoding.hasContent(decoder) ? decoding.readVarUint(decoder) : 0;
+        return isHash(sha256) ? { kind: "want", sha256, priority, from } : null;
       }
       case DATA: {
         const sha256 = decoding.readVarString(decoder);

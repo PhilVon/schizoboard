@@ -307,11 +307,31 @@ Assets aren't in the document, so they need their own path — a side channel on
 
 ```
 HAVE(hashPrefixes)                          // periodic, compact
-WANT(sha256, priority)
+WANT(sha256, priority, fromChunk)           // fromChunk: what the asker already has
 DATA(sha256, chunkIdx, totalChunks, bytes)  // 256 KB chunks
 DONE(sha256)                                // full hash verified before CAS commit
 NACK(sha256)                                // "I don't have it"
 ```
+
+**Transfers resume.** Chunks are written at their own offsets in a file named for
+the hash, so a transfer that is displaced by a higher priority, dropped by a peer
+going quiet, or cut off by the connection keeps what arrived — and the next
+attempt asks from where it stopped rather than from zero. A photograph did not
+care; a 400 MB interview over a flaky LAN never finished without it.
+
+`fromChunk` is derived rather than remembered: the receiver asks its own store
+how long the partial is and divides by the chunk size, which needs no bookkeeping
+and survives a reload. That is only a chunk count because the two halves agree to
+keep it one — a holder serves from `fromChunk` upwards *in order*, and the asker
+only ever resumes from a contiguous point, so the partial never has a hole in it.
+The store does not enforce that and must not: chunks are accepted in any order on
+purpose, and the hash at commit is what actually decides. A commit that fails
+deletes the partial, so the one case that starts over is the one that should.
+
+The field was **appended** to `WANT`, and read back only when there are bytes
+left to read it from. An older holder never looks past the priority and sends
+from zero; a newer one reading an older asker's `WANT` defaults to zero. Both are
+"a transfer that does not resume", which is what the protocol did before.
 
 Rust does chunking, verification and the store commit. The frontend only orchestrates by hash — a chunk leaves `asset_chunk` and enters `asset_receive` without JavaScript reading a byte of it, and `asset_commit` refuses anything that does not hash to the name it arrived under.
 
