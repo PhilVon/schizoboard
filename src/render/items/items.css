@@ -2241,24 +2241,64 @@ textarea.item-field::-webkit-scrollbar {
   height: 86%;
   border-radius: 50%;
   /*
-   * **How far out the tape is wound**, and the whole of what a tape with no
-   * recording in it looks like (T-271). `--arrived` is `0` when the bytes are
-   * not here, the transfer's own fraction while they come, and *absent* once
-   * they have — so the fallback below is the resting pack and this declaration
-   * evaluates to a plain `100%` on every object whose file is present. That is
-   * deliberate and it is tested: nothing about a tape that is here may change
-   * because this task happened.
+   * **How far out the tape is wound**, off the one number `--wound` that says
+   * how much ribbon is on *this* hub — see `.is-supply` and `.is-takeup` below,
+   * which is where the two inputs to it are combined.
+   *
+   * ## The radius is the square root of the length (T-268)
+   *
+   * This used to be linear in the fraction, which was right while the fraction
+   * meant "how much of the file is here" and there was only ever one of these
+   * winding. It is wrong for a transport. Tape is wound in a flat spiral, so the
+   * *area* of the annulus is the length of ribbon on the hub — a tape half
+   * played is not a spool at half radius, it is one at 0.80, and the error is
+   * worst exactly in the middle where the eye is reading the balance between the
+   * two spools.
+   *
+   * `0.2809` is the hub at `0.53` squared and `0.7191` is what is left of 1, so
+   * this is `sqrt(h² + (1 - h²)·L)` with the full reel at radius 1. At `L = 1`
+   * it is `sqrt(1)`, which is exactly `100%` — the same resting pack this drew
+   * before, and the reason that matters is below.
+   *
+   * ## Absent at rest, on purpose
+   *
+   * `--arrived` is `0` when the bytes are not here, the transfer's own fraction
+   * while they come, and *absent* once they have. `--reeled` is where playback
+   * has got to and is absent until something plays (Q-250 parks that for T-257).
+   * So on a tape sitting on the board both fall back and the supply reel is
+   * full, which is the pack T-267 shipped: nothing about a tape that is here may
+   * change because this task happened, and that is tested rather than hoped for.
    *
    * The three bands below hold their proportions as it winds, and they are
    * written as the spans they are — 19 and 37 out of 47 — rather than as
-   * decimals, so `--arrived: 1` gives back 72% and 90% *exactly* rather than
-   * 71.988% and 89.996%. A resting pose that is nearly where it was is the
-   * failure this whole section is arranged to avoid.
+   * decimals, so a full pack gives back 72% and 90% *exactly* rather than
+   * 71.988% and 89.996%.
    */
-  --pack: calc(53% + 47% * var(--arrived, 1));
+  --pack: calc(100% * sqrt(0.2809 + 0.7191 * var(--wound, 1)));
   background:
+    /*
+     * `closest-side`, and without it none of the above is visible (T-268).
+     *
+     * A radial gradient with no size given is `farthest-corner`, so `100%` is
+     * the distance to the corner of the box — and the reel is a square box
+     * clipped to a circle, so every percentage below was landing at √2 times
+     * the radius it names. The consequences were invisible while the pack never
+     * moved and are the whole task once it does:
+     *
+     *   - `53%`, which the comment below calls half the radius, was drawing at
+     *     75% of it. The pale spool was three quarters of the reel.
+     *   - A full pack ran to 141% of the radius, so **two of the tape's three
+     *     browns were outside the disc** and had never once been drawn.
+     *   - And the band past the pack only entered the circle below `70.7%`, so
+     *     a spool anywhere between a quarter and full played looked exactly
+     *     like a full one. Measured on the running board before this line: an
+     *     annulus at 0.8 of the radius read luma 37.6 against 38.6 for a spool
+     *     with a third of the tape on it.
+     *
+     * So the numbers below are unchanged and now mean what they say.
+     */
     radial-gradient(
-      circle at 50% 50%,
+      circle closest-side at 50% 50%,
       #171410 0% 20%,
       rgba(0, 0, 0, 0) 20% 44%,
       #5f676b 44% 49%,
@@ -2269,16 +2309,56 @@ textarea.item-field::-webkit-scrollbar {
       #2b241d 53% calc(53% + (var(--pack) - 53%) * 19 / 47),
       #1d1811 calc(53% + (var(--pack) - 53%) * 19 / 47) calc(53% + (var(--pack) - 53%) * 37 / 47),
       #120e0a calc(53% + (var(--pack) - 53%) * 37 / 47) var(--pack),
-      /* Past the pack is the inside of the shell — the same `--shell-in` the
-         window itself takes, so the ring the tape has left is continuous with
-         the space around the reel rather than a disc of its own. Opaque rather
-         than transparent: the teeth are a conic *under* this gradient and are
-         masked by it being opaque, so a hole here would put a ring of spool
-         teeth out where the tape should be. At rest this band is 100% to 100%
-         and draws nothing. */
-      var(--shell-in, #0a0908) var(--pack) 100%
+      /*
+       * Past the pack is the far wall of the shell, and **it is grey rather
+       * than the window's black even while the file is here** (T-268).
+       *
+       * The fallback used to be the window's own `#0a0908`, which was right
+       * while the only thing that could uncover this band was a transfer — and
+       * a transfer sets `--shell-in` to the grey itself. Playback uncovers it
+       * too, and T-271 already measured what happens when it is not lightened:
+       * the pack's browns run to `#120e0a` against a `#0a0908` hole, six levels
+       * of luma, and a four-state ladder came back with the rows identical. A
+       * spool that has played half its tape has to *look* like one.
+       *
+       * So this is the same `#3e3833` the waiting state writes, which is why it
+       * is written as that variable's fallback rather than as a second colour:
+       * the ring the tape has left is one thing, whether the tape has not come
+       * yet or has already gone past the head.
+       *
+       * Opaque rather than transparent: the teeth are a conic *under* this
+       * gradient and are masked by it being opaque, so a hole here would put a
+       * ring of spool teeth out where the tape should be. On a tape at rest the
+       * band is 100% to 100% and draws nothing at all.
+       */
+      var(--shell-in, #3e3833) var(--pack) 100%
     ),
     repeating-conic-gradient(from 22deg, #b9bfc0 0 26deg, #838b8f 26deg 45deg);
+}
+
+/*
+ * Which spool is which, and the whole of the transport in two declarations.
+ *
+ * **A tape has a fixed quantity of ribbon**, so the two hubs are not two
+ * independent readings — they are one reading and its complement. The supply
+ * reel holds what has not been played and the take-up reel holds what has, and
+ * the sum of the two is however much of the file is here. Both spools used to
+ * take `--arrived` directly, which is why a rewound tape had two full reels;
+ * Phil's reference has a dark full spool on the left and a bare one on the
+ * right, and that is what a tape wound to its start looks like.
+ *
+ * So position is drawn by the object rather than by a bar over it, which is
+ * DESIGN 1.3 applied to a transport control. There is no producer for
+ * `--reeled` yet: T-257 is where playback lands and Q-250 parked the wiring
+ * there deliberately, so until then every tape on the board reads as rewound,
+ * which is exactly what an unplayed tape is.
+ */
+.case-reel.is-supply {
+  --wound: calc(var(--arrived, 1) * (1 - var(--reeled, 0)));
+}
+
+.case-reel.is-takeup {
+  --wound: calc(var(--arrived, 1) * var(--reeled, 0));
 }
 
 /*
@@ -2388,6 +2468,66 @@ textarea.item-field::-webkit-scrollbar {
 
 .item-case[data-kind="vhs"] .case-reel {
   height: 74%;
+}
+
+/*
+ * The counter — T-268, and the half of it a cassette does not need.
+ *
+ * A cassette says where it is by the balance between its spools, which is
+ * legible because both hubs are in one window an inch apart. A VHS has its two
+ * windows at opposite ends of a face nine inches wide with a label between
+ * them, so the same reading is a comparison across the whole object and the eye
+ * will not make it. Hence four digits, on the shell under the label, in the
+ * strip of ribbing that had nothing on it.
+ *
+ * Not on Phil's reference, which is the honest note to leave here: a real
+ * cassette has no counter and a real *deck* does. DESIGN 1.3 is what decides it
+ * — position is a property of the object rather than a control drawn over it —
+ * so the readout that would have been a scrub bar is a thing the tape wears.
+ */
+.case-counter {
+  position: absolute;
+  top: 81.5%;
+  height: 11.5%;
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  /* A hair of black between the wheels: they are four separate drums behind one
+     window, and a continuous strip of digits is a display. */
+  gap: 1.5%;
+  padding: 0.6% 0.9%;
+  border-radius: 1.5px;
+  /* The recess. Darker than the shell so the window reads as cut into it, with
+     the lip catching light along the top the way every other cut edge on this
+     board does. */
+  background: #0b0a09;
+  box-shadow:
+    inset 0 1px 0 rgba(0, 0, 0, 0.9),
+    0 -0.5px 0 rgba(255, 250, 240, 0.13);
+}
+
+.case-digit {
+  /* Each digit is as wide as it needs and no wider - the counter sizes itself
+     off its own type, so it stays the same fraction of the object at every
+     zoom without a second declaration of how big it is. */
+  padding: 0 0.42em;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #241f19;
+  font-family: "Source Sans 3", ui-sans-serif, system-ui, sans-serif;
+  font-weight: 600;
+  line-height: 1.05;
+  font-variant-numeric: tabular-nums;
+  /* A drum, not a card: brightest across the middle and falling away top and
+     bottom, because the digit is printed on the curve of a wheel. */
+  background: linear-gradient(
+    to bottom,
+    #b8b2a4 0%,
+    #efece2 38%,
+    #e6e2d6 58%,
+    #a8a294 100%
+  );
 }
 
 /*
@@ -2790,6 +2930,7 @@ textarea.item-field::-webkit-scrollbar {
     .pol-gloss,
     .pol-age,
     .case-grain,
+    .case-counter,
     .case-reel,
     .case-tape,
     .folder-sheets,

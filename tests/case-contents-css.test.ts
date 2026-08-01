@@ -36,26 +36,50 @@ const front = declarations(".folder-front");
 const slip = declarations('.item-case[data-kind="folder"] .case-body::after');
 
 /**
- * Resolve a `calc()` written in the one shape this file uses — percentages,
- * `var(--pack)`, `var(--arrived, F)`, `+ - * /` and parentheses — at a given
- * `--arrived`.
+ * How much of the file is here, and how far playback has got — the two numbers
+ * every declaration below is a function of.
  *
- * A five-line evaluator rather than a regex per declaration, because the whole
- * point below is to compare a parameterised stop against the plain number it
- * used to be, and there are eight of them. `Function` over the substituted
- * string is safe here in the way it never is elsewhere: the input is a file in
- * this repository, read at test time.
+ * `reeled` is `0` on every object on the board today, because nothing produces a
+ * playback position yet: T-257 is where that lands and Q-250 parked the wiring
+ * there. It is a parameter here anyway, because the *drawing* is finished and
+ * the whole claim of T-268 is about what it does between 0 and 1.
  */
-function at(expr: string, arrived: number): number {
-  const pack = 53 + 47 * arrived;
+interface Transport {
+  arrived: number;
+  reeled: number;
+}
+
+const REST: Transport = { arrived: 1, reeled: 0 };
+
+/**
+ * Resolve a `calc()` written in the one shape this file uses — percentages,
+ * `var(--pack)`, `var(--wound, F)`, `var(--arrived, F)`, `var(--reeled, F)`,
+ * `sqrt()`, `+ - * /` and parentheses — at a given transport state.
+ *
+ * A short evaluator rather than a regex per declaration, because the whole point
+ * below is to compare a parameterised stop against the plain number it used to
+ * be, and there are eight of them. `Function` over the substituted string is
+ * safe here in the way it never is elsewhere: the input is a file in this
+ * repository, read at test time.
+ *
+ * `wound` is the supply reel's, since that is the one every stop below is drawn
+ * for — the take-up reel is the same declarations at the complement, which is
+ * asserted where the two rules are read rather than assumed here.
+ */
+function at(expr: string, t: Transport = REST): number {
+  const wound = t.arrived * (1 - t.reeled);
+  const pack = 100 * Math.sqrt(0.2809 + 0.7191 * wound);
   const substituted = expr
     .replace(/var\(--pack\)/g, `(${pack})`)
-    .replace(/var\(--arrived,\s*[\d.]+\)/g, `(${arrived})`)
+    .replace(/var\(--wound,\s*[\d.]+\)/g, `(${wound})`)
+    .replace(/var\(--arrived,\s*[\d.]+\)/g, `(${t.arrived})`)
+    .replace(/var\(--reeled,\s*[\d.]+\)/g, `(${t.reeled})`)
     .replace(/(\d(?:\.\d+)?)%/g, "$1")
+    .replace(/sqrt\(/g, "Math.sqrt(")
     .replace(/calc/g, "");
   expect(
-    /^[\d\s.+\-*/()]+$/.test(substituted),
-    `"${expr}" is arithmetic over --pack and --arrived`,
+    /^[\d\s.+\-*/()]+$/.test(substituted.replace(/Math\.sqrt/g, "")),
+    `"${expr}" is arithmetic over the transport`,
   ).toBe(true);
   return Number(new Function(`return (${substituted})`)());
 }
@@ -84,14 +108,14 @@ function words(value: string): string[] {
   return out;
 }
 
-function pack(arrived: number): Array<[string, number, number]> {
+function pack(t: Transport = REST): Array<[string, number, number]> {
   const radial = layers(reel.get("background")!)[0]!;
   // The stop list, minus the `radial-gradient(circle at 50% 50%` head.
   const stops = layers(radial.slice(radial.indexOf("(") + 1, radial.lastIndexOf(")"))).slice(1);
   return stops.map((s) => {
     const parts = words(s);
     expect(parts, `"${s}" is a colour and two stops`).toHaveLength(3);
-    return [parts[0]!, at(parts[1]!, arrived), at(parts[2]!, arrived)] as [string, number, number];
+    return [parts[0]!, at(parts[1]!, t), at(parts[2]!, t)] as [string, number, number];
   });
 }
 
@@ -103,8 +127,8 @@ describe("a tape with nothing wound on it", () => {
    * close to the tape T-267 shipped, it is that tape.
    */
   it("winds to exactly the pack it always drew", () => {
-    expect(at(reel.get("--pack")!, 1)).toBe(100);
-    const rest = pack(1);
+    expect(at(reel.get("--pack")!)).toBe(100);
+    const rest = pack();
     expect(rest.map(([, from, to]) => [from, to])).toEqual([
       [0, 20],
       [20, 44],
@@ -124,8 +148,9 @@ describe("a tape with nothing wound on it", () => {
    * through its window.
    */
   it("collapses onto the bare hub when nothing has arrived", () => {
-    expect(at(reel.get("--pack")!, 0)).toBe(53);
-    for (const [, from, to] of pack(0).slice(4, 7)) expect(to - from).toBe(0);
+    const nothing = { arrived: 0, reeled: 0 };
+    expect(at(reel.get("--pack")!, nothing)).toBeCloseTo(53, 10);
+    for (const [, from, to] of pack(nothing).slice(4, 7)) expect(to - from).toBeCloseTo(0, 10);
   });
 
   /**
@@ -137,10 +162,44 @@ describe("a tape with nothing wound on it", () => {
    * colour as well as an opaque one.
    */
   it("shows the inside of the shell past the pack, not a hole", () => {
-    const outer = pack(0).at(-1)!;
-    expect(outer[1], "the empty band starts at the hub").toBe(53);
+    const outer = pack({ arrived: 0, reeled: 0 }).at(-1)!;
+    expect(outer[1], "the empty band starts at the hub").toBeCloseTo(53, 10);
     expect(outer[2]).toBe(100);
-    expect(outer[0]).toBe(window_.get("background"));
+    // Both bands are the same variable, so a tape whose file has not arrived
+    // shows one continuous grey through the window and around the reel.
+    expect(outer[0]).toMatch(/^var\(--shell-in,/);
+    expect(window_.get("background")).toMatch(/^var\(--shell-in,/);
+  });
+
+  /**
+   * **The fallbacks are where the two part company, and T-268 is why.**
+   *
+   * They used to be the same black, because the only thing that could ever
+   * uncover the reel's outer band was a transfer — and a transfer sets
+   * `--shell-in` for both. Playback uncovers it while the file is here, so the
+   * reel's fallback has to be the far wall: T-271 measured what a pack against
+   * the window's own black looks like, and the answer was that it is not there.
+   *
+   * The window keeps the black, and that is not an oversight either. Below 35%
+   * the reels are `display: none` and the window's background is the whole of
+   * what says whether the file is here at all, which is the reading a person
+   * scanning a wall of tapes is making.
+   */
+  it("keeps the reel's ring legible while the window stays the tell", () => {
+    const luma = (hex: string): number => {
+      const [r, g, b] = [1, 3, 5].map((i) => Number.parseInt(hex.slice(i, i + 2), 16));
+      return 0.2126 * r! + 0.7152 * g! + 0.0722 * b!;
+    };
+    const fallback = (decl: string): string => /var\(--shell-in,\s*(#[0-9a-f]{6})\)/.exec(decl)![1]!;
+    const ring = fallback(pack({ arrived: 0, reeled: 0 }).at(-1)![0]);
+    const hole = fallback(window_.get("background")!);
+    expect(luma(hole), "a packed window is the black it always was").toBeLessThan(12);
+    // Against `#120e0a`, the darkest brown in the pack. Six levels of luma is
+    // what the first pass of T-271 shipped and nobody could see.
+    expect(luma(ring) - luma("#120e0a")).toBeGreaterThan(30);
+    // And it is the same grey the waiting state writes, rather than a second
+    // opinion about what the inside of a shell looks like.
+    expect(ring).toBe(waiting.get("--shell-in"));
   });
 
   /**
@@ -174,8 +233,8 @@ describe("a tape with nothing wound on it", () => {
    */
   it("has no web between the spools until there is tape", () => {
     expect(web.get("opacity")).toBe("var(--arrived, 1)");
-    expect(at(web.get("opacity")!, 0)).toBe(0);
-    expect(at(web.get("opacity")!, 1)).toBe(1);
+    expect(at(web.get("opacity")!, { arrived: 0, reeled: 0 })).toBe(0);
+    expect(at(web.get("opacity")!)).toBe(1);
   });
 
   /**
@@ -259,5 +318,63 @@ describe("a folder that opens on nothing", () => {
     expect(brightest(slip.get("background")!)).toBeGreaterThan(
       brightest(declarations(".folder-sheets").get("background")!),
     );
+  });
+});
+
+/**
+ * The transport — T-268, and the reason the pack stopped being linear.
+ *
+ * A tape has a fixed quantity of ribbon, so the two spools are one reading and
+ * its complement rather than two independent ones. Both used to take `--arrived`
+ * directly, which is why a rewound tape had two full reels where Phil's
+ * reference has a dark spool on the left and a bare one on the right.
+ *
+ * `--reeled` has no producer yet: T-257 is where playback lands and Q-250 parked
+ * the wiring there. So this is the whole of what can be asserted about a control
+ * nothing drives — that the drawing is a correct function of the position, and
+ * that at the position every tape on this board is at, it draws what it drew
+ * before.
+ */
+describe("where in the tape you are", () => {
+  const supply = declarations(".case-reel.is-supply");
+  const takeup = declarations(".case-reel.is-takeup");
+
+  /** How much ribbon a rule puts on its own hub, at one transport state. */
+  function wound(rule: Map<string, string>, t: Transport): number {
+    return at(rule.get("--wound")!, t);
+  }
+
+  it("splits one tape between two spools rather than filling both", () => {
+    for (const reeled of [0, 0.25, 0.5, 0.75, 1]) {
+      const t = { arrived: 1, reeled };
+      expect(wound(supply, t) + wound(takeup, t), `at ${reeled}`).toBeCloseTo(1, 10);
+      expect(wound(takeup, t)).toBeCloseTo(reeled, 10);
+    }
+  });
+
+  /**
+   * And a transfer is still a transfer: half a file that has not been played is
+   * half a tape on the supply reel and nothing on the take-up, not half on each.
+   */
+  it("winds what has arrived onto the spool that has not been played off", () => {
+    const half = { arrived: 0.5, reeled: 0 };
+    expect(wound(supply, half)).toBeCloseTo(0.5, 10);
+    expect(wound(takeup, half)).toBe(0);
+  });
+
+  /**
+   * **Area, not radius.** Tape is wound in a flat spiral, so the length on a hub
+   * is the area of the annulus. A tape half played sits at 0.80 of the full
+   * radius; drawn linearly it would sit at 0.765, and the error is worst exactly
+   * where the eye is reading the balance between the two spools.
+   */
+  it("grows the pack by area, so a half-played tape is not a half spool", () => {
+    const half = at(reel.get("--pack")!, { arrived: 1, reeled: 0.5 });
+    expect(half).toBeCloseTo(100 * Math.sqrt(0.2809 + 0.7191 * 0.5), 6);
+    expect(half).toBeGreaterThan(53 + 47 * 0.5);
+    // The two ends, which are the ones a reader will check against the old
+    // linear declaration: they agree there and nowhere else.
+    expect(at(reel.get("--pack")!, { arrived: 1, reeled: 0 })).toBe(100);
+    expect(at(reel.get("--pack")!, { arrived: 1, reeled: 1 })).toBeCloseTo(53, 10);
   });
 });

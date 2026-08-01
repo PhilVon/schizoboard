@@ -1656,6 +1656,8 @@ class CaseView implements View {
   private readonly bend: HTMLDivElement | null;
   /** The fibre in the card, likewise: a cassette label is coated and smooth. */
   private readonly grain: HTMLDivElement | null;
+  /** The four digit counter, which only a VHS wears — see the constructor. */
+  private readonly counter: HTMLDivElement | null;
 
   private boundCold: ItemCold | null = null;
   /**
@@ -1718,6 +1720,7 @@ class CaseView implements View {
       const front = div("folder-front");
       // No curl. See `setCurl` — this is where refusing it costs nothing.
       this.bend = null;
+      this.counter = null;
       this.grain = div("case-grain");
       // One shared tile for every folder on the board, generated once and
       // memoised by stock. `cream` is the fibre nearest to kraft card, and the
@@ -1737,15 +1740,31 @@ class CaseView implements View {
       // each. Not a label above a window — the two windows flank the label, and
       // that is the arrangement the object is recognised by.
       const shell = div("case-shell");
+      // Supply on the left and take-up on the right, which is a fact about the
+      // object rather than about the order these were appended in — see
+      // `.is-supply` in `items.css`.
       const left = div("case-window is-left");
-      left.append(div("case-reel"));
+      left.append(div("case-reel is-supply"));
       const right = div("case-window is-right");
-      right.append(div("case-reel"));
+      right.append(div("case-reel is-takeup"));
       const label = div("case-label");
       this.bend = null;
       this.grain = null;
       label.append(this.number, this.meta, this.title, this.caption);
-      this.body.append(shell, left, right, label);
+      // The counter, on the shell under the label and nowhere near it: it is a
+      // reading off the transport and not a thing anybody wrote. Four digits,
+      // each on its own drum, and all four are zeros because nothing has played
+      // — which is what the counter on a tape nobody has watched says. A cassette
+      // has none, because a cassette's transport readout is the spools
+      // themselves and that is the whole distinction T-268 is drawn on.
+      const counter = div("case-counter");
+      for (const digit of COUNTER_AT_REST) {
+        const wheel = div("case-digit");
+        wheel.textContent = digit;
+        counter.append(wheel);
+      }
+      this.counter = counter;
+      this.body.append(shell, left, right, label, counter);
     } else {
       // A compact cassette, likewise from the reference, and its window is the
       // structural surprise: it is a hole *through the label*, with writing
@@ -1759,8 +1778,9 @@ class CaseView implements View {
       const label = div("case-label");
       this.bend = null;
       this.grain = null;
+      this.counter = null;
       const window_ = div("case-window");
-      window_.append(div("case-reel"), div("case-tape"), div("case-reel"));
+      window_.append(div("case-reel is-supply"), div("case-tape"), div("case-reel is-takeup"));
       label.append(this.number, this.meta, window_, this.title, this.caption);
       this.body.append(shell, label, div("case-holes"));
     }
@@ -1976,6 +1996,7 @@ class CaseView implements View {
       this.meta.style.fontSize = body;
       this.title.style.fontSize = `${Math.max(6, w * TITLE_SIZE).toFixed(1)}px`;
       this.caption.style.fontSize = body;
+      if (this.counter) this.counter.style.fontSize = `${Math.max(4, w * DIGIT_SIZE).toFixed(1)}px`;
       if (this.field) this.field.style.fontSize = body;
     }
     writeTransform(this.el, x, y, rot, w, h, lift);
@@ -2089,6 +2110,21 @@ function div(className: string): HTMLDivElement {
   el.className = className;
   return el;
 }
+
+/**
+ * What a VHS's counter reads until something plays it (T-268, Q-250).
+ *
+ * Four zeros, and four rather than a `"0000"` because each digit is a drum of
+ * its own — a mechanical counter is four wheels behind one window, and drawing
+ * it as one string would be drawing a display. When T-257 lands, this is the
+ * shape the position is formatted into and nothing about the drawing moves.
+ */
+const COUNTER_AT_REST = ["0", "0", "0", "0"] as const;
+
+/** The counter's digits, as a fraction of the object's width. Smaller than
+ *  anything a person wrote on it: it is stamped on a wheel the size of a
+ *  fingernail. */
+const DIGIT_SIZE = 0.032;
 
 /** The case number's size, as a fraction of the object's width. */
 const NUMBER_SIZE = 0.055;
