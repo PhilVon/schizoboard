@@ -165,7 +165,41 @@ describe("a tape with nothing wound on it", () => {
     const outer = pack({ arrived: 0, reeled: 0 }).at(-1)!;
     expect(outer[1], "the empty band starts at the hub").toBeCloseTo(53, 10);
     expect(outer[2]).toBe(100);
-    expect(outer[0]).toBe(window_.get("background"));
+    // Both bands are the same variable, so a tape whose file has not arrived
+    // shows one continuous grey through the window and around the reel.
+    expect(outer[0]).toMatch(/^var\(--shell-in,/);
+    expect(window_.get("background")).toMatch(/^var\(--shell-in,/);
+  });
+
+  /**
+   * **The fallbacks are where the two part company, and T-268 is why.**
+   *
+   * They used to be the same black, because the only thing that could ever
+   * uncover the reel's outer band was a transfer — and a transfer sets
+   * `--shell-in` for both. Playback uncovers it while the file is here, so the
+   * reel's fallback has to be the far wall: T-271 measured what a pack against
+   * the window's own black looks like, and the answer was that it is not there.
+   *
+   * The window keeps the black, and that is not an oversight either. Below 35%
+   * the reels are `display: none` and the window's background is the whole of
+   * what says whether the file is here at all, which is the reading a person
+   * scanning a wall of tapes is making.
+   */
+  it("keeps the reel's ring legible while the window stays the tell", () => {
+    const luma = (hex: string): number => {
+      const [r, g, b] = [1, 3, 5].map((i) => Number.parseInt(hex.slice(i, i + 2), 16));
+      return 0.2126 * r! + 0.7152 * g! + 0.0722 * b!;
+    };
+    const fallback = (decl: string): string => /var\(--shell-in,\s*(#[0-9a-f]{6})\)/.exec(decl)![1]!;
+    const ring = fallback(pack({ arrived: 0, reeled: 0 }).at(-1)![0]);
+    const hole = fallback(window_.get("background")!);
+    expect(luma(hole), "a packed window is the black it always was").toBeLessThan(12);
+    // Against `#120e0a`, the darkest brown in the pack. Six levels of luma is
+    // what the first pass of T-271 shipped and nobody could see.
+    expect(luma(ring) - luma("#120e0a")).toBeGreaterThan(30);
+    // And it is the same grey the waiting state writes, rather than a second
+    // opinion about what the inside of a shell looks like.
+    expect(ring).toBe(waiting.get("--shell-in"));
   });
 
   /**

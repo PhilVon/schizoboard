@@ -2276,8 +2276,29 @@ textarea.item-field::-webkit-scrollbar {
    */
   --pack: calc(100% * sqrt(0.2809 + 0.7191 * var(--wound, 1)));
   background:
+    /*
+     * `closest-side`, and without it none of the above is visible (T-268).
+     *
+     * A radial gradient with no size given is `farthest-corner`, so `100%` is
+     * the distance to the corner of the box — and the reel is a square box
+     * clipped to a circle, so every percentage below was landing at √2 times
+     * the radius it names. The consequences were invisible while the pack never
+     * moved and are the whole task once it does:
+     *
+     *   - `53%`, which the comment below calls half the radius, was drawing at
+     *     75% of it. The pale spool was three quarters of the reel.
+     *   - A full pack ran to 141% of the radius, so **two of the tape's three
+     *     browns were outside the disc** and had never once been drawn.
+     *   - And the band past the pack only entered the circle below `70.7%`, so
+     *     a spool anywhere between a quarter and full played looked exactly
+     *     like a full one. Measured on the running board before this line: an
+     *     annulus at 0.8 of the radius read luma 37.6 against 38.6 for a spool
+     *     with a third of the tape on it.
+     *
+     * So the numbers below are unchanged and now mean what they say.
+     */
     radial-gradient(
-      circle at 50% 50%,
+      circle closest-side at 50% 50%,
       #171410 0% 20%,
       rgba(0, 0, 0, 0) 20% 44%,
       #5f676b 44% 49%,
@@ -2288,14 +2309,29 @@ textarea.item-field::-webkit-scrollbar {
       #2b241d 53% calc(53% + (var(--pack) - 53%) * 19 / 47),
       #1d1811 calc(53% + (var(--pack) - 53%) * 19 / 47) calc(53% + (var(--pack) - 53%) * 37 / 47),
       #120e0a calc(53% + (var(--pack) - 53%) * 37 / 47) var(--pack),
-      /* Past the pack is the inside of the shell — the same `--shell-in` the
-         window itself takes, so the ring the tape has left is continuous with
-         the space around the reel rather than a disc of its own. Opaque rather
-         than transparent: the teeth are a conic *under* this gradient and are
-         masked by it being opaque, so a hole here would put a ring of spool
-         teeth out where the tape should be. At rest this band is 100% to 100%
-         and draws nothing. */
-      var(--shell-in, #0a0908) var(--pack) 100%
+      /*
+       * Past the pack is the far wall of the shell, and **it is grey rather
+       * than the window's black even while the file is here** (T-268).
+       *
+       * The fallback used to be the window's own `#0a0908`, which was right
+       * while the only thing that could uncover this band was a transfer — and
+       * a transfer sets `--shell-in` to the grey itself. Playback uncovers it
+       * too, and T-271 already measured what happens when it is not lightened:
+       * the pack's browns run to `#120e0a` against a `#0a0908` hole, six levels
+       * of luma, and a four-state ladder came back with the rows identical. A
+       * spool that has played half its tape has to *look* like one.
+       *
+       * So this is the same `#3e3833` the waiting state writes, which is why it
+       * is written as that variable's fallback rather than as a second colour:
+       * the ring the tape has left is one thing, whether the tape has not come
+       * yet or has already gone past the head.
+       *
+       * Opaque rather than transparent: the teeth are a conic *under* this
+       * gradient and are masked by it being opaque, so a hole here would put a
+       * ring of spool teeth out where the tape should be. On a tape at rest the
+       * band is 100% to 100% and draws nothing at all.
+       */
+      var(--shell-in, #3e3833) var(--pack) 100%
     ),
     repeating-conic-gradient(from 22deg, #b9bfc0 0 26deg, #838b8f 26deg 45deg);
 }
