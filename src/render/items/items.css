@@ -2590,11 +2590,25 @@ textarea.item-field::-webkit-scrollbar {
   /* About the clip, because the clip is what holds it and a print hanging off
      one swings from there rather than from its own middle. */
   transform-origin: 50% 4%;
-  /* Sitting on the shell rather than in it. Small and tight: the print is a
-     third of a millimetre of paper, not a card standing off the surface. */
+  /*
+   * Sitting on the shell rather than in it. Small and tight: the print is a
+   * third of a millimetre of paper, not a card standing off the surface.
+   *
+   * Offset off `--lx`/`--ly` rather than written down the page, which is T-313
+   * one step further than that task took it. `shadow.ts` calls that pair "a
+   * unit vector from an object toward its shadow", counter-rotated into the
+   * item's own frame — so this *is* the offset, and a tape turned on the cork
+   * keeps its print's shadow falling away from the one light the board has.
+   * Written flat it would rotate with the element, and a tape stood on its head
+   * would have a print lit from underneath.
+   *
+   * The inset rim is the same fact with the sign the other way round. An inset
+   * shadow shows on the side *opposite* its offset, so `+(lx, ly)` puts the lit
+   * edge of the paper toward the light rather than away from it.
+   */
   box-shadow:
-    0 1px 1.5px rgba(0, 0, 0, 0.45),
-    0 0.5px 0 rgba(255, 255, 255, 0.1) inset;
+    calc(var(--lx, 0.5) * 1.2px) calc(var(--ly, 0.87) * 1.2px) 1.5px rgba(0, 0, 0, 0.45),
+    calc(var(--lx, 0.5) * 0.5px) calc(var(--ly, 0.87) * 0.5px) 0 rgba(255, 255, 255, 0.12) inset;
 }
 
 /*
@@ -2639,12 +2653,25 @@ textarea.item-field::-webkit-scrollbar {
   height: 34%;
   transform: translateX(-50%);
   border-radius: 999px;
-  border: 1.1px solid;
-  /* Nickel: bright along the top of the wire and dark underneath it, one
-     gradient doing the whole of the roundness. */
-  border-color: rgba(226, 226, 230, 0.95) rgba(126, 126, 134, 0.92) rgba(96, 96, 104, 0.9)
-    rgba(178, 178, 188, 0.92);
-  box-shadow: 0 0.5px 1px rgba(0, 0, 0, 0.35);
+  /*
+   * One nickel, not four sides of it — and that is a decision rather than a
+   * simplification lost on the way.
+   *
+   * The first version gave the wire a bright top edge and a dark bottom, which
+   * is what a round wire lit from above looks like and is *direction-blind*:
+   * four `border-color`s are declared in the element's frame and a border colour
+   * cannot be counter-turned, so a tape stood on its head had a clip lit from
+   * underneath. That is precisely the fault T-313 went through eighteen
+   * gradients to fix, arriving on a new element three tasks later.
+   *
+   * Swapping the two edges on the sign of `--ly` — the `--edge-lit` idiom two
+   * hundred lines up — would work and is six declarations of arithmetic for a
+   * fastener eight units across. A flat wire with a counter-turned shadow reads
+   * as metal at every size this is ever drawn and is right at every angle by
+   * construction, so the roundness is the thing that goes.
+   */
+  border: 1.1px solid rgba(196, 196, 204, 0.94);
+  box-shadow: calc(var(--lx, 0.5) * 0.7px) calc(var(--ly, 0.87) * 0.7px) 1px rgba(0, 0, 0, 0.35);
 }
 
 /*
@@ -2659,8 +2686,10 @@ textarea.item-field::-webkit-scrollbar {
   position: absolute;
   inset: 30% 27% 12%;
   border-radius: 999px;
-  border: 1px solid rgba(150, 150, 158, 0.85);
-  border-top-color: rgba(214, 214, 220, 0.9);
+  /* Darker than the outer loop because it is *behind* it, which is a fact about
+     depth and not about which way the light is coming from — so it needs no
+     counter-turn and keeps none. */
+  border: 1px solid rgba(138, 138, 146, 0.88);
 }
 
 /*
@@ -3090,6 +3119,14 @@ textarea.item-field::-webkit-scrollbar {
  * simplified print, it is a different board — and which *variant* of the
  * picture is a question `setRasterScale` already answers, whose answer at this
  * zoom is a thumbnail.
+ *
+ * And the still clipped to a tape stays for a stronger version of the same
+ * reason (T-270): this is the *only* zoom at which it earns its keep. A wall of
+ * tapes read at 30% is a wall of black rectangles, and telling them apart is
+ * the whole of what the poster frame is for — so it is the last thing on the
+ * object to go rather than an early one. Its paperclip stays with it, at three
+ * pixels across, because hiding a border costs the same as drawing one and a
+ * print with no fastener reads as a sheet lying loose on the tape.
  */
 
 /*

@@ -179,4 +179,28 @@ describe("the still clipped to a tape", () => {
     expect(print.get("transform")).toContain("--print-tilt");
     expect(print.get("transform")).not.toContain("--turn");
   });
+
+  it("throws the print's and the clip's shadows away from the light, at any angle", () => {
+    // The half of T-313 that task did not reach, because it had no shadows to
+    // reach: `shadow.ts` calls `--lx`/`--ly` "a unit vector from an object
+    // toward its shadow", already counter-rotated into the item's frame, so an
+    // offset written off that pair is right at every angle and one written flat
+    // down the page turns with the element. A tape stood on its head would have
+    // a print lit from underneath, which is what the first version did.
+    for (const [what, rule] of [
+      ["print", print],
+      ["clip", clip],
+    ] as const) {
+      const shadow = rule.get("box-shadow")!;
+      expect(shadow, what).toContain("var(--lx");
+      expect(shadow, what).toContain("var(--ly");
+    }
+
+    // And no direction is left declared in the element's own frame — a
+    // `border-color` cannot be counter-turned, so a wire with a bright top edge
+    // and a dark bottom is direction-blind however good it looks at rest.
+    expect(clip.get("border")).toContain("solid");
+    expect(clip.has("border-top-color")).toBe(false);
+    expect(clip.has("border-color")).toBe(false);
+  });
 });
