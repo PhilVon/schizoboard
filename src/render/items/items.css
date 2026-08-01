@@ -2176,7 +2176,21 @@ textarea.item-field::-webkit-scrollbar {
 
 .case-window {
   border-radius: 3px;
-  background: #0a0908;
+  /*
+   * What is behind the reels, and it is a variable because on a tape with no
+   * ribbon in it you are looking at something else (T-271). Wound full, the
+   * window is packed with tape and this black is what a window is. Empty, it is
+   * the far wall of the shell — dark grey polystyrene, and *lighter* than tape,
+   * which is the whole reason the empty state can be seen at all.
+   *
+   * The first version of this task left the window black and collapsed the pack
+   * alone, on the reasoning that removing the tape was enough. It was not: the
+   * pack's three browns run #2b241d to #120e0a against a #0a0908 window, so at
+   * board scale the tape and the hole it leaves are the same colour, and a
+   * four-state ladder came back with the two tape rows identical. The pack was
+   * declared and never visible.
+   */
+  background: var(--shell-in, #0a0908);
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -2226,12 +2240,14 @@ textarea.item-field::-webkit-scrollbar {
       #2b241d 53% calc(53% + (var(--pack) - 53%) * 19 / 47),
       #1d1811 calc(53% + (var(--pack) - 53%) * 19 / 47) calc(53% + (var(--pack) - 53%) * 37 / 47),
       #120e0a calc(53% + (var(--pack) - 53%) * 37 / 47) var(--pack),
-      /* Past the pack is the inside of the shell, which is the window's own
-         black rather than transparency: the teeth are a conic *under* this
-         gradient and are masked by it being opaque, so a hole here would put a
-         ring of spool teeth out where the tape should be. At rest this band is
-         100% to 100% and draws nothing. */
-      #0a0908 var(--pack) 100%
+      /* Past the pack is the inside of the shell — the same `--shell-in` the
+         window itself takes, so the ring the tape has left is continuous with
+         the space around the reel rather than a disc of its own. Opaque rather
+         than transparent: the teeth are a conic *under* this gradient and are
+         masked by it being opaque, so a hole here would put a ring of spool
+         teeth out where the tape should be. At rest this band is 100% to 100%
+         and draws nothing. */
+      var(--shell-in, #0a0908) var(--pack) 100%
     ),
     repeating-conic-gradient(from 22deg, #b9bfc0 0 26deg, #838b8f 26deg 45deg);
 }
@@ -2539,18 +2555,34 @@ textarea.item-field::-webkit-scrollbar {
  * ## Why `is-torn` reaches further down than `is-waiting` does
  *
  * The pack, the tape web and the folder's paper are all detail the LOD tier
- * switches off below 35% (see the block after this one), so a transfer in flight
- * is invisible on a fitted board — which is right, and is the same bargain every
- * other piece of furniture on these objects takes.
+ * switches off below 35% (see the block after this one), so **how far through a
+ * transfer is** goes with the rest of the detail — the same bargain every other
+ * piece of furniture on these objects takes.
  *
- * A file that **is not coming** is not detail. It is a fact about the board, and
- * it is the one a person is scanning the whole wall for; a torn photograph reads
- * at 20% and a tape whose ribbon is out has to as well. So that one is drawn on
- * `.case-body::after`, which no tier hides.
+ * What survives it, without anything being arranged for it, is *whether the file
+ * is here at all* on the two tapes: `--shell-in` is the window's own background
+ * and no tier hides a window. So a fitted board shows a wall of tapes with black
+ * windows and grey ones, and a card-tier folder says nothing — which is the
+ * right way round, since a folder at that zoom is a rectangle of kraft and there
+ * is nowhere on it for a page of paper to be.
+ *
+ * A file that **is not coming** is a different matter, and this one is arranged.
+ * It is not detail — it is a fact about the board, and the one a person scanning
+ * a whole wall is looking for. A torn photograph reads at 20% and a tape whose
+ * ribbon is out has to as well, so it is drawn on `.case-body::after`, a
+ * pseudo-element of the object itself, which no tier can reach.
  */
 
 .item-case.is-waiting {
   --arrived: 0;
+  /*
+   * And what a window with no tape behind it shows: the far wall of the shell.
+   * Darker than the shell's own lit face (`#453e3a`), because it is the inside
+   * and the light does not reach it, and a long way lighter than the `#0a0908`
+   * a packed window is — 56 levels of luma against 9, which is the difference
+   * that makes an empty tape legible from across a board.
+   */
+  --shell-in: #3e3833;
 }
 
 /*
@@ -2588,27 +2620,35 @@ textarea.item-field::-webkit-scrollbar {
  */
 .item-case[data-kind="vhs"] .case-body::after,
 .item-case[data-kind="cassette"] .case-body::after {
-  left: 18%;
-  right: -20%;
-  top: 66%;
-  bottom: -46%;
+  /*
+   * Three quarters of the object across and two thirds of it down, hanging off
+   * the bottom right corner. It was half again that on the first pass and the
+   * tangle was bigger than the cassette it had come out of — which reads as a
+   * drawing of loops rather than as a tape that has failed, because the one
+   * thing a person knows about the inside of a cassette is that it is smaller
+   * than the outside.
+   */
+  left: 32%;
+  right: -8%;
+  top: 70%;
+  bottom: -36%;
   background:
     radial-gradient(
-      ellipse 30% 34% at 26% 30%,
-      rgba(0, 0, 0, 0) 0 86%,
-      #3b2a19 86% 93%,
+      ellipse 30% 36% at 24% 32%,
+      rgba(0, 0, 0, 0) 0 80%,
+      #3b2a19 80% 92%,
+      rgba(0, 0, 0, 0) 92%
+    ),
+    radial-gradient(
+      ellipse 25% 30% at 62% 54%,
+      rgba(0, 0, 0, 0) 0 82%,
+      #241a0f 82% 93%,
       rgba(0, 0, 0, 0) 93%
     ),
     radial-gradient(
-      ellipse 26% 30% at 58% 58%,
-      rgba(0, 0, 0, 0) 0 86%,
-      #1d1409 86% 93%,
-      rgba(0, 0, 0, 0) 93%
-    ),
-    radial-gradient(
-      ellipse 34% 22% at 44% 82%,
-      rgba(0, 0, 0, 0) 0 88%,
-      #2b1d11 88% 94%,
+      ellipse 34% 21% at 47% 84%,
+      rgba(0, 0, 0, 0) 0 84%,
+      #2b1d11 84% 94%,
       rgba(0, 0, 0, 0) 94%
     );
 }

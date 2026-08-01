@@ -144,6 +144,28 @@ describe("a tape with nothing wound on it", () => {
   });
 
   /**
+   * **The one the first pass of this task got wrong, and the reason it is a
+   * number rather than a screenshot.** Collapsing the pack was declared and
+   * invisible: the tape's three browns run `#2b241d` to `#120e0a` against a
+   * `#0a0908` window, so an empty reel and a full one were the same black and a
+   * four-state ladder came back with the two tape rows identical.
+   *
+   * So the empty window is not the packed one. It is the far wall of the shell,
+   * and it has to be *legibly* lighter — 30 levels of luma is about where a
+   * difference stops being a shade of the same thing and starts being another
+   * material, and the shadow this board mistook for a pale square once was 11.
+   */
+  it("makes an empty window a different colour from a packed one, not a darker one", () => {
+    const luma = (hex: string) => {
+      const [, r, g, b] = /#(..)(..)(..)/.exec(hex)!.map((h) => Number.parseInt(h, 16));
+      return 0.2126 * r! + 0.7152 * g! + 0.0722 * b!;
+    };
+    const packed = /var\(--shell-in,\s*(#[0-9a-f]{6})\)/.exec(window_.get("background")!)![1]!;
+    const empty = waiting.get("--shell-in")!;
+    expect(luma(empty) - luma(packed)).toBeGreaterThan(30);
+  });
+
+  /**
    * There is no span of tape between two bare spools. It fades rather than
    * narrows because a threaded cassette carries the same width of ribbon across
    * it however much is on either reel — and it is `var(--arrived, 1)` rather
