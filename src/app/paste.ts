@@ -138,6 +138,17 @@ export class Paste {
    */
   private refused: string[] = [];
 
+  /**
+   * Paths this run has already handed to the store.
+   *
+   * Two routes now ask the shell the same question — `fromFiles`, for the file
+   * it is already holding bytes for, and `fromNativeClipboard` behind it — and
+   * a file ingested twice would be *refused* twice, counted twice against the
+   * cap, and named twice in the notice. An instance field for the same reason
+   * `refused` is one, and safe for the same reason: `queue` serialises runs.
+   */
+  private tried = new Set<string>();
+
   constructor(options: PasteOptions) {
     this.options = options;
   }
@@ -290,6 +301,10 @@ export class Paste {
    * those would turn a photograph into a note. First usable answer wins.
    */
   private async resolve(clip: Snapshot): Promise<Ingested[]> {
+    // Cleared here rather than at the end of the last run, on the same argument
+    // `sayWhatWasRefused` makes: a run that threw would otherwise leave its
+    // paths behind and silently skip them on the next paste.
+    this.tried.clear();
     const attempts = [
       () => this.fromFiles(clip.files),
       () => this.fromNativeClipboard(),
@@ -319,7 +334,23 @@ export class Paste {
    */
   private async fromFiles(files: readonly File[]): Promise<Ingested[]> {
     const out: Ingested[] = [];
-    for (const file of this.capped(files, "things on the clipboard")) {
+    const taken = this.capped(files, "things on the clipboard");
+    const paths = await this.pathsFor(taken);
+    for (const [index, file] of taken.entries()) {
+      const path = paths[index];
+      try {
+        if (path !== undefined) {
+          this.tried.add(path);
+          this.accept(out, await this.options.native.assetIngestPath(path), path, baseName(path));
+          continue;
+        }
+      } catch (error) {
+        // A path the shell named and the shell cannot open — a virtual file out
+        // of an archive or a mail client, or something moved between the copy
+        // and the paste. The webview is still holding bytes for it, so this is
+        // a reason to take the slow road rather than to lose the file.
+        console.warn(`could not read ${path}, falling back to its bytes:`, error);
+      }
       try {
         const bytes = new Uint8Array(await file.arrayBuffer());
         if (bytes.length === 0) continue;
@@ -332,6 +363,57 @@ export class Paste {
       }
     }
     return out;
+  }
+
+  /**
+   * The path behind each `File`, where the shell can name one.
+   *
+   * **This is a cheaper road to the same place, not a fifth case.** The four
+   * routes in `resolve` are competing readings of one clipboard and their order
+   * is the design; this is asked *inside* the file route, so it can only ever
+   * change how a file's bytes reach the store and never which reading wins. Ask
+   * it beside the others instead and a clipboard carrying `CF_HDROP` *and*
+   * markup — Outlook, some Office copies — would stop being a note and start
+   * being a file, which is a different feature.
+   *
+   * Worth the round trip because the bytes are otherwise read into the JS heap
+   * and pushed back over the IPC boundary, and that boundary is about 55 MiB/s
+   * against `asset_ingest_path`'s nothing at all (T-266, D-51). It costs about
+   * 7 ms, and only when the webview handed over files in the first place — a
+   * paste of text or markup never asks.
+   *
+   * Paired by **file name**, and only where that is unambiguous: the shell
+   * reports the clipboard's own order and so does the webview, but nothing
+   * promises they are the same list, and two files with one name between them
+   * is not worth guessing about. Anything unmatched simply keeps its bytes.
+   */
+  private async pathsFor(files: readonly File[]): Promise<(string | undefined)[]> {
+    const none = files.map(() => undefined);
+    if (files.length === 0) return none;
+    let paths: readonly string[];
+    try {
+      const payload = await this.options.native.clipboardReadItem("files");
+      if (payload?.kind !== "files" || payload.paths.length === 0) return none;
+      paths = payload.paths;
+    } catch {
+      // A shell that cannot answer is not an error — it is the browser, or a
+      // platform this has not been written for. The bytes are right there.
+      return none;
+    }
+    const byName = new Map<string, string[]>();
+    for (const path of paths) {
+      // A path the shell named with nothing after the last separator has no
+      // name to pair a `File` with, so it stays in the fallback's hands.
+      const name = baseName(path);
+      if (name === undefined) continue;
+      const bucket = byName.get(name);
+      if (bucket) bucket.push(path);
+      else byName.set(name, [path]);
+    }
+    return files.map((file) => {
+      const bucket = file.name ? byName.get(file.name) : undefined;
+      return bucket?.length === 1 ? bucket[0] : undefined;
+    });
   }
 
   /**
@@ -412,8 +494,15 @@ export class Paste {
 
   private async ingestPaths(paths: readonly string[]): Promise<Ingested[]> {
     const out: Ingested[] = [];
-    for (const path of this.capped(paths, "files")) {
+    // Not what `fromFiles` already took by path. It runs first and now asks the
+    // shell the same question, so without this a file it ingested and `accept`
+    // *refused* would be ingested and refused a second time here — and the
+    // notice would read "Nothing here can hold 2 of those — backup.zip,
+    // C:/backup.zip", one file counted twice against one paste.
+    const fresh = paths.filter((path) => !this.tried.has(path));
+    for (const path of this.capped(fresh, "files")) {
       try {
+        this.tried.add(path);
         this.accept(out, await this.options.native.assetIngestPath(path), path, baseName(path));
       } catch (error) {
         console.warn(`could not read ${path}:`, error);

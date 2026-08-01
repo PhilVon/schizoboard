@@ -67,9 +67,15 @@ class FakeNative {
   async clipboardReadManifest(): Promise<{ kinds: ("files" | "text")[] }> {
     return { kinds: this.nativeFiles.length > 0 ? ["files"] : [] };
   }
+  /** Counted, so a test can say the shell was never troubled at all. */
+  itemReads = 0;
   async clipboardReadItem(): Promise<ClipboardPayload | null> {
+    this.itemReads += 1;
+    if (this.clipboardThrows) throw new Error("the clipboard is held by another process");
     return this.nativeFiles.length > 0 ? { kind: "files", paths: this.nativeFiles } : null;
   }
+  /** A shell that cannot answer — the browser, or a locked Win32 clipboard. */
+  clipboardThrows = false;
   /** The page a fragment was copied from, as the shell would report it. Null is
    *  the answer on a platform that cannot read CF_HTML — which is most of them. */
   sourceUrl: string | null = null;
@@ -284,6 +290,79 @@ describe("what wins", () => {
     await firePaste({ files: [imageFile(0)] });
     expect(native.calls).toEqual([{ method: "path", arg: "C:/photos/one.png" }]);
     expect(itemsOnBoard()[0]!.type).toBe("polaroid");
+  });
+
+  it("takes the shell's path rather than the webview's bytes, when it can name one", async () => {
+    // The same file by two roads. The bytes cross the IPC boundary at about
+    // 55 MiB/s and a path crosses nothing (T-266, D-51) — so a film is seconds
+    // apart depending on which is taken, for identical work at the far end.
+    native.nativeFiles = ["C:/photos/photo.png"];
+    await firePaste({ files: [imageFile(4_000_000)] });
+    expect(native.calls).toEqual([{ method: "path", arg: "C:/photos/photo.png" }]);
+    expect(itemsOnBoard()).toHaveLength(1);
+  });
+
+  it("keeps the file's own bytes when the shell cannot name a path for it", async () => {
+    // Dropped out of a browser, or any File with nothing behind it on disk.
+    await firePaste({ files: [imageFile(2048)] });
+    expect(native.calls).toEqual([{ method: "bytes", arg: { length: 2048, mime: "image/png" } }]);
+  });
+
+  it("does not ask the shell at all when the webview handed over no files", async () => {
+    // The round trip is only worth it where a path can exist. A paste of
+    // markup or text must not grow one.
+    await firePaste({ text: "just some words" });
+    expect(native.itemReads).toBe(0);
+  });
+
+  it("keeps the bytes when the shell's names do not line up with the webview's", async () => {
+    // Two roads to what may not be the same place. Nothing promises the two
+    // lists are in the same order, so an unmatched name simply keeps its bytes.
+    native.nativeFiles = ["C:/elsewhere/other.png"];
+    await firePaste({ files: [imageFile(2048, "image/png", "photo.png")] });
+    expect(native.calls).toEqual([{ method: "bytes", arg: { length: 2048, mime: "image/png" } }]);
+  });
+
+  it("keeps the bytes when two of the shell's paths share one name", async () => {
+    native.nativeFiles = ["C:/a/photo.png", "C:/b/photo.png"];
+    await firePaste({ files: [imageFile(2048, "image/png", "photo.png")] });
+    expect(native.calls[0]).toEqual({ method: "bytes", arg: { length: 2048, mime: "image/png" } });
+  });
+
+  it("falls back to the bytes when the path the shell named cannot be opened", async () => {
+    // A virtual file out of an archive or a mail client: named on the clipboard
+    // and not on the disk. The webview is still holding real bytes for it, so
+    // this is a reason to take the slow road rather than to lose the file.
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    native.nativeFiles = ["C:/inside-a-zip/photo.png"];
+    native.refuse.add("C:/inside-a-zip/photo.png");
+    await firePaste({ files: [imageFile(2048)] });
+    expect(native.calls).toEqual([
+      { method: "path", arg: "C:/inside-a-zip/photo.png" },
+      { method: "bytes", arg: { length: 2048, mime: "image/png" } },
+    ]);
+    expect(itemsOnBoard()).toHaveLength(1);
+    warn.mockRestore();
+  });
+
+  it("keeps the bytes when the shell cannot read the clipboard at all", async () => {
+    native.clipboardThrows = true;
+    await firePaste({ files: [imageFile(2048)] });
+    expect(native.calls).toEqual([{ method: "bytes", arg: { length: 2048, mime: "image/png" } }]);
+  });
+
+  it("refuses one file once, however many routes can see it", async () => {
+    // Both file routes now ask the shell the same question. Without the guard
+    // the same zip is ingested twice and named twice — "Nothing here can hold
+    // 2 of those — backup.zip, C:/backup.zip" — one file counted twice.
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    native.nativeFiles = ["C:/backup.zip"];
+    native.mimeFor.set("C:/backup.zip", "application/zip");
+    await firePaste({ files: [imageFile(900, "application/zip", "backup.zip")] });
+    expect(itemsOnBoard()).toEqual([]);
+    expect(native.calls).toEqual([{ method: "path", arg: "C:/backup.zip" }]);
+    expect(said).toEqual(["Nothing here can hold C:/backup.zip"]);
+    warn.mockRestore();
   });
 
   it("ignores things that are not pictures", async () => {
