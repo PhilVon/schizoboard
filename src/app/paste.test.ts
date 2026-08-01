@@ -12,7 +12,13 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { initialiseBoard, openBoardDoc, sealBoard, type BoardDoc } from "@/crdt/doc";
 import { readAsset, readItem } from "@/crdt/schema";
 import { Paste } from "@/app/paste";
-import type { AssetMeta, ClipboardPayload, Platform, PlatformEvents } from "@/platform/types";
+import type {
+  AssetMeta,
+  ClipboardPayload,
+  Platform,
+  PlatformEvents,
+  Refusal,
+} from "@/platform/types";
 import { Camera } from "@/state/camera";
 
 interface Call {
@@ -25,6 +31,14 @@ class FakeNative {
   readonly calls: Call[] = [];
   /** Sources this fake refuses, so failure paths can be driven. */
   readonly refuse = new Set<string>();
+  /**
+   * Sources the *store* refuses, in the shape the store refuses them in.
+   *
+   * Distinct from `refuse` above, which throws whatever a broken read throws.
+   * The whole of T-309 is that these two are not the same thing on this side
+   * either: one is a claim about the board and the other is not.
+   */
+  readonly refusal = new Map<string, Refusal>();
   /** What the bytes behind a path turn out to be. */
   readonly mimeFor = new Map<string, string>();
   nativeFiles: string[] = [];
@@ -56,6 +70,8 @@ class FakeNative {
   }
   async assetIngestPath(path: string): Promise<AssetMeta> {
     this.calls.push({ method: "path", arg: path });
+    const refusal = this.refusal.get(path);
+    if (refusal) throw refusal;
     if (this.refuse.has(path)) throw new Error("no such file");
     return this.meta(`p${path.length}`, this.mimeFor.get(path));
   }
@@ -361,7 +377,9 @@ describe("what wins", () => {
     await firePaste({ files: [imageFile(900, "application/zip", "backup.zip")] });
     expect(itemsOnBoard()).toEqual([]);
     expect(native.calls).toEqual([{ method: "path", arg: "C:/backup.zip" }]);
-    expect(said).toEqual(["Nothing here can hold C:/backup.zip"]);
+    expect(said).toEqual([
+      "Nothing here can hold C:/backup.zip — it is not a picture, a film, a recording or a document",
+    ]);
     warn.mockRestore();
   });
 
@@ -515,6 +533,50 @@ describe("a handful at once", () => {
     native.refuse.add("C:/broken.png");
     await firePaste({});
     expect(itemsOnBoard()).toHaveLength(2);
+    // And says which one. Two of three arriving with no mention of the third
+    // reads as a paste that only ever had two things in it.
+    // A read that broke is not the board refusing anything, so it does not
+    // claim to be: the file could not be read, and nothing is said about what
+    // this board can hold.
+    expect(said).toEqual(["C:/broken.png could not be read"]);
+  });
+
+  /** T-308, T-309. This used to be a console line and no more. */
+  it("says why, in the shell's words, when a picture is refused for its pixels", async () => {
+    // Only the shell can see this one: a small file and an enormous photograph.
+    // It is also the refusal with no other road behind it — the file is refused
+    // however it arrives — so the sentence is the whole of what the person gets.
+    native.refusal.set("C:/enormous-scan.png", {
+      holdsNowhere: true,
+      say: "is 16000 × 16000, which is more picture than this board can open — the pixels rather than the size of the file",
+    });
+    native.drop(["C:/enormous-scan.png"], 0, 0);
+    await settle();
+
+    expect(itemsOnBoard()).toEqual([]);
+    expect(said).toEqual([
+      "Nothing here can hold C:/enormous-scan.png — it is 16000 × 16000, which is more picture than this board can open — the pixels rather than the size of the file",
+    ]);
+  });
+
+  /** T-309, and the sentence the task was actually filed about. */
+  it("offers the other road rather than claiming the board cannot hold it", async () => {
+    // A 400 MB interview refused by the paste route is one drag away from
+    // working. "Nothing here can hold it" would be a claim about the *board*,
+    // and a false one — the kind that stops somebody trying the thing that
+    // works. Only the shell knows which of the two this is, which is why the
+    // answer crosses as data rather than as prose to match on.
+    native.refusal.set("C:/interview.wav", {
+      holdsNowhere: false,
+      say: "is too big to hand over in one piece — drag it in from a window instead",
+    });
+    native.drop(["C:/interview.wav"], 0, 0);
+    await settle();
+
+    expect(itemsOnBoard()).toEqual([]);
+    expect(said).toEqual([
+      "C:/interview.wav is too big to hand over in one piece — drag it in from a window instead",
+    ]);
   });
 
   it("says so rather than silently dropping half of a very large paste", async () => {
@@ -675,7 +737,9 @@ describe("what the board will take", () => {
     // The whole sentence, not a fragment of it: "1 of those" is a real thing a
     // plural-only version would say, and it reads as a machine counting rather
     // than as somebody telling you what happened.
-    expect(said).toEqual(["Nothing here can hold C:/model.blend"]);
+    expect(said).toEqual([
+      "Nothing here can hold C:/model.blend — it is not a picture, a film, a recording or a document",
+    ]);
   });
 
   it("says it once for a folder of them rather than once each", async () => {

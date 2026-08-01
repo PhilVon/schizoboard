@@ -553,6 +553,25 @@ where
         .map_err(|e| e.to_string())
 }
 
+/// [`blocking`], for the three commands whose failure is a sentence somebody
+/// reads rather than a line in a log.
+///
+/// It keeps the refusal as data across the boundary. The frontend has to decide
+/// whether to tell the person the board cannot hold their file — which is true
+/// of a four-hundred-megapixel scan and false of a clipboard entry that went
+/// stale — and the only thing it had to decide that on was the prose of the
+/// message, which is not a contract (T-309).
+async fn blocking_ingest<F>(job: F) -> Result<AssetMeta, assets::Refusal>
+where
+    F: FnOnce() -> assets::Result<AssetMeta> + Send + 'static,
+{
+    match tauri::async_runtime::spawn_blocking(job).await {
+        Ok(Ok(meta)) => Ok(meta),
+        Ok(Err(error)) => Err(error.into()),
+        Err(join) => Err(assets::Refusal::failed(join.to_string())),
+    }
+}
+
 fn store_of(app: &AppHandle) -> Result<tauri::State<'_, AssetStore>, String> {
     app.try_state::<AssetStore>()
         .ok_or_else(|| "the asset store failed to open".to_string())
@@ -574,9 +593,11 @@ fn store_of(app: &AppHandle) -> Result<tauri::State<'_, AssetStore>, String> {
 async fn asset_ingest_bytes(
     app: AppHandle,
     request: tauri::ipc::Request<'_>,
-) -> Result<AssetMeta, String> {
+) -> Result<AssetMeta, assets::Refusal> {
     let InvokeBody::Raw(bytes) = request.body() else {
-        return Err("asset_ingest_bytes expects a raw body".into());
+        return Err(assets::Refusal::failed(
+            "asset_ingest_bytes expects a raw body".into(),
+        ));
     };
     let bytes = bytes.clone();
     let mime = request
@@ -586,7 +607,7 @@ async fn asset_ingest_bytes(
         .map(str::to_string);
 
     let handle = app.clone();
-    let meta = blocking(move || {
+    let meta = blocking_ingest(move || {
         store_of(&handle)
             .map_err(assets::Error::Unavailable)?
             .ingest_ipc_bytes(&bytes, mime.as_deref())
@@ -598,9 +619,9 @@ async fn asset_ingest_bytes(
 }
 
 #[tauri::command]
-async fn asset_ingest_path(app: AppHandle, path: String) -> Result<AssetMeta, String> {
+async fn asset_ingest_path(app: AppHandle, path: String) -> Result<AssetMeta, assets::Refusal> {
     let handle = app.clone();
-    let meta = blocking(move || {
+    let meta = blocking_ingest(move || {
         store_of(&handle)
             .map_err(assets::Error::Unavailable)?
             .ingest_path(&PathBuf::from(path))
@@ -611,9 +632,9 @@ async fn asset_ingest_path(app: AppHandle, path: String) -> Result<AssetMeta, St
 }
 
 #[tauri::command]
-async fn asset_ingest_url(app: AppHandle, url: String) -> Result<AssetMeta, String> {
+async fn asset_ingest_url(app: AppHandle, url: String) -> Result<AssetMeta, assets::Refusal> {
     let handle = app.clone();
-    let meta = blocking(move || {
+    let meta = blocking_ingest(move || {
         store_of(&handle)
             .map_err(assets::Error::Unavailable)?
             .ingest_url(&url)

@@ -53,6 +53,7 @@ import {
 } from "@/app/ingest";
 import { assetKind } from "@/lib/objects";
 import type { AssetMeta, Platform } from "@/platform/types";
+import { refusalOf } from "@/platform/types";
 import type { Camera } from "@/state/camera";
 import { isTextTarget } from "@/state/input";
 
@@ -136,7 +137,7 @@ export class Paste {
    * because `queue` serialises runs: one paste is finished with this before the
    * next one starts.
    */
-  private refused: string[] = [];
+  private refused: { what: string; why: string; holdsNowhere: boolean }[] = [];
 
   /**
    * Paths this run has already handed to the store.
@@ -244,9 +245,23 @@ export class Paste {
    * gesture, and four lines about four files is four times the punishment for
    * it. Reported by `create`, which is the end of every route.
    */
-  private refuse(what: string, why: string): void {
+  private refuse(what: string, why: string, holdsNowhere = true): void {
     console.warn(`nothing to put on the board: ${what} — it ${why}`);
-    this.refused.push(what);
+    this.refused.push({ what, why, holdsNowhere });
+  }
+
+  /**
+   * Refuse a file the shell would not take, in the shell's own words.
+   *
+   * The sentence comes from the far side because that is the side holding the
+   * numbers — a picture's shape, a paste ceiling — and it arrives as data
+   * rather than as prose to match on (T-309). Anything that is not a
+   * {@link Refusal} is something that went wrong before the command was
+   * reached, and gets the sentence that claims least.
+   */
+  private refuseFromShell(what: string, error: unknown): void {
+    const refusal = refusalOf(error);
+    this.refuse(what, refusal?.say ?? "could not be read", refusal?.holdsNowhere ?? false);
   }
 
   /**
@@ -268,10 +283,28 @@ export class Paste {
     const say = this.options.say;
     if (!say) return;
     if (refused.length === 1) {
-      say(`Nothing here can hold ${refused[0]}`);
+      const [only] = refused;
+      // **The reason, not just the fact** (Q-235). "Nothing here can hold this"
+      // and no more leaves somebody to work out for themselves whether the file
+      // is the wrong sort of thing, too big, or broken — three different things
+      // to do next.
+      //
+      // And a file the board *could* hold by another road does not get told
+      // that nothing here can hold it, because that sentence is a claim about
+      // the board rather than about the attempt: a 400 MB interview refused by
+      // the paste route is one drag away from working, and being told the board
+      // cannot take it would be a lie that stops somebody trying.
+      say(
+        only.holdsNowhere
+          ? `Nothing here can hold ${only.what} — it ${only.why}`
+          : `${only.what} ${only.why}`,
+      );
       return;
     }
-    say(`Nothing here can hold ${refused.length} of those — ${refused.join(", ")}`);
+    // The plural stays as it was. Four files with four reasons is four lines
+    // again, which is what collecting them was for.
+    const names = refused.map((one) => one.what);
+    say(`Nothing here can hold ${names.length} of those — ${names.join(", ")}`);
   }
 
   private create(payloads: readonly Ingested[], at: BoardPoint): void {
@@ -359,7 +392,14 @@ export class Paste {
       } catch (error) {
         // One unreadable file must not take the rest of the paste with it. The
         // clipboard's copy of a file can be gone by the time it is asked for.
-        console.warn(`could not read ${file.name || "a clipboard file"}:`, error);
+        //
+        // Refused rather than only logged, because this is the *end* of the road
+        // for this file — the path attempt above falls through on purpose and is
+        // the one place a failure here is not final. A file that reaches this
+        // line and says nothing is indistinguishable from a paste that never
+        // happened, which is the state AC-651 exists to prevent, and it is how a
+        // picture refused for its pixels would have vanished (T-308).
+        this.refuseFromShell(file.name || "a clipboard file", error);
       }
     }
     return out;
@@ -505,7 +545,10 @@ export class Paste {
         this.tried.add(path);
         this.accept(out, await this.options.native.assetIngestPath(path), path, baseName(path));
       } catch (error) {
-        console.warn(`could not read ${path}:`, error);
+        // Said rather than swallowed, on the same argument as `fromFiles`: this
+        // road has no fallback behind it, so a file that fails here is a file
+        // the person watched disappear.
+        this.refuseFromShell(path, error);
       }
     }
     return out;

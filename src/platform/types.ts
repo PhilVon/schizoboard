@@ -67,6 +67,44 @@ export function variantFor(screenPx: number): AssetVariant {
  * Because `w` and `h` go into the document, an item is fully usable — pinnable,
  * stringable, annotatable — before its photograph has arrived at all.
  */
+/**
+ * What the shell says about a file it would not take.
+ *
+ * The three `assetIngest*` calls reject with one of these rather than with a
+ * string, and it is the only boundary on this board that does. The reason is
+ * that this is the only one whose failure is a *sentence somebody reads* — and
+ * the alternative to carrying it as data was matching on the prose of an error
+ * message, which is not a contract (T-309).
+ *
+ * `say` is a verb phrase with the file as its subject, written on the shell's
+ * side because that is the side holding the numbers: a picture's shape, a paste
+ * ceiling, the road that would clear it. This side supplies the file's name and
+ * the frame.
+ */
+export interface Refusal {
+  /**
+   * Whether the board will refuse the file **however it arrives**.
+   *
+   * The one thing this side cannot work out and must not guess. "Nothing here
+   * can hold it" is a claim about the board: true of a four-hundred-megapixel
+   * scan, a lie about a file that is only too big to hand across the IPC
+   * boundary — that one has another road, and its sentence offers it.
+   */
+  holdsNowhere: boolean;
+  say: string;
+}
+
+/**
+ * A rejected ingest read back as a {@link Refusal}, or null if it was something
+ * else entirely — a promise that rejected before the command was reached, a
+ * platform that is not the shell.
+ */
+export function refusalOf(error: unknown): Refusal | null {
+  if (typeof error !== "object" || error === null) return null;
+  const { holdsNowhere, say } = error as Partial<Refusal>;
+  return typeof holdsNowhere === "boolean" && typeof say === "string" ? { holdsNowhere, say } : null;
+}
+
 export interface AssetMeta {
   sha256: string;
   w: number;
@@ -309,6 +347,9 @@ export interface Platform {
   readonly canPrintPdf: boolean;
 
   // --- assets: Rust owns bytes ------------------------------------------
+  //
+  // These three reject with a `Refusal` (below) rather than with a string, and
+  // they are the only commands that do.
   assetIngestBytes(bytes: Uint8Array, mime?: string): Promise<AssetMeta>;
   assetIngestPath(path: string): Promise<AssetMeta>;
   assetIngestUrl(url: string): Promise<AssetMeta>;
