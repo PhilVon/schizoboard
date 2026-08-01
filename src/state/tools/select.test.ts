@@ -443,6 +443,22 @@ describe("selecting", () => {
     expect(opens).toEqual(["folder"]);
   });
 
+  it("stays out of the way of a gesture already under way", () => {
+    // The guard `Delete` has, for the same reason: a key pressed with a button
+    // down is a key pressed during a drag, and carrying the camera off to
+    // somewhere else halfway through moving something is not what was asked.
+    put("folder", 100, 100);
+    selection.replace(["folder"]);
+    down(100, 100);
+    move(160, 140);
+    key("Enter");
+    expect(opens).toEqual([]);
+    up(160, 140);
+    // And it comes back the moment the hand is off.
+    key("Enter");
+    expect(opens).toEqual(["folder"]);
+  });
+
   it("asks the caller what is openable rather than deciding for itself", () => {
     // The tool calls `open` for whatever is selected and never inspects it: a
     // note has no asset and is not openable, and that is `lib/objects.ts`'s
