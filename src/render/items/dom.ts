@@ -613,6 +613,74 @@ function writeCurl(
   }
 }
 
+/**
+ * The one light, in an item's **own** frame, as two numbers (T-313).
+ *
+ * ## Why the case objects need this and paper does not
+ *
+ * A folder's kraft is drawn with CSS gradients — two handling creases, a cut
+ * edge along the front panel, a wash down the board — and every one of them is
+ * declared in the element's frame, so all of them turn with the object. Phil
+ * turned a folder upside down and its creases were lit from below: DESIGN 4.1's
+ * "one element lit from the wrong side", which it says breaks the sense of a
+ * real surface faster than anything else on the board.
+ *
+ * Paper already solves this twice. `wear.ts`'s `creaseFace` hands the stylesheet
+ * a signed number per fold and `curl.ts`'s `cornerFace` one per corner, and in
+ * both the light is counter-rotated *into the sheet's frame* rather than the
+ * feature being rotated out of it — one rotation instead of four.
+ *
+ * ## Why two numbers rather than one per feature
+ *
+ * The case objects have eighteen directional gradients between the three of
+ * them, at eight different angles. A signed number per feature would mean this
+ * function knowing every angle in the stylesheet, which is the wrong place for
+ * it to be written down twice.
+ *
+ * So it publishes the light itself and the stylesheet takes its own dot product.
+ * A crease at `a` degrees has normal `(sin a, -cos a)` — CSS measures a gradient
+ * clockwise from *to top*, which is not a maths angle, and `creaseFace` records
+ * what reading it as one costs — so how lit its far flank is comes out as
+ * `calc(-1 * (SIN * var(--lx) + -COS * var(--ly)))` with the two constants
+ * written literally beside the gradient they belong to. An axis-locked profile
+ * is the same expression with the trivial normal: `to bottom` is `var(--ly)`.
+ *
+ * Negative alphas clamp to zero rather than invalidating the declaration —
+ * checked in this webview before `curl.ts` relied on it — so one layer painted
+ * at `+k` and one at `-k` is a shine on whichever side faces the light and a
+ * shade on the other, off the one number.
+ *
+ * ## And `--turn`, which is the other half
+ *
+ * A broad wash across a face is not a feature of the object at all, it is the
+ * light falling on it, and the right answer for one of those is to counter-rotate
+ * the gradient's own angle so it stays in board space: `calc(166deg +
+ * var(--turn))`. A crease may not be treated that way — rotating its angle
+ * slides the fold across the object — which is why both exist.
+ *
+ * Quantised, on `writeCurl`'s argument: this is offered on every frame anything
+ * moves, and a hundredth of a unit vector is far under what a gradient shows.
+ */
+function writeLight(el: HTMLDivElement, rot: number, written: Float32Array): void {
+  const light = counterRotate(LIGHT_DX, LIGHT_DY, rot);
+  const lx = round(light.x, 100);
+  const ly = round(light.y, 100);
+  // One tenth of a degree, which at the far corner of the largest case object is
+  // about a third of a board unit of gradient travel.
+  const turn = round((-rot * 180) / Math.PI, 10);
+  if (lx !== written[0]) {
+    written[0] = lx;
+    el.style.setProperty("--lx", lx.toFixed(2));
+  }
+  if (ly !== written[1]) {
+    written[1] = ly;
+    el.style.setProperty("--ly", ly.toFixed(2));
+  }
+  if (turn === written[2]) return;
+  written[2] = turn;
+  el.style.setProperty("--turn", `${turn.toFixed(1)}deg`);
+}
+
 /** Shared by both views: position, rotation, size, and the carry. */
 function writeTransform(
   el: HTMLDivElement,
@@ -1587,6 +1655,13 @@ class CaseView implements View {
   private sizedFor = -1;
   private field: HTMLTextAreaElement | null = null;
   private readonly written = new Float32Array(CURL_PROPS.length + FACE_PROPS.length).fill(-9);
+  /**
+   * What `writeLight` last wrote — the light in this object's frame and the
+   * counter-turn (T-313). Its own slots rather than more of `written`, because
+   * this is written on the *transform* pass and that one on the curl pass, and a
+   * shared cache would be two writers on one array.
+   */
+  private readonly writtenLight = new Float32Array(3).fill(-9);
 
   constructor(archetype: CaseArchetype) {
     this.archetype = archetype;
@@ -1795,6 +1870,11 @@ class CaseView implements View {
       if (this.field) this.field.style.fontSize = body;
     }
     writeTransform(this.el, x, y, rot, w, h, lift);
+    // Here and not on the curl pass: these three are a function of the drawn
+    // rotation and nothing else, and this is where the drawn rotation arrives.
+    // A folder's kraft is all CSS gradients, and without this every one of them
+    // turns with the object and the folder is lit from its own side (T-313).
+    writeLight(this.el, rot, this.writtenLight);
     setCarried(this.el, this.shadow, lift);
     this.shadow.update(rot);
     this.tape.update(rot);
