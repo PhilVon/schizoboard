@@ -45,7 +45,7 @@
 use std::borrow::Cow;
 use std::collections::HashSet;
 use std::fs::{self, File};
-use std::io::{self, BufReader, Read, Seek, SeekFrom, Write};
+use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::net::{IpAddr, SocketAddr, ToSocketAddrs};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -128,55 +128,110 @@ const IPC_INGEST_MULTIPLIER: u64 = 11;
 /// avoided, and that is the frontend's to do.
 pub(crate) const MAX_PASTE_BYTES: u64 = INGEST_MEMORY_BUDGET / IPC_INGEST_MULTIPLIER;
 
-/// What the disk road costs — **and it is a staircase, not a multiple of the
-/// file.** This is the correction T-264's own measurements made to D-54, whose
-/// 1.91× turned out to be one point on one stair (D-55).
+/// What the disk road costs — **the file, and then a fixed amount that is not
+/// the file.** It used to be a staircase (D-55), because
+/// [`AssetStore::ingest_path`] read through a `Take<BufReader<File>>` that
+/// `read_to_end` could not size-hint through, so the `Vec` doubled its way up
+/// and every file on one stair cost the same. T-307 flattened it by sizing the
+/// buffer from the metadata and holding the read to that number; D-56 has the
+/// before-and-after at the same sizes on the same rig.
 ///
-/// [`AssetStore::ingest_path`] reads through a `Take<BufReader<File>>`, which
-/// `read_to_end` cannot size-hint through, so it grows its `Vec` by doubling —
-/// and the allocator keeps the outgrown half rather than handing it back. The
-/// peak is therefore set by the *capacity* the read arrives at, and every file
-/// on one stair costs the same. Four sizes, fresh process each, 20 ms sampling:
+/// | file | peak, stair (D-55) | peak, flat (D-56) | what is left over |
+/// |---|---|---|---|
+/// | 260.0 MiB | 774.7 MiB | 265.7 MiB | 5.7 MiB |
+/// | 448.0 MiB | 774.9 MiB | 454.1 MiB | 6.1 MiB |
+/// | 512.0 MiB | 1544.2 MiB | 518.3 MiB | 6.3 MiB |
+/// | 768.0 MiB | *would not arrive* | 774.8 MiB | 6.8 MiB |
 ///
-/// | file | peak | what a "multiplier" would have called it |
-/// |---|---|---|
-/// | 260.0 MiB | 774.7 MiB | 2.98× |
-/// | 403.7 MiB | 775.0 MiB | 1.92× |
-/// | 448.0 MiB | 774.9 MiB | 1.73× |
-/// | 512.0 MiB | **1544.2 MiB** | 3.02× |
+/// The first two rows used to be equal to within 0.2 MiB and are now 188 MiB
+/// apart: that is the run that shows the *shape* changed rather than one number
+/// moving. The third is the size this constant published before anybody
+/// measured it, which needed 1544 MiB and could not arrive on an 8 GB machine —
+/// it now costs a third of that. The fourth is the new ceiling, and it lands on
+/// the peak the old ceiling of 448 MiB already cost: the same memory, seventy
+/// per cent more file.
 ///
-/// A 260 MiB file and a 448 MiB file cost the same to within 0.2 MiB. There is
-/// no per-byte figure here to write down; there is a stair to stay on.
-///
-/// One line would flatten it — `ingest_path` knows the size from the metadata
-/// it already read and could hand `Vec::with_capacity` the answer. That is the
-/// shrink-the-multiplier work Q-227 deliberately did not choose, so the ceiling
-/// below is measured with the staircase in place. **Flatten it and this
-/// function is what should change**, not the ceiling by hand.
+/// [`OVERHEAD`] is the part that is not the file. It is dominated by the
+/// process's own 5.1 MiB idle before the paste, sampled in the same run, and
+/// what drifts on top of that across the four rows is commit granularity and
+/// the sampler standing next to it rather than anything that scales with the
+/// file. What matters for a bound is that it does not grow *with* the file, and
+/// in particular that [`AssetStore::build_variants`]' `fs::read` of the file it
+/// was just handed does **not** stack on top: `ingest_path`'s buffer is dropped
+/// before it runs and the allocator hands the same pages straight back.
 const fn disk_ingest_peak(size: u64) -> u64 {
-    // Where the doubling stops. `<=` and not `<`: a read that exactly fills its
-    // buffer grows once more to find out whether the file was really over.
-    let mut capacity = 1;
-    while capacity <= size {
-        capacity *= 2;
-    }
-    // The buffer it arrived at, plus the one it just outgrew.
-    capacity + capacity / 2
+    size + OVERHEAD
 }
+
+/// Read exactly the `promised` bytes, into a buffer that is already that size,
+/// and refuse a source that has more to give.
+///
+/// **This is the whole of why [`disk_ingest_peak`] is flat**, and it is one
+/// function rather than two copies because there are two roads that read a
+/// whole file into memory against a promised length — [`AssetStore::ingest_path`]
+/// off the file system's metadata, and `bundle::entry` off a zip's central
+/// directory — and a rule that a peak is derived from is the last rule that
+/// should be allowed to drift between them.
+///
+/// The two halves do different jobs and both are load-bearing:
+///
+///   - **sizing** the buffer means `read_to_end` never has to guess, which is
+///     what removes the doubling that used to cost `next_power_of_two(n) * 1.5`;
+///   - **stopping** at the promise means it cannot guess *anyway*. A hint on its
+///     own is only a hint: a source that hands back more than it said would
+///     reserve past it and double from there, so the worst case would still be
+///     the staircase and the ceiling could not have moved at all.
+///
+/// The byte past the end is what makes the promise binding rather than merely
+/// believed. A character device, a FIFO and most of `/proc` report a length of
+/// zero and then stream; a file being appended to while it is pasted is the same
+/// lie told smaller; a zip that overstates is an archive somebody else wrote.
+/// All three are refused rather than accommodated.
+pub(crate) fn read_promised(source: impl Read, promised: u64) -> Result<Vec<u8>> {
+    let mut source = source.take(promised);
+    let mut bytes = Vec::with_capacity(promised as usize);
+    source.read_to_end(&mut bytes)?;
+
+    source.set_limit(1);
+    if source.read(&mut [0u8; 1])? != 0 {
+        return Err(Error::SizeMismatch);
+    }
+    Ok(bytes)
+}
+
+/// The part of [`disk_ingest_peak`] that is not the file. Rounded up from the
+/// 6.8 MiB measured at the ceiling — which is the only place a bound has to
+/// hold, and the largest of the four runs — because a ceiling that rounds the
+/// other way is not a ceiling.
+///
+/// Deliberately *not* fitted to the drift across the four rows. A line through
+/// 5.7, 6.1, 6.3 and 6.8 would predict all four better and would be a worse thing to
+/// write down: the drift is the measuring rig and the allocator's commit
+/// granularity, and a slope fitted to noise reads to the next person as a cost
+/// that scales with the file, which is exactly the mistake D-54 made.
+const OVERHEAD: u64 = 8 * 1024 * 1024;
 
 /// How big an asset may be **at all** — read in one go rather than streamed,
 /// above which the caller is doing something other than putting a file on a
 /// corkboard.
 ///
-/// 448 MiB: the most that stays on the 512 MiB stair, which peaks at about
-/// 775 MiB and leaves a quarter of the budget spare. A byte more than 512 MiB
-/// of file — the number this constant held before anybody measured it — costs
-/// 1544 MiB and does not arrive on an 8 GB machine at all.
+/// 768 MiB, and **the interesting thing about it is that it peaks where 448 MiB
+/// used to.** T-307 flattened the read (see [`disk_ingest_peak`]), so the same
+/// 775 MiB of memory the old ceiling cost now buys seventy per cent more file.
+/// The number moved because the code did; nobody raised it by hand.
 ///
-/// It still holds the four-hundred-megabyte interview T-254 exists for, which
-/// is the constraint the number had to clear. This one bounds every road that
-/// starts from a file already on a disk: [`AssetStore::ingest_path`], a peer
-/// transfer landing in [`AssetStore::commit_received`], a bundle entry.
+/// 248 MiB of the budget is left spare on purpose, and it is doing two jobs:
+/// the 5.1 MiB idle in [`OVERHEAD`] is a *fresh* board's, and a process with a
+/// four-hundred-page document already on it is not fresh; and the budget is
+/// what **one** ingest may ask for, while nothing stops a person dropping two
+/// files at once. It is asserted below rather than left as a comment, so that
+/// raising the ceiling into it has to be done on purpose.
+///
+/// It holds the four-hundred-megabyte interview T-254 exists for with room to
+/// spare, which is the constraint the number had to clear. This one bounds
+/// every road that starts from a file already on a disk:
+/// [`AssetStore::ingest_path`], a peer transfer landing in
+/// [`AssetStore::commit_received`], a bundle entry.
 ///
 /// **It cannot bound a photograph, and nothing byte-shaped can.** An 11 MiB
 /// JPEG of 121 megapixels asked for 794 MiB (D-54), because the cost of a
@@ -188,7 +243,7 @@ const fn disk_ingest_peak(size: u64) -> u64 {
 /// `pub(crate)` for `bundle`, which has to bound a zip entry before it
 /// decompresses it and must bound it at the same number — an asset this store
 /// would refuse to ingest is not one a bundle should be allowed to expand.
-pub(crate) const MAX_ASSET_BYTES: u64 = 448 * 1024 * 1024;
+pub(crate) const MAX_ASSET_BYTES: u64 = 768 * 1024 * 1024;
 
 // Pinned where they are defined and not in a test, because these are
 // comparisons between constants and the build is the right thing to fail: a
@@ -196,10 +251,15 @@ pub(crate) const MAX_ASSET_BYTES: u64 = 448 * 1024 * 1024;
 // number into the binary before it runs.
 //
 // Each road inside the budget at its own ceiling. This is the whole claim the
-// two numbers are making, and the staircase is why the second one is not a
-// division.
+// two numbers are making.
 const _: () = assert!(MAX_PASTE_BYTES * IPC_INGEST_MULTIPLIER <= INGEST_MEMORY_BUDGET);
 const _: () = assert!(disk_ingest_peak(MAX_ASSET_BYTES) <= INGEST_MEMORY_BUDGET);
+// The second one now clears the budget by 248 MiB rather than by a whisker, and
+// that slack is a choice rather than a rounding — so it is asserted separately,
+// in the terms it was chosen in. Raise the ceiling until this fails and the next
+// person has taken the margin without noticing it was there.
+const _: () =
+    assert!(INGEST_MEMORY_BUDGET - disk_ingest_peak(MAX_ASSET_BYTES) >= INGEST_MEMORY_BUDGET / 5);
 // And the paste ceiling to the byte, because the 943.8 MiB above is not a
 // figure derived at some other size and scaled — it was sampled at exactly this
 // one. Move the multiplier and the measurement has to be taken again.
@@ -317,6 +377,15 @@ pub enum Error {
     /// as one buffer across the IPC boundary. Its own variant so the sentence
     /// can say the thing worth saying, which is what to do instead.
     TooLargeToPaste(u64),
+    /// The source handed back more bytes than its own metadata promised — a
+    /// file appended to while it was being pasted, or a pipe, a character
+    /// device or something else that reports a length of zero and then streams.
+    ///
+    /// Its own variant rather than a [`Error::TooLarge`] because there is no
+    /// honest number to put in one. [`AssetStore::ingest_path`] sizes its buffer
+    /// from the promised length and stops the read there, so all this store ever
+    /// learns is that there was more.
+    SizeMismatch,
     Undecodable(String),
     Fetch(String),
     /// The store itself is not there — the app data directory could not be
@@ -334,6 +403,7 @@ impl std::fmt::Display for Error {
             Error::TooLargeToPaste(n) => {
                 write!(f, "{n} bytes is too much to hand over in one piece — drag the file in instead")
             }
+            Error::SizeMismatch => write!(f, "that file is not the size it said it was"),
             Error::Undecodable(why) => write!(f, "could not decode: {why}"),
             Error::Fetch(why) => write!(f, "could not fetch: {why}"),
             Error::Unavailable(why) => write!(f, "{why}"),
@@ -1142,27 +1212,25 @@ impl AssetStore {
     /// re-reading to probe would touch the disk twice to save a buffer that a
     /// background thread is about to allocate anyway.
     ///
-    /// The read below is the one [`disk_ingest_peak`] models, and the reason the
-    /// ceiling is a stair rather than a quotient: `read_to_end` cannot size-hint
-    /// through the `Take<BufReader<_>>` and so doubles its way up. `size` is
-    /// right there and would flatten it — see that function for why this task
-    /// deliberately measured around it instead.
+    /// The read below is the one [`disk_ingest_peak`] models, and **the whole of
+    /// that function's flatness rests on the two lines here that look like
+    /// belt-and-braces.** The buffer is sized from the metadata so `read_to_end`
+    /// never has to guess, and the read is held to that same number so it can
+    /// never grow past it — a hint on its own is only a hint, and a source that
+    /// hands back more than it promised would double its way up exactly as
+    /// before. The ceiling is derived from the worst case, not the usual one.
     pub fn ingest_path(&self, path: &Path) -> Result<AssetMeta> {
         let file = File::open(path)?;
         let size = file.metadata()?.len();
         if size > MAX_ASSET_BYTES {
             return Err(Error::TooLarge(size));
         }
-        // Bounded by the read as well as by the metadata, because a character
-        // device, a FIFO and most of `/proc` all report a length of zero and
-        // then hand back bytes until the allocator gives up.
-        let mut bytes = Vec::new();
-        BufReader::new(file)
-            .take(MAX_ASSET_BYTES + 1)
-            .read_to_end(&mut bytes)?;
-        if bytes.len() as u64 > MAX_ASSET_BYTES {
-            return Err(Error::TooLarge(bytes.len() as u64));
-        }
+        // No `BufReader` around it: that exists to make small reads cheap, and
+        // there are no small reads left here. `read_to_end` fills the spare
+        // capacity in whatever chunks the file system gives it, and an 8 KiB
+        // way-station in front of that is one memcpy of the whole file for
+        // nothing.
+        let bytes = read_promised(file, size)?;
         self.ingest_bytes(&bytes, None)
     }
 
@@ -2696,39 +2764,112 @@ mod tests {
     }
 
     #[test]
-    fn the_staircase_predicts_the_four_sizes_it_was_measured_at() {
+    fn the_flat_cost_predicts_the_three_sizes_it_was_measured_at() {
         // The model behind `MAX_ASSET_BYTES`, checked against the runs it came
         // from — real application, one fresh process per file, private bytes
-        // sampled at 20 ms (D-55). Within 2%, which is the process's own 5 MiB
-        // and the probe standing next to it.
+        // sampled at 20 ms (D-56, same rig as D-55). Never under, because a
+        // bound that under-predicts is not one; and within 2%, because slack
+        // nobody can account for is slack that grows.
         let mib = |n: u64| n * 1024 * 1024;
         // Peaks in tenths of a MiB, so the numbers read as they were reported.
         for (size, tenths) in [
-            (272_629_760u64, 7747u64), // 260.0 MiB of file ->  774.7 MiB
-            (423_338_803, 7750),       // 403.7 MiB         ->  775.0 MiB
-            (469_762_048, 7749),       // 448.0 MiB         ->  774.9 MiB
-            (536_870_912, 15442),      // 512.0 MiB         -> 1544.2 MiB
+            (272_629_760u64, 2657u64), // 260.0 MiB of file -> 265.7 MiB
+            (469_762_048, 4541),       // 448.0 MiB         -> 454.1 MiB
+            (536_870_912, 5183),       // 512.0 MiB         -> 518.3 MiB
+            (805_306_368, 7748),       // 768.0 MiB         -> 774.8 MiB
         ] {
             let measured = tenths * 1024 * 1024 / 10;
             let predicted = disk_ingest_peak(size);
             assert!(
-                predicted.abs_diff(measured) <= measured / 50,
-                "{size} bytes: predicted {predicted}, measured {measured}"
+                predicted >= measured,
+                "{size} bytes: predicted {predicted} under the measured {measured}"
+            );
+            assert!(
+                predicted - measured <= measured / 50,
+                "{size} bytes: predicted {predicted} is more than 2% over {measured}"
             );
         }
 
-        // The property that makes it a staircase rather than a multiplier, and
-        // the reason a per-byte figure fitted to any one run predicts the others
-        // wrongly: two files far apart in size cost the same, and one step past
-        // them costs twice as much.
-        assert_eq!(disk_ingest_peak(mib(260)), disk_ingest_peak(mib(448)));
-        assert_eq!(disk_ingest_peak(mib(512)), 2 * disk_ingest_peak(mib(448)));
+        // The property that makes it flat rather than a staircase, and the whole
+        // of what T-307 changed: two files far apart in size no longer cost the
+        // same, and the step that used to double is gone. Both of these were
+        // *equalities* against the old model.
+        assert_ne!(disk_ingest_peak(mib(260)), disk_ingest_peak(mib(448)));
+        assert!(disk_ingest_peak(mib(512)) < 2 * disk_ingest_peak(mib(448)));
+        // Stated as the difference rather than only as `!=`, so a model that
+        // went flat-but-wrong — a constant, say — still fails here.
+        assert_eq!(
+            disk_ingest_peak(mib(448)) - disk_ingest_peak(mib(260)),
+            mib(188)
+        );
 
-        // Which is why the ceiling is where it is: 448 MiB fits the budget and
-        // the 512 MiB this constant used to hold does not — on an 8 GB machine
-        // a file at the old number did not arrive at all.
+        // Which is why the ceiling could move: the old 448 MiB peaked at 775 MiB
+        // and so does the new 768 MiB.
         assert!(disk_ingest_peak(MAX_ASSET_BYTES) <= INGEST_MEMORY_BUDGET);
-        assert!(disk_ingest_peak(mib(512)) > INGEST_MEMORY_BUDGET);
+        // And the 512 MiB this constant held before anybody measured it — the
+        // row that cost 1544.2 MiB and could not arrive on an 8 GB machine at
+        // all — is now in the loop above at 518.3 measured. Stated here against
+        // the old *measurement* rather than against the budget, because that is
+        // the comparison that says what changed.
+        assert!(disk_ingest_peak(mib(512)) * 2 < 15442 * mib(1) / 10);
+        // And the margin, in the terms it was chosen in rather than as a number
+        // copied down from the constant.
+        assert!(INGEST_MEMORY_BUDGET - disk_ingest_peak(MAX_ASSET_BYTES) >= mib(248));
+    }
+
+    #[test]
+    fn a_read_against_an_honest_promise_does_not_grow_its_buffer() {
+        // `disk_ingest_peak` is flat only because `read_promised` cannot reserve
+        // past the capacity it starts with. That is a property of `read_to_end`
+        // and `Take` rather than of anything written here, which makes it exactly
+        // the kind of assumption a constant should not rest on silently: if a
+        // future std grows the buffer to probe for EOF, the peak doubles,
+        // nothing fails to compile, and the ceiling becomes a lie in the unsafe
+        // direction with no test to say so.
+        //
+        // 64 KiB and not a handful of bytes, because a `Vec` under a page can be
+        // rounded up by the allocator and read as growth that did not happen.
+        let n = 64 * 1024;
+        let bytes = read_promised(io::Cursor::new(vec![3u8; n]), n as u64).unwrap();
+        assert_eq!(bytes.len(), n);
+        assert_eq!(
+            bytes.capacity(),
+            n,
+            "the read grew a buffer that was already the right size"
+        );
+    }
+
+    #[test]
+    fn a_source_that_hands_back_more_than_it_promised_is_refused() {
+        // The other half of the flatness, and the half that is this codebase's
+        // own decision rather than std's: a source that will not keep to its
+        // length is one whose buffer cannot be sized, and the old code
+        // accommodated it by doubling — which is the staircase coming back for
+        // precisely the input that is trying to cause it.
+        //
+        // Driven by understating the promise rather than by racing a writer
+        // against a real file: a test that has to win a race to fail is a test
+        // that passes for the wrong reason.
+        match read_promised(io::Cursor::new(b"twelve bytes".to_vec()), 4) {
+            Err(Error::SizeMismatch) => {}
+            other => panic!("a source that overran its promise was taken: {other:?}"),
+        }
+
+        // Exactly at the promise is fine. A rule nobody may satisfy is a
+        // different rule from the one written down.
+        let exact = read_promised(io::Cursor::new(b"twelve bytes".to_vec()), 12).unwrap();
+        assert_eq!(exact.len(), 12);
+
+        // And under it is fine too — a file that *shrank* is short, not lying,
+        // and what was read hashes to what it is. Only more is refused.
+        let short = read_promised(io::Cursor::new(b"four".to_vec()), 9).unwrap();
+        assert_eq!(short, b"four");
+
+        // The sentence names the file rather than a number: there is no honest
+        // number to report, which is the whole reason this is not `TooLarge`.
+        let said = Error::SizeMismatch.to_string();
+        assert!(said.contains("not the size it said it was"), "{said}");
+        assert!(!said.contains("too large"), "{said}");
     }
 
     #[test]
