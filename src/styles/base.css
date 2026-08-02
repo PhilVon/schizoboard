@@ -1048,6 +1048,19 @@ body {
 .crt {
   position: absolute;
   inset: 0;
+  /*
+   * Above its own siblings, which is the difference between covering the board
+   * and covering everything. Every other panel in this layer is positioned with
+   * no `z-index` at all, so they stack in DOM order and the set is built at boot
+   * - before the HUD, the drawer and the info bar. Without this it comes up
+   * *underneath* all three, with the tool info bar explaining across the bottom
+   * of a film how to open a case file.
+   *
+   * A number rather than appending it last, because the order panels are built
+   * in is about what depends on what, and burying a stacking decision in it is
+   * how the next panel added to this layer silently lands on top of a modal.
+   */
+  z-index: 1;
   display: none;
   flex-direction: column;
   align-items: center;
@@ -1061,16 +1074,18 @@ body {
   --crt-curve: 2.2%; /* the glass rolling over at its edge */
 
   /*
-   * The room, not a scrim. Near-opaque because this is the one surface that is
-   * allowed to take the screen and a board showing faintly through a film is a
-   * board you are not using and cannot read either - the worst of both.
+   * The room, not a scrim, and **opaque** - which was worth finding out by
+   * looking. At 96% the board behind was invisible, because the board behind is
+   * dark cork; the four bright panels in this layer were not. The HUD, the
+   * drawer and the info bar all ghosted faintly through a film, which reads as
+   * a rendering fault rather than as atmosphere, and no amount of alpha short of
+   * 1 fixes it. A room with the lights off is not translucent.
+   *
+   * Warm rather than black, and lifting towards the middle: this is the set's
+   * own spill on the walls, so the gradient is centred slightly above the
+   * middle where the set is, not on the geometric centre of the screen.
    */
-  background: radial-gradient(
-    128% 96% at 50% 46%,
-    rgba(52, 38, 24, 0.955) 0%,
-    rgba(var(--shadow-warm), 0.975) 52%,
-    rgba(14, 9, 5, 0.99) 100%
-  );
+  background: radial-gradient(128% 96% at 50% 46%, #342617 0%, #26180c 52%, #0e0905 100%);
   cursor: default;
 }
 
@@ -1094,16 +1109,22 @@ body {
   padding: clamp(8px, 1.1vw, 18px);
   border-radius: clamp(10px, 1.6vw, 26px);
   /*
-   * Moulded plastic that has been in a room for thirty years, and the gradient
-   * runs top to bottom rather than from the light: what shapes a bezel here is
-   * the screen behind the aperture, which is brightest where the plastic turns
-   * in towards it.
+   * Moulded plastic that has been in a room for thirty years, and it is one
+   * flat colour on purpose.
+   *
+   * The first version graded it light-to-dark down the set, which is a bezel lit
+   * from above - and there is nothing above it. DESIGN section 4.1 names that as
+   * the fastest way to break the illusion, and it broke it here: the top edge
+   * read as a highlight from a room light that has been turned off. What lights
+   * this object is the aperture, so all of the lightening is inset and even, and
+   * the four sides brighten towards the picture equally because a flat emitter
+   * behind a hole has no direction.
    */
-  background: linear-gradient(#4a4640 0%, #35312c 42%, #26231f 100%);
+  background: #2b2724;
   box-shadow:
     /* the aperture edge catching the picture, all the way round */
-    inset 0 0 0 1px rgba(198, 214, 226, 0.16),
-    inset 0 0 14px rgba(150, 178, 200, 0.1),
+    inset 0 0 0 1px rgba(198, 214, 226, 0.2),
+    inset 0 0 26px rgba(150, 178, 200, 0.14),
     /* the set's own spill onto the dark behind it */ 0 0 90px 30px rgba(120, 150, 176, 0.055);
 }
 
@@ -1269,7 +1290,6 @@ body {
  * folder after somebody found an open state with no visible exit; a modal is
  * the shape where that failure is worst, so it is here from the start. */
 .crt-out {
-  margin-left: auto;
   color: rgba(198, 214, 226, 0.34);
 }
 

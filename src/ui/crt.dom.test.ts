@@ -137,14 +137,26 @@ describe("a tape on the set", () => {
     expect(plate()?.textContent).toBe("CASE-004");
   });
 
-  it("cuts the set to the frame's own shape rather than measuring the element", () => {
+  it("cuts the set to the frame's shape when the record carries one", () => {
     expect(el()?.style.getPropertyValue("--crt-aspect")).toBe("1920 / 1080");
   });
 
-  it("falls back to 16:9 for a record that would not say what shape it is", () => {
+  it("falls back to 16:9 for a record that would not say — which today is all of them", () => {
+    // Not a rare branch: `assets.rs` derives w and h from an image decode and
+    // writes (0, 0) for everything else, so no tape on this board has a shape.
     crt.close();
     crt.open(film({ id: "bb22", w: 0, h: 0 }));
     expect(el()?.style.getPropertyValue("--crt-aspect")).toBe("16 / 9");
+  });
+
+  it("re-cuts itself to what the element says, which is where the shape really comes from", () => {
+    crt.close();
+    crt.open(film({ id: "bb22", w: 0, h: 0 }));
+    const v = video() as HTMLVideoElement;
+    Object.defineProperty(v, "videoWidth", { value: 1080, configurable: true });
+    Object.defineProperty(v, "videoHeight", { value: 1920, configurable: true });
+    v.dispatchEvent(new Event("loadedmetadata"));
+    expect(el()?.style.getPropertyValue("--crt-aspect")).toBe("1080 / 1920");
   });
 });
 

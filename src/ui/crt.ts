@@ -83,9 +83,17 @@ export interface CrtFilm {
   /** The two lines the spine carries: what it is called, and its case number. */
   title: string;
   number: string;
-  /** The frame's own shape, off the asset record. The set is cut to it, so that
-   *  a phone video stands up and a widescreen one lies down — and so that
-   *  nothing here has to measure an element to lay one out. */
+  /**
+   * The frame's own shape, off the asset record, or `0` for a tape whose shape
+   * nobody has measured — which today is **every** tape.
+   *
+   * `assets.rs` derives `w` and `h` from an image decode and writes `(0, 0)` for
+   * anything that is not a picture, and nothing else probes a container for its
+   * frame size. So this is here for the record that eventually carries one, and
+   * the set gets its real shape from `loadedmetadata` instead — which costs
+   * nothing, is exact, and is a fact the element was always going to know
+   * before it could draw a frame anyway.
+   */
   w: number;
   h: number;
   /** How far through the transfer, `0`…`1`, when `url` is `""`. */
@@ -196,6 +204,12 @@ export class Crt {
     this.el.append(set, this.rail, plate);
     host.append(this.el);
 
+    // What the record could not say. The element knows its own frame the moment
+    // it has read the container's header, which is well before it has a picture.
+    this.video.addEventListener("loadedmetadata", () => {
+      this.shape(this.video.videoWidth, this.video.videoHeight);
+      this.report();
+    });
     this.video.addEventListener("timeupdate", () => this.report());
     this.video.addEventListener("durationchange", () => this.report());
     this.video.addEventListener("play", () => this.report());
@@ -290,13 +304,7 @@ export class Crt {
     const was = this.film;
     this.film = film;
 
-    if (film.w !== was?.w || film.h !== was?.h) {
-      // A record that came from an older build, or a container that would not
-      // say: fall back rather than divide by zero, and 16:9 is what all but a
-      // handful of films are.
-      const shape = film.w > 0 && film.h > 0 ? `${film.w} / ${film.h}` : "16 / 9";
-      this.el.style.setProperty("--crt-aspect", shape);
-    }
+    if (film.w !== was?.w || film.h !== was?.h) this.shape(film.w, film.h);
 
     if (film.poster !== (was?.poster ?? "")) {
       this.still.src = film.poster;
@@ -437,6 +445,20 @@ export class Crt {
     const at = Math.max(0, Math.min(1, (clientX - box.left) / box.width));
     this.video.currentTime = Math.min(end - 0.01, at * end);
     this.report();
+  }
+
+  /**
+   * Cut the set to a frame this shape, or to 16:9 for one that will not say.
+   *
+   * The fallback is not a rare branch. No video asset on this board carries a
+   * frame size — `assets.rs` writes `(0, 0)` for anything that is not a picture
+   * — so every tape is cut to 16:9 until `loadedmetadata` says otherwise, which
+   * is a moment or two after the source is written and before there is a frame
+   * to look at. What that costs is one relayout of a `display: none` box for a
+   * portrait film, inside the overlay, touching nothing on the board.
+   */
+  private shape(w: number, h: number): void {
+    this.el.style.setProperty("--crt-aspect", w > 0 && h > 0 ? `${w} / ${h}` : "16 / 9");
   }
 
   /** Write a line on the glass, or clear it. */
