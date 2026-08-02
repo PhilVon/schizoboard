@@ -1449,7 +1449,28 @@ async function boot(): Promise<void> {
     // Both, and answered as one. `Escape` means "shut what is open", and there
     // is no reading of it under which one press should leave the other up.
     const wasWatching = crt.close();
-    if (opening.itemId === null) return wasWatching;
+    // Left of the `||` so it always runs: this is the act, and `wasWatching` is
+    // only how the answer is worded when there was no folder.
+    return shutFolder() || wasWatching;
+  };
+
+  /**
+   * Turn the open folder back down and let its file go — and answer whether
+   * there was one.
+   *
+   * The two acts are one function because they drifted apart once (T-326).
+   * `watchItem` shut the folder with a bare `opening.close()` and left the shell
+   * holding the file: on a 51 MB scan that is 51 MB of working set held until
+   * some *other* document is opened, because `pages.ts` only evicts the previous
+   * file on the next `open`. Nothing on this side asks again — `Escape` off the
+   * set finds `opening.itemId` already null and returns on the CRT.
+   *
+   * Not `closeOpen` itself, which is the version that cannot drift and is still
+   * the wrong call from `watchItem`: that one shuts the set, which is the thing
+   * about to be put on.
+   */
+  const shutFolder = (): boolean => {
+    if (opening.itemId === null) return false;
     // Let the file go. On a 51 MB scan that is 51 MB of working set the shell
     // was holding open, and it is held until somebody says — Rust cannot infer
     // that a folder has been shut.
@@ -1540,7 +1561,9 @@ async function boot(): Promise<void> {
     // By hash rather than by item, because two items wearing one film are two
     // labels on one recording and putting it on twice is putting it on.
     if (crt.showing === film.id) return closeOpen();
-    opening.close();
+    // The folder goes down and its file is released — the set replaces it, and a
+    // document nobody is reading has no claim on the shell's working set.
+    shutFolder();
     // One thing plays at a time (DESIGN section 3.7). A cassette playing behind
     // a film is two recordings at once out of one pair of speakers, which is
     // the one case where "carry on working" is not what anybody meant — and
