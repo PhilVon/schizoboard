@@ -350,8 +350,15 @@ Undo: text edits are character-level and merge into sensible entries by typing p
 | Close the search | `Escape` |
 | Open a case file | `Enter` on a selection of exactly one, or the item menu's *Open* — flies the camera the way search does |
 | Shut it | `Escape`, or `Enter` again. **Selecting something else does not** — an open document is worked *against*, so a click on the board must not shut it |
+| Watch a tape | `Enter` on a video puts it on the set instead: `Space` plays, `←` / `→` step 5s, with `Shift` 30s. `Escape` shuts it |
 
 Zoom range is **15% to 400%**. The board is unbounded in every direction.
+
+**The one modal, and why a tape gets it when a document does not** (T-276, Q-197). A film covers the screen. Nothing else in this application ever has — every other surface is a corner-anchored strip that takes no press it did not ask for — and the exception is not a concession to how video is usually shown. It is the line the two activities were always on either side of. Reading is done *against* the wall: you pull a quote out onto the board and look back at the page, so a document that covered the board would break the loop it exists for. Watching is linear, full-attention and done once, and there is nothing to look back at — a board visible behind a film is a board you are not using, and a stylised CRT is the picture that says which of the two you are doing.
+
+What comes with taking the screen, stated because a modal is where every one of these is usually got wrong: the board behind is **not** re-laid-out, re-fitted or re-tiered on the way in or out, and the camera does not move at all — shutting the set puts you back exactly where you were. Leaving it **stops the tape**, because a recording nobody is watching is not one worth decoding. None of its chrome reaches an export. And a click outside the picture does **not** shut it, for the same reason it does not shut a folder: the playhead is local, is written down nowhere, and a stray press must not cost you your place in a two-hour interview. The way out is on the set itself.
+
+One thing plays at a time, and where the playhead is stays on this machine — it is a fact about the window looking at the tape, not about the board, and it never goes on the wire (§7.4's argument, applied to media).
 
 **What "flies" means, and what search is allowed to do** (T-85, Q-150, Q-151). The camera *eases* to a match over about 300ms rather than jumping, and it is the only camera move on the board that does. That is a §2.3 decision rather than a decorative one: the board earns its keep on spatial memory — you know roughly where a thing is because you put it there — and a teleport spends it, six times over if you step through six matches. `reveal` (§7.6, after an undo) rightly still jumps: it moves only when something is *already* off screen, and its job is to show you a change rather than to carry you. Any pan, zoom or other camera move cancels a flight in progress; the hand always outranks it.
 
@@ -395,6 +402,8 @@ Strings         1–9 slack presets · Alt+wheel whole-string slack · Enter/Esc
 Search          Ctrl+F find · Enter next match · Shift+Enter previous · Esc close
 Case files      Enter opens the selected document, tape or cassette · item menu → Open
                 Esc or Enter again shuts it · clicking away does not (T-273)
+The set         a tape takes the screen, and only a tape (T-276)
+                Space play/pause · Left/Right 5s · Shift+Left/Right 30s · Home to the start
 ```
 
 ### 3.10 The tool drawer and the tool info bar

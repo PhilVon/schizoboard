@@ -61,6 +61,7 @@ describe("the print block", () => {
     [".notice", "whose laptop the missing photographs are on"],
     [".flash", "a confirmation that something just happened"],
     [".search", "the query you were looking for, across the top of the board"],
+    [".crt", "a tape left on — a page of dark room with a video frame in it and no board"],
     [".menu", "a context menu left open"],
   ])("hides %s — %s", (selector) => {
     expect(hiddenInPrint().has(selector)).toBe(true);

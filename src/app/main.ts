@@ -74,7 +74,13 @@ import { formatInvite, inviteSearch, openingPlan, parseInvite } from "@/app/invi
 import * as prefs from "@/app/prefs";
 import { dialAddress, freshBoardId, identityFor } from "@/app/sync";
 import { DEFAULT_ERASER_SIZE, type InkSurface, type WetStroke } from "@/lib/ink";
-import { canBeOpened, carriesItsOwnName, type AssetKind } from "@/lib/objects";
+import {
+  canBeOpened,
+  carriesItsOwnName,
+  caseNumber,
+  titleWorthWriting,
+  type AssetKind,
+} from "@/lib/objects";
 import { initPlatform } from "@/platform";
 import { variantFor } from "@/platform/types";
 import { Cork } from "@/render/cork";
@@ -120,6 +126,7 @@ import { SelectTool } from "@/state/tools/select";
 import { StringTool } from "@/state/tools/string";
 import type { BoardWriter, Tool, WritePose } from "@/state/tools/tool";
 import { boardMenuRows, itemMenuRows, penMenuRows, pinMenuRows, stringMenuRows } from "@/ui/boardmenu";
+import { Crt, type CrtFilm } from "@/ui/crt";
 import { Hud, type HudStats } from "@/ui/hud";
 import { RAIL, Toolbar } from "@/ui/toolbar";
 import type { BoardStatus } from "@/ui/toolhint";
@@ -577,6 +584,86 @@ async function boot(): Promise<void> {
   // state that changed and did not redraw is the bug this makes impossible, and
   // there are five places that change one.
   assets.onChange(refreshAsset);
+
+  /**
+   * The television (T-276), and the only surface in this application that ever
+   * covers the board — `ui/crt.ts` carries the argument.
+   *
+   * Built at boot beside the other panels rather than on demand. It costs a
+   * `display: none` div and one capture-phase listener that returns immediately
+   * while nothing is on, and the alternative — constructing it the first time
+   * somebody presses `Enter` on a tape — would put a DOM build inside a gesture
+   * for no saving worth measuring.
+   */
+  const crt = new Crt(world.layers.ui);
+
+  /**
+   * What a tape needs to go on the set, or `null` for an item that is not
+   * wearing one.
+   *
+   * The want is raised here rather than left to `assetUrl`, and the difference
+   * is what it means. `assetUrl`'s want says *an item wearing this is on
+   * screen*; this one says *somebody has asked to watch this*, which is the
+   * strongest claim anything on this board makes about an asset. `VISIBLE` is
+   * the top of the two-value scale (`crdt/sync/exchange.ts`) and is already
+   * what it deserves — the scale gaining a third value is a change to make when
+   * something is actually behind a film, not in advance of it.
+   *
+   * The original, not a variant, for the reason `PosterGrabber` gives at its own
+   * call site: there is no downscale of a film in the store, because the shell
+   * only makes those for pictures.
+   */
+  const filmFor = (sha256: string): CrtFilm | null => {
+    const map = board.assets.get(sha256);
+    const record = map ? readAsset(sha256, map) : null;
+    if (record === null) return null;
+    const here = assets.isReady(sha256);
+    if (!here && exchange !== null) {
+      exchange.want(sha256, Priority.VISIBLE);
+      assets.requesting(sha256);
+    }
+    const poster = record.poster ?? "";
+    return {
+      id: sha256,
+      url: here ? native.assetUrl(sha256, "original") : "",
+      // The still is what the glass has to show while the film is coming, which
+      // is the whole reason T-270 grabbed it — so a poster whose own bytes have
+      // not landed is simply no poster, not a hole to fill in.
+      poster: poster !== "" && assets.isReady(poster) ? native.assetUrl(poster, "display") : "",
+      // The same two lines the spine carries, so the plate under the set names
+      // the tape the person picked up rather than a second opinion about it.
+      title: titleWorthWriting(titles.get(sha256) ?? "", record.origName),
+      number: caseNumber(record.origName || null, sha256),
+      w: record.w,
+      h: record.h,
+      fraction: assets.fraction(sha256),
+      lost: assets.phase(sha256) === "unavailable",
+    };
+  };
+
+  /**
+   * A tape arriving, or its still, while somebody is sat watching the set.
+   *
+   * Separate from `refreshAsset` because it is a different job: that one dirties
+   * every item wearing a hash so the board redraws, and this one re-reads one
+   * film for one surface that is not in the scene at all. Folding them together
+   * would make the set's contents depend on the culler having mounted something.
+   *
+   * The second half is the poster: a still that reaches this disk after the set
+   * is already on is announced under *its* hash, not the film's, so the record
+   * is asked which film claims it. That is the same walk `refreshAsset` does and
+   * for the same reason — a poster is an asset no item wears (T-270).
+   */
+  assets.onChange((sha256) => {
+    const showing = crt.showing;
+    if (showing === "") return;
+    if (sha256 !== showing) {
+      const map = board.assets.get(showing);
+      if ((map ? readAsset(showing, map)?.poster : null) !== sha256) return;
+    }
+    const film = filmFor(showing);
+    if (film !== null) crt.update(film);
+  });
 
   /**
    * The still that stands for a film (T-270), grabbed off bytes this machine
@@ -1173,7 +1260,17 @@ async function boot(): Promise<void> {
   const openItem = (itemId: string | null): boolean => {
     if (itemId === null) return closeOpen();
     if (!openable(itemId)) return false;
+    // A tape is the one kind that does not turn up to be read. It goes on the
+    // set — the fork Q-197 settled, and the reason the two branches are not one
+    // gesture with a flag: a document is read *against* the board and a film
+    // takes the board away.
+    if (kindOfItem(itemId) === "video") return watchItem(itemId);
     if (opening.itemId === itemId) return closeOpen();
+    // One open thing at a time, held at the fork rather than trusted to the two
+    // branches. `opening.open` replaces a turn already in progress on its own;
+    // the set is a different object and would otherwise be left on behind a
+    // folder, which is a state no single `Escape` could get out of.
+    crt.close();
     opening.open(itemId);
     const box = scene.boundsOf(itemId, 0, foundBox);
     if (box !== null) flight.toBox(camera, box, undefined, READING_ZOOM);
@@ -1194,8 +1291,36 @@ async function boot(): Promise<void> {
    * mean you have stopped looking.
    */
   const closeOpen = (): boolean => {
-    if (opening.itemId === null) return false;
+    // Both, and answered as one. `Escape` means "shut what is open", and there
+    // is no reading of it under which one press should leave the other up.
+    const wasWatching = crt.close();
+    if (opening.itemId === null) return wasWatching;
     opening.close();
+    return true;
+  };
+
+  /**
+   * Put a tape on.
+   *
+   * > Watching a tape is linear, full-attention and done once. — D-46 section 4
+   *
+   * **The camera does not move and nothing about the board changes** — AC-676.
+   * That is the difference from the folder, which flies the camera because you
+   * are going to work at it; here the board is about to be covered, so moving it
+   * first would be spending the one thing a camera move costs (DESIGN section
+   * 3.7's spatial memory) on a view nobody is going to see. Shutting the set
+   * puts you back exactly where you were, with no flight either way.
+   */
+  const watchItem = (itemId: string): boolean => {
+    const sha256 = scene.cold(itemId)?.assetId ?? null;
+    const film = sha256 === null ? null : filmFor(sha256);
+    if (film === null) return false;
+    // Pressed on the tape that is already on: the same toggle the folder has.
+    // By hash rather than by item, because two items wearing one film are two
+    // labels on one recording and putting it on twice is putting it on.
+    if (crt.showing === film.id) return closeOpen();
+    opening.close();
+    crt.open(film);
     return true;
   };
 
