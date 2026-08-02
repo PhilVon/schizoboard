@@ -497,7 +497,10 @@ mod tests {
     #[test]
     fn both_export_kinds_are_understood_and_nothing_else_is() {
         assert_eq!(ExportKind::parse("pdf").unwrap().default_extension(), "pdf");
-        assert_eq!(ExportKind::parse("image").unwrap().default_extension(), "png");
+        assert_eq!(
+            ExportKind::parse("image").unwrap().default_extension(),
+            "png"
+        );
         assert!(ExportKind::parse("PDF").is_err());
         assert!(ExportKind::parse("png").is_err());
         assert!(ExportKind::parse("").is_err());

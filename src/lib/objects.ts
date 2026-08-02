@@ -191,6 +191,22 @@ function units(mm: { w: number; h: number }): ObjectSize {
 }
 
 /**
+ * **A4 upright, in board units** — the sheet a case file holds, and the sheet the
+ * reading surface draws on (T-319).
+ *
+ * It is here rather than in the renderer because it is the *other half* of
+ * `FOLDER_MM`. The folder above is 310 by 222 mm "holding A4 lying horizontal",
+ * so these two numbers and those two are one decision: turn the folder up to
+ * read it and this sheet stands portrait inside it with about six millimetres of
+ * board showing either side, which is what the reference photograph shows.
+ *
+ * `items.css` writes the same sheet as a percentage of the folder, because that
+ * is the only form a stylesheet can hold it in, and `folder-open-css.test.ts`
+ * asserts the two agree. This is the writer; the percentages are the copy.
+ */
+export const A4_UNITS: ObjectSize = units({ w: 210, h: 297 });
+
+/**
  * How big a file's object is, before a byte of it has arrived — and there is no
  * "before" about it, because none of the three has a size that depends on its
  * contents. A photograph is the odd one out on this board: it is the only thing

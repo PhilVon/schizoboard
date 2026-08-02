@@ -238,10 +238,13 @@ pub enum FigureContent {
 
 /// A scanned page, lifted.
 ///
-/// Deliberately not `Serialize`: what crosses to the frontend is a hash, and
-/// there is no hash until the store has the bytes. Which store, at what
-/// refcount, and what two hundred of them do to the sweep and the wire is
-/// T-299's subject, so this module hands over bytes and stops.
+/// Deliberately not `Serialize`, and the reason changed under it. It was once
+/// that what crossed to the frontend would be a hash; Q-206 then settled that a
+/// page image is derived local data which never reaches the store, so there is
+/// no hash and there was never going to be one. The reason it stays un-derivable
+/// is now the simpler one: half a megabyte of JPEG must not be able to end up
+/// inside a JSON value. `reading.rs` sends it as bytes on a road of its own, and
+/// sends this record's shape without its payload.
 #[derive(Debug, Clone, PartialEq)]
 pub struct PageImage {
     pub bytes: Vec<u8>,
@@ -680,7 +683,9 @@ fn text_string(bytes: &[u8]) -> String {
 /// producer with a character to write that is not ASCII writes UTF-16 with a
 /// mark, so in practice this path decodes ASCII and the two tables agree.
 fn pdf_doc_char(byte: u8) -> char {
-    const ACCENTS: [char; 8] = ['\u{2D8}', '\u{2C7}', '\u{2C6}', '\u{2D9}', '\u{2DD}', '\u{2DB}', '\u{2DA}', '\u{2DC}'];
+    const ACCENTS: [char; 8] = [
+        '\u{2D8}', '\u{2C7}', '\u{2C6}', '\u{2D9}', '\u{2DD}', '\u{2DB}', '\u{2DA}', '\u{2DC}',
+    ];
     const TYPOGRAPHY: [char; 32] = [
         '\u{2022}', '\u{2020}', '\u{2021}', '\u{2026}', '\u{2014}', '\u{2013}', '\u{192}',
         '\u{2044}', '\u{2039}', '\u{203A}', '\u{2212}', '\u{2030}', '\u{201E}', '\u{201C}',
@@ -894,7 +899,11 @@ impl PageFrame {
                 let r = ((r % 360) + 360) % 360;
                 // A `/Rotate` that is not a multiple of 90 is illegal; treating
                 // it as none is the only reading that does not tilt the page.
-                if r % 90 == 0 { r as i32 } else { 0 }
+                if r % 90 == 0 {
+                    r as i32
+                } else {
+                    0
+                }
             })
             .unwrap_or(0);
 
@@ -1163,7 +1172,11 @@ impl<'a> FontMetrics<'a> {
         let mut descriptor = None;
 
         if let Some(cid_font) = descendant {
-            if let Some(dw) = cid_font.get_deref(b"DW", doc).ok().and_then(|o| number(doc, o)) {
+            if let Some(dw) = cid_font
+                .get_deref(b"DW", doc)
+                .ok()
+                .and_then(|o| number(doc, o))
+            {
                 default_width = dw;
             }
             if let Ok(array) = cid_font.get_deref(b"W", doc).and_then(Object::as_array) {
@@ -1187,7 +1200,10 @@ impl<'a> FontMetrics<'a> {
     }
 
     fn width(&self, code: u32) -> f32 {
-        self.widths.get(&code).copied().unwrap_or(self.default_width)
+        self.widths
+            .get(&code)
+            .copied()
+            .unwrap_or(self.default_width)
     }
 
     fn decode(&self, bytes: &[u8]) -> String {
@@ -1376,16 +1392,30 @@ impl<'a> Walk<'a> {
                 }
 
                 "Tf" => {
-                    state.font = operands.first().and_then(|o| o.as_name().ok()).map(<[u8]>::to_vec);
+                    state.font = operands
+                        .first()
+                        .and_then(|o| o.as_name().ok())
+                        .map(<[u8]>::to_vec);
                     state.size = operands.get(1).and_then(|o| number(doc, o)).unwrap_or(0.0);
                 }
-                "Tc" => state.char_spacing = operands.first().and_then(|o| number(doc, o)).unwrap_or(0.0),
-                "Tw" => state.word_spacing = operands.first().and_then(|o| number(doc, o)).unwrap_or(0.0),
-                "Tz" => {
-                    state.horizontal =
-                        operands.first().and_then(|o| number(doc, o)).unwrap_or(100.0) / 100.0
+                "Tc" => {
+                    state.char_spacing =
+                        operands.first().and_then(|o| number(doc, o)).unwrap_or(0.0)
                 }
-                "TL" => state.leading = operands.first().and_then(|o| number(doc, o)).unwrap_or(0.0),
+                "Tw" => {
+                    state.word_spacing =
+                        operands.first().and_then(|o| number(doc, o)).unwrap_or(0.0)
+                }
+                "Tz" => {
+                    state.horizontal = operands
+                        .first()
+                        .and_then(|o| number(doc, o))
+                        .unwrap_or(100.0)
+                        / 100.0
+                }
+                "TL" => {
+                    state.leading = operands.first().and_then(|o| number(doc, o)).unwrap_or(0.0)
+                }
                 "Ts" => state.rise = operands.first().and_then(|o| number(doc, o)).unwrap_or(0.0),
                 "Tr" => {
                     state.render_mode = operands.first().and_then(|o| o.as_i64().ok()).unwrap_or(0)
@@ -1417,12 +1447,21 @@ impl<'a> Walk<'a> {
 
                 "Tj" => {
                     if let Some(bytes) = operands.first().and_then(|o| o.as_str().ok()) {
-                        self.show(&mut fonts, resources, &state, &mut tm, &[Piece::Text(bytes)]);
+                        self.show(
+                            &mut fonts,
+                            resources,
+                            &state,
+                            &mut tm,
+                            &[Piece::Text(bytes)],
+                        );
                     }
                 }
                 "TJ" => {
                     if let Ok(array) = operands.first().map(|o| o.as_array()).unwrap_or(Err(
-                        lopdf::Error::ObjectType { expected: "Array", found: "none" },
+                        lopdf::Error::ObjectType {
+                            expected: "Array",
+                            found: "none",
+                        },
                     )) {
                         let pieces: Vec<Piece> = array
                             .iter()
@@ -1451,7 +1490,13 @@ impl<'a> Walk<'a> {
                     tm = tlm;
                     let slot = if quoted { 2 } else { 0 };
                     if let Some(bytes) = operands.get(slot).and_then(|o| o.as_str().ok()) {
-                        self.show(&mut fonts, resources, &state, &mut tm, &[Piece::Text(bytes)]);
+                        self.show(
+                            &mut fonts,
+                            resources,
+                            &state,
+                            &mut tm,
+                            &[Piece::Text(bytes)],
+                        );
                     }
                 }
 
@@ -1477,8 +1522,14 @@ impl<'a> Walk<'a> {
         let Some(object) = resources.find(doc, b"XObject", name) else {
             return;
         };
-        let Ok(stream) = object.as_stream() else { return };
-        let subtype = stream.dict.get(b"Subtype").and_then(Object::as_name).unwrap_or(b"");
+        let Ok(stream) = object.as_stream() else {
+            return;
+        };
+        let subtype = stream
+            .dict
+            .get(b"Subtype")
+            .and_then(Object::as_name)
+            .unwrap_or(b"");
 
         if subtype == b"Image" {
             let placement = self.placed(Source::XObject(stream), state.ctm);
@@ -1500,7 +1551,11 @@ impl<'a> Walk<'a> {
             .unwrap_or(Matrix::IDENTITY)
             .mul(state.ctm);
 
-        let own = stream.dict.get_deref(b"Resources", doc).and_then(Object::as_dict).ok();
+        let own = stream
+            .dict
+            .get_deref(b"Resources", doc)
+            .and_then(Object::as_dict)
+            .ok();
         let inner = resources.inside(own);
         if let Ok(content) = stream.decompressed_content_with_limit(MAX_PAGE_CONTENT_BYTES) {
             self.run(&content, &inner, ctm, depth + 1);
@@ -1734,7 +1789,13 @@ fn lift(doc: &Document, stream: &Stream) -> std::result::Result<PageImage, Strin
         .unwrap_or(false);
     let space = colour_space(doc, dict);
 
-    encode(&samples, width, height, bits, if mask { Space::Gray } else { space })
+    encode(
+        &samples,
+        width,
+        height,
+        bits,
+        if mask { Space::Gray } else { space },
+    )
 }
 
 /// The image filters this build has no decoder for, each named in words.
@@ -1749,7 +1810,9 @@ fn unreadable(filter: &[u8]) -> Option<String> {
         b"JPXDecode" => "a JPEG 2000 image",
         _ => return None,
     };
-    Some(format!("the page is {what}, which this build cannot decode"))
+    Some(format!(
+        "the page is {what}, which this build cannot decode"
+    ))
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -1971,7 +2034,9 @@ mod tests {
     }
 
     fn ops(operations: Vec<Operation>) -> Vec<u8> {
-        Content { operations }.encode().expect("content should encode")
+        Content { operations }
+            .encode()
+            .expect("content should encode")
     }
 
     fn tj(text: &str) -> Operation {
@@ -2217,7 +2282,14 @@ mod tests {
                 Operation::new("q", vec![]),
                 Operation::new(
                     "cm",
-                    vec![1.into(), 0.into(), 0.into(), 1.into(), 72.into(), 120.into()],
+                    vec![
+                        1.into(),
+                        0.into(),
+                        0.into(),
+                        1.into(),
+                        72.into(),
+                        120.into(),
+                    ],
                 ),
                 Operation::new("Do", vec![Object::Name(b"Fm0".to_vec())]),
                 Operation::new("Q", vec![]),
@@ -2229,7 +2301,11 @@ mod tests {
         });
 
         let runs = runs(&builder.finish());
-        assert_eq!(runs.len(), 1, "a page whose content is one form still has text on it");
+        assert_eq!(
+            runs.len(),
+            1,
+            "a page whose content is one form still has text on it"
+        );
         near(runs[0].x, 72.0);
         near(runs[0].y, 792.0 - 720.0 - 12.0 * 0.629);
     }
@@ -2316,7 +2392,14 @@ mod tests {
             Operation::new("q", vec![]),
             Operation::new(
                 "cm",
-                vec![612.into(), 0.into(), 0.into(), 792.into(), 0.into(), 0.into()],
+                vec![
+                    612.into(),
+                    0.into(),
+                    0.into(),
+                    792.into(),
+                    0.into(),
+                    0.into(),
+                ],
             ),
             Operation::new("Do", vec![Object::Name(b"Im0".to_vec())]),
             Operation::new("Q", vec![]),
@@ -2332,7 +2415,10 @@ mod tests {
     fn jpeg_bytes() -> Vec<u8> {
         let mut out = Vec::new();
         image::RgbImage::from_fn(8, 8, |x, y| image::Rgb([x as u8 * 30, y as u8 * 30, 40]))
-            .write_to(&mut std::io::Cursor::new(&mut out), image::ImageFormat::Jpeg)
+            .write_to(
+                &mut std::io::Cursor::new(&mut out),
+                image::ImageFormat::Jpeg,
+            )
             .expect("jpeg should encode");
         out
     }
@@ -2496,7 +2582,14 @@ mod tests {
                 Operation::new("q", vec![]),
                 Operation::new(
                     "cm",
-                    vec![40.into(), 0.into(), 0.into(), 40.into(), 36.into(), 720.into()],
+                    vec![
+                        40.into(),
+                        0.into(),
+                        0.into(),
+                        40.into(),
+                        36.into(),
+                        720.into(),
+                    ],
                 ),
                 Operation::new("Do", vec![Object::Name(b"Im0".to_vec())]),
                 Operation::new("Q", vec![]),
@@ -2542,9 +2635,7 @@ mod tests {
         let reading = read_pdf_bytes(&builder.finish()).expect("fixture should read");
         match &reading.pages[0].content {
             PageContent::Image(_) => {}
-            other => panic!(
-                "an invisible OCR layer must not turn a scan into text: {other:?}"
-            ),
+            other => panic!("an invisible OCR layer must not turn a scan into text: {other:?}"),
         }
     }
 
@@ -2755,7 +2846,10 @@ mod tests {
         let PageContent::Text { figures, .. } = content else {
             panic!("expected a text page");
         };
-        assert!(figures.is_empty(), "forty points square is a logo: {figures:?}");
+        assert!(
+            figures.is_empty(),
+            "forty points square is a logo: {figures:?}"
+        );
     }
 
     #[test]
@@ -2778,7 +2872,11 @@ mod tests {
         let PageContent::Text { figures, .. } = content else {
             panic!("expected a text page");
         };
-        assert_eq!(figures.len(), 1, "a blank space is the failure, not the fix");
+        assert_eq!(
+            figures.len(),
+            1,
+            "a blank space is the failure, not the fix"
+        );
         near(figures[0].width, 300.0);
         match &figures[0].content {
             FigureContent::Unsupported(why) => {
@@ -2993,8 +3091,8 @@ mod tests {
 
     #[test]
     fn something_that_is_not_a_pdf_is_refused_rather_than_read_as_empty() {
-        let error = read_pdf_bytes(b"this is not a document at all")
-            .expect_err("a text file is not a PDF");
+        let error =
+            read_pdf_bytes(b"this is not a document at all").expect_err("a text file is not a PDF");
         assert!(matches!(error, Error::Malformed(_)), "got {error:?}");
     }
 
@@ -3047,14 +3145,19 @@ mod tests {
     fn a_document_this_build_cannot_open_probes_as_nothing_rather_than_failing() {
         // 6% of the files D-47 swept. A paste is not refused over it — the
         // folder simply has no page count on it.
-        assert_eq!(probe(b"%PDF-1.7 and then nonsense", "application/pdf"), None);
+        assert_eq!(
+            probe(b"%PDF-1.7 and then nonsense", "application/pdf"),
+            None
+        );
     }
 
     #[test]
     fn a_title_is_read_in_each_of_the_three_encodings_a_pdf_may_write_it_in() {
         let latin = titled(1, Some(b"Findings"));
         assert_eq!(
-            probe(&latin, "application/pdf").and_then(|p| p.title).as_deref(),
+            probe(&latin, "application/pdf")
+                .and_then(|p| p.title)
+                .as_deref(),
             Some("Findings")
         );
 
@@ -3078,8 +3181,11 @@ mod tests {
         // are a private-use control and a low double quote — the two encodings
         // disagree about almost the whole of `0x80`–`0x9F`, and this is the one
         // that PDF 32000-1 section 7.9.2.2 says a text string is written in.
-        let quoted = probe(&titled(1, Some(b"O\x90Brien \x84 statement")), "application/pdf")
-            .and_then(|p| p.title);
+        let quoted = probe(
+            &titled(1, Some(b"O\x90Brien \x84 statement")),
+            "application/pdf",
+        )
+        .and_then(|p| p.title);
         assert_eq!(quoted.as_deref(), Some("O\u{2019}Brien \u{2014} statement"));
     }
 
@@ -3087,7 +3193,10 @@ mod tests {
     fn a_title_that_says_nothing_is_no_title_at_all() {
         // Three ways to be absent, and a tab cannot tell them apart: no `/Info`
         // dictionary, an `/Info` with no `/Title`, and a `/Title` of whitespace.
-        assert_eq!(probe(&titled(1, None), "application/pdf").and_then(|p| p.title), None);
+        assert_eq!(
+            probe(&titled(1, None), "application/pdf").and_then(|p| p.title),
+            None
+        );
         assert_eq!(
             probe(&titled(1, Some(b"   \r\n\t ")), "application/pdf").and_then(|p| p.title),
             None
@@ -3098,7 +3207,9 @@ mod tests {
     fn a_title_is_collapsed_and_capped_because_it_is_going_on_a_label() {
         let ragged = titled(1, Some(b"  Interim\n\treport   2019  "));
         assert_eq!(
-            probe(&ragged, "application/pdf").and_then(|p| p.title).as_deref(),
+            probe(&ragged, "application/pdf")
+                .and_then(|p| p.title)
+                .as_deref(),
             Some("Interim report 2019")
         );
 

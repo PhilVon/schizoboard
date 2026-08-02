@@ -24,6 +24,7 @@ import type {
   ClipboardManifest,
   ClipboardPayload,
   DocState,
+  DocumentPage,
   ExportKind,
   PdfPage,
   Platform,
@@ -167,6 +168,30 @@ export class TauriPlatform implements Platform {
    */
   assetTitle(sha256: string): Promise<string | null> {
     return invoke<string | null>("asset_title", { sha256 });
+  }
+
+  documentPageCount(sha256: string): Promise<number> {
+    return invoke<number>("document_page_count", { sha256 });
+  }
+
+  documentPage(sha256: string, index: number): Promise<DocumentPage | null> {
+    return invoke<DocumentPage | null>("document_page", { sha256, index });
+  }
+
+  // Raw response, for the reason `assetChunk` is one: a scanned page is around
+  // half a megabyte, and base64 in a JSON string is a third bigger again for
+  // bytes nothing in JavaScript is going to read.
+  async documentPageImage(sha256: string, index: number, figure?: number): Promise<Uint8Array> {
+    const bytes = await invoke<ArrayBuffer | Uint8Array>("document_page_image", {
+      sha256,
+      index,
+      figure: figure ?? null,
+    });
+    return bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes);
+  }
+
+  documentClose(sha256: string): Promise<void> {
+    return invoke<void>("document_close", { sha256 });
   }
 
   docAppendUpdate(bytes: Uint8Array): Promise<void> {

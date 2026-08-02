@@ -544,7 +544,10 @@ pub enum Error {
     /// carries is the picture's own numbers, and what it says is about the
     /// picture. Somebody told the file is too big when the file is 11 MiB will
     /// go and look at the file.
-    PictureTooLarge { w: u32, h: u32 },
+    PictureTooLarge {
+        w: u32,
+        h: u32,
+    },
     Undecodable(String),
     Fetch(String),
     /// The store itself is not there — the app data directory could not be
@@ -832,7 +835,9 @@ fn check_fetchable(url: &str) -> Result<()> {
         return Err(Error::Fetch(format!("{host} resolves to nothing")));
     }
     if let Some(ip) = first_unroutable(&addresses) {
-        return Err(Error::Fetch(format!("{host} is {ip}, not a public address")));
+        return Err(Error::Fetch(format!(
+            "{host} is {ip}, not a public address"
+        )));
     }
     Ok(())
 }
@@ -1328,7 +1333,9 @@ impl AssetStore {
         if !valid_hash(sha256) {
             return None;
         }
-        fs::metadata(self.original_path(sha256)).ok().map(|m| m.len())
+        fs::metadata(self.original_path(sha256))
+            .ok()
+            .map(|m| m.len())
     }
 
     /// Every hash there are bytes for here, for the `HAVE` announcement.
@@ -2083,10 +2090,7 @@ fn trashed_at(name: &str) -> Option<u64> {
 /// answer in memory first. Buffered, because an encoder writes in small pieces
 /// and a syscall each is the thing `write_atomic`'s single `write_all` was
 /// getting for free.
-fn write_atomic_with(
-    path: &Path,
-    fill: impl FnOnce(&mut dyn Write) -> Result<()>,
-) -> Result<()> {
+fn write_atomic_with(path: &Path, fill: impl FnOnce(&mut dyn Write) -> Result<()>) -> Result<()> {
     let temp = temp_beside(path);
     let outcome = (|| {
         let mut file = io::BufWriter::new(File::create(&temp)?);
@@ -2285,7 +2289,11 @@ mod tests {
         // before it reads a byte of the file, and refuses an octet-stream
         // without saying why.
         for (name, bytes, expected) in [
-            ("pdf", b"%PDF-1.7\n%\xe2\xe3\xcf\xd3\n".to_vec(), "application/pdf"),
+            (
+                "pdf",
+                b"%PDF-1.7\n%\xe2\xe3\xcf\xd3\n".to_vec(),
+                "application/pdf",
+            ),
             ("mp4", ftyp(b"isom"), "video/mp4"),
             ("mp4 from a phone", ftyp(b"mp42"), "video/mp4"),
             ("m4a", ftyp(b"M4A "), "audio/mp4"),
@@ -2296,9 +2304,17 @@ mod tests {
             ("vorbis in ogg", ogg(b"\x01vorbis"), "audio/ogg"),
             ("theora in ogg", ogg(b"\x80theora"), "video/ogg"),
             ("wav", b"RIFF\x24\x00\x00\x00WAVEfmt ".to_vec(), "audio/wav"),
-            ("avi", b"RIFF\x24\x00\x00\x00AVI LIST".to_vec(), "video/x-msvideo"),
+            (
+                "avi",
+                b"RIFF\x24\x00\x00\x00AVI LIST".to_vec(),
+                "video/x-msvideo",
+            ),
             ("flac", b"fLaC\x00\x00\x00\x22".to_vec(), "audio/flac"),
-            ("mp3 with a tag", b"ID3\x04\x00\x00\x00\x00\x00\x00".to_vec(), "audio/mpeg"),
+            (
+                "mp3 with a tag",
+                b"ID3\x04\x00\x00\x00\x00\x00\x00".to_vec(),
+                "audio/mpeg",
+            ),
             ("mp3 with none", vec![0xff, 0xfb, 0x90, 0x00], "audio/mpeg"),
         ] {
             assert_eq!(sniff_mime(&bytes), Some(expected), "{name}");
@@ -2310,7 +2326,11 @@ mod tests {
             let mut padded = bytes.clone();
             padded.resize(SNIFF_BYTES * 4, 0);
             assert!(padded.len() > SNIFF_BYTES);
-            assert_eq!(sniff_mime(&padded[..SNIFF_BYTES]), Some(expected), "{name} head");
+            assert_eq!(
+                sniff_mime(&padded[..SNIFF_BYTES]),
+                Some(expected),
+                "{name} head"
+            );
 
             // And the answer must not change once the rest of the file is
             // there: at ingest `sniff_mime` is handed every byte, so anything
@@ -2321,9 +2341,18 @@ mod tests {
 
     #[test]
     fn text_is_what_is_left_once_every_signature_has_said_no() {
-        assert_eq!(sniff_mime(b"To: the editor\n\nI enclose the transcript.\n"), Some("text/plain"));
-        assert_eq!(sniff_mime("a page\ttabbed\r\nand fed\x0con".as_bytes()), Some("text/plain"));
-        assert_eq!(sniff_mime("naïve, café, £4\n".as_bytes()), Some("text/plain"));
+        assert_eq!(
+            sniff_mime(b"To: the editor\n\nI enclose the transcript.\n"),
+            Some("text/plain")
+        );
+        assert_eq!(
+            sniff_mime("a page\ttabbed\r\nand fed\x0con".as_bytes()),
+            Some("text/plain")
+        );
+        assert_eq!(
+            sniff_mime("naïve, café, £4\n".as_bytes()),
+            Some("text/plain")
+        );
         assert_eq!(extension_for("text/plain"), "txt");
 
         // However short. There is no floor under this and there should not be:
@@ -2336,8 +2365,14 @@ mod tests {
         // And it is asked last. Every one of these reads perfectly well as text
         // and is something else, so a text arm anywhere above would take them.
         assert_eq!(sniff_mime(b"%PDF-1.7\ntrailer\n"), Some("application/pdf"));
-        assert_eq!(sniff_mime(b"RIFF\x24\x00\x00\x00WAVEfmt "), Some("audio/wav"));
-        assert_eq!(sniff_mime(b"ID3\x04and then some words"), Some("audio/mpeg"));
+        assert_eq!(
+            sniff_mime(b"RIFF\x24\x00\x00\x00WAVEfmt "),
+            Some("audio/wav")
+        );
+        assert_eq!(
+            sniff_mime(b"ID3\x04and then some words"),
+            Some("audio/mpeg")
+        );
     }
 
     #[test]
@@ -2358,9 +2393,16 @@ mod tests {
         // nothing but two-byte characters would divide it exactly and this test
         // would assert nothing.)
         let accented = format!("x{}", "é".repeat(SNIFF_BYTES));
-        assert_eq!(accented.as_bytes()[SNIFF_BYTES - 1], 0xc3, "the window cuts one");
+        assert_eq!(
+            accented.as_bytes()[SNIFF_BYTES - 1],
+            0xc3,
+            "the window cuts one"
+        );
         assert_eq!(sniff_mime(accented.as_bytes()), Some("text/plain"));
-        assert_eq!(sniff_mime(&accented.as_bytes()[..SNIFF_BYTES]), Some("text/plain"));
+        assert_eq!(
+            sniff_mime(&accented.as_bytes()[..SNIFF_BYTES]),
+            Some("text/plain")
+        );
 
         // But a broken sequence *within* the window still refuses the file:
         // tolerating the tail must not become tolerating everything.
@@ -2406,12 +2448,12 @@ mod tests {
         // Eleven sync bits on their own are common enough in arbitrary data to
         // matter, and this is the one signature with no string in it.
         for junk in [
-            vec![0xff, 0xff, 0xff, 0xff],       // layer and version both reserved
-            vec![0xff, 0xfb, 0xf0, 0x00],       // bitrate index 1111 — "bad"
-            vec![0xff, 0xfb, 0x0c, 0x00],       // bitrate index 0000 — "free"
-            vec![0xff, 0xfb, 0x9c, 0x00],       // sampling rate 11 — reserved
-            vec![0xff, 0xe9, 0x90, 0x00],       // version 01 — reserved
-            vec![0xff],                          // nothing to check
+            vec![0xff, 0xff, 0xff, 0xff], // layer and version both reserved
+            vec![0xff, 0xfb, 0xf0, 0x00], // bitrate index 1111 — "bad"
+            vec![0xff, 0xfb, 0x0c, 0x00], // bitrate index 0000 — "free"
+            vec![0xff, 0xfb, 0x9c, 0x00], // sampling rate 11 — reserved
+            vec![0xff, 0xe9, 0x90, 0x00], // version 01 — reserved
+            vec![0xff],                   // nothing to check
         ] {
             assert_eq!(sniff_mime(&junk), None, "{junk:02x?}");
         }
@@ -2422,7 +2464,10 @@ mod tests {
         assert_eq!(sniff_mime(&png(2, 2)), Some("image/png"));
         assert_eq!(sniff_mime(&jpeg(2, 2)), Some("image/jpeg"));
         assert_eq!(sniff_mime(b"GIF89a\x01\x00"), Some("image/gif"));
-        assert_eq!(sniff_mime(b"RIFF\x24\x00\x00\x00WEBPVP8 "), Some("image/webp"));
+        assert_eq!(
+            sniff_mime(b"RIFF\x24\x00\x00\x00WEBPVP8 "),
+            Some("image/webp")
+        );
     }
 
     #[test]
@@ -2540,7 +2585,9 @@ mod tests {
         let crossed = serde_json::to_value(&meta).unwrap();
         let keys: Vec<&String> = crossed.as_object().unwrap().keys().collect();
         assert!(
-            !keys.iter().any(|key| key.contains("title") || key.contains("name")),
+            !keys
+                .iter()
+                .any(|key| key.contains("title") || key.contains("name")),
             "a title reached the record: {keys:?}"
         );
 
@@ -2614,7 +2661,10 @@ mod tests {
         let (_dir, store) = store();
         let folder = store.ingest_bytes(&pdf(3), None).unwrap();
         let picture = store.ingest_bytes(&png(4, 4), None).unwrap();
-        assert_eq!(serde_json::to_value(&folder).unwrap()["pages"], serde_json::json!(3));
+        assert_eq!(
+            serde_json::to_value(&folder).unwrap()["pages"],
+            serde_json::json!(3)
+        );
         assert_eq!(
             serde_json::to_value(&picture).unwrap()["pages"],
             serde_json::Value::Null
@@ -2663,10 +2713,12 @@ mod tests {
         // offered to the decoder — this is a rule about *known* non-pictures.
         let picture = store.ingest_bytes(&png(4096, 8), None).unwrap();
         store.build_variants(&picture.sha256).unwrap();
-        assert!(store
-            .resolve(&picture.sha256, Variant::Thumb)
-            .unwrap()
-            .exact);
+        assert!(
+            store
+                .resolve(&picture.sha256, Variant::Thumb)
+                .unwrap()
+                .exact
+        );
     }
 
     #[test]
@@ -2917,7 +2969,10 @@ mod tests {
     fn the_resolver_leaves_an_ordinary_public_address_alone() {
         let addresses = resolve("https://93.184.216.34/photo.jpg").unwrap();
         assert_eq!(addresses.len(), 1);
-        assert_eq!(addresses[0].ip(), "93.184.216.34".parse::<IpAddr>().unwrap());
+        assert_eq!(
+            addresses[0].ip(),
+            "93.184.216.34".parse::<IpAddr>().unwrap()
+        );
         // The port comes from the scheme, and getting that wrong would mean
         // connecting somewhere other than the address that was vetted.
         assert_eq!(addresses[0].port(), 443);
@@ -3154,7 +3209,10 @@ mod tests {
 
         assert!(transfer(&sender, &receiver, &meta.sha256));
         assert!(receiver.has(&meta.sha256));
-        assert_eq!(fs::read(receiver.original_path(&meta.sha256)).unwrap(), bytes);
+        assert_eq!(
+            fs::read(receiver.original_path(&meta.sha256)).unwrap(),
+            bytes
+        );
         // Through the ingest path, so the dimensions came out too.
         assert_eq!(receiver.size(&meta.sha256), Some(meta.size));
     }
@@ -3215,7 +3273,9 @@ mod tests {
     fn a_transfer_leaves_nothing_behind_when_it_fails() {
         let (dir, receiver) = store();
         let wanted = "1".repeat(64);
-        receiver.receive_chunk(&wanted, 0, 1, b"not a photograph").unwrap();
+        receiver
+            .receive_chunk(&wanted, 0, 1, b"not a photograph")
+            .unwrap();
         assert!(!receiver.commit_received(&wanted).unwrap());
 
         let leftovers = walk_files(&dir.path().join("assets")).unwrap();
@@ -3226,7 +3286,9 @@ mod tests {
     fn an_abandoned_transfer_can_be_thrown_away() {
         let (_dir, receiver) = store();
         let wanted = "2".repeat(64);
-        receiver.receive_chunk(&wanted, 0, 2, b"half of it").unwrap();
+        receiver
+            .receive_chunk(&wanted, 0, 2, b"half of it")
+            .unwrap();
 
         receiver.abort_received(&wanted).unwrap();
         assert!(!receiver.partial_path(&wanted).is_file());
@@ -3312,7 +3374,9 @@ mod tests {
         let far = MAX_ASSET_BYTES / CHUNK_BYTES + 1;
 
         assert!(receiver.receive_chunk(&wanted, far, far + 1, b"x").is_err());
-        assert!(receiver.receive_chunk(&wanted, u64::MAX, u64::MAX, b"x").is_err());
+        assert!(receiver
+            .receive_chunk(&wanted, u64::MAX, u64::MAX, b"x")
+            .is_err());
         // And an index outside the total it claims for itself.
         assert!(receiver.receive_chunk(&wanted, 5, 2, b"x").is_err());
         assert!(!receiver.partial_path(&wanted).is_file());
@@ -3537,7 +3601,8 @@ mod tests {
         // out of 255 against 1.30 at 2x (D-58). So the split is stated here as
         // the exact edge it happens at rather than left as a comment on a
         // constant.
-        let strip = |w: u32| DynamicImage::ImageRgb8(RgbImage::from_pixel(w, 4, image::Rgb([9, 8, 7])));
+        let strip =
+            |w: u32| DynamicImage::ImageRgb8(RgbImage::from_pixel(w, 4, image::Rgb([9, 8, 7])));
         let edge = DISPLAY_MAX_EDGE;
 
         let box_side = strip(edge * BOX_FILTER_FROM);
@@ -3590,11 +3655,9 @@ mod tests {
         // pixel against three is the same picture costing two and a half times
         // as much, and it is sitting in the header exactly as the count is.
         // Nothing shaped like a megapixel ceiling can say this.
-        assert!(
-            store
-                .ingest_bytes(&claiming(png(8, 8), 11_000, 11_000), None)
-                .is_ok()
-        );
+        assert!(store
+            .ingest_bytes(&claiming(png(8, 8), 11_000, 11_000), None)
+            .is_ok());
         assert!(matches!(
             store.ingest_bytes(&claiming(png16(2, 2), 11_000, 11_000), None),
             Err(Error::PictureTooLarge { .. })
@@ -3749,7 +3812,11 @@ mod tests {
         });
         assert!(nowhere.holds_nowhere);
         // A verb phrase with the file as its subject, so it reads after a name.
-        assert!(nowhere.say.starts_with("is 16000 × 16000"), "{}", nowhere.say);
+        assert!(
+            nowhere.say.starts_with("is 16000 × 16000"),
+            "{}",
+            nowhere.say
+        );
         assert!(nowhere.say.contains("pixels"), "{}", nowhere.say);
 
         // And the one that is *not* a claim about the board. A four-hundred
@@ -3811,7 +3878,10 @@ mod tests {
         // reads a byte, and half a gigabyte of real content to prove one
         // comparison is a test nobody would run twice.
         let path = dir.path().join("enormous.bin");
-        File::create(&path).unwrap().set_len(MAX_ASSET_BYTES + 1).unwrap();
+        File::create(&path)
+            .unwrap()
+            .set_len(MAX_ASSET_BYTES + 1)
+            .unwrap();
         match store.ingest_path(&path) {
             Err(Error::TooLarge(n)) => assert_eq!(n, MAX_ASSET_BYTES + 1),
             other => panic!("the path road took a file over the ceiling: {other:?}"),
@@ -3824,7 +3894,10 @@ mod tests {
         let wanted = "4".repeat(64);
         fs::create_dir_all(store.dir_for(&wanted)).unwrap();
         let partial = store.partial_path(&wanted);
-        File::create(&partial).unwrap().set_len(MAX_ASSET_BYTES + 1).unwrap();
+        File::create(&partial)
+            .unwrap()
+            .set_len(MAX_ASSET_BYTES + 1)
+            .unwrap();
         assert!(!store.commit_received(&wanted).unwrap());
         assert!(!partial.is_file());
     }
@@ -3862,7 +3935,9 @@ mod tests {
         let (_dir, store) = store();
         let meta = store.ingest_bytes(&png(80, 60), None).unwrap();
         store.build_variants(&meta.sha256).unwrap();
-        store.receive_chunk(&"5".repeat(64), 0, 2, b"partial").unwrap();
+        store
+            .receive_chunk(&"5".repeat(64), 0, 2, b"partial")
+            .unwrap();
 
         // A machine holding a display variant cannot serve the photograph, and
         // one holding half of a transfer certainly cannot.

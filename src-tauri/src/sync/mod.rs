@@ -258,15 +258,18 @@ async fn serve(stream: TcpStream, id: u64, rooms: Arc<Mutex<Rooms>>, secret: Opt
     // a webview cannot carry a header of our choosing.
     let mut path = String::new();
     let mut query = String::new();
-    let accepted = tokio_tungstenite::accept_hdr_async(stream, |request: &Request, response: Response| {
-        path = request.uri().path().to_string();
-        query = request.uri().query().unwrap_or("").to_string();
-        Ok(response)
-    })
-    .await;
+    let accepted =
+        tokio_tungstenite::accept_hdr_async(stream, |request: &Request, response: Response| {
+            path = request.uri().path().to_string();
+            query = request.uri().query().unwrap_or("").to_string();
+            Ok(response)
+        })
+        .await;
 
     let Ok(mut socket) = accepted else { return };
-    let Some(board) = room_name(&path) else { return };
+    let Some(board) = room_name(&path) else {
+        return;
+    };
 
     // Refused *after* the handshake rather than during it, so the reason
     // arrives as a `PERMISSION_DENIED` the client can show a human — a 401 on
@@ -313,7 +316,9 @@ async fn serve(stream: TcpStream, id: u64, rooms: Arc<Mutex<Rooms>>, secret: Opt
             _ => continue,
         };
         let mut locked = rooms.lock().expect("relay lock");
-        let Some(room) = locked.open.get_mut(&board) else { break };
+        let Some(room) = locked.open.get_mut(&board) else {
+            break;
+        };
         let out = room.receive(id, &frame);
         locked.post(&board, id, out);
     }

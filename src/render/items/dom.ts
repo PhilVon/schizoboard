@@ -380,8 +380,29 @@ interface View {
     wear: number,
     plain: boolean,
   ): void;
-  /** `lift` is the scene's carry transient, 0 at rest and 1 while carried. */
-  transform(x: number, y: number, rot: number, w: number, h: number, lift: number): void;
+  /**
+   * `lift` is the scene's carry transient, 0 at rest and 1 while carried.
+   *
+   * `open` is the other one, and it is the first thing in this layer to read the
+   * open state at all (T-319): 0 as the case file hangs, 1 when it is turned up
+   * and its cover is folded back. Both are transients of exactly the same kind —
+   * eased clocks the scene owns, never written to the document, and cleared when
+   * the item goes — so `open` arrives the way `lift` does rather than through a
+   * mechanism of its own.
+   *
+   * Every view is offered it and only the folder answers, which is the bargain
+   * `setCurl` already takes: the layer asks the same question of every item and
+   * each material answers for itself.
+   */
+  transform(
+    x: number,
+    y: number,
+    rot: number,
+    w: number,
+    h: number,
+    lift: number,
+    open: number,
+  ): void;
   /**
    * Take the text editor's field in, beside the static text it stands in for,
    * or give it back (T-179).
@@ -1055,7 +1076,7 @@ class PolaroidView implements View {
     void next.decode().then(apply, apply);
   }
 
-  transform(x: number, y: number, rot: number, w: number, h: number, lift: number): void {
+  transform(x: number, y: number, rot: number, w: number, h: number, lift: number, _open: number): void {
     if (w !== this.framedFor) {
       this.framedFor = w;
       const side = w * FRAME_SIDE;
@@ -1434,7 +1455,7 @@ class PaperView implements View {
     writeHand(this.body, cold.text, cold.seed, plain || face === "clean");
   }
 
-  transform(x: number, y: number, rot: number, w: number, h: number, lift: number): void {
+  transform(x: number, y: number, rot: number, w: number, h: number, lift: number, _open: number): void {
     writeTransform(this.el, x, y, rot, w, h, lift);
     // Elevation before the offset: swapping sprites invalidates the written
     // rotation, so doing it the other way round leaves the new sprite wearing
@@ -1679,6 +1700,22 @@ class CaseView implements View {
    */
   private readonly print: HTMLDivElement | null;
   private readonly still: HTMLImageElement | null;
+  /**
+   * The case number and the page count again, typed at the head of the open
+   * page as a document header — Q-267, and a folder's only.
+   *
+   * The string exists twice on screen and must never exist twice in the code:
+   * one `textContent` write below feeds both the tab and the header, so a
+   * closed folder and its own open page cannot disagree about what the file is
+   * called. A case number at the head of a page is a filing convention rather
+   * than a piece of chrome, which is what made this the answer instead of a tab
+   * counter-turned to stay upright.
+   */
+  private readonly pageNumber: HTMLDivElement | null = null;
+  private readonly pageMeta: HTMLDivElement | null = null;
+  /** The sheet's own frame, upright, and the one thing on this object whose
+   *  type is sized to a page rather than to the label on a box. */
+  private readonly leaf: HTMLDivElement | null = null;
 
   private boundCold: ItemCold | null = null;
   /**
@@ -1708,6 +1745,9 @@ class CaseView implements View {
    * shared cache would be two writers on one array.
    */
   private readonly writtenLight = new Float32Array(3).fill(-9);
+  /** What `--open` was last set to. `-9` so the first write always happens,
+   *  including the first write of a zero onto a recycled node. */
+  private writtenOpen = -9;
 
   constructor(archetype: CaseArchetype) {
     this.archetype = archetype;
@@ -1756,7 +1796,28 @@ class CaseView implements View {
       front.append(this.grain, label, this.meta, this.title, this.caption);
       this.print = null;
       this.still = null;
-      this.body.append(back, sheets, front);
+      // The sheet inside, which is only ever seen with the cover folded back
+      // (T-319). Between the pile and the cover in the DOM, so the cover
+      // reveals it by leaving rather than by anything being switched on.
+      //
+      // **It is turned a quarter the other way**, and that is the whole of the
+      // geometry. The folder holds A4 lying horizontal — objects.ts says so and
+      // the 310 by 222 mm it is cut to is that A4 plus a margin — so the sheet's
+      // long edge runs along the folder's width. Turn the folder up to read it
+      // (`Scene.setOpen`) and that long edge stands: the page is portrait on
+      // screen, `text.rs`'s 66 by 46 grid is the right way round, and no number
+      // anywhere had to move. `.folder-leaf` is the sheet in its own upright
+      // frame and `items.css` puts it back into the folder's.
+      const leaf = div("folder-leaf");
+      this.leaf = leaf;
+      this.pageNumber = div("leaf-number");
+      this.pageMeta = div("leaf-meta");
+      const header = div("leaf-header");
+      header.append(this.pageNumber, this.pageMeta);
+      leaf.append(header);
+      const page = div("folder-page");
+      page.append(leaf);
+      this.body.append(back, sheets, page, front);
     } else if (archetype === "vhs") {
       // A VHS is read from Phil's reference: a ribbed shell, a white label in
       // the MIDDLE of the face, and a window either side of it showing one reel
@@ -1912,6 +1973,11 @@ class CaseView implements View {
     this.number.textContent = caseNumber(facts.name || null, cold.assetId ?? "");
     this.meta.textContent =
       this.archetype === "folder" ? pagesLabel(facts.pages) : runtimeLabel(facts.duration);
+    // The open page's header, off the same two writes rather than off a second
+    // reading of the facts (Q-267). `textContent` and not a copy taken later:
+    // these are the same strings, so there is one place to be wrong about them.
+    if (this.pageNumber) this.pageNumber.textContent = this.number.textContent;
+    if (this.pageMeta) this.pageMeta.textContent = this.meta.textContent;
     // In the hand, because the two hand-written lines are the two that came from
     // a person: one of them from whoever made the document, one from whoever is
     // looking at it. `titleWorthWriting` is what keeps the first from being the
@@ -1968,6 +2034,14 @@ class CaseView implements View {
         ? fitLabel(this.number.textContent ?? "", w * LABEL_WIDTH, base)
         : base;
     this.number.style.fontSize = `${Math.max(5, size).toFixed(1)}px`;
+    // And the open page's own type, which is a different question with a
+    // different answer. The label on a folder is sized to be read across a room
+    // — 0.055 of the object, about 26 units — and a document is not set in
+    // twenty-six units. This is the size a page is actually typed at, so it is
+    // deliberately too small to read at board scale, and the floor that fixes
+    // that is a camera problem rather than a type one (T-321). Set on the leaf
+    // and inherited, so everything on the page is one number.
+    if (this.leaf) this.leaf.style.fontSize = `${Math.max(3, w * LEAF_TEXT_SIZE).toFixed(2)}px`;
   }
 
   /**
@@ -2087,7 +2161,7 @@ class CaseView implements View {
     if (this.field) this.field.style.filter = filter;
   }
 
-  transform(x: number, y: number, rot: number, w: number, h: number, lift: number): void {
+  transform(x: number, y: number, rot: number, w: number, h: number, lift: number, open: number): void {
     if (w !== this.sizedFor) {
       this.sizedFor = w;
       // Every line of type on these objects is sized off the item's width, for
@@ -2108,6 +2182,23 @@ class CaseView implements View {
     // A folder's kraft is all CSS gradients, and without this every one of them
     // turns with the object and the folder is lit from its own side (T-313).
     writeLight(this.el, rot, this.writtenLight);
+    // How far the cover has folded back, 0 as it hangs and 1 when it is open
+    // (T-319). One custom property and `items.css` does the rest — the folding,
+    // the sheet appearing under it and the header at its head are all one
+    // number, which is what keeps the whole open state out of this file.
+    //
+    // Guarded on having changed, and the guard is not a micro-optimisation: a
+    // custom property write invalidates style for the subtree, and this runs on
+    // every item on every transform pass. Only one folder on a board is ever
+    // open, so the honest steady state here is that nothing is written at all.
+    if (open !== this.writtenOpen) {
+      this.writtenOpen = open;
+      // A folder that has never been opened gets no property, so the CSS
+      // fallback is what draws it — one fewer thing on the style resolution of
+      // every case object on the board.
+      if (open === 0) this.el.style.removeProperty("--open");
+      else this.el.style.setProperty("--open", open.toFixed(4));
+    }
     setCarried(this.el, this.shadow, lift);
     this.shadow.update(rot);
     this.tape.update(rot);
@@ -2236,6 +2327,16 @@ const NUMBER_SIZE = 0.055;
 const TITLE_SIZE = 0.058;
 /** And the rest, which is the runtime, the page count and the caption. */
 const CASE_TEXT_SIZE = 0.048;
+/**
+ * The open page's type, as a fraction of the folder's width.
+ *
+ * 0.017 of 480 units is about 8, which is 11 point at this board's scale — a
+ * document header, and about a fifth of the gummed label above it. That is the
+ * whole distinction: a label is sized to be read off a shelf and a page is sized
+ * to be read at a desk, and pretending otherwise is how a document ends up
+ * looking like a poster of itself.
+ */
+const LEAF_TEXT_SIZE = 0.017;
 /** How much of a folder's width the gummed label may take, inside its own
  *  padding — the number `items.css` writes, here as well because `fitLabel`
  *  needs the box the name has to fit in. */
@@ -2815,6 +2916,10 @@ export class DomItemLayer implements ItemLayer {
         scene.w[slot]!,
         scene.h[slot]!,
         scene.lift[slot]!,
+        // Off the scene's own reader, like the three above it and for the same
+        // reason: this is a drawn transient and nothing about it is in the
+        // document, so an item's own record cannot answer it (T-319).
+        scene.openOf(slot),
       );
     }
 

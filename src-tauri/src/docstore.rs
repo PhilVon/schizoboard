@@ -391,7 +391,10 @@ mod tests {
         store.append(b"three").unwrap();
 
         let state = store.load().unwrap();
-        assert_eq!(state.updates, vec![b"one".to_vec(), b"two".to_vec(), b"three".to_vec()]);
+        assert_eq!(
+            state.updates,
+            vec![b"one".to_vec(), b"two".to_vec(), b"three".to_vec()]
+        );
     }
 
     #[test]

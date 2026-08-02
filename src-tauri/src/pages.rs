@@ -285,7 +285,14 @@ mod tests {
                         Operation::new("q", vec![]),
                         Operation::new(
                             "cm",
-                            vec![612.into(), 0.into(), 0.into(), 792.into(), 0.into(), 0.into()],
+                            vec![
+                                612.into(),
+                                0.into(),
+                                0.into(),
+                                792.into(),
+                                0.into(),
+                                0.into(),
+                            ],
                         ),
                         Operation::new("Do", vec![Object::Name(b"Im0".to_vec())]),
                         Operation::new("Q", vec![]),
@@ -332,7 +339,10 @@ mod tests {
                 seed.wrapping_mul(91) as u8,
             ])
         })
-        .write_to(&mut std::io::Cursor::new(&mut out), image::ImageFormat::Jpeg)
+        .write_to(
+            &mut std::io::Cursor::new(&mut out),
+            image::ImageFormat::Jpeg,
+        )
         .expect("jpeg should encode");
         out
     }
@@ -382,7 +392,11 @@ mod tests {
         // Bytes held is the weaker half of this. A reader that read all twenty
         // and kept one would satisfy the line above and be twelve seconds
         // slower on a real filing, so what is actually asserted is the work.
-        assert_eq!(store.pages_produced(), 1, "one page asked for, one page read");
+        assert_eq!(
+            store.pages_produced(),
+            1,
+            "one page asked for, one page read"
+        );
     }
 
     #[test]
@@ -391,7 +405,11 @@ mod tests {
         let store = PageStore::default();
         assert_eq!(store.page_count("aa", &path).unwrap(), 20);
         assert_eq!(store.cached_bytes(), 0);
-        assert_eq!(store.pages_produced(), 0, "counting pages is not reading them");
+        assert_eq!(
+            store.pages_produced(),
+            0,
+            "counting pages is not reading them"
+        );
     }
 
     #[test]
@@ -437,7 +455,11 @@ mod tests {
         store.page("aa", &path, 2).unwrap().unwrap();
         store.page("aa", &path, 4).unwrap().unwrap();
 
-        assert!(store.cached_bytes() <= ceiling, "held {}", store.cached_bytes());
+        assert!(
+            store.cached_bytes() <= ceiling,
+            "held {}",
+            store.cached_bytes()
+        );
         let inner = store.inner.lock().unwrap();
         let held: Vec<u32> = inner.cached.iter().map(|((_, index), _)| *index).collect();
         assert!(held.contains(&2), "page 2 was read most recently: {held:?}");
@@ -512,14 +534,19 @@ mod tests {
         store.page("aa", &a, 1).unwrap().unwrap();
         store.page("bb", &b, 1).unwrap().unwrap();
         let inner = store.inner.lock().unwrap();
-        assert_eq!(inner.open.as_ref().map(|(hash, _)| hash.as_str()), Some("bb"));
+        assert_eq!(
+            inner.open.as_ref().map(|(hash, _)| hash.as_str()),
+            Some("bb")
+        );
     }
 
     #[test]
     fn a_file_that_is_not_there_is_an_error_rather_than_a_panic() {
         let store = PageStore::default();
         assert!(store.page("aa", Path::new("no/such/file.pdf"), 1).is_err());
-        assert!(store.page_count("aa", Path::new("no/such/file.pdf")).is_err());
+        assert!(store
+            .page_count("aa", Path::new("no/such/file.pdf"))
+            .is_err());
     }
 
     #[test]
@@ -544,12 +571,21 @@ mod tests {
         let pages = PageStore::default();
         assert_eq!(pages.page_count(&meta.sha256, &path).unwrap(), 12);
         for index in 1..=12 {
-            pages.page(&meta.sha256, &path, index).unwrap().expect("page");
+            pages
+                .page(&meta.sha256, &path, index)
+                .unwrap()
+                .expect("page");
         }
-        assert!(pages.cached_bytes() > 0, "twelve pages should have been produced");
+        assert!(
+            pages.cached_bytes() > 0,
+            "twelve pages should have been produced"
+        );
 
         let after = crate::assets::walk_files(&root).expect("walk").len();
-        assert_eq!(before, after, "reading pages must write nothing to the store");
+        assert_eq!(
+            before, after,
+            "reading pages must write nothing to the store"
+        );
     }
 
     #[test]

@@ -470,7 +470,11 @@ pub fn read(store: &AssetStore, src: &Path) -> Result<Opened> {
         if !seen.insert(hash.as_str()) {
             continue;
         }
-        let Some(bytes) = entry(&mut zip, &format!("{ASSET_PREFIX}{hash}"), assets::MAX_ASSET_BYTES)?
+        let Some(bytes) = entry(
+            &mut zip,
+            &format!("{ASSET_PREFIX}{hash}"),
+            assets::MAX_ASSET_BYTES,
+        )?
         else {
             missing.push(hash.clone());
             continue;
@@ -544,9 +548,9 @@ fn entry<R: Read + io::Seek>(
     // directory said it would, which for an archive is damage rather than a
     // race — so it is reported as such and not passed on as an asset error.
     let bytes = assets::read_promised(file.by_ref(), claimed).map_err(|e| match e {
-        assets::Error::SizeMismatch => {
-            Error::Corrupt(format!("{name} expands past the {claimed} bytes it declares"))
-        }
+        assets::Error::SizeMismatch => Error::Corrupt(format!(
+            "{name} expands past the {claimed} bytes it declares"
+        )),
         other => Error::Asset(other),
     })?;
     Ok(Some(bytes))
@@ -586,7 +590,9 @@ mod tests {
         let there = store(&dir, "there");
 
         let photo = here.ingest_bytes(PIXEL, None).unwrap();
-        let other = here.ingest_bytes(b"not an image, still bytes", None).unwrap();
+        let other = here
+            .ingest_bytes(b"not an image, still bytes", None)
+            .unwrap();
         let snapshot = b"opaque document state".to_vec();
 
         let dest = dir.path().join("board.schizo");
@@ -624,14 +630,21 @@ mod tests {
         write(&here, &spec(vec![photo.sha256.clone()]), b"doc", &dest).unwrap();
 
         let mut zip = ZipArchive::new(BufReader::new(File::open(&dest).unwrap())).unwrap();
-        let manifest: Manifest =
-            serde_json::from_slice(&entry(&mut zip, MANIFEST, MAX_MANIFEST_BYTES).unwrap().unwrap())
-                .unwrap();
+        let manifest: Manifest = serde_json::from_slice(
+            &entry(&mut zip, MANIFEST, MAX_MANIFEST_BYTES)
+                .unwrap()
+                .unwrap(),
+        )
+        .unwrap();
         for hash in &manifest.assets {
             assert!(
-                entry(&mut zip, &format!("{ASSET_PREFIX}{hash}"), assets::MAX_ASSET_BYTES)
-                    .unwrap()
-                    .is_some(),
+                entry(
+                    &mut zip,
+                    &format!("{ASSET_PREFIX}{hash}"),
+                    assets::MAX_ASSET_BYTES
+                )
+                .unwrap()
+                .is_some(),
                 "{hash} is listed and not embedded"
             );
         }
@@ -675,7 +688,13 @@ mod tests {
 
         let one = dir.path().join("one.schizo");
         let two = dir.path().join("two.schizo");
-        write(&here, &spec(vec![a.clone(), b.clone(), a.clone()]), b"doc", &one).unwrap();
+        write(
+            &here,
+            &spec(vec![a.clone(), b.clone(), a.clone()]),
+            b"doc",
+            &one,
+        )
+        .unwrap();
         write(&here, &spec(vec![b.clone(), a.clone()]), b"doc", &two).unwrap();
 
         let there = store(&dir, "there");
@@ -711,7 +730,8 @@ mod tests {
             .unwrap();
             zip.start_file(SNAPSHOT, plain).unwrap();
             zip.write_all(b"doc").unwrap();
-            zip.start_file(format!("{ASSET_PREFIX}{claimed}"), plain).unwrap();
+            zip.start_file(format!("{ASSET_PREFIX}{claimed}"), plain)
+                .unwrap();
             zip.write_all(b"these are somebody else's bytes").unwrap();
             zip.finish().unwrap();
         }
@@ -1029,9 +1049,12 @@ mod tests {
         let dest = dir.path().join("webapp.zip");
         {
             let mut zip = ZipWriter::new(File::create(&dest).unwrap());
-            zip.start_file(MANIFEST, SimpleFileOptions::default()).unwrap();
-            zip.write_all(br#"{"format":"web-extension","schemaVersion":3,"title":"x","assets":[]}"#)
+            zip.start_file(MANIFEST, SimpleFileOptions::default())
                 .unwrap();
+            zip.write_all(
+                br#"{"format":"web-extension","schemaVersion":3,"title":"x","assets":[]}"#,
+            )
+            .unwrap();
             zip.finish().unwrap();
         }
         assert!(matches!(peek(&dest).unwrap_err(), Error::NotABundle(_)));

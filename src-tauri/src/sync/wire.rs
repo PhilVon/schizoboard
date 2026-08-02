@@ -155,7 +155,18 @@ mod tests {
 
     #[test]
     fn var_uints_survive_the_round_trip() {
-        for value in [0, 1, 127, 128, 255, 256, 16383, 16384, u32::MAX as u64, u64::MAX] {
+        for value in [
+            0,
+            1,
+            127,
+            128,
+            255,
+            256,
+            16383,
+            16384,
+            u32::MAX as u64,
+            u64::MAX,
+        ] {
             assert_eq!(round_trip(value), value, "value {value}");
         }
     }

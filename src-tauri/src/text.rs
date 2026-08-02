@@ -403,7 +403,11 @@ mod tests {
     fn tiles(text: &str) {
         let pages = paginate(text);
         assert_eq!(pages.first().map(|r| r.start), Some(0), "starts at zero");
-        assert_eq!(pages.last().map(|r| r.end), Some(text.len()), "ends at the end");
+        assert_eq!(
+            pages.last().map(|r| r.end),
+            Some(text.len()),
+            "ends at the end"
+        );
         for pair in pages.windows(2) {
             assert_eq!(pair[0].end, pair[1].start, "no gap and no overlap");
         }
