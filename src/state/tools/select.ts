@@ -1486,9 +1486,13 @@ export class SelectTool implements Tool {
   ): void {
     switch (input.code) {
       case "Escape":
-        // Mid-gesture Escape reverts; otherwise it drops the selection.
+        // Mid-gesture Escape reverts; otherwise it shuts an open case file,
+        // and only if there was not one does it drop the selection. That order
+        // is the one Escape has everywhere: it undoes the most recent thing you
+        // put on the screen, and an open folder is more recent than a selection
+        // you must already have had to open it.
         if (this.gesturing) this.cancel(ctx);
-        else ctx.selection.clear();
+        else if (!ctx.open(null)) ctx.selection.clear();
         return;
 
       case "Delete":

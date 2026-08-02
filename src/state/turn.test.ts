@@ -12,7 +12,7 @@
 import { describe, expect, it } from "vitest";
 
 import { DirtySets } from "@/state/dirty";
-import { FLATTEN_MS, Flatten } from "@/state/flatten";
+import { FLATTEN_MS, PaperTurn } from "@/state/turn";
 import { Scene, type ItemColdInput, type ItemPose, type PinNode } from "@/state/scene";
 import { drawnPose } from "@/state/tools/frame";
 
@@ -49,7 +49,7 @@ function pin(over: Partial<PinNode> = {}): PinNode {
 }
 
 /** Run the clock to a stop, or give up — a stepper that never lands is a bug. */
-function settle(flat: Flatten, scene: Scene, dirty: DirtySets): number {
+function settle(flat: PaperTurn, scene: Scene, dirty: DirtySets): number {
   for (let frame = 0; frame < 100; frame++) {
     flat.step(scene, dirty, 16);
     if (!flat.moving) return frame;
@@ -181,7 +181,7 @@ describe("the clock", () => {
     const scene = new Scene();
     const dirty = new DirtySets();
     const slot = scene.putItem(cold("a"), pose({ rot: 0.4 }));
-    const flat = new Flatten();
+    const flat = new PaperTurn();
 
     flat.open("a");
     expect(flat.square).toBe(false);
@@ -201,7 +201,7 @@ describe("the clock", () => {
     const scene = new Scene();
     const dirty = new DirtySets();
     const slot = scene.putItem(cold("a"), pose({ rot: 0.4 }));
-    const flat = new Flatten();
+    const flat = new PaperTurn();
 
     flat.open("a");
     settle(flat, scene, dirty);
@@ -219,7 +219,7 @@ describe("the clock", () => {
     const scene = new Scene();
     const dirty = new DirtySets();
     const slot = scene.putItem(cold("a"), pose({ rot: 0.4 }));
-    const flat = new Flatten();
+    const flat = new PaperTurn();
 
     flat.open("a");
     flat.step(scene, dirty, 40);
@@ -241,7 +241,7 @@ describe("the clock", () => {
     const dirty = new DirtySets();
     scene.putItem(cold("a"), pose({ rot: 0.4 }));
     scene.putPin(pin());
-    const flat = new Flatten();
+    const flat = new PaperTurn();
 
     flat.open("a");
     settle(flat, scene, dirty);
@@ -257,7 +257,7 @@ describe("the clock", () => {
     const scene = new Scene();
     const dirty = new DirtySets();
     const slot = scene.putItem(cold("a"), pose({ rot: 0.4 }));
-    const flat = new Flatten();
+    const flat = new PaperTurn();
 
     flat.open("a");
     settle(flat, scene, dirty);

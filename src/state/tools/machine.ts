@@ -87,7 +87,7 @@ export interface ToolMachineOptions {
    * Open what is inside an item — see `ToolContext.open`. Optional on the same
    * terms as `edit` above: a headless harness has nowhere to open anything.
    */
-  open?: (itemId: string) => void;
+  open?: (itemId: string | null) => boolean;
   /** True when navigation owns the pointer — space held, or mid-pan. */
   suppressed?: () => boolean;
   /**
@@ -196,7 +196,7 @@ export class ToolMachine {
       hitPin: options.hitPin,
       hitString: options.hitString,
       edit: options.edit ?? (() => undefined),
-      open: options.open ?? (() => undefined),
+      open: options.open ?? (() => false),
       held: this.heldKeys,
     };
     this.attach();

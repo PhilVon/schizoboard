@@ -567,8 +567,15 @@ export interface ToolContext {
    * reading. So this is safe to call on anything, and does nothing for a note.
    * The same function backs the menu's *Open* row (`ui/boardmenu.ts`), which is
    * what stops the pointer and the keyboard forming two opinions.
+   *
+   * **`null` shuts whatever is open**, which is `Escape`'s route in (T-273).
+   * One capability with two verbs rather than two, because the tool would
+   * otherwise be holding an "open" and a "close" that could disagree about what
+   * counts as open. The boolean is what lets `Escape` fall through: with
+   * nothing open it must still drop the selection, which is what it has always
+   * done, so this reports rather than swallowing and the tool decides.
    */
-  open(itemId: string): void;
+  open(itemId: string | null): boolean;
 }
 
 /**
