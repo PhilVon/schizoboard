@@ -321,7 +321,12 @@ export class SelectTool implements Tool {
       // there is no other sign that the key exists. Shutting it says so here
       // too, because clicking away deliberately does *not* do it (T-273) — so
       // without this line an open folder is a state with no visible way out.
-      { keys: "Enter", does: "open a case file, and Esc shuts it" },
+      // A cassette is named in the same row rather than given one of its own,
+      // because it is the same key on the same selection — and because what it
+      // does is the one thing on this board a person could otherwise press
+      // twice by mistake: nothing opens, nothing is covered, and the only sign
+      // it worked is the spools starting to turn (T-277).
+      { keys: "Enter", does: "open a case file or play a tape, and Esc shuts it" },
       // Beside it rather than anywhere else, because it is only meaningful
       // while the line above has been used — and because the arrows are the
       // one binding on this board that nobody would think to try on cork.
