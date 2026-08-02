@@ -3861,6 +3861,14 @@ async function boot(): Promise<void> {
        * sixty times a second.
        */
       search,
+      /**
+       * The rectangle being cut out of an open page (T-282).
+       *
+       * Four turned corners rather than a box, and the tool has already put
+       * them in board space — the rectangle is square with the page, and the
+       * page is at whatever angle the folder was scattered to.
+       */
+      select.clipping,
     );
     hud.update(frame.now);
     /**

@@ -65,6 +65,7 @@ import { threadFrom } from "@/state/thread";
 import {
   anchorAt,
   anchorParent,
+  itemLocal,
   settleOnPin,
   stringAt,
 } from "@/state/tools/frame";
@@ -200,6 +201,9 @@ type GesturePhase =
   | "rotating"
   | "resizing"
   | "marquee"
+  /** Drag over the page of an open case file: a rectangle being cut out of it
+   *  as a clipping — T-282. Square with the *page*, never with the screen. */
+  | "clip"
   | "pin";
 
 function approach(current: number, target: number, dt: number, tau: number): number {
@@ -475,6 +479,32 @@ export class SelectTool implements Tool {
   private readonly rectBuf: Bounds = { minX: 0, minY: 0, maxX: 0, maxY: 0 };
 
   /**
+   * The open case file a clipping is being cut out of, and where the press
+   * landed in its own frame — T-282.
+   *
+   * **Item-local, and that is the whole reason this is not the marquee.** A
+   * folder sits at its seeded angle and goes on sitting at it while you read
+   * it: `readItem` flies the camera to the item's *bounds* and never turns it
+   * square to the screen. So a rectangle tracked in board space would be
+   * skewed against the lines of the page, and the picture cut out of it would
+   * come out with the text running off one corner. Tracked in the page's own
+   * frame it is square with what is written on it, which is what a cutting is.
+   */
+  private clipItem: string | null = null;
+  private clipDownX = 0;
+  private clipDownY = 0;
+  private readonly clipBuf: Bounds = { minX: 0, minY: 0, maxX: 0, maxY: 0 };
+  private clipRect: Bounds | null = null;
+  /** The four corners of {@link clipRect} in board space, for the overlay —
+   *  a quad rather than a rect, because the page is turned. Reused. */
+  private readonly clipQuad: Vec2[] = [
+    { x: 0, y: 0 },
+    { x: 0, y: 0 },
+    { x: 0, y: 0 },
+    { x: 0, y: 0 },
+  ];
+
+  /**
    * Pressing an item that is *already* selected must not collapse the
    * selection, or a group could never be dragged — but a plain click on one
    * still has to mean "just this one" (DESIGN section 3.8). So the intent is
@@ -548,6 +578,22 @@ export class SelectTool implements Tool {
    *  it. Read by the overlay in phase 8. */
   get marquee(): Bounds | null {
     return this.rect;
+  }
+
+  /**
+   * The clipping rectangle as four **board**-space corners, or null — T-282.
+   *
+   * A quad and not a `Bounds` because it is square with a page that is turned,
+   * so there is no axis-aligned box that describes it. Converted here rather
+   * than in the overlay for the reason the marquee is converted there: what the
+   * overlay is owed is where to draw, and the frame the rectangle lives in is
+   * this gesture's business and nobody else's.
+   *
+   * Clockwise from the corner the press landed on, which is the order a path
+   * wants and the order the harvest reads it back in.
+   */
+  get clipping(): readonly Vec2[] | null {
+    return this.clipRect === null ? null : this.clipQuad;
   }
 
   /** True while a gesture is in progress — the pointer is captured and the
@@ -861,6 +907,44 @@ export class SelectTool implements Tool {
       return;
     }
 
+    /**
+     * A drag over the page of an open case file cuts a clipping out of it
+     * rather than dragging the folder the page is in — T-282, D-46 section 3.
+     *
+     * **No modifier, and the press is still unambiguous**, which is the whole
+     * reason this gesture could be built at all: T-230 searched for a free
+     * modifier and found none, and `isScissors` exists because `Ctrl`+`Alt` was
+     * the only pair left. What makes a bare drag safe here is that the two
+     * questions below are already asked by other people for other reasons and
+     * together they name exactly one surface on the board.
+     *
+     * `inkHitTest` stops at the **silhouette**, and `DomItemLayer.silhouette`
+     * has answered "the A4 sheet" rather than "the folder" for an open case
+     * file since T-278 — that is what makes redaction land on the page. And
+     * `shownPage` is non-null for the one item that is open and nothing else.
+     * So this is true only over paper somebody is reading.
+     *
+     * Which leaves the folder draggable by the kraft you can see either side of
+     * the page: that margin is inside the item's rectangle and outside the
+     * sheet's silhouette, so `hitTest` claims it and this does not. The page
+     * cuts, the border moves — and a shut folder is unchanged in every way.
+     */
+    const page = ctx.inkHitTest(board.x, board.y);
+    if (page !== null && ctx.shownPage(page) !== null) {
+      const local = itemLocal(ctx.scene, page, board.x, board.y);
+      if (local !== null) {
+        this.clipItem = page;
+        this.clipDownX = local.x;
+        this.clipDownY = local.y;
+        this.clipBuf.minX = this.clipBuf.maxX = local.x;
+        this.clipBuf.minY = this.clipBuf.maxY = local.y;
+        this.clipRect = this.clipBuf;
+        this.quadFrom(ctx);
+        this.phase = "clip";
+        return;
+      }
+    }
+
     const hit = ctx.hitTest(board.x, board.y);
 
     if (hit === null) {
@@ -918,6 +1002,9 @@ export class SelectTool implements Tool {
         return;
       case "marquee":
         this.applyMarquee(at, ctx);
+        return;
+      case "clip":
+        this.applyClip(at, ctx);
         return;
       default:
         return;
@@ -991,6 +1078,30 @@ export class SelectTool implements Tool {
       this.release();
     } else if (this.phase === "marquee") {
       this.rect = null;
+    } else if (this.phase === "clip") {
+      const item = this.clipItem;
+      const rect = this.clipRect;
+      /**
+       * A press that never became a drag is a click, and a click on a page is
+       * not a cut — AC-855, and the same threshold every other gesture in this
+       * tool uses. Measured in **screen** pixels like `DRAG_THRESHOLD_PX`
+       * itself, because what is being asked is whether the hand moved, and at
+       * 30% zoom a board-unit floor would refuse deliberate rectangles while at
+       * 300% it would let a tremor cut one.
+       *
+       * It falls through to selecting the folder rather than doing nothing.
+       * Clicking a thing you are looking at and having the board ignore you is
+       * worse than the small surprise of it becoming selected, and it is what a
+       * click anywhere else on an item already means.
+       */
+      if (item !== null && rect !== null) {
+        const px = ctx.camera.zoom;
+        const wide = (rect.maxX - rect.minX) * px >= DRAG_THRESHOLD_PX;
+        const tall = (rect.maxY - rect.minY) * px >= DRAG_THRESHOLD_PX;
+        if (wide && tall) ctx.clip(item, rect);
+        else ctx.selection.replace([item]);
+      }
+      this.resetClip();
     } else if (this.pendingSelect !== null) {
       // A press on an already-selected item that never became a drag. It was a
       // click, so it means that one item — DESIGN section 3.8, "click to
@@ -1489,6 +1600,67 @@ export class SelectTool implements Tool {
     ctx.selection.replaceThread(inside, this.marqueeBase.strings, pins);
   }
 
+  /**
+   * The clipping rectangle, tracked in the page's own frame — T-282.
+   *
+   * The cursor is converted *in* on every move rather than the rectangle being
+   * converted out once at the end, because the page can move under the gesture:
+   * a folder hanging on one pin is still swinging while you read it, and
+   * `itemLocal` goes through the pose it is **drawn** at. Tracking in board
+   * space and converting at the release would hand the harvest a rectangle
+   * measured against wherever the paper happened to be when the press landed.
+   */
+  private applyClip(at: PointerSample, ctx: ToolContext): void {
+    const item = this.clipItem;
+    if (item === null) return;
+    const board = ctx.camera.screenToBoard(at.x, at.y, this.board);
+    const local = itemLocal(ctx.scene, item, board.x, board.y);
+    // The paper has gone — deleted, or taken away by a peer mid-gesture. There
+    // is nothing left to cut out of, and nothing has been written.
+    if (local === null) {
+      this.resetClip();
+      this.phase = "idle";
+      return;
+    }
+    const rect = this.clipBuf;
+    rect.minX = Math.min(this.clipDownX, local.x);
+    rect.minY = Math.min(this.clipDownY, local.y);
+    rect.maxX = Math.max(this.clipDownX, local.x);
+    rect.maxY = Math.max(this.clipDownY, local.y);
+    this.clipRect = rect;
+    this.quadFrom(ctx);
+  }
+
+  /**
+   * The clipping rectangle's four corners in board space, for the overlay.
+   *
+   * Through the item's **rendered** pose, like every other conversion a tool
+   * makes against paper (`state/tools/frame.ts`): the rectangle has to be drawn
+   * over the page where the page actually is, swing and all, or the outline
+   * would slide off the paper it is supposed to be cutting.
+   */
+  private quadFrom(ctx: ToolContext): void {
+    const item = this.clipItem;
+    const rect = this.clipRect;
+    if (item === null || rect === null) return;
+    const slot = ctx.scene.slotOf(item);
+    if (slot === undefined) return;
+    const angle = ctx.scene.renderRot(slot);
+    const cx = ctx.scene.renderX(slot);
+    const cy = ctx.scene.renderY(slot);
+    const cos = Math.cos(angle);
+    const sin = Math.sin(angle);
+    rotateOut(rect.minX, rect.minY, cx, cy, cos, sin, this.clipQuad[0]!);
+    rotateOut(rect.maxX, rect.minY, cx, cy, cos, sin, this.clipQuad[1]!);
+    rotateOut(rect.maxX, rect.maxY, cx, cy, cos, sin, this.clipQuad[2]!);
+    rotateOut(rect.minX, rect.maxY, cx, cy, cos, sin, this.clipQuad[3]!);
+  }
+
+  private resetClip(): void {
+    this.clipItem = null;
+    this.clipRect = null;
+  }
+
   // --- keys -----------------------------------------------------------------
 
   private onKey(
@@ -1798,6 +1970,9 @@ export class SelectTool implements Tool {
     this.pendingString = null;
     this.grabbed = null;
     this.rect = null;
+    // Nothing to put back: a clipping is written at the release and an
+    // abandoned one never touched the document or the selection.
+    this.resetClip();
     this.phase = "idle";
     // A tool switch or a lost focus ends a roll of the wheel too. Nothing was
     // half-written — every notch is its own complete edit — so letting go of the

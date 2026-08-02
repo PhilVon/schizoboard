@@ -34,7 +34,7 @@
  * thing on this class that reaches the tool from outside the frame.
  */
 
-import type { Camera } from "@/state/camera";
+import type { Bounds, Camera } from "@/state/camera";
 import type { DirtySets } from "@/state/dirty";
 import {
   DOUBLE_CLICK_MS,
@@ -99,6 +99,8 @@ export interface ToolMachineOptions {
   open?: (itemId: string | null) => boolean;
   /** Turn a page in whatever case file is open (T-321). */
   turnPage?: (by: number) => boolean;
+  /** Cut a clipping out of the page on show (T-282). Item-local rectangle. */
+  clip?: (itemId: string, rect: Bounds) => void;
   /** True when navigation owns the pointer — space held, or mid-pan. */
   suppressed?: () => boolean;
   /**
@@ -210,6 +212,7 @@ export class ToolMachine {
       edit: options.edit ?? (() => undefined),
       open: options.open ?? (() => false),
       turnPage: options.turnPage ?? (() => false),
+      clip: options.clip ?? (() => undefined),
       held: this.heldKeys,
     };
     this.attach();

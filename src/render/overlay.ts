@@ -66,6 +66,27 @@ const MARQUEE_FILL = "rgba(255, 244, 214, 0.10)";
 const MARQUEE_STROKE = "rgba(255, 244, 214, 0.85)";
 
 /**
+ * The clipping rectangle — T-282. Deliberately not the marquee's colours.
+ *
+ * A marquee gathers what is already on the board and a clipping *takes a piece
+ * out of* something, and the two land within a few pixels of each other: a
+ * press just off the edge of an open page is a marquee, a press just on it is a
+ * cut. If they looked alike the only thing telling you which one you started
+ * would be whether anything got selected.
+ *
+ * So this one is drawn as a cut line rather than a sweep: dashed, unfilled, and
+ * dark like the selection outline for that outline's own reason — a pale line
+ * is invisible against paper, and paper is the only surface this rectangle is
+ * ever drawn on.
+ */
+const CLIP_STROKE = "rgba(31, 27, 23, 0.85)";
+/** The pale half of the same line, under it, so the dashes read against ink as
+ *  well as against paper — a scan is mostly black type. */
+const CLIP_BACKING = "rgba(255, 244, 214, 0.75)";
+/** Screen pixels, so the cut reads the same at every zoom. */
+const CLIP_DASH: readonly number[] = [5, 4];
+
+/**
  * Dark rather than light, and that is not a taste call: a pale line is invisible
  * against a polaroid's own off-white frame, which is most of what anyone selects.
  * A dark warm line is the only one legible against both the cork and the paper,
@@ -363,6 +384,7 @@ export class Overlay {
    */
   private matchesVersion = -1;
   private hadMarquee = false;
+  private hadClip = false;
   /** The candidate ring changes with nothing else: dragging a pin across a
    *  still board moves no item, no camera and no selection. */
   private highlighted: string | null = null;
@@ -535,11 +557,21 @@ export class Overlay {
      * match on the board.
      */
     matches: MatchSource | null = null,
+    /**
+     * The clipping rectangle being dragged over an open page — T-282.
+     *
+     * Four **board**-space corners rather than a `Bounds`, because it is square
+     * with a page that is turned and no axis-aligned box describes it. The
+     * select tool does the conversion, for the reason it does the marquee's:
+     * what this layer is owed is where to draw.
+     */
+    clip: readonly Vec2[] | null = null,
   ): void {
     const ctx = this.ctx;
     if (!ctx) return;
 
     const wantsMarquee = marquee !== null;
+    const wantsClip = clip !== null && clip.length === 4;
     const wantsPending = pending !== null && pending.points.length >= 2;
     const wantsStrings = ropes !== null && selection.strings.size > 0;
     const wantsThreads = ropes !== null && hoveredPin !== null;
@@ -625,6 +657,7 @@ export class Overlay {
       // nothing else changed — dragging a marquee across empty cork and letting
       // go never touches the selection.
       this.hadMarquee ||
+      this.hadClip ||
       // A cursor that moved, a peer who joined or left, a selection of theirs
       // that changed. One integer, and it is the *drawn* cursor rather than the
       // published one, so a peer's spring settling is a change and a peer
@@ -641,6 +674,7 @@ export class Overlay {
       this.selectedMoved(selection, scene, dirty);
     if (peers !== null) this.peersVersion = peers.version;
     this.hadMarquee = wantsMarquee;
+    this.hadClip = wantsClip;
     this.hadPending = wantsPending;
     this.hadStringHover = stringHover !== null;
     this.hadFlash = wantsFlash;
@@ -713,6 +747,10 @@ export class Overlay {
     if (highlight !== null && this.drawCandidate(ctx, camera, scene, highlight)) drew = true;
     if (marquee) {
       this.drawMarquee(ctx, camera, marquee);
+      drew = true;
+    }
+    if (wantsClip) {
+      this.drawClip(ctx, camera, clip);
       drew = true;
     }
     if (wantsPending && this.drawPending(ctx, camera, pending)) drew = true;
@@ -1491,6 +1529,45 @@ export class Overlay {
     ctx.strokeRect(-hw, -hh, hw * 2, hh * 2);
     ctx.restore();
     return true;
+  }
+
+  /**
+   * The clipping rectangle, as a path through four turned corners — T-282.
+   *
+   * `fillRect` would be wrong here in a way that is not obvious until a folder
+   * is pinned: the rectangle is square with the page and the page is at
+   * whatever angle the folder was scattered to, so the four corners are a
+   * parallelogram on screen and only a path can draw one.
+   *
+   * Two strokes, dark over pale, and the pale one is not decoration. A scanned
+   * page is mostly black type on white, so a single dark dash disappears the
+   * moment the cut crosses a line of text — which is the only place anybody
+   * ever draws one. The backing is what keeps the dashes readable over ink.
+   *
+   * The dash is set and cleared inside this method rather than left on the
+   * context: every other painter on this canvas draws solid, and a dash pattern
+   * left behind would turn the next frame's selection outline dotted.
+   */
+  private drawClip(ctx: CanvasRenderingContext2D, camera: Camera, quad: readonly Vec2[]): void {
+    this.clear(ctx);
+    ctx.beginPath();
+    for (let i = 0; i < 4; i += 1) {
+      const at = camera.boardToScreen(quad[i]!.x, quad[i]!.y, i === 0 ? this.a : this.b);
+      if (i === 0) ctx.moveTo(at.x, at.y);
+      else ctx.lineTo(at.x, at.y);
+    }
+    ctx.closePath();
+
+    ctx.setLineDash([]);
+    ctx.strokeStyle = CLIP_BACKING;
+    ctx.lineWidth = 3;
+    ctx.stroke();
+
+    ctx.setLineDash([...CLIP_DASH]);
+    ctx.strokeStyle = CLIP_STROKE;
+    ctx.lineWidth = 1;
+    ctx.stroke();
+    ctx.setLineDash([]);
   }
 
   private drawMarquee(ctx: CanvasRenderingContext2D, camera: Camera, marquee: Bounds): void {

@@ -123,6 +123,7 @@ beforeEach(() => {
     edit: () => undefined,
     open: () => false,
     turnPage: () => false,
+    clip: () => undefined,
     held: new Set<string>(),
     write: {
       deleteStrings: (ids) => writes.push({ kind: "deleteStrings", ids: [...ids] }),

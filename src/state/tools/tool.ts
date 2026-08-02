@@ -19,7 +19,7 @@
 
 import type { InkSurface, WetStroke } from "@/lib/ink";
 import type { ItemStyle } from "@/lib/style";
-import type { Camera, Vec2 } from "@/state/camera";
+import type { Bounds, Camera, Vec2 } from "@/state/camera";
 import type { DirtySets } from "@/state/dirty";
 import type { Scene } from "@/state/scene";
 import type { Selection } from "@/state/selection";
@@ -604,6 +604,37 @@ export interface ToolContext {
    * nothing open it does nothing and says so.
    */
   turnPage(by: number): boolean;
+
+  /**
+   * Cut a clipping out of the page on show, and hang it on the board — T-282,
+   * D-46 section 3.
+   *
+   * `rect` is **item-local and un-rotated**, the frame every write against a
+   * piece of paper uses (`state/tools/frame.ts`): square with the page rather
+   * than with the screen, because a folder is read at whatever angle it was
+   * scattered to and a screen-aligned cut would run diagonally across the text.
+   *
+   * ## Why this is a capability and not a `BoardWriter` method
+   *
+   * It ends in a write — a card, two pins and a string — but everything before
+   * that write is a question only the application can answer and only
+   * asynchronously. What the rectangle *yields* depends on what is on the page
+   * (Q-284: pixels off a scan, the words off a typed page), which is the
+   * reader's business; lifting pixels means rasterising DOM, which is the
+   * renderer's; and storing them means an ingest that crosses to Rust and comes
+   * back with a hash. A tool that could do any of that would be a tool holding
+   * an element and a promise.
+   *
+   * So this is shaped like {@link open} and {@link edit}: the tool knows which
+   * paper the pointer meant and hands that over. Unlike those two it does not
+   * report — there is nothing for the gesture to fall through to, and the
+   * answer arrives long after the pointer has gone up.
+   *
+   * **Safe to call on anything**, for {@link open}'s reason: whether an item is
+   * a case file with a page on show is a question about a document and an asset
+   * record, and a tool has no business reading either.
+   */
+  clip(itemId: string, rect: Bounds): void;
 }
 
 /**
