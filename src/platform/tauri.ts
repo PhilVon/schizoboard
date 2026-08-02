@@ -26,6 +26,7 @@ import type {
   DocState,
   DocumentPage,
   ExportKind,
+  PageText,
   PdfPage,
   Platform,
   PlatformEvents,
@@ -188,6 +189,10 @@ export class TauriPlatform implements Platform {
       figure: figure ?? null,
     });
     return bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes);
+  }
+
+  documentText(sha256: string): Promise<readonly PageText[]> {
+    return invoke<PageText[]>("document_text", { sha256 });
   }
 
   documentClose(sha256: string): Promise<void> {

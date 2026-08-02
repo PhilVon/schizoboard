@@ -48,7 +48,7 @@ use serde::Serialize;
 use tauri::{AppHandle, Manager};
 
 use crate::assets::AssetStore;
-use crate::document::{FigureContent, Page, PageContent, PageImage};
+use crate::document::{FigureContent, NoText, Page, PageContent, PageImage, PageText, Reader};
 use crate::pages::PageStore;
 
 /// One page, as the reading surface sees it.
@@ -153,6 +153,38 @@ impl WireImage {
             width: image.width,
             height: image.height,
             bytes: image.bytes.len(),
+        }
+    }
+}
+
+/// What one page says, for the index — the other, much smaller thing a page can
+/// be asked for.
+///
+/// Two arms against [`WireContent`]'s five, and the shortfall is the point: a
+/// typed page and a page of a text file are the same answer to "what does it
+/// say", and a scan, a blank page and a page this build cannot read are three
+/// different answers to "why does it say nothing". The reading surface needs
+/// the first distinction and not the second; a search field needs the second
+/// and not the first, because "its scans are not searchable" is a sentence
+/// somebody can act on and "no match" is not (T-286, D-46 section 4).
+#[derive(Debug, Serialize)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum WirePageText {
+    Text { text: String },
+    None { why: &'static str },
+}
+
+impl WirePageText {
+    fn of(text: &PageText) -> WirePageText {
+        match text {
+            PageText::Text(text) => WirePageText::Text { text: text.clone() },
+            PageText::None(why) => WirePageText::None {
+                why: match why {
+                    NoText::Scan => "scan",
+                    NoText::Empty => "empty",
+                    NoText::Unreadable => "unreadable",
+                },
+            },
         }
     }
 }
@@ -342,6 +374,51 @@ fn read_page_image(
     Ok(image_of(&page, figure)
         .map(|image| image.bytes.clone())
         .unwrap_or_default())
+}
+
+/// Every page's characters, in one answer — what the derived local index of
+/// D-46 section 2 is built out of.
+///
+/// ## Why the whole document and not a page at a time
+///
+/// Asking page by page would pay the structure load again per call — unless the
+/// reader were held between them, which is exactly the 51 MB [`PageStore`]
+/// holds one document at a time to avoid, and that slot belongs to whoever is
+/// reading. One call reads a whole file on one reader and drops it.
+///
+/// Measured cold on 40 real multi-page files (772 pages): 8.5 ms to open one
+/// and 11.1 ms a page to take the text off, so an average case file is about
+/// 215 ms and the worst on that corpus — a 100-page permit — was 4.9 seconds.
+///
+/// What comes back is text and never runs, which is what makes one answer
+/// affordable: a page is a couple of thousand characters, so a two-hundred-page
+/// filing is a few hundred kilobytes and the largest document this build will
+/// open at all is a few megabytes. The runs and their boxes would be an order
+/// of magnitude more, every byte of it thrown away by the caller on arrival.
+/// `document::joined` says what that costs and what it does not.
+///
+/// ## It does not touch `PageStore`, deliberately
+///
+/// That slot belongs to the person reading. An index that took it would make
+/// the next page turn re-open a file the reader already had open, so this opens
+/// its own [`Reader`] and drops it — which costs the document's structure twice
+/// over for as long as the walk runs, and is the honest price of not
+/// interrupting somebody mid-page.
+#[tauri::command]
+pub async fn document_text(app: AppHandle, sha256: String) -> Result<Vec<WirePageText>, String> {
+    crate::blocking(move || {
+        let store = app.try_state::<AssetStore>().ok_or_else(|| {
+            crate::document::Error::Malformed("the asset store failed to open".into())
+        })?;
+        read_text(&store, &sha256)
+    })
+    .await
+}
+
+/// [`document_text`] without the app.
+fn read_text(store: &AssetStore, sha256: &str) -> crate::document::Result<Vec<WirePageText>> {
+    let reader = Reader::open(&store.original_path(sha256))?;
+    Ok(reader.read_text().iter().map(WirePageText::of).collect())
 }
 
 /// The folder has been shut. Let the file go.
@@ -674,6 +751,95 @@ mod tests {
         // And the page comes back without re-opening the document.
         read_page(&store, &pages, &meta.sha256, 1).expect("read");
         assert_eq!(pages.pages_produced(), 0, "a cache hit reopens nothing");
+    }
+
+    // --- T-280: the whole document's text, on the same real store ---------
+
+    #[test]
+    fn the_text_of_every_page_is_reachable_from_the_hash_the_board_holds() {
+        let (_dir, store, _pages) = stores_on_disk();
+        let meta = store.ingest_bytes(&filing(), None).expect("ingest");
+
+        let text = read_text(&store, &meta.sha256).expect("text");
+        assert!(text.len() > 2, "the fixture is several pages");
+
+        // Index-aligned, and the alignment is the whole of what a citation
+        // stands on: element 0 is page 1, which is the number `document_page`
+        // takes and the number printed on the sheet.
+        let joined: Vec<String> = text
+            .iter()
+            .map(|page| match page {
+                WirePageText::Text { text } => text.clone(),
+                WirePageText::None { why } => panic!("a text file has no {why} pages"),
+            })
+            .collect();
+        assert!(joined[0].starts_with("line 0 of"), "{}", joined[0]);
+        assert!(
+            joined[1].starts_with("line 46 of"),
+            "the second page picks up where the first stopped: {}",
+            joined[1]
+        );
+
+        // Every line of the fixture is somewhere, so nothing was dropped
+        // between the pages.
+        let all = joined.concat();
+        for line in 0..200 {
+            assert!(
+                all.contains(&format!("line {line} of the witness statement")),
+                "line {line} went missing"
+            );
+        }
+    }
+
+    #[test]
+    fn reading_a_documents_text_does_not_take_the_slot_the_reader_is_holding() {
+        // The one thing this command must not do. `PageStore` holds one file
+        // open and that slot belongs to whoever is turning pages; an index that
+        // took it would make the next turn re-open a document the reader
+        // already had.
+        //
+        // True by construction today — `read_text` is not given a `PageStore`
+        // and so cannot reach one — and this is the assertion from outside that
+        // says so, on the same footing as
+        // `reading_every_page_leaves_the_store_holding_exactly_what_it_held`. It
+        // does not discriminate against anything that exists; it catches the
+        // future change that threads the store in for the convenience of one
+        // cached page.
+        let (_dir, store, pages) = stores_on_disk();
+        let meta = store.ingest_bytes(&filing(), None).expect("ingest");
+
+        read_page(&store, &pages, &meta.sha256, 1).expect("read");
+        assert_eq!(pages.pages_produced(), 1);
+
+        read_text(&store, &meta.sha256).expect("text");
+
+        // Still open, still holding its page, and the next turn is a cache hit.
+        assert_eq!(pages.pages_produced(), 1, "the index went nowhere near it");
+        read_page(&store, &pages, &meta.sha256, 1).expect("read");
+        assert_eq!(pages.pages_produced(), 1);
+    }
+
+    #[test]
+    fn reading_a_documents_text_leaves_the_store_holding_exactly_what_it_held() {
+        // The same claim `pages.rs` makes about a page and for the same reason:
+        // there is no hash for an index entry, so nothing can reference it,
+        // nothing can collect it, and no `WANT` can be sent for it.
+        let (dir, store, _pages) = stores_on_disk();
+        let meta = store.ingest_bytes(&filing(), None).expect("ingest");
+        let root = dir.path().join("assets");
+        let before = files_under(&root);
+
+        read_text(&store, &meta.sha256).expect("text");
+
+        assert_eq!(files_under(&root), before);
+    }
+
+    #[test]
+    fn a_hash_the_store_does_not_hold_is_an_error_rather_than_an_empty_document() {
+        let (_dir, store, _pages) = stores_on_disk();
+        // Silence would read as a case file that says nothing, which is a
+        // sentence about the document. This is a sentence about the machine.
+        assert!(read_text(&store, &"f".repeat(64)).is_err());
     }
 
     #[test]

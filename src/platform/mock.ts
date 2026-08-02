@@ -36,6 +36,7 @@ import {
   type DocState,
   type DocumentPage,
   type ExportKind,
+  type PageText,
   type Platform,
   type PlatformEvents,
   type SyncConfig,
@@ -320,6 +321,16 @@ export class MockPlatform implements Platform {
 
   documentPageImage(_sha256: string, _index: number, _figure?: number): Promise<Uint8Array> {
     return unavailable("Lifting the image off a scanned page");
+  }
+
+  /**
+   * Refused on the same argument, and it is the same argument twice over: the
+   * parse is not available here, and the text a search matches has to be the
+   * text `document::joined` produced or two boards would find different things
+   * in the same file.
+   */
+  documentText(_sha256: string): Promise<readonly PageText[]> {
+    return unavailable("Reading the text of a document");
   }
 
   /** Nothing is held open, so there is nothing to let go of. */

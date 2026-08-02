@@ -328,6 +328,23 @@ Local per-asset state, **never** in the document:
 unknown → requesting → transferring(pct) → ready | unavailable
 ```
 
+And so is **what a case file says**. Page text, transcripts and any other
+extracted content are a derived local index (D-46 section 2) — it is bytes, and
+§2.6 of DESIGN settled where bytes go. `app/textindex.ts` holds one entry per
+document hash, in memory, built by reading the file this machine already has:
+never written down, never on the wire, and thrown away with the window. A
+machine holding none of the bytes has no index, which is the intended state and
+not a degraded one — it is the same machine that cannot show you the
+photographs. Content addressing is what makes that safe rather than fragile: an
+entry keyed on a hash stays true for as long as that hash exists, so losing all
+of it costs time and nothing else.
+
+Measured, because the boot cost is the whole of the choice (Q-271): a real
+multi-page PDF is about 8.5 ms to open and 11 ms a page to take the text off, so
+a case file is roughly 215 ms of background work and a 100-page one is five
+seconds. It is read when the folder appears rather than when somebody first
+searches, one document at a time.
+
 Garbage collection refcounts from `assets` union the set of referenced `item.assetId`s, keeps a 30-day trash tier, and never collects on a peer that may be the only holder without first confirming another peer has it.
 
 ---

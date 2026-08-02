@@ -26,6 +26,7 @@ import {
   snapshot,
 } from "@/crdt/doc";
 import { PageReader } from "@/app/pages";
+import { TextIndex } from "@/app/textindex";
 import * as ops from "@/crdt/ops";
 import { readAsset, SCHEMA_VERSION } from "@/crdt/schema";
 import {
@@ -465,6 +466,13 @@ async function boot(): Promise<void> {
     // treats that as *not done* rather than as done, so a tape that arrives
     // naming a still nobody transferred grabs the same frame back.
     if (record.kind === "video") posters.wants(sha256, record.poster);
+    // And what a case file says, on the third turn of the same argument
+    // (Q-271). This is the eager half of that answer: a folder appearing is
+    // what starts the read, so `Ctrl+F` is complete from the first keystroke
+    // rather than becoming complete a few seconds into the first search. The
+    // bytes are the one thing it cannot work around, and a document whose
+    // transfer has not committed becomes ready later and is asked then.
+    if (record.kind === "document" && assets.isReady(sha256)) textIndex.wants(sha256);
     return {
       kind: record.kind,
       name: record.origName,
@@ -716,6 +724,16 @@ async function boot(): Promise<void> {
       refreshAsset(poster.sha256);
     },
   });
+
+  /**
+   * What the case files say, so `Ctrl+F` can look inside them (T-280).
+   *
+   * Beside `posters` because it is the same shape for the same reason: a queue
+   * of one, fed from the record probe, doing work that costs a file read per
+   * object and would otherwise all start at once when a board of them mounts.
+   * Nothing reads it yet — T-286 is the search that will.
+   */
+  const textIndex = new TextIndex(native);
 
   // Awaited, not fired and forgotten: `listen` is itself a round trip, and an
   // `asset:ready` emitted before it resolves is simply lost — which would
@@ -3856,6 +3874,17 @@ async function boot(): Promise<void> {
       search,
       flight,
       found,
+      /**
+       * What the case files on this board say (T-280).
+       *
+       * Here for the reason `flashes` and `search` are, and more so than
+       * either: an index is *by design* not drawn anywhere. There is no pixel
+       * on this board that says whether a folder's text arrived, how many of
+       * its pages were scans, or whether the shell refused the file — and until
+       * T-286 puts a search field in front of it there is no pixel that could.
+       * `textIndex.of(sha)` is the whole readout.
+       */
+      textIndex,
       /**
        * Everybody else, as this board has them — the store the overlay draws
        * from, cursors and hold-chrome and claimed segments alike.
