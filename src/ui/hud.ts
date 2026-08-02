@@ -17,6 +17,7 @@
 
 import type { Tier } from "@/render/lod";
 import { PHASES, type FrameLoop } from "@/render/loop";
+import { isTextTarget } from "@/state/input";
 
 const REFRESH_MS = 200;
 /** DESIGN section 9.5 — hard alert past this document size. */
@@ -145,6 +146,14 @@ export class Hud {
     host.append(this.el);
 
     const onKey = (e: KeyboardEvent): void => {
+      // Somebody is typing, and a backquote is a character (T-325). This is the
+      // bail every other keydown in the application makes, and it is the one
+      // this listener was missing: a caret in a note, a polaroid's caption or
+      // the search field would otherwise toggle the HUD *and* lose the
+      // character, because the `preventDefault` below stops it being typed.
+      // The HUD ships — it is built outside the `import.meta.env.DEV` block —
+      // so this is a shipped shortcut eating a shipped keystroke.
+      if (isTextTarget(e.target)) return;
       // Backquote — F12 belongs to devtools and Escape belongs to the tools.
       // The *shifted* one belongs to the physics panel beside this (T-232), so
       // it is excluded here rather than opening both at once.

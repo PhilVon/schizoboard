@@ -68,6 +68,29 @@ describe("the physics panel", () => {
     expect(panel.open).toBe(false);
   });
 
+  /**
+   * And leaves the character alone when somebody is typing one — T-325. Only a
+   * tidy-up here, since this panel is dev-only, but the HUD beside it had the
+   * same miss on a listener that ships, and one of the two guarding would be
+   * the more confusing arrangement.
+   */
+  it("does not open while a caret has the keyboard", () => {
+    const note = document.createElement("div");
+    note.contentEditable = "true";
+    document.body.append(note);
+
+    const e = new KeyboardEvent("keydown", {
+      code: "Backquote",
+      shiftKey: true,
+      bubbles: true,
+      cancelable: true,
+    });
+    note.dispatchEvent(e);
+
+    expect(panel.open).toBe(false);
+    expect(e.defaultPrevented).toBe(false);
+  });
+
   it("writes a dial while the thumb is still down", () => {
     slide("GRAVITY", 20000);
     expect(read("GRAVITY")).toBe(20000);

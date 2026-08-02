@@ -29,6 +29,7 @@
  */
 
 import { setTuning, resetTuning, tuningChanged, TUNABLES, type Knob } from "@/sim/tuning";
+import { isTextTarget } from "@/state/input";
 
 /**
  * How a value is written next to its slider.
@@ -85,6 +86,11 @@ export class TuningPanel {
     host.append(this.el);
 
     const onKey = (e: KeyboardEvent): void => {
+      // A caret somewhere takes the character (T-325). Dev-only, so this is a
+      // tidy-up rather than the fault the HUD's identical miss was — but the
+      // two listeners are read together and one of them guarding would be the
+      // more confusing arrangement.
+      if (isTextTarget(e.target)) return;
       // Shift+backquote, beside the HUD's own backquote — the two are read
       // together and the pairing is how the second one is ever found. The HUD
       // ignores the shifted press for exactly this.
