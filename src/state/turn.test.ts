@@ -273,3 +273,73 @@ describe("the clock", () => {
     expect(scene.renderRot(reused)).toBeCloseTo(0.4, 6);
   });
 });
+
+/**
+ * Switching straight from one to the other — found in the running app while
+ * driving T-286.
+ *
+ * A search that steps from one case file to the next opens the second without
+ * shutting the first, which is the same call `Enter` on a second folder always
+ * made. The scene is right immediately — there is one open slot and the second
+ * item takes it — so nothing in a scene-only test could see what was wrong: the
+ * first folder's *view* was never told, and went on drawing an open sheet with
+ * a page number on it until something unrelated marked it dirty.
+ */
+describe("opening a second thing while the first is still open", () => {
+  it("marks the one being left behind, so its view redraws shut", () => {
+    const scene = new Scene();
+    scene.putItem(cold("a"), pose());
+    scene.putItem(cold("b"), pose({ x: 400 }));
+    const dirty = new DirtySets();
+    const flat = new PaperTurn();
+
+    flat.open("a");
+    settle(flat, scene, dirty);
+    expect(scene.flattenOf(scene.slotOf("a")!)).toBe(1);
+    dirty.clear();
+
+    flat.open("b");
+    flat.step(scene, dirty, 16);
+    // The scene has already taken the slot away from `a`; the mark is the only
+    // thing that tells the layer drawing `a` that this happened.
+    expect(scene.flattenOf(scene.slotOf("a")!)).toBe(0);
+    expect(dirty.items.has("a")).toBe(true);
+    expect(dirty.items.has("b")).toBe(true);
+  });
+
+  it("marks it once, not on every frame after", () => {
+    const scene = new Scene();
+    scene.putItem(cold("a"), pose());
+    scene.putItem(cold("b"), pose({ x: 400 }));
+    const dirty = new DirtySets();
+    const flat = new PaperTurn();
+
+    flat.open("a");
+    settle(flat, scene, dirty);
+    flat.open("b");
+    flat.step(scene, dirty, 16);
+    dirty.clear();
+    flat.step(scene, dirty, 16);
+    // A shut folder is a still item, and this runs on every frame the second
+    // one is still turning.
+    expect(dirty.items.has("a")).toBe(false);
+  });
+
+  it("says nothing about an item opened again from idle", () => {
+    const scene = new Scene();
+    scene.putItem(cold("a"), pose());
+    const dirty = new DirtySets();
+    const flat = new PaperTurn();
+
+    flat.open("a");
+    flat.close();
+    settle(flat, scene, dirty);
+    dirty.clear();
+
+    // Nothing was left behind: the clock ran to zero and let the subject go,
+    // which already marked it.
+    flat.open("a");
+    flat.step(scene, dirty, 16);
+    expect([...dirty.items]).toEqual(["a"]);
+  });
+});
