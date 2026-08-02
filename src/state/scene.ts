@@ -1695,16 +1695,59 @@ export class Scene {
    * arrays.
    */
   boundsAt(slot: number, pad: number, out: Bounds): Bounds {
-    const angle = this.renderRot(slot);
+    return this.boxAround(slot, this.renderX(slot), this.renderY(slot), this.renderRot(slot), pad, out);
+  }
+
+  /**
+   * The bounds this item will have once it is **fully turned up to be read** —
+   * where an open folder is going to be, asked before it has got there.
+   *
+   * The camera has to know this. `readItem` starts the turn and aims the flight
+   * in the same tick, so `boundsAt` answers about a folder that is still lying
+   * closed, and the two motions then take 300 ms to disagree. On an *unpinned*
+   * folder they never do: there is no pivot, the turn is about the centre, and
+   * the box stays exactly where it was — which is why this went unnoticed
+   * through every driven run of T-273, T-319 and T-321, all of them on pasted
+   * folders. Pin one and the turn is about the pin, and the folder walks out
+   * from under the camera by a good part of its own height (T-323).
+   *
+   * It computes the pose {@link setOpen} would write at `t === 1` rather than
+   * predicting it: same `settledRot`, same `openAngle`, same `turnPivot` and
+   * `aboutPivot`. If those two ever disagree the folder lands somewhere the
+   * camera is not looking, so they are deliberately the same four calls.
+   */
+  openBoundsOf(id: string, pad = 0, out: Bounds = { minX: 0, minY: 0, maxX: 0, maxY: 0 }): Bounds | null {
+    const slot = this.slots.get(id);
+    if (slot === undefined) return null;
+    const settled = this.settledRot(slot);
+    const angle = openAngle(shortest(settled), 1);
+    const to = this.aboutPivot(this.turnPivot(id, slot), settled, angle);
+    return this.boxAround(slot, this.settledX(slot) + to.x, this.settledY(slot) + to.y, angle, pad, out);
+  }
+
+  /**
+   * The axis-aligned box of this item's paper at a given centre and angle.
+   *
+   * Shared so that "where the camera is going" and "where the item is drawn"
+   * cannot be two different pieces of arithmetic — which is the whole of
+   * T-323's bug, one level up.
+   *
+   * Ink adds nothing here: it is clipped to the paper (T-136), so an item is
+   * exactly as big as its paper and its shadow. That was not true between
+   * T-133 and T-136, and this is the code that carried the difference.
+   */
+  private boxAround(
+    slot: number,
+    cx: number,
+    cy: number,
+    angle: number,
+    pad: number,
+    out: Bounds,
+  ): Bounds {
     const cos = Math.abs(Math.cos(angle));
     const sin = Math.abs(Math.sin(angle));
-    // Ink adds nothing here: it is clipped to the paper (T-136), so an item is
-    // exactly as big as its paper and its shadow. That was not true between
-    // T-133 and T-136, and this is the code that carried the difference.
     const hw = (this.w[slot]! * cos + this.h[slot]! * sin) / 2 + pad;
     const hh = (this.w[slot]! * sin + this.h[slot]! * cos) / 2 + pad;
-    const cx = this.renderX(slot);
-    const cy = this.renderY(slot);
     out.minX = cx - hw;
     out.minY = cy - hh;
     out.maxX = cx + hw;

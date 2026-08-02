@@ -120,6 +120,77 @@ describe("turning a case file up to read it", () => {
     expect(scene.setOpen("gone", 1)).toBe(false);
   });
 
+  /**
+   * Where an open folder is going to be, asked before it gets there — T-323.
+   *
+   * The camera has to aim at this: `readItem` starts the turn and fires the
+   * flight in the same tick, so the drawn box still belongs to a closed folder
+   * for the 300 ms the two take to disagree.
+   */
+  describe("where it will be when it is open", () => {
+    const pinned = (lx: number, ly: number) => {
+      const scene = new Scene();
+      scene.putItem(cold("f"), pose({ x: 200, y: -60, w: 480, h: 344, rot: 0.12 }));
+      scene.putPin({
+        id: "p",
+        parent: "f",
+        lx,
+        ly,
+        kind: "pushpin",
+        color: "#c8352f",
+        wx: 0,
+        wy: 0,
+      });
+      return scene;
+    };
+    const centreOf = (b: { minX: number; minY: number; maxX: number; maxY: number }) => ({
+      x: (b.minX + b.maxX) / 2,
+      y: (b.minY + b.maxY) / 2,
+    });
+
+    it("is where the folder actually lands, pin or no pin", () => {
+      // The assertion that matters, and the reason it is written as a
+      // comparison rather than as numbers: a prediction and the thing it
+      // predicts drifting apart IS the bug. Numbers would let both be wrong
+      // together.
+      for (const [lx, ly] of [
+        [0, 0],
+        [-144, -136],
+        [200, 90],
+      ] as const) {
+        const scene = pinned(lx, ly);
+        const predicted = { ...scene.openBoundsOf("f")! };
+        scene.setOpen("f", 1);
+        expect(centreOf(predicted)).toEqual(centreOf(scene.boundsOf("f")!));
+        expect(predicted).toEqual(scene.boundsOf("f")!);
+      }
+    });
+
+    it("moves the box for a pinned folder and not for a loose one", () => {
+      // The half of it that went unnoticed for three tasks: an unpinned folder
+      // turns about its own centre, so aiming at the closed box was right, and
+      // every driven run of T-273, T-319 and T-321 was on a pasted folder.
+      const loose = new Scene();
+      loose.putItem(cold("f"), pose({ x: 200, y: -60, w: 480, h: 344, rot: 0.12 }));
+      // `toBeCloseTo` rather than `toEqual`: the two boxes are the same centre
+      // at different angles, and half-extents that differ round the mean of the
+      // two edges by a tenth of a femtometre.
+      const still = centreOf(loose.openBoundsOf("f")!);
+      const shut = centreOf(loose.boundsOf("f")!);
+      expect(still.x).toBeCloseTo(shut.x, 9);
+      expect(still.y).toBeCloseTo(shut.y, 9);
+
+      const hung = pinned(-144, -136);
+      const before = centreOf(hung.boundsOf("f")!);
+      const after = centreOf(hung.openBoundsOf("f")!);
+      expect(Math.hypot(after.x - before.x, after.y - before.y)).toBeGreaterThan(100);
+    });
+
+    it("is null for an item that is not there", () => {
+      expect(new Scene().openBoundsOf("gone")).toBeNull();
+    });
+  });
+
   it("does not fight the lay-flat over one board", () => {
     // Both are at most one item and they are not exclusive of each other: a
     // folder can be open while a note is being written on somewhere else.
