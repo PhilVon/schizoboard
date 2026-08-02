@@ -253,6 +253,40 @@ pub struct PageImage {
     pub height: u32,
 }
 
+/// One page's characters, and nothing that is looked at.
+///
+/// The other half of a page — its figures, its lifted scan, its box in points —
+/// is [`PageContent`]'s and is what the reading surface asks for. This is what
+/// the derived local index of D-46 section 2 asks for, and the difference is
+/// most of what makes an index affordable: see [`Reader::read_text`].
+///
+/// A typed page and a page of a text file are one arm, deliberately. They are
+/// two very different things to *draw* and the same thing to *search*, and this
+/// is the searching side.
+#[derive(Debug, Clone, PartialEq)]
+pub enum PageText {
+    /// What the page says.
+    Text(String),
+    /// Nothing to read here, and which of the three reasons it is — because
+    /// they are not the same sentence to somebody whose search just missed.
+    None(NoText),
+}
+
+/// Why a page has no characters on it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NoText {
+    /// A picture covering the page. There is no OCR (D-46 section 6), so a scan
+    /// is permanently unsearchable and the search field is expected to say so
+    /// rather than let a silent miss read as a board that failed to find
+    /// something (T-286).
+    Scan,
+    /// Genuinely blank.
+    Empty,
+    /// There is something on it and this build cannot read it — the same 6% of
+    /// real files D-47 measured, one page at a time.
+    Unreadable,
+}
+
 pub type Result<T> = std::result::Result<T, Error>;
 
 #[derive(Debug)]
@@ -494,6 +528,42 @@ impl Reader {
         Reading { pages }
     }
 
+    /// Every page's characters, and nothing that is looked at — the read the
+    /// derived local index is made of (D-46 section 2).
+    ///
+    /// Deliberately **not** [`Reader::read_all`]. That produces a page the way
+    /// the reading surface wants one, which means `decide` lifts a scan's image
+    /// and every figure over `FIGURE_COVERAGE` — and not one byte of a lifted
+    /// image is a character. This walks the same content stream through the
+    /// same [`Walk`] and stops before the pictures.
+    ///
+    /// Measured cold on 40 real multi-page files off this machine (772 pages),
+    /// each read twice on its own reader: **11.1 ms a page here against 18.5
+    /// through `read_all`**. That 1.7x is the floor rather than the figure,
+    /// because ten of those 772 pages were scans — what separates them on that
+    /// corpus is figures being lifted off typed pages. On a filing that is
+    /// scanned exhibits the gap is the whole of the lift, which T-299 measured
+    /// at 57 to 92 ms a page against a walk of about eleven.
+    ///
+    /// Sharing the walk is the point rather than a saving. What the index calls
+    /// a scan has to be what the reader draws as a scan, or the search field
+    /// says a page is unsearchable while the page beside it shows text.
+    pub fn read_text(&self) -> Vec<PageText> {
+        match &self.inner {
+            Inner::Pdf { doc, ids } => ids
+                .iter()
+                .map(|&(_, page_id)| {
+                    self.read.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    read_page_text(doc, page_id)
+                })
+                .collect(),
+            Inner::Plain { text, pages } => pages
+                .iter()
+                .map(|range| PageText::Text(text[range.clone()].to_string()))
+                .collect(),
+        }
+    }
+
     fn produce(&self, doc: &Document, index: u32, page_id: ObjectId) -> Page {
         self.read.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         read_page(doc, index, page_id)
@@ -709,22 +779,52 @@ fn pdf_doc_char(byte: u8) -> char {
 fn read_page(doc: &Document, index: u32, page_id: ObjectId) -> Page {
     let frame = PageFrame::of(doc, page_id);
     let (width, height) = frame.size();
-
-    let resources = page_resources(doc, page_id);
-    let content = match doc.get_page_content_with_limit(page_id, MAX_PAGE_CONTENT_BYTES) {
-        Ok(bytes) => bytes,
+    let content = match walk_page(doc, frame, page_id) {
+        Ok(walked) => decide(doc, walked.runs, walked.images, width * height, walked.undecodable),
         // A page whose content will not decompress within the bound is not a
         // page we can say anything about. It is not blank, so it does not get
         // to read as blank.
-        Err(e) => {
-            return Page {
-                index,
-                width,
-                height,
-                content: PageContent::Unsupported(format!("the page could not be read: {e}")),
-            };
-        }
+        Err(why) => PageContent::Unsupported(why),
     };
+    Page {
+        index,
+        width,
+        height,
+        content,
+    }
+}
+
+fn read_page_text(doc: &Document, page_id: ObjectId) -> PageText {
+    let frame = PageFrame::of(doc, page_id);
+    let (width, height) = frame.size();
+    match walk_page(doc, frame, page_id) {
+        Ok(walked) => decide_text(walked, width * height),
+        Err(_) => PageText::None(NoText::Unreadable),
+    }
+}
+
+/// A page's content stream, walked — what was set on it and what was drawn on
+/// it, before anything has decided which of the two the page *is*.
+///
+/// The split is here so that the reading surface and the index share one walk
+/// and part company only at the decision. Two walks would be two answers to
+/// "does this page have text on it", and the pair have to agree: what the index
+/// calls a scan is what the reader draws as a scan.
+struct Walked<'a> {
+    runs: Vec<TextRun>,
+    images: Vec<Placement<'a>>,
+    undecodable: bool,
+}
+
+fn walk_page(
+    doc: &Document,
+    frame: PageFrame,
+    page_id: ObjectId,
+) -> std::result::Result<Walked<'_>, String> {
+    let resources = page_resources(doc, page_id);
+    let content = doc
+        .get_page_content_with_limit(page_id, MAX_PAGE_CONTENT_BYTES)
+        .map_err(|e| format!("the page could not be read: {e}"))?;
 
     let mut walk = Walk {
         doc,
@@ -740,13 +840,81 @@ fn read_page(doc: &Document, index: u32, page_id: ObjectId) -> Page {
         undecodable,
         ..
     } = walk;
+    Ok(Walked {
+        runs,
+        images,
+        undecodable,
+    })
+}
 
-    Page {
-        index,
-        width,
-        height,
-        content: decide(doc, runs, images, width * height, undecodable),
+/// The same decision [`decide`] makes, stopping one step short of the picture.
+///
+/// It has to be the same decision and in the same order, which is why it is
+/// written beside it rather than folded into it: `decide` cannot answer this
+/// question without lifting, and lifting is the entire cost this exists to
+/// avoid. The tests assert the two agree page for page.
+///
+/// A scan that turns out to be an inline image, or one whose bytes will not
+/// lift, is [`NoText::Scan`] here where `decide` says `Unsupported`. That is not
+/// a disagreement about the page: all three are a picture with no characters on
+/// it, and the difference between them is about what can be *shown*, which this
+/// side of the fork is not asking.
+fn decide_text(walked: Walked<'_>, page_area: f32) -> PageText {
+    let Walked {
+        runs,
+        images,
+        undecodable,
+    } = walked;
+    if runs.iter().any(|run| !run.text.trim().is_empty()) {
+        return PageText::Text(joined(&runs));
     }
+    let biggest = images.iter().max_by(|a, b| a.area().total_cmp(&b.area()));
+    match biggest {
+        Some(candidate) if page_area > 0.0 && candidate.area() / page_area >= SCAN_COVERAGE => {
+            PageText::None(NoText::Scan)
+        }
+        _ => PageText::None(if undecodable {
+            NoText::Unreadable
+        } else {
+            NoText::Empty
+        }),
+    }
+}
+
+/// Runs, joined into the characters a needle is tested against.
+///
+/// **This is not `linesOfRuns` and must not become a port of it.** That function
+/// (`render/items/dom.ts`) decides where the *lines* were, off the run boxes,
+/// because Q-198 re-sets the text on our own paper and a line break is part of
+/// setting it. This decides only where the *gaps* were — which is the whole of
+/// what a needle can tell apart, because every separator either function inserts
+/// is whitespace, and a search normalises whitespace before it matches.
+///
+/// So the two are held to a promise they can actually keep: **the same
+/// non-space characters in the same order**, asserted on this side and on the
+/// other. "The same string" is a promise a line-breaking heuristic and a gap
+/// rule could only keep by being one function, and one function would have to
+/// live on one side — which would either put layout in Rust or a PDF parser in
+/// the browser, and D-46 refuses both.
+///
+/// The rule itself is `linesOfRuns`'s own, in its own words: a run that
+/// continues a line still needs a gap unless one end already has one. A PDF
+/// splits a line at every font and kerning change, so joining bare runs the
+/// words together — and a board that cannot find "witness statement" because
+/// the file set it in two runs is a search that has failed at the only thing it
+/// is for.
+fn joined(runs: &[TextRun]) -> String {
+    let mut text = String::new();
+    for run in runs {
+        if !text.is_empty()
+            && !text.ends_with(char::is_whitespace)
+            && !run.text.starts_with(char::is_whitespace)
+        {
+            text.push(' ');
+        }
+        text.push_str(&run.text);
+    }
+    text
 }
 
 /// The per-page decision, which is AC-684 and is the whole of it.
@@ -3357,4 +3525,239 @@ mod tests {
         ));
         assert_eq!(probe(huge.as_bytes(), "text/plain"), None);
     }
+
+    // -- T-280: the text a search is matched against -----------------------
+
+    /// A document with one of each page a reader can meet, in the order the
+    /// assertions below read them.
+    fn four_kinds() -> Vec<u8> {
+        let mut builder = Builder::new();
+        let font = builder.courier();
+
+        // 1: typed.
+        let typed = builder.stream(
+            Dictionary::new(),
+            ops(vec![
+                Operation::new("BT", vec![]),
+                Operation::new("Tf", vec!["F1".into(), 12.into()]),
+                Operation::new("Td", vec![72.into(), 720.into()]),
+                tj("Witness statement"),
+                Operation::new("ET", vec![]),
+            ]),
+        );
+        builder.page(dictionary! {
+            "Contents" => typed,
+            "Resources" => dictionary! { "Font" => dictionary! { "F1" => font } },
+        });
+
+        // 2: a scan.
+        let image = dct_image(&mut builder, jpeg_bytes());
+        let scan = scanned_page(&mut builder, image, vec![]);
+        builder.page(scan);
+
+        // 3: blank.
+        let blank = builder.stream(Dictionary::new(), ops(vec![]));
+        builder.page(dictionary! { "Contents" => blank });
+
+        // 4: a scan this build cannot lift — CMYK, which `lift` names and
+        //    refuses rather than half-decoding.
+        let cmyk = builder.stream(
+            dictionary! {
+                "Type" => "XObject",
+                "Subtype" => "Image",
+                "Width" => 8,
+                "Height" => 8,
+                "ColorSpace" => "DeviceCMYK",
+                "BitsPerComponent" => 8,
+            },
+            vec![0u8; 8 * 8 * 4],
+        );
+        let page = scanned_page(&mut builder, cmyk, vec![]);
+        builder.page(page);
+
+        builder.finish()
+    }
+
+    #[test]
+    fn the_index_and_the_reading_surface_agree_page_for_page_about_what_says_something() {
+        let bytes = four_kinds();
+        let reader = Reader::open_bytes(&bytes).expect("fixture should read");
+        let drawn = reader.read_all();
+        let said = reader.read_text();
+        assert_eq!(drawn.pages.len(), 4);
+        assert_eq!(said.len(), 4);
+
+        // The pairing is the claim. A page the reader draws as text is a page
+        // the index has characters for, and a page the reader draws as a
+        // picture is one the index calls a scan — so the search field can never
+        // say a page is unsearchable while the page beside it shows words.
+        for (page, text) in drawn.pages.iter().zip(&said) {
+            match (&page.content, text) {
+                (PageContent::Text { .. }, PageText::Text(_)) => {}
+                (PageContent::Image(_), PageText::None(NoText::Scan)) => {}
+                (PageContent::Empty, PageText::None(NoText::Empty)) => {}
+                // Page 4: the reader has to say it cannot show the scan, and
+                // the index only has to say there are no words on it. Both are
+                // "a picture with nothing to read", which is the one thing a
+                // search is asking.
+                (PageContent::Unsupported(_), PageText::None(NoText::Scan)) => {}
+                (drawn, said) => panic!("page {}: {drawn:?} against {said:?}", page.index),
+            }
+        }
+
+        let PageText::Text(first) = &said[0] else {
+            panic!("page 1 should say something");
+        };
+        assert_eq!(first, "Witness statement");
+    }
+
+    #[test]
+    fn naming_a_scan_costs_no_lift() {
+        // Page 4 of the fixture is a scan whose bytes `lift` refuses. The
+        // reading surface can only report that; the index names it a scan
+        // anyway, which it could not do if it had gone through `lift` to find
+        // out. This is the whole of why `read_text` is affordable on a filing
+        // that is two hundred scanned exhibits.
+        let bytes = four_kinds();
+        let reader = Reader::open_bytes(&bytes).expect("fixture should read");
+        assert!(matches!(
+            reader.read_all().pages[3].content,
+            PageContent::Unsupported(_)
+        ));
+        assert_eq!(reader.read_text()[3], PageText::None(NoText::Scan));
+    }
+
+    #[test]
+    fn a_page_whose_font_will_not_say_what_its_codes_mean_is_unreadable_rather_than_blank() {
+        // The same page `decide` calls `Unsupported`: bytes are shown and no
+        // characters come back. It must not read as an empty page, because an
+        // empty page is a page there is nothing on and this is a page nobody
+        // can search.
+        let bytes = one_line(None);
+        let reader = Reader::open_bytes(&bytes).expect("fixture should read");
+        assert!(matches!(reader.read_text()[0], PageText::Text(_)));
+
+        let mut builder = Builder::new();
+        let font = identity_h(&mut builder, false);
+        let content = builder.stream(
+            Dictionary::new(),
+            ops(vec![
+                Operation::new("BT", vec![]),
+                Operation::new("Tf", vec!["F1".into(), 12.into()]),
+                Operation::new("Td", vec![72.into(), 720.into()]),
+                zy(),
+                Operation::new("ET", vec![]),
+            ]),
+        );
+        builder.page(dictionary! {
+            "Contents" => content,
+            "Resources" => dictionary! { "Font" => dictionary! { "F1" => font } },
+        });
+        let reader = Reader::open_bytes(&builder.finish()).expect("fixture should read");
+        assert_eq!(reader.read_text()[0], PageText::None(NoText::Unreadable));
+    }
+
+    #[test]
+    fn a_text_files_pages_say_exactly_what_the_reading_surface_sets_on_them() {
+        // One writer for the pagination (T-298/D-60) means the index cannot cut
+        // a text file anywhere the reader does not, so a page reference taken
+        // from a search is a page reference the reader can turn to.
+        let text = (1..=300)
+            .map(|n| format!("line {n} of the statement"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let reader = Reader::open_text(text).expect("text should read");
+        let drawn = reader.read_all();
+        let said = reader.read_text();
+        assert!(drawn.pages.len() > 1, "the fixture should run to two pages");
+        assert_eq!(said.len(), drawn.pages.len());
+        for (page, text) in drawn.pages.iter().zip(&said) {
+            let PageContent::Plain(shown) = &page.content else {
+                panic!("a text file's page is plain, got {:?}", page.content);
+            };
+            assert_eq!(text, &PageText::Text(shown.clone()));
+        }
+    }
+
+    #[test]
+    fn read_text_reads_every_page_and_read_all_is_not_what_it_calls() {
+        let bytes = four_kinds();
+        let reader = Reader::open_bytes(&bytes).expect("fixture should read");
+        assert_eq!(reader.pages_read(), 0);
+        let _ = reader.read_text();
+        assert_eq!(reader.pages_read(), 4);
+    }
+
+    // -- the gap rule ------------------------------------------------------
+
+    fn run(text: &str) -> TextRun {
+        TextRun {
+            text: text.into(),
+            x: 0.0,
+            y: 0.0,
+            width: 0.0,
+            height: 0.0,
+            size: 12.0,
+        }
+    }
+
+    #[test]
+    fn two_runs_get_one_gap_between_them_and_never_two() {
+        // A PDF splits a line at every font and kerning change. Joining bare
+        // would make "witness statement" unfindable in a file that set the two
+        // words in two runs, and joining blindly would make it unfindable in
+        // one that already put the space in.
+        assert_eq!(joined(&[run("witness"), run("statement")]), "witness statement");
+        assert_eq!(joined(&[run("witness "), run("statement")]), "witness statement");
+        assert_eq!(joined(&[run("witness"), run(" statement")]), "witness statement");
+        // And a gap is never invented in front of the first run.
+        assert_eq!(joined(&[run("witness")]), "witness");
+        assert_eq!(joined(&[]), "");
+    }
+
+    /// The cases both sides of the boundary are held to.
+    ///
+    /// `render/items/dom.ts`'s `linesOfRuns` reads the same file and asserts the
+    /// same tokens, which is the promise the two implementations can keep: the
+    /// same non-space characters in the same order. See [`joined`] for why it is
+    /// not "the same string".
+    #[test]
+    fn the_gap_rule_agrees_with_the_reading_surfaces_line_rule() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("..")
+            .join("tests")
+            .join("fixtures")
+            .join("run-joining.json");
+        let raw = std::fs::read_to_string(&path).expect("the shared fixture should be readable");
+        let cases: serde_json::Value = serde_json::from_str(&raw).expect("valid json");
+        let cases = cases.as_array().expect("an array of cases");
+        assert!(!cases.is_empty());
+        for case in cases {
+            let runs: Vec<TextRun> = case["runs"]
+                .as_array()
+                .expect("runs")
+                .iter()
+                .map(|r| TextRun {
+                    text: r["text"].as_str().expect("text").to_string(),
+                    x: r["x"].as_f64().unwrap_or(0.0) as f32,
+                    y: r["y"].as_f64().unwrap_or(0.0) as f32,
+                    width: r["width"].as_f64().unwrap_or(0.0) as f32,
+                    height: r["height"].as_f64().unwrap_or(12.0) as f32,
+                    size: 12.0,
+                })
+                .collect();
+            let want: Vec<String> = case["tokens"]
+                .as_array()
+                .expect("tokens")
+                .iter()
+                .map(|t| t.as_str().expect("token").to_string())
+                .collect();
+            let got: Vec<String> = joined(&runs)
+                .split_whitespace()
+                .map(str::to_string)
+                .collect();
+            assert_eq!(got, want, "case {}", case["name"]);
+        }
+    }
 }
+

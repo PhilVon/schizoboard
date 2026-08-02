@@ -1383,6 +1383,7 @@ pub fn run() {
             reading::document_page_count,
             reading::document_page,
             reading::document_page_image,
+            reading::document_text,
             reading::document_close,
             print::export_choose,
             print::export_pdf_write,

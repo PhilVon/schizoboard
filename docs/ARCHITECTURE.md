@@ -182,7 +182,7 @@ Base64-ing a 12 MB photograph across the IPC boundary is the obvious first thing
 
 ### 4.4 IPC surface
 
-All thirty, as `generate_handler!` registers them.
+All thirty-seven, as `generate_handler!` registers them.
 
 ```
 // commands (all async)
@@ -223,10 +223,22 @@ board_remember(boardId)                       // beside the document, per Q-75
 
 peer_have_summary()        → sha256[]     // everything this machine can serve
 asset_size(sha256)         → bytes        // 0 for one it does not hold
+asset_partial(sha256)      → bytes        // how far a resumed transfer got
 asset_chunk(sha256, index) → bytes        // raw, to put on the wire
 asset_receive(bytes)                      // raw body; hash/index/total on headers
 asset_commit(sha256)       → bool         // verified, or nothing written
 asset_abort(sha256)
+asset_title(sha256)        → string|null  // what the file says it is called
+
+// reading a case file. Everything here is derived, local, and rebuildable
+// from the file - none of it reaches the store or the document (Q-206, D-46
+// section 2), so nothing can reference it, collect it or WANT it.
+document_page_count(sha)   → n            // off the page tree; reads no page
+document_page(sha, i)      → page | null  // one page, and one page's cost
+document_page_image(sha, i, figure?) → bytes  // raw: a lifted scan, not JSON
+document_text(sha)         → pageText[]   // every page's characters, one call,
+                                          // never a lift - the search index
+document_close(sha)                       // let the open file go
 
 // events (Rust → frontend). Four, and these four are all of them:
 asset:ready · files:dropped · deeplink:open · sync:peer-found

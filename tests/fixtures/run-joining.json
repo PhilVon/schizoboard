@@ -1,0 +1,85 @@
+[
+  {
+    "name": "a line split at a kerning change",
+    "why": "A PDF splits a line at every font and kerning change. Joined bare, the words run together and nobody can find either of them.",
+    "runs": [
+      { "text": "Witness", "y": 100 },
+      { "text": "statement", "y": 100 }
+    ],
+    "tokens": ["Witness", "statement"]
+  },
+  {
+    "name": "a gap the file already put in",
+    "why": "One end already has whitespace, so nothing is added and the words do not come apart.",
+    "runs": [
+      { "text": "Witness ", "y": 100 },
+      { "text": "statement", "y": 100 }
+    ],
+    "tokens": ["Witness", "statement"]
+  },
+  {
+    "name": "a gap on the leading end instead",
+    "runs": [
+      { "text": "Witness", "y": 100 },
+      { "text": " statement", "y": 100 }
+    ],
+    "tokens": ["Witness", "statement"]
+  },
+  {
+    "name": "a line break",
+    "why": "The two sides disagree about which whitespace goes here - a newline against a space - and agree about everything a needle can see.",
+    "runs": [
+      { "text": "Witness", "y": 100 },
+      { "text": "statement", "y": 120 }
+    ],
+    "tokens": ["Witness", "statement"]
+  },
+  {
+    "name": "a footnote mark does not break the line behind it",
+    "why": "A 7-unit run on a 12-unit line shifts y a little and is not a line break. It changes which whitespace lands, and not the characters.",
+    "runs": [
+      { "text": "statement", "y": 100, "height": 12 },
+      { "text": "1", "y": 96, "height": 7 },
+      { "text": "of", "y": 100, "height": 12 }
+    ],
+    "tokens": ["statement", "1", "of"]
+  },
+  {
+    "name": "nothing at all",
+    "runs": [],
+    "tokens": []
+  },
+  {
+    "name": "one run",
+    "runs": [{ "text": "statement", "y": 100 }],
+    "tokens": ["statement"]
+  },
+  {
+    "name": "an empty run between two words",
+    "why": "A run that shows nothing must not be able to weld the words either side of it together.",
+    "runs": [
+      { "text": "Witness", "y": 100 },
+      { "text": "", "y": 100 },
+      { "text": "statement", "y": 100 }
+    ],
+    "tokens": ["Witness", "statement"]
+  },
+  {
+    "name": "a run that is only space",
+    "runs": [
+      { "text": "Witness", "y": 100 },
+      { "text": "   ", "y": 100 },
+      { "text": "statement", "y": 100 }
+    ],
+    "tokens": ["Witness", "statement"]
+  },
+  {
+    "name": "a hyphen gets a gap like anything else",
+    "why": "A known limit rather than a decision: neither side can tell a hyphenated word broken across runs from two words, so both break it the same way and a search for cross-examination misses on both. Written down here so it is a shared limit and not a drift.",
+    "runs": [
+      { "text": "cross-", "y": 100 },
+      { "text": "examination", "y": 100 }
+    ],
+    "tokens": ["cross-", "examination"]
+  }
+]

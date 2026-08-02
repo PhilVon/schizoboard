@@ -222,6 +222,39 @@ export interface PageImage {
   readonly bytes: number;
 }
 
+/**
+ * What one page *says* — the much smaller thing a page can be asked for, and
+ * the whole of what a derived local text index is made of (D-46 section 2).
+ *
+ * Two arms against `PageContent`'s five, and the shortfall is deliberate. A
+ * typed page and a page of a text file are the same answer to "what does it
+ * say"; a scan, a blank page and a page this build cannot read are three
+ * different answers to "why does it say nothing". The reading surface needs the
+ * first distinction; a search field needs the second, because "its scans are
+ * not searchable" is a sentence somebody can act on and a silent miss is not
+ * (D-46 section 4).
+ *
+ * `text` is the page's runs already joined, and joined by a **gap rule** rather
+ * than by `linesOfRuns`'s line-breaking one. The two agree on the same
+ * non-space characters in the same order and disagree about which whitespace
+ * sits between them, which is invisible to a search that normalises whitespace
+ * — see `document::joined` in the shell for why that is the promise the two
+ * sides can actually keep.
+ */
+export type PageText =
+  | { readonly kind: "text"; readonly text: string }
+  | { readonly kind: "none"; readonly why: NoText };
+
+/** Why a page has no characters on it. */
+export type NoText =
+  /** A picture covering the page. There is no OCR (D-46 section 6), so this one
+   *  is permanent rather than pending. */
+  | "scan"
+  /** Genuinely blank. */
+  | "empty"
+  /** Something is on it and this build cannot read it. */
+  | "unreadable";
+
 /** Everything on disk for this board's document, as opaque frames. */
 export interface DocState {
   /** Most recent snapshot, or null on a board that has never been compacted. */
@@ -548,6 +581,28 @@ export interface Platform {
    * covers all four ways that can be true and is one thing to a caller.
    */
   documentPageImage(sha256: string, index: number, figure?: number): Promise<Uint8Array>;
+
+  /**
+   * Every page's characters, in one answer, index-aligned so element `n` is
+   * page `n + 1`.
+   *
+   * **The whole document, and that is the cheap shape rather than the greedy
+   * one.** Asking page by page would pay the structure load again per page —
+   * unless the shell held the reader between calls, which is the one slot
+   * `documentClose` exists to hand back to whoever is reading.
+   *
+   * Measured cold on 40 real multi-page files (772 pages): 8.5 ms to open a
+   * document and 11.1 ms a page to take the text off it, so an average case
+   * file is about 215 ms of background work and a 100-page one is five seconds.
+   * Reading the same pages through `documentPage` is 18.5 ms a page on that
+   * corpus and much worse on a scanned filing, because this never lifts a scan
+   * or a figure.
+   *
+   * Text, never runs — a few hundred kilobytes for a long filing where the runs
+   * and their boxes would be an order of magnitude more, all of it discarded by
+   * the caller on arrival.
+   */
+  documentText(sha256: string): Promise<readonly PageText[]>;
 
   /**
    * The folder has been shut. Let the file go.
