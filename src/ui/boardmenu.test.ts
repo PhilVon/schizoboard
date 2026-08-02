@@ -32,6 +32,7 @@ import {
 } from "@/ui/boardmenu";
 import type { MenuChoice, MenuEntry, MenuRow } from "@/ui/menu";
 import type { ItemStyle } from "@/lib/style";
+import type { AssetKind } from "@/lib/objects";
 
 type Settle = [string, WritePose][];
 
@@ -518,6 +519,65 @@ describe("the item context menu", () => {
   });
 
   /**
+   * T-317, and Phil on the board: a case object is made of its own furniture,
+   * so there is no paper stock to choose for a folder and no hand to set a
+   * cassette's label in. The strips were written when every item was a sheet of
+   * paper and were never told that three kinds of item stopped being one.
+   */
+  describe("a case object is not a sheet of paper", () => {
+    const HASH = "c".repeat(64);
+    const shellHere = { gone: () => false, save: () => {} };
+    const rowsFor = (kind: AssetKind) => {
+      wearing("c", HASH);
+      return itemMenuRows(
+        scene, write, "c", ["c"], 0, 0, undefined, shellHere, undefined, () => kind,
+      );
+    };
+
+    it("offers no Paper or Writing strip to any of the three", () => {
+      for (const kind of ["document", "video", "audio"] as const) {
+        scene = new Scene();
+        const labels = rowsFor(kind).map((r) => r.label);
+        expect(labels, kind).not.toContain("Paper");
+        expect(labels, kind).not.toContain("Writing");
+      }
+    });
+
+    it("still offers them to a photograph and to a note", () => {
+      // The half that stops this passing by the strips being deleted for
+      // everything, which is the cheapest way to make the assertion above true.
+      expect(rowsFor("image").map((r) => r.label)).toContain("Paper");
+      scene = new Scene();
+      put("n", { x: 0, y: 0 });
+      const note = itemMenuRows(scene, write, "n", ["n"], 0, 0).map((r) => r.label);
+      expect(note).toContain("Paper");
+      expect(note).toContain("Writing");
+    });
+
+    it("hands the file back under its own name rather than as a photograph", () => {
+      for (const [kind, said] of [
+        ["image", "Save the photograph…"],
+        ["document", "Save the document…"],
+        ["video", "Save the film…"],
+        ["audio", "Save the recording…"],
+      ] as const) {
+        scene = new Scene();
+        const row = verbs(rowsFor(kind)).find((r) => r.label.startsWith("Save"))!;
+        expect(row.label, kind).toBe(said);
+      }
+    });
+
+    it("says file when the caller cannot say what it is", () => {
+      // A headless caller has no asset records, so it genuinely does not know -
+      // and a wrong noun is worse than a general one.
+      wearing("c", HASH);
+      const row = verbs(itemMenuRows(scene, write, "c", ["c"], 0, 0, undefined, shellHere))
+        .find((r) => r.label.startsWith("Save"))!;
+      expect(row.label).toBe("Save the file…");
+    });
+  });
+
+  /**
    * T-181. Q-92 made writing on a note a double-click, which is the fastest way
    * in and the least discoverable - nothing on the board says the gesture is
    * there. This row is what says it.
@@ -717,7 +777,10 @@ describe("the item context menu", () => {
 
     it("hands the shell the hash the clicked item is wearing", () => {
       wearing("i", PHOTO);
-      pick(itemMenuRows(scene, write, "i", ["i"], 0, 0, undefined, shell), "Save the photograph");
+      pick(
+        itemMenuRows(scene, write, "i", ["i"], 0, 0, undefined, shell, undefined, () => "image"),
+        "Save the photograph",
+      );
       expect(saved).toEqual([PHOTO]);
       // Nothing about it is an edit: the document is untouched.
       expect(writes).toEqual([]);
@@ -731,7 +794,9 @@ describe("the item context menu", () => {
     it("saves the clicked photograph even when several are selected", () => {
       wearing("i0", PHOTO);
       wearing("i1", OTHER, { x: 300 });
-      const rows = itemMenuRows(scene, write, "i1", ["i0", "i1"], 300, 0, undefined, shell);
+      const rows = itemMenuRows(
+        scene, write, "i1", ["i0", "i1"], 300, 0, undefined, shell, undefined, () => "image",
+      );
       pick(rows, "Save the photograph");
       expect(saved).toEqual([OTHER]);
       // And it says nothing about how many are held - a count would promise the
@@ -784,7 +849,10 @@ describe("the item context menu", () => {
     it("stays for a photograph nothing has asked about yet", () => {
       wearing("i", PHOTO);
       unavailable.add(OTHER);
-      pick(itemMenuRows(scene, write, "i", ["i"], 0, 0, undefined, shell), "Save the photograph");
+      pick(
+        itemMenuRows(scene, write, "i", ["i"], 0, 0, undefined, shell, undefined, () => "image"),
+        "Save the photograph",
+      );
       expect(saved).toEqual([PHOTO]);
     });
 

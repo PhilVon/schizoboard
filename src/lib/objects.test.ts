@@ -4,6 +4,8 @@ import {
   assetKind,
   canBeOpened,
   carriesItsOwnName,
+  fileNoun,
+  isCaseObject,
   caseNumber,
   folderBulk,
   objectSizeFor,
@@ -41,6 +43,31 @@ describe("what a file is", () => {
     // it has nothing to open it *as*, and an object that offers to open and
     // then cannot is what D-46 section 6 refuses about embedded players.
     expect(canBeOpened("unknown")).toBe(false);
+  });
+
+  /** T-317. */
+  it("knows which kinds are objects made of their own furniture", () => {
+    expect(isCaseObject("document")).toBe(true);
+    expect(isCaseObject("video")).toBe(true);
+    expect(isCaseObject("audio")).toBe(true);
+    // A photograph's shape is a fact about its bytes and `polaroidFor` answers
+    // for it; an unknown never gets past the gate.
+    expect(isCaseObject("image")).toBe(false);
+    expect(isCaseObject("unknown")).toBe(false);
+    // Derived from the object sizes rather than a fourth list of the same three
+    // names, which is what stops it drifting from them.
+    for (const kind of ["document", "video", "audio", "image", "unknown"] as const) {
+      expect(isCaseObject(kind)).toBe(objectSizeFor(kind) !== null);
+    }
+  });
+
+  it("calls a file what it is when handing it back to the disk", () => {
+    expect(fileNoun("image")).toBe("photograph");
+    expect(fileNoun("document")).toBe("document");
+    expect(fileNoun("video")).toBe("film");
+    expect(fileNoun("audio")).toBe("recording");
+    // A caller that cannot say gets a general word rather than a wrong one.
+    expect(fileNoun("unknown")).toBe("file");
   });
 
   it("calls a mime it has never heard of unknown rather than guessing", () => {

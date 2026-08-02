@@ -99,6 +99,49 @@ export function canBeOpened(kind: AssetKind): boolean {
   return kind === "document" || kind === "video" || kind === "audio";
 }
 
+/**
+ * Whether this kind is one of D-46 section 1's three objects — the manilla
+ * folder, the VHS and the compact cassette — rather than a photograph.
+ *
+ * **Derived rather than a fourth list of the same three names.** The family is
+ * exactly the kinds that have an object size: a photograph's shape is a fact
+ * about its bytes and `polaroidFor` answers for it, an unknown never gets past
+ * the gate, and everything else is one of the three. Writing the names out
+ * again is how a fourth reader of one fact starts disagreeing with the other
+ * three.
+ *
+ * It exists because a case object is *made of its own furniture* — kraft, a
+ * spine, a J-card — and several menus need to know that. There is no paper
+ * stock to choose for a folder and no hand to set a cassette's label in.
+ */
+export function isCaseObject(kind: AssetKind): boolean {
+  return objectSizeFor(kind) !== null;
+}
+
+/**
+ * What to call the file behind an item when it is handed back to the disk.
+ *
+ * A photograph was the only thing an item could wear when that row was written,
+ * so it said so; T-260 opened the gate to four kinds and the row was not told
+ * (T-317). The verb underneath was right the whole time — the original bytes,
+ * under a name from the store — so this is what it should have been calling
+ * them, in the idiom D-46 section 1 already uses for the objects themselves.
+ */
+export function fileNoun(kind: AssetKind): string {
+  switch (kind) {
+    case "image":
+      return "photograph";
+    case "document":
+      return "document";
+    case "video":
+      return "film";
+    case "audio":
+      return "recording";
+    default:
+      return "file";
+  }
+}
+
 // --- how big each one is ----------------------------------------------------
 
 /**

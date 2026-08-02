@@ -30,6 +30,7 @@
 
 import { inkColors, INK_SIZES, type InkTool } from "@/lib/ink";
 import { STRING_MATERIALS } from "@/lib/material";
+import { fileNoun, isCaseObject, type AssetKind } from "@/lib/objects";
 import { STRING_COLORS, STRING_THICKNESSES } from "@/lib/palette";
 import { PAPER_STOCKS, STOCK_BASE, STOCK_NAMES, type ItemStyle } from "@/lib/style";
 import type { Scene } from "@/state/scene";
@@ -288,6 +289,17 @@ export function itemMenuRows(
     can(itemId: string): boolean;
     run(itemId: string): void;
   },
+  /**
+   * What kind of object an item is, for the two rows that have to speak about
+   * it rather than merely act on it (T-317).
+   *
+   * Asked of the caller rather than read here, for the reason `photo` is: an
+   * item's kind comes off its *asset record*, and a menu is a pure function of
+   * ids. Absent in a headless caller, where every item reads as `unknown` —
+   * which is right, because a caller with no asset records genuinely does not
+   * know what anything is wearing.
+   */
+  kindOf?: (itemId: string) => AssetKind,
 ): MenuEntry[] {
   const live = targets.filter((id) => scene.slotOf(id) !== undefined);
   if (live.length === 0) return [];
@@ -412,7 +424,20 @@ export function itemMenuRows(
    * making, and for tint, tape and the torn edge the seed's answer is the one
    * anybody would have picked.
    */
-  rows.push(...appearanceRows(scene, write, live, clicked));
+  /**
+   * **Not on a case object** (T-317). A folder, a VHS and a cassette are made
+   * of their own furniture — kraft, a spine, a J-card — so there is no paper
+   * stock to choose for one and no hand to set its label in. The strips were
+   * written when every item was a sheet of paper and were never told that three
+   * kinds of item stopped being one.
+   *
+   * The clicked item decides, like the marks inside the strips do and for the
+   * same reason: a mixed selection has no single answer, and the one under the
+   * cursor is the one the menu is about.
+   */
+  if (!isCaseObject(kindOf?.(clicked) ?? "unknown")) {
+    rows.push(...appearanceRows(scene, write, live, clicked));
+  }
 
   /**
    * The photograph back out, under the name it came in with (T-101).
@@ -466,11 +491,14 @@ export function itemMenuRows(
         // *Export board…* below carries one for the same reason, and *Copy
         // invite link*, which is finished the moment you let go, does not.
         //
-        // "The photograph" rather than "image": DESIGN calls them photographs
-        // throughout, and the word also separates this row from *Export the
-        // board as an image…* on the other menu, which is the row it could most
-        // easily be mistaken for and writes something else entirely.
-        label: "Save the photograph…",
+        // Named for what it actually is (T-317). "The photograph" rather than
+        // "the image" for a picture: DESIGN calls them photographs throughout,
+        // and the word also separates this row from *Export the board as an
+        // image…* on the other menu, which is the row it could most easily be
+        // mistaken for and writes something else entirely. The other three get
+        // D-46 section 1's words, because a manilla folder being offered back
+        // as a photograph is the board naming its own evidence wrongly.
+        label: `Save the ${fileNoun(kindOf?.(clicked) ?? "unknown")}…`,
         divided: true,
         run: () => photo.save(asset),
       });
