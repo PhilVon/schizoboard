@@ -1005,6 +1005,275 @@ body {
 }
 
 
+/* --- the television, D-46 section 4 (Q-197) -------------------------------- */
+
+/*
+ * The only element in this stylesheet that covers the board, and the only one
+ * that is allowed to. `ui/crt.ts` carries the argument for why a film may and a
+ * document may not.
+ *
+ * ## The light
+ *
+ * DESIGN section 4.1 puts one light over this whole application, upper left and
+ * about 30 degrees off vertical, and says the fastest way to break the illusion
+ * is one element lit from the wrong side. Nothing here is lit by it, and that is
+ * not an exemption - it is the same rule with the room lights off. The screen is
+ * the only emitter, so:
+ *
+ *   - the surround is darkest at the corners and lifts towards the middle, which
+ *     is the set's own spill, not a highlight;
+ *   - the bezel's inner edge is lit all the way round rather than along the top,
+ *     because a flat emitter behind an aperture does not have a direction;
+ *   - the set casts no drop shadow. There is nothing above it to cast one, and a
+ *     shadow under a lamp is the wrong-side error the section names.
+ *
+ * Shadow colour is still never black: `--shadow-warm` is the cork's own brown,
+ * and the corners of the room are that at high alpha rather than `#000`.
+ *
+ * ## Baked, not live
+ *
+ * Section 4 asks for fidelity from baking rather than from per-frame effects,
+ * and this is all gradients - scanlines are a repeating gradient, the bloom and
+ * the vignette are radial ones, the phosphor bleed is a static blur on a pseudo
+ * element. Nothing animates and nothing is measured per frame. D-48 measured a
+ * filter, a clip path, a blend mode and an opacity over a playing film at no
+ * cost on top of the plain case, so the dressing here is free; it is written as
+ * gradients anyway, because the cheapest effect is still one the compositor
+ * never has to think about.
+ *
+ * The four knobs are variables so the whole look can be walked up and down in
+ * one place when somebody judges it against a real film rather than a paragraph.
+ */
+
+.crt {
+  position: absolute;
+  inset: 0;
+  display: none;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 16px;
+
+  /* The dressing, in one place. */
+  --crt-scan: 0.22; /* how dark the line between the lines is */
+  --crt-bloom: 0.1; /* phosphor lifting off the glass */
+  --crt-vignette: 0.42; /* how far the corners of the tube fall away */
+  --crt-curve: 2.2%; /* the glass rolling over at its edge */
+
+  /*
+   * The room, not a scrim. Near-opaque because this is the one surface that is
+   * allowed to take the screen and a board showing faintly through a film is a
+   * board you are not using and cannot read either - the worst of both.
+   */
+  background: radial-gradient(
+    128% 96% at 50% 46%,
+    rgba(52, 38, 24, 0.955) 0%,
+    rgba(var(--shadow-warm), 0.975) 52%,
+    rgba(14, 9, 5, 0.99) 100%
+  );
+  cursor: default;
+}
+
+.crt.is-live {
+  display: flex;
+}
+
+/*
+ * The set. `aspect-ratio` from the asset record rather than from the element,
+ * so nothing here has to measure a video to lay it out - and the fallback is
+ * the shape all but a handful of films are.
+ *
+ * Sized off the viewport with a cap on both axes: a tall phone video gets the
+ * height and a wide one gets the width, and neither runs into the plate.
+ */
+.crt-set {
+  position: relative;
+  width: 84vw;
+  max-height: 78vh;
+  aspect-ratio: var(--crt-aspect, 16 / 9);
+  padding: clamp(8px, 1.1vw, 18px);
+  border-radius: clamp(10px, 1.6vw, 26px);
+  /*
+   * Moulded plastic that has been in a room for thirty years, and the gradient
+   * runs top to bottom rather than from the light: what shapes a bezel here is
+   * the screen behind the aperture, which is brightest where the plastic turns
+   * in towards it.
+   */
+  background: linear-gradient(#4a4640 0%, #35312c 42%, #26231f 100%);
+  box-shadow:
+    /* the aperture edge catching the picture, all the way round */
+    inset 0 0 0 1px rgba(198, 214, 226, 0.16),
+    inset 0 0 14px rgba(150, 178, 200, 0.1),
+    /* the set's own spill onto the dark behind it */ 0 0 90px 30px rgba(120, 150, 176, 0.055);
+}
+
+/*
+ * The glass. `overflow: hidden` is load-bearing rather than tidy: the tube is
+ * rounded and a 16:9 film in a 4:3 set has to be cut by the glass, not sit on
+ * top of it.
+ */
+.crt-screen {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  border-radius: var(--crt-curve);
+  background: #07090a;
+}
+
+.crt-tube,
+.crt-still {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  /* Letterboxed inside the tube rather than cropped. What is missing from a
+   * frame is not recoverable and a board of evidence does not crop evidence. */
+  object-fit: contain;
+  background: #07090a;
+}
+
+/* The still is only there until the film is, and goes under it either way. */
+.crt-still {
+  display: none;
+}
+
+.crt-still.is-there {
+  display: block;
+}
+
+.crt-tube {
+  z-index: 1;
+}
+
+/*
+ * Phosphor. A wash of screen-coloured light lifting off the middle of the tube,
+ * plus the corners falling away - the two things that stop a rectangle of video
+ * reading as a rectangle of video.
+ */
+.crt-glow {
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  pointer-events: none;
+  background:
+    radial-gradient(
+      112% 88% at 50% 44%,
+      rgba(150, 200, 230, var(--crt-bloom)) 0%,
+      rgba(150, 200, 230, 0) 58%
+    ),
+    radial-gradient(
+      124% 118% at 50% 50%,
+      rgba(0, 0, 0, 0) 46%,
+      rgba(0, 0, 0, calc(var(--crt-vignette) * 0.55)) 82%,
+      rgba(0, 0, 0, var(--crt-vignette)) 100%
+    );
+}
+
+/*
+ * The lines. A percentage-based repeating gradient rather than a pixel one, so
+ * the count is the same on a set filling a 4K display and one on a laptop - a
+ * tube has a fixed number of lines and does not grow more when you sit closer.
+ *
+ * About 240 of them, which is half of what the real thing had. Drawing 480 at
+ * this size gives a grey haze rather than a texture: the pair is under two
+ * device pixels and averages out, which is the tube being simulated accurately
+ * enough to become invisible.
+ */
+.crt-scan {
+  position: absolute;
+  inset: 0;
+  z-index: 3;
+  pointer-events: none;
+  background: repeating-linear-gradient(
+    to bottom,
+    rgba(0, 0, 0, 0) 0%,
+    rgba(0, 0, 0, 0) 0.209%,
+    rgba(0, 0, 0, var(--crt-scan)) 0.209%,
+    rgba(0, 0, 0, var(--crt-scan)) 0.417%
+  );
+}
+
+/*
+ * What the glass says when it has no picture. Centred on the tube, in the
+ * chrome's own quiet sans rather than in a hand - this is the application
+ * talking, not something somebody wrote on the board.
+ */
+.crt-word {
+  position: absolute;
+  inset: 0;
+  z-index: 4;
+  display: none;
+  align-items: center;
+  justify-content: center;
+  padding: 0 8%;
+  text-align: center;
+  font-family: var(--ui-mono);
+  font-size: 12px;
+  letter-spacing: 0.04em;
+  color: rgba(196, 214, 226, 0.62);
+  text-shadow: 0 0 12px rgba(150, 200, 230, 0.35);
+  pointer-events: none;
+}
+
+.crt-word.is-there {
+  display: flex;
+}
+
+/*
+ * The transport. Two rules from DESIGN section 4.8: chrome is a quiet neutral
+ * sans that stays out of the way, and it does not pretend to be a physical
+ * object. So the rail is a line and not a moulded slider - the set is the only
+ * thing in this overlay allowed to be an object.
+ */
+.crt-rail {
+  width: 84vw;
+  max-width: 84vw;
+  height: 3px;
+  border-radius: 2px;
+  background: rgba(198, 214, 226, 0.14);
+  cursor: pointer;
+}
+
+.crt-fill {
+  width: 0;
+  height: 100%;
+  border-radius: 2px;
+  background: rgba(198, 214, 226, 0.62);
+}
+
+.crt-plate {
+  display: flex;
+  align-items: baseline;
+  gap: 14px;
+  max-width: 84vw;
+  font-family: var(--ui-mono);
+  font-size: 11px;
+  color: rgba(198, 214, 226, 0.52);
+}
+
+.crt-name {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  color: rgba(214, 226, 234, 0.78);
+}
+
+/* Fixed width per digit, so a playhead ticking past 0:09 does not shuffle the
+ * line under the cursor - the same reason the search count does it. */
+.crt-time {
+  font-variant-numeric: tabular-nums;
+}
+
+/* The way out, said on the thing itself. T-273 had to add this line to the
+ * folder after somebody found an open state with no visible exit; a modal is
+ * the shape where that failure is worst, so it is here from the start. */
+.crt-out {
+  margin-left: auto;
+  color: rgba(198, 214, 226, 0.34);
+}
+
+
 /* --- what must not be in an export (T-208, D-36) -------------------------- */
 
 /*
@@ -1036,6 +1305,13 @@ body {
    * it composites the six painters and layer-ui is not one of them - so this
    * line is the whole of what keeps it out of a file. */
   .search,
+  /* The one element here that covers the whole board. Left in, a print taken
+   * with a tape on would be a page of dark brown with a video frame in the
+   * middle of it and nothing of the board at all - which is not a worse version
+   * of the export, it is a different document. The image route never sees it
+   * either, and for the same reason it never sees the search field: it
+   * composites six painters and layer-ui is not one of them. */
+  .crt,
   .menu {
     display: none !important;
   }
