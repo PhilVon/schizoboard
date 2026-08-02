@@ -191,6 +191,34 @@ export interface ItemLayer {
     camera: RasterCamera,
   ): Promise<RasterReport>;
 
+  /**
+   * Draw **one** item into a canvas in the item's *own* frame — square on,
+   * un-rotated, with `camera` measured in item-local units (T-282).
+   *
+   * The rest of this seam draws the board; this draws a thing on it as the
+   * thing itself. That distinction is the whole of why it is a second method
+   * and not a flag: a clipping cut out of a page is square with the *page*,
+   * because a folder sits at whatever angle it was scattered to and goes on
+   * sitting at it while you read it. Asking the board painter for a rectangle
+   * of board would give back the page seen at a slant.
+   *
+   * Here rather than in `app/` for this file's standing reason: the alternative
+   * is a caller that holds the item's element, and
+   *
+   * > If it ever leaks an `HTMLElement`, the escalation stops being one
+   * > directory.
+   *
+   * Reports nothing drawn for an item that is not mounted — culled, deleted, or
+   * never bound. That is a real answer rather than an error: there is no
+   * presentation to photograph.
+   */
+  rasteriseInFrame(
+    scene: Scene,
+    itemId: string,
+    ctx: CanvasRenderingContext2D,
+    camera: RasterCamera,
+  ): Promise<RasterReport>;
+
   /** How many item presentations currently exist — for the dev HUD. */
   readonly mounted: number;
 

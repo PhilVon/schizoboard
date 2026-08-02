@@ -1505,16 +1505,39 @@ export class Scene {
   }
 
   /**
-   * How many pins hold this item — its physics, per DESIGN section 2.2.
+   * How many pins hold this item **up** — its physics, per DESIGN section 2.2.
    *
    * Geometric, not parental: every pin actually stuck through the paper counts,
    * whoever's frame its coordinates happen to be in. See [`byOver`], and note
    * that this and `pinsParentedTo` are now different questions with different
    * answers.
+   *
+   * **Tape does not count** (Q-286). The other three kinds are objects pushed
+   * into the board and this whole method is about what that does; a piece of
+   * tape is stuck to the paper and to nothing else, so it holds a string to a
+   * page without holding the page to the wall. Counting it would make a folder
+   * stop hanging the moment a quote card was cut out of it — and an *open* one
+   * leap across the board, because `turnPivot` reads [`solePin`] and the turn is
+   * measured about it (T-328, measured at 156 board units).
+   *
+   * Filtered here rather than kept out of [`byOver`], which was the first shape
+   * and is wrong: that index is also what `sim/ropes.ts` rouses a rope through
+   * when an item moves, so a tape left out of it would leave the very thread it
+   * is holding un-simulated. The index answers "every pin on this item"; this
+   * asks the narrower question its own name has always described.
    */
   pinCount(itemId: string): number {
     if (this.overStale) this.layoutOver();
-    return this.byOver.get(itemId)?.size ?? 0;
+    const held = this.byOver.get(itemId);
+    if (held === undefined) return 0;
+    let n = 0;
+    for (const id of held) if (!this.isTape(id)) n += 1;
+    return n;
+  }
+
+  /** Whether this pin is tape — stuck to the paper, holding nothing up. */
+  private isTape(pinId: string): boolean {
+    return this.pins.get(pinId)?.kind === "tape";
   }
 
   /**
@@ -1678,9 +1701,17 @@ export class Scene {
   solePin(itemId: string): PinNode | null {
     if (this.overStale) this.layoutOver();
     const held = this.byOver.get(itemId);
-    if (!held || held.size !== 1) return null;
-    for (const id of held) return this.pins.get(id) ?? null;
-    return null;
+    if (!held) return null;
+    // Tape skipped, for [`pinCount`]'s reason: a taped thread is not what the
+    // paper hangs from, so a page with one pin and three quote cards taped to
+    // it still hangs — and still turns — about the pin.
+    let only: PinNode | null = null;
+    for (const id of held) {
+      if (this.isTape(id)) continue;
+      if (only !== null) return null;
+      only = this.pins.get(id) ?? null;
+    }
+    return only;
   }
 
   // --- strings --------------------------------------------------------------

@@ -138,6 +138,9 @@ describe("every tool declares what it does", () => {
       // Beside `Enter` rather than at the end, because it is only meaningful
       // once that has been used and the readout is read in order (T-321).
       "arrows",
+      // And beside those two for the same reason: it is a gesture on a page,
+      // so it is only meaningful once a case file has been opened (T-282).
+      "drag a page",
       "wheel",
       "Alt+wheel",
       "1-9",

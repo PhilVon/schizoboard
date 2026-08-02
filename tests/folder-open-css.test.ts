@@ -19,7 +19,7 @@
 
 import { describe, expect, it } from "vitest";
 
-import { A4_UNITS, objectSizeFor, openSheetOf } from "../src/lib/objects";
+import { A4_UNITS, OPEN_PAGE_TURN, objectSizeFor, openSheetOf } from "../src/lib/objects";
 
 import { declarations } from "./css-declarations";
 
@@ -64,6 +64,11 @@ describe("the sheet inside an open folder", () => {
     // is the -90° that makes `text.rs`'s 66-by-46 grid the right way round
     // without a single number in either place moving (D-60).
     expect(page.get("transform")).toBe("rotate(-90deg)");
+    // And the number the code uses for it is the same number. A clipping is
+    // lifted in the item's own frame and turned back by this (T-282), so a
+    // stylesheet edit that moved one and not the other would come out as
+    // clippings quietly lying on their side.
+    expect(OPEN_PAGE_TURN).toBeCloseTo((-90 * Math.PI) / 180, 12);
 
     const { top, side } = inset(page.get("inset")!);
     // Once turned, the sheet's long edge runs down the folder's long axis and

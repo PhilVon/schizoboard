@@ -9,8 +9,11 @@ import {
   caseNumber,
   folderBulk,
   objectSizeFor,
+  pageReference,
   pagesLabel,
+  referenceName,
   runtimeLabel,
+  timeReference,
   titleWorthWriting,
 } from "@/lib/objects";
 
@@ -283,5 +286,71 @@ describe("the case number on the label", () => {
     // on every machine holding it.
     expect(caseNumber(null, hash)).toBe("4F2A9C1B");
     expect(caseNumber("   ", hash)).toBe("4F2A9C1B");
+  });
+});
+
+describe("the reference a card cites its source by", () => {
+  const hash = "4f2a9c1b".padEnd(64, "0");
+
+  it("keeps the extension the case number strips", () => {
+    // The one deliberate difference between the two. A tab is written on an
+    // object that has already said what it is; a citation is read away from
+    // that object by somebody who wants to find the file again.
+    expect(referenceName("scan.pdf", hash)).toBe("scan.pdf");
+    expect(caseNumber("scan.pdf", hash)).toBe("scan");
+  });
+
+  it("falls back to the same hash the tab falls back to", () => {
+    expect(referenceName(null, hash)).toBe("4F2A9C1B");
+    expect(referenceName("   ", hash)).toBe(caseNumber(null, hash));
+  });
+
+  it("says a page the way a citation says one", () => {
+    expect(pageReference("scan.pdf", hash, 4)).toBe("scan.pdf p. 4");
+    expect(pageReference("deposition.pdf", hash, 301)).toBe("deposition.pdf p. 301");
+  });
+
+  it("does not carry the document's length", () => {
+    // The open sheet's header reads "4 of 51" because that is a position in
+    // something you are holding. A citation is a pointer somebody follows
+    // back, and the folder is still on the board with "51 pp." on it.
+    expect(pageReference("scan.pdf", hash, 4)).not.toContain("51");
+    expect(pageReference("scan.pdf", hash, 4)).not.toContain(" of ");
+  });
+
+  it("cites the file and stops when there was no page", () => {
+    // A weaker reference rather than a broken one: there was no page.
+    expect(pageReference("notes.txt", hash, null)).toBe("notes.txt");
+    expect(pageReference("notes.txt", hash, 0)).toBe("notes.txt");
+    expect(pageReference("notes.txt", hash, -1)).toBe("notes.txt");
+    expect(pageReference("notes.txt", hash, Number.NaN)).toBe("notes.txt");
+  });
+
+  it("never cites half a page", () => {
+    // A page number reaches this from a reader whose cursor is an integer, but
+    // a citation is stored forever and "p. 4.5" is not a place.
+    expect(pageReference("scan.pdf", hash, 4.7)).toBe("scan.pdf p. 4");
+  });
+
+  it("names a recording by its clock rather than by a page", () => {
+    expect(timeReference("interview.mp4", hash, 724)).toBe("interview.mp4 12:04");
+    expect(timeReference("interview.mp4", hash, 3907)).toBe("interview.mp4 1:05:07");
+  });
+
+  it("gives the same shape to all three kinds", () => {
+    // D-46's symmetry constraint, as an assertion rather than a comment: the
+    // unit differs because a tape has no pages, and nothing else may.
+    expect(pageReference("scan.pdf", hash, 4).startsWith("scan.pdf ")).toBe(true);
+    expect(timeReference("tape.mp4", hash, 724).startsWith("tape.mp4 ")).toBe(true);
+  });
+
+  it("cites an unmeasured recording by name alone", () => {
+    expect(timeReference("interview.mp4", hash, null)).toBe("interview.mp4");
+  });
+
+  it("says the start of a recording rather than saying nothing", () => {
+    // Zero is a measurement — the opening frame is a real place on a tape, and
+    // the same distinction runtimeLabel already draws for a spine.
+    expect(timeReference("interview.mp4", hash, 0)).toBe("interview.mp4 0:00");
   });
 });

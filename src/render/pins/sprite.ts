@@ -32,7 +32,14 @@
 
 import { LIGHT_ANGLE, LIGHT_DX, LIGHT_DY } from "@/render/items/shadow";
 
-export type PinKind = "pushpin" | "thumbtack" | "nail";
+/**
+ * Its own copy of the union, deliberately — `render/` does not import from
+ * `crdt/`. Adding a kind to the schema and not to this list is a silent
+ * failure: `dom.ts` casts on the way in, so the new kind reaches
+ * {@link HEAD_RADIUS} as an undefined lookup and bakes a sprite of `NaN`
+ * pixels. `pin-kinds.test.ts` is what holds the two lists together.
+ */
+export type PinKind = "pushpin" | "thumbtack" | "nail" | "tape";
 
 /**
  * Sprite resolution, device pixels.
@@ -59,10 +66,19 @@ const SHADOW_RGB = "38, 24, 12";
  * halfway. `PIN_BOARD_SIZE` is scaled to match, so the head comes out the
  * same size on screen as if the box were tight around it.
  */
+/** The same list as the union above, for the test that holds this module
+ *  against `crdt/schema.ts`'s copy. */
+export const PIN_SPRITE_KINDS: readonly PinKind[] = ["pushpin", "thumbtack", "nail", "tape"];
+
 const HEAD_RADIUS: Record<PinKind, number> = {
   pushpin: 0.26,
   thumbtack: 0.3,
   nail: 0.14,
+  // Not a head at all — the half-width of a strip. A pushpin's number rather
+  // than a bigger one on purpose: this feeds `HEAD_FRACTION`, which is the
+  // grab radius for *every* pin on the board, so a piece of tape that wanted a
+  // wider target would widen the aim for nails too.
+  tape: 0.26,
 };
 
 /**
@@ -71,6 +87,10 @@ const HEAD_RADIUS: Record<PinKind, number> = {
  * that reaching for a nail and reaching for a pushpin take the same aim.
  */
 export const HEAD_FRACTION = Math.max(...Object.values(HEAD_RADIUS));
+
+/** The table itself, for `tests/pin-kinds.test.ts` — which has to assert on the
+ *  shipped numbers rather than on a copy that would agree with itself. */
+export const HEAD_RADIUS_BY_KIND: Readonly<Record<string, number>> = HEAD_RADIUS;
 
 /** Fallback for a colour no version of any client can parse. Matches the
  *  schema's own default, so a malformed pin looks like an ordinary one. */
@@ -158,6 +178,14 @@ function bake(kind: PinKind, color: string): PinSprite {
   const head = BAKE * HEAD_RADIUS[kind];
   const rgb = kind === "nail" ? STEEL : parseColor(color);
 
+  // Tape is not a pin and leaves before any of the four steps below — it has
+  // no shaft going into the cork, no dome to light and no hard shadow, because
+  // it is lying *on* the paper rather than pushed through it (Q-286).
+  if (kind === "tape") {
+    drawTape(ctx, c, head);
+    return { url: canvas.toDataURL("image/png"), canvas };
+  }
+
   // 1. The shadow. Hard rather than soft: a pin sits *on* the surface with no
   //    gap under it, so its shadow has a defined edge — which is also what
   //    stops a pin reading as floating above the photograph it holds.
@@ -205,6 +233,65 @@ function bake(kind: PinKind, color: string): PinSprite {
   ctx.fill();
 
   return { url: canvas.toDataURL("image/png"), canvas };
+}
+
+/**
+ * A strip of tape stuck flat to the paper — Q-286.
+ *
+ * Everything about it is chosen against the three pins beside it, because the
+ * whole point of the kind is that you can tell at a glance that the thread is
+ * *stuck to the page* rather than *pinned through it*:
+ *
+ * - **Rectangular, and turned off square.** Every other pin is radially
+ *   symmetric, so a shape with corners reads as a different object before you
+ *   have looked at it. The angle is what stops it reading as a UI chip.
+ * - **Translucent, with the paper showing through.** This is the one that does
+ *   the work: a pinhead is opaque and sits above the sheet, and tape does not.
+ * - **A soft, shallow shadow instead of the hard displaced one.** DESIGN 4.1's
+ *   single light still applies, but a strip lying flat casts almost nothing —
+ *   and the hard ellipse the other kinds use is precisely what says "this is
+ *   standing off the surface".
+ * - **Torn ends rather than cut ones**, by a hair, since nothing else on this
+ *   board has a machined edge either.
+ */
+function drawTape(ctx: CanvasRenderingContext2D, c: number, head: number): void {
+  const halfW = head;
+  const halfH = head * 0.52;
+  ctx.save();
+  ctx.translate(c, c);
+  ctx.rotate(-0.28);
+
+  // The shadow: barely there, and directly under rather than displaced.
+  ctx.save();
+  ctx.filter = `blur(${(head * 0.16).toFixed(2)}px)`;
+  ctx.fillStyle = `rgba(${SHADOW_RGB}, 0.22)`;
+  ctx.fillRect(-halfW, -halfH + head * 0.06, halfW * 2, halfH * 2);
+  ctx.restore();
+
+  // The strip. Warm and pale, and lighter down the middle the way a curl of
+  // tape catches the light along its length.
+  const sheen = ctx.createLinearGradient(0, -halfH, 0, halfH);
+  sheen.addColorStop(0, "rgba(226, 214, 186, 0.62)");
+  sheen.addColorStop(0.45, "rgba(243, 236, 214, 0.72)");
+  sheen.addColorStop(1, "rgba(214, 200, 170, 0.66)");
+  ctx.fillStyle = sheen;
+  ctx.beginPath();
+  // Torn ends: the two short edges step in and out rather than running true.
+  ctx.moveTo(-halfW, -halfH);
+  ctx.lineTo(halfW, -halfH * 0.86);
+  ctx.lineTo(halfW * 0.94, halfH);
+  ctx.lineTo(-halfW * 0.96, halfH * 0.88);
+  ctx.closePath();
+  ctx.fill();
+
+  // The two long edges, where the adhesive lifts and catches the light.
+  ctx.strokeStyle = "rgba(255, 250, 232, 0.5)";
+  ctx.lineWidth = Math.max(1, head * 0.07);
+  ctx.beginPath();
+  ctx.moveTo(-halfW, -halfH);
+  ctx.lineTo(halfW, -halfH * 0.86);
+  ctx.stroke();
+  ctx.restore();
 }
 
 function drawShaft(

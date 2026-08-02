@@ -20,7 +20,7 @@ import { checkInvariants } from "@/crdt/invariants";
 import { createItems, itemText } from "@/crdt/ops/items";
 import { createQuoteCard, quoteCardText } from "@/crdt/ops/quote";
 import { deleteStrings } from "@/crdt/ops/strings";
-import { readItem, readPin, readString } from "@/crdt/schema";
+import { readAsset, readItem, readPin, readString } from "@/crdt/schema";
 import { UndoHistory } from "@/crdt/undo";
 
 let board: BoardDoc;
@@ -216,5 +216,118 @@ describe("what the card says", () => {
 
   it("is just the passage when there is nothing to cite", () => {
     expect(quoteCardText("a passage", "")).toBe("a passage");
+  });
+});
+
+describe("the source end is taped, not pinned", () => {
+  it("tapes the thread to the page it came out of", () => {
+    // Q-286. You cannot push a pin through a sheet lying inside a folder, and
+    // what holds a thread to paper is tape.
+    const itemId = source();
+    const made = quote(itemId)!;
+    expect(readPin(made.sourcePin, board.pins.get(made.sourcePin)!)!.kind).toBe("tape");
+  });
+
+  it("leaves the card's own pin a pin", () => {
+    // The card is a piece of paper on a corkboard and hangs from a pin like
+    // everything else. Only the end stuck to the page is tape.
+    const made = quote(source())!;
+    expect(readPin(made.cardPin, board.pins.get(made.cardPin)!)!.kind).toBe("pushpin");
+  });
+
+  it("is still a pin in every other respect", () => {
+    // Which is what keeps D-1 — strings attach to pins, never to items — and
+    // what T-284's citation tabs and T-285's thread-back hang off.
+    const itemId = source();
+    const made = quote(itemId)!;
+    const pin = readPin(made.sourcePin, board.pins.get(made.sourcePin)!)!;
+    expect(pin.parent).toBe(itemId);
+    const run = readString(made.stringId, board.strings.get(made.stringId)!)!;
+    expect(run.nodes.map((n) => n.pin)).toContain(made.sourcePin);
+  });
+});
+
+describe("a clipping, which is a picture rather than words", () => {
+  const SHA = "b17c".padEnd(64, "0");
+
+  function clip(itemId: string): ReturnType<typeof createQuoteCard> {
+    return createQuoteCard(board, {
+      quote: "",
+      reference: "scan.pdf p. 4",
+      x: 900,
+      y: -200,
+      w: 320,
+      h: 200,
+      source: { itemId, lx: -40, ly: 120 },
+      clipping: {
+        sha256: SHA,
+        asset: { w: 640, h: 400, mime: "image/webp", size: 21_804, origName: "scan.pdf" },
+      },
+    });
+  }
+
+  it("comes out as a polaroid and not as a sheet of paper", () => {
+    // Q-283. The object matches its content: a photograph of a scan and a card
+    // of a quotation are different things and should not look alike.
+    const made = clip(source())!;
+    expect(readItem(made.itemId, board.items.get(made.itemId)!)!.type).toBe("polaroid");
+  });
+
+  it("carries the pixels, with a record a peer could ask for them by", () => {
+    // Registered in this transaction or a peer merging the card learns a hash
+    // with nothing to draw and no way to request the bytes.
+    const made = clip(source())!;
+    expect(readItem(made.itemId, board.items.get(made.itemId)!)!.assetId).toBe(SHA);
+    expect(board.assets.has(SHA)).toBe(true);
+    expect(readAsset(SHA, board.assets.get(SHA)!)!.mime).toBe("image/webp");
+  });
+
+  it("says only where it came from, because the picture is the passage", () => {
+    // Not "— scan.pdf p. 4": a quotation with the quote missing.
+    expect(textOf(clip(source())!.itemId)).toBe("scan.pdf p. 4");
+  });
+
+  it("takes no paper stock, having no paper", () => {
+    // A style override no renderer reads is the T-240 shape exactly.
+    const made = clip(source())!;
+    expect(readItem(made.itemId, board.items.get(made.itemId)!)!.style.paperStock).toBeUndefined();
+  });
+
+  it("is threaded exactly as a written card is", () => {
+    // The fork is one conditional in one createItems call. Everything that
+    // makes a quote card a quote card is shared.
+    const itemId = source();
+    const made = clip(itemId)!;
+    expect(readPin(made.sourcePin, board.pins.get(made.sourcePin)!)!.parent).toBe(itemId);
+    expect(readPin(made.cardPin, board.pins.get(made.cardPin)!)!.parent).toBe(made.itemId);
+    const run = readString(made.stringId, board.strings.get(made.stringId)!)!;
+    expect(run.nodes.map((n) => n.pin)).toEqual([made.sourcePin, made.cardPin]);
+  });
+
+  it("is one undo entry, like every other quote", () => {
+    const itemId = source();
+    const history = new UndoHistory(board);
+    const made = clip(itemId)!;
+    history.undo();
+    expect(board.items.has(made.itemId)).toBe(false);
+    expect(board.pins.has(made.sourcePin)).toBe(false);
+    expect(board.strings.has(made.stringId)).toBe(false);
+    // The thing quoted is not what was undone.
+    expect(board.items.has(itemId)).toBe(true);
+    history.destroy();
+  });
+
+  it("leaves the document sound", () => {
+    clip(source());
+    expect(checkInvariants(board)).toEqual([]);
+  });
+
+  it("stores nothing at all when the source has gone", () => {
+    // The asset is written inside the transaction, so a refusal must not leave
+    // bytes registered against a card that was never made.
+    const itemId = source();
+    board.items.delete(itemId);
+    expect(clip(itemId)).toBeNull();
+    expect(board.assets.has(SHA)).toBe(false);
   });
 });

@@ -18,7 +18,7 @@ import { DirtySets } from "@/state/dirty";
 import { Scene } from "@/state/scene";
 import { Selection } from "@/state/selection";
 import { MIN_RESIZE, LIVE_WRITE_MS, SelectTool } from "@/state/tools/select";
-import type { Vec2 } from "@/state/camera";
+import type { Bounds, Vec2 } from "@/state/camera";
 import type {
   SegmentSplit, StringAnchor, PointerSample, StringHit, ToolContext, WritePose, WriteSize } from "@/state/tools/tool";
 
@@ -68,6 +68,10 @@ let wasOpen: boolean;
 /** Page turns the tool asked for, and what the app would answer (T-321). */
 let turns: number[];
 let turnable: boolean;
+/** Which page each item is showing, if any — the app's `shownPage` (T-278). */
+let pageOf: Map<string, number>;
+/** Every clipping the tool asked for — T-282. */
+let clips: Array<{ itemId: string; rect: Bounds }>;
 let ctx: ToolContext;
 
 /** Insertion order is paint order, as it is in the real layer for equal z. */
@@ -258,6 +262,8 @@ beforeEach(() => {
   wasOpen = false;
   turns = [];
   turnable = true;
+  pageOf = new Map();
+  clips = [];
   ctx = {
     scene,
     dirty,
@@ -273,11 +279,12 @@ beforeEach(() => {
       opens.push(itemId);
       return true;
     },
+    clip: (itemId, rect) => clips.push({ itemId, rect: { ...rect } }),
     turnPage: (by) => {
       turns.push(by);
       return turnable;
     },
-    shownPage: () => null,
+    shownPage: (itemId) => pageOf.get(itemId) ?? null,
     held,
     write: {
       setPoses: (poses, phase) => writes.push({ kind: "poses", phase, poses: new Map(poses) }),
@@ -3294,5 +3301,199 @@ describe("the scissors", () => {
 
     expect(writes.some((w) => w.kind === "deleteStrings")).toBe(false);
     expect(writes.some((w) => w.kind === "insert")).toBe(true);
+  });
+});
+
+describe("cutting a clipping out of an open page", () => {
+  /**
+   * A case file lying open. `pageOf` is the app's `shownPage`, which is
+   * non-null for exactly one item — the one that has been turned up.
+   */
+  function openFolder(id = "f", x = 0, y = 0, rot = 0): void {
+    paper(id, x, y, 480, 344, rot);
+    pageOf.set(id, 4);
+  }
+
+  it("cuts rather than dragging the folder the page is on", () => {
+    openFolder();
+    const start = camera.boardToScreen(-100, -80);
+    const end = camera.boardToScreen(60, 70);
+    down(start.x, start.y);
+    move(end.x, end.y);
+    up(end.x, end.y);
+
+    expect(clips).toHaveLength(1);
+    expect(clips[0]!.itemId).toBe("f");
+    // Nothing was moved and nothing was written — a cut is not a drag.
+    expect(writes).toEqual([]);
+  });
+
+  it("hands over the rectangle in the page's own frame", () => {
+    openFolder();
+    const a = camera.boardToScreen(-100, -80);
+    const b = camera.boardToScreen(60, 70);
+    down(a.x, a.y);
+    move(b.x, b.y);
+    up(b.x, b.y);
+
+    const rect = clips[0]!.rect;
+    expect(rect.minX).toBeCloseTo(-100, 4);
+    expect(rect.minY).toBeCloseTo(-80, 4);
+    expect(rect.maxX).toBeCloseTo(60, 4);
+    expect(rect.maxY).toBeCloseTo(70, 4);
+  });
+
+  it("stays square with a page that is turned", () => {
+    // The one that matters. A folder sits at its seeded angle and goes on
+    // sitting at it while you read it, so a rectangle tracked in board space
+    // would come out skewed against the lines of the page.
+    const rot = 0.4;
+    openFolder("f", 0, 0, rot);
+    const cos = Math.cos(rot);
+    const sin = Math.sin(rot);
+    // Two board points that are the corners of an axis-aligned rectangle *in
+    // the page's frame*, which on screen is a parallelogram.
+    const corner = (lx: number, ly: number): Vec2 =>
+      camera.boardToScreen(lx * cos - ly * sin, lx * sin + ly * cos);
+    const a = corner(-100, -80);
+    const b = corner(60, 70);
+    down(a.x, a.y);
+    move(b.x, b.y);
+    up(b.x, b.y);
+
+    const rect = clips[0]!.rect;
+    expect(rect.minX).toBeCloseTo(-100, 4);
+    expect(rect.minY).toBeCloseTo(-80, 4);
+    expect(rect.maxX).toBeCloseTo(60, 4);
+    expect(rect.maxY).toBeCloseTo(70, 4);
+  });
+
+  it("draws the rectangle as four turned corners", () => {
+    const rot = 0.4;
+    openFolder("f", 0, 0, rot);
+    const cos = Math.cos(rot);
+    const sin = Math.sin(rot);
+    const board = (lx: number, ly: number): Vec2 => ({
+      x: lx * cos - ly * sin,
+      y: lx * sin + ly * cos,
+    });
+    const a = board(-100, -80);
+    const b = board(60, 70);
+    down(camera.boardToScreen(a.x, a.y).x, camera.boardToScreen(a.x, a.y).y);
+    const to = camera.boardToScreen(b.x, b.y);
+    move(to.x, to.y);
+
+    const quad = tool.clipping!;
+    expect(quad).toHaveLength(4);
+    // Clockwise from the press. The far corners are the two the pointer never
+    // visited, and on a turned page they are not axis-aligned with anything.
+    expect(quad[0]!.x).toBeCloseTo(a.x, 4);
+    expect(quad[0]!.y).toBeCloseTo(a.y, 4);
+    expect(quad[2]!.x).toBeCloseTo(b.x, 4);
+    expect(quad[2]!.y).toBeCloseTo(b.y, 4);
+    const off = board(60, -80);
+    expect(quad[1]!.x).toBeCloseTo(off.x, 4);
+    expect(quad[1]!.y).toBeCloseTo(off.y, 4);
+  });
+
+  it("leaves the marquee alone", () => {
+    // Two rectangles that land within a few pixels of each other, and only one
+    // of them is a selection.
+    openFolder();
+    const a = camera.boardToScreen(-100, -80);
+    const b = camera.boardToScreen(60, 70);
+    down(a.x, a.y);
+    move(b.x, b.y);
+    expect(tool.marquee).toBeNull();
+    expect(tool.clipping).not.toBeNull();
+    up(b.x, b.y);
+    expect(tool.clipping).toBeNull();
+  });
+
+  it("does not cut on a folder that is shut", () => {
+    // `shownPage` is null for everything but the one item that is open, and
+    // that is the whole of the rule. A shut folder drags exactly as before.
+    paper("f", 0, 0, 480, 344);
+    const a = camera.boardToScreen(-100, -80);
+    const b = camera.boardToScreen(60, 70);
+    down(a.x, a.y);
+    move(b.x, b.y);
+    up(b.x, b.y);
+    expect(clips).toEqual([]);
+    expect(writes.length).toBeGreaterThan(0);
+  });
+
+  it("does not cut where the page is not", () => {
+    // The kraft margin either side of the page: inside the item's rectangle
+    // and outside the sheet's silhouette, so `hitTest` claims it and
+    // `inkHitTest` does not. The page cuts, the border moves.
+    openFolder();
+    ctx = { ...ctx, inkHitTest: () => null };
+    const a = camera.boardToScreen(-100, -80);
+    const b = camera.boardToScreen(60, 70);
+    down(a.x, a.y);
+    move(b.x, b.y);
+    up(b.x, b.y);
+    expect(clips).toEqual([]);
+  });
+
+  it("is a click and not a cut when the hand did not move", () => {
+    openFolder();
+    const a = camera.boardToScreen(-100, -80);
+    down(a.x, a.y);
+    move(a.x + 1, a.y + 1);
+    up(a.x + 1, a.y + 1);
+    expect(clips).toEqual([]);
+    // It falls through to selecting the folder rather than being ignored.
+    expect(selection.toArray()).toEqual(["f"]);
+  });
+
+  it("cuts nothing from a rectangle with no width", () => {
+    // A stroke straight down the page. It has area in one axis only, and a
+    // clipping of zero columns is not a clipping.
+    openFolder();
+    const a = camera.boardToScreen(-100, -80);
+    const b = camera.boardToScreen(-100, 70);
+    down(a.x, a.y);
+    move(b.x, b.y);
+    up(b.x, b.y);
+    expect(clips).toEqual([]);
+  });
+
+  it("cuts nothing from a rectangle with no height", () => {
+    // The mirror of the one above, and it is a separate test because it is a
+    // separate guard: a mutation that removed the height check survived the
+    // width one, since a stroke down the page fails on width whatever the
+    // height rule says.
+    openFolder();
+    const a = camera.boardToScreen(-100, -80);
+    const b = camera.boardToScreen(60, -80);
+    down(a.x, a.y);
+    move(b.x, b.y);
+    up(b.x, b.y);
+    expect(clips).toEqual([]);
+  });
+
+  it("abandons the cut when the page goes mid-gesture", () => {
+    openFolder();
+    const a = camera.boardToScreen(-100, -80);
+    down(a.x, a.y);
+    scene.removeItem("f");
+    const b = camera.boardToScreen(60, 70);
+    move(b.x, b.y);
+    up(b.x, b.y);
+    expect(clips).toEqual([]);
+    expect(tool.clipping).toBeNull();
+  });
+
+  it("writes nothing when the gesture is cancelled", () => {
+    openFolder();
+    const a = camera.boardToScreen(-100, -80);
+    const b = camera.boardToScreen(60, 70);
+    down(a.x, a.y);
+    move(b.x, b.y);
+    tool.cancel(ctx);
+    expect(clips).toEqual([]);
+    expect(tool.clipping).toBeNull();
   });
 });

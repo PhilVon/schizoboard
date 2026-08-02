@@ -123,6 +123,7 @@ beforeEach(() => {
     open: () => false,
     /** True, because a test that presses an arrow has something open, and the
      *  tool ignores the answer, so the count is all there is to watch. */
+    clip: () => undefined,
     turnPage: (by) => {
       turned.push(by);
       return true;

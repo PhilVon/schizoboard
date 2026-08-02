@@ -90,6 +90,7 @@ beforeEach(() => {
     edit: () => undefined,
     open: () => false,
     turnPage: () => false,
+    clip: () => undefined,
     held: new Set<string>(),
     hitTest: (bx, by) => {
       for (const id of scene.itemIds()) {

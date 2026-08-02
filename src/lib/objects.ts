@@ -268,6 +268,25 @@ export function objectSizeFor(kind: AssetKind): ObjectSize | null {
  * keeps that true of a folder somebody has resized: both axes are a proportion
  * of the item, which is what a CSS percentage is.
  */
+/**
+ * How far the sheet is turned inside the folder — a quarter, anticlockwise.
+ *
+ * The angle behind [`openSheetOf`]'s swap, named because two things now need it
+ * as a *number* rather than as a swap. `Scene.setOpen` turns the item by +90°
+ * and this is the -90° that cancels it, which is what leaves the page upright on
+ * screen and `text.rs`'s 66-by-46 grid the right way round.
+ *
+ * The second thing is cutting a clipping (T-282). A clipping is rasterised in
+ * the item's own frame — that is the only frame the rectangle is square in — and
+ * in that frame the page lies on its side. Turning the lifted canvas back by
+ * this is what makes the clipping the right way up, and doing it with the same
+ * constant the sheet's box comes from is what stops the two drifting apart.
+ *
+ * `folder-open-css.test.ts` holds this against the stylesheet's own
+ * `rotate(-90deg)`.
+ */
+export const OPEN_PAGE_TURN = -Math.PI / 2;
+
 export function openSheetOf(w: number, h: number): ObjectSize {
   const folder = units(FOLDER_MM);
   return { w: (h * A4_UNITS.h) / folder.h, h: (w * A4_UNITS.w) / folder.w };
@@ -489,4 +508,85 @@ export function caseNumber(filename: string | null, sha256: string): string {
   const name = (filename ?? "").trim();
   if (name.length > 0) return stem(name);
   return sha256.slice(0, 8).toUpperCase();
+}
+
+/**
+ * What a citation calls the evidence — the name half of a page reference.
+ *
+ * **The extension stays on, and that is the one difference from
+ * [`caseNumber`].** They are deliberately not the same string. A case number is
+ * written on a physical tab, on an object that has already said what it is by
+ * being a manilla folder rather than a cassette; `.pdf` after the name there is
+ * noise. A citation is the opposite kind of thing: it is read away from the
+ * object, on a card that may be across the board from the folder it came out
+ * of, by somebody who wants to find the file again. That is what a filename
+ * with its extension is *for*.
+ *
+ * The unnamed case falls back to `caseNumber`'s hash prefix rather than
+ * inventing a second answer, because a screenshot or a paste of raw bytes is
+ * the ordinary case and the store already calls it that.
+ */
+export function referenceName(filename: string | null, sha256: string): string {
+  const name = (filename ?? "").trim();
+  return name.length > 0 ? name : caseNumber(null, sha256);
+}
+
+/**
+ * A page reference, as a card says it out loud — `scan.pdf p. 4`.
+ *
+ * ## Why this is a string and not a pair
+ *
+ * `crdt/ops/quote.ts` takes the reference already in words, and its header says
+ * why: the three kinds reference themselves in three different units — a page,
+ * a timestamp, a line — and the card only ever says one of them. So the *pair*
+ * D-60 defines, `(sha256, page)`, is what the machine cites with, and this is
+ * what a person reads. They are different jobs and the card is doing the second
+ * one.
+ *
+ * ## `p. 4` and not `p. 4 of 51`
+ *
+ * The open sheet's own header reads `4 of 51`, and it is right to: it is a
+ * position in something you are holding, and the count is what tells you where
+ * in the document you are. A citation is not that. It is a pointer somebody
+ * follows back, and `p. 4` is the whole of what they need to follow it — the
+ * length of the document is a fact about the folder, which is still on the
+ * board with `51 pp.` written on it. Two places saying the same number is two
+ * places to get it wrong.
+ *
+ * A page that is not a real page — a document with none of its own, or a quote
+ * of the whole thing — cites the file and stops. That is a weaker reference
+ * rather than a broken one, and it is the honest form: there was no page.
+ */
+export function pageReference(
+  filename: string | null,
+  sha256: string,
+  page: number | null,
+): string {
+  const name = referenceName(filename, sha256);
+  if (page === null || !Number.isFinite(page) || page < 1) return name;
+  return `${name} p. ${Math.floor(page)}`;
+}
+
+/**
+ * The same sentence for a recording — `interview.mp4 12:04`.
+ *
+ * Here rather than at the gesture that will want it (T-287, a still off a tape)
+ * for [`quoteCardText`]'s reason one level up: quoting is the same gesture on
+ * all three kinds, and if the three ever disagree about how they name
+ * themselves then one of them is wrong. The unit differs because a tape has no
+ * pages; the shape must not.
+ *
+ * No `t.` or `at` before the time, unlike the page's `p.` — a clock is
+ * self-announcing in a way a bare integer is not, and `interview.mp4 t. 12:04`
+ * reads as a typo. An unmeasured recording cites the file and stops, exactly as
+ * a page-less document does.
+ */
+export function timeReference(
+  filename: string | null,
+  sha256: string,
+  seconds: number | null,
+): string {
+  const name = referenceName(filename, sha256);
+  const at = runtimeLabel(seconds);
+  return at === "" ? name : `${name} ${at}`;
 }

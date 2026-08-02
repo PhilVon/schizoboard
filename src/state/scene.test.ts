@@ -1401,3 +1401,64 @@ describe("Scene.rehomes", () => {
     expect(out).toHaveLength(0);
   });
 });
+
+describe("tape holds a string to the paper and the paper to nothing", () => {
+  /** An item with one real pin through it, plus however many tapes. */
+  function pinned(scene: Scene, id: string, kinds: readonly string[]): void {
+    scene.putItem(
+      { id, type: "note", z: "a0", seed: 1, assetId: null, createdBy: 1, createdAt: 0, text: "" },
+      { x: 0, y: 0, rot: 0, w: 400, h: 300 },
+    );
+    kinds.forEach((kind, i) => {
+      scene.putPin({
+        id: `p${i}`,
+        parent: id,
+        lx: -100 + i * 20,
+        ly: -50,
+        kind,
+        color: "#c8352f",
+        wx: -100 + i * 20,
+        wy: -50,
+      });
+    });
+  }
+
+  it("does not count toward the item's physics", () => {
+    // DESIGN 2.2: zero pins lies loose, one hangs, two are rigid. A quote card
+    // taped to a page must not make the page rigid.
+    const scene = new Scene();
+    pinned(scene, "a", ["pushpin", "tape", "tape"]);
+    expect(scene.pinCount("a")).toBe(1);
+  });
+
+  it("leaves an item hanging from the one pin it really has", () => {
+    // The bug this exists for, one level down (T-328): solePin is what the open
+    // turn is measured about, so a tape counted here would move the folder.
+    const scene = new Scene();
+    pinned(scene, "a", ["pushpin", "tape"]);
+    expect(scene.solePin("a")?.id).toBe("p0");
+  });
+
+  it("does not make an unpinned item hang", () => {
+    const scene = new Scene();
+    pinned(scene, "a", ["tape"]);
+    expect(scene.pinCount("a")).toBe(0);
+    expect(scene.solePin("a")).toBeNull();
+  });
+
+  it("still leaves two real pins rigid", () => {
+    const scene = new Scene();
+    pinned(scene, "a", ["pushpin", "tape", "nail"]);
+    expect(scene.pinCount("a")).toBe(2);
+    expect(scene.solePin("a")).toBeNull();
+  });
+
+  it("is still on the item as far as the index is concerned", () => {
+    // pinsOf must stay complete: sim/ropes.ts rouses a rope through it when the
+    // item moves, so a tape missing from the index would leave the very thread
+    // it anchors un-simulated.
+    const scene = new Scene();
+    pinned(scene, "a", ["pushpin", "tape"]);
+    expect([...scene.pinsOf("a")].sort()).toEqual(["p0", "p1"]);
+  });
+});
