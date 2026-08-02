@@ -187,7 +187,14 @@ fn mvhd_fields(payload: &[u8]) -> Option<(u32, u64)> {
         // version, flags, creation(4), modification(4), timescale, duration(4)
         0 => {
             let duration = be32(payload, 16)? as u64;
-            Some((be32(payload, 12)?, if duration == u32::MAX as u64 { 0 } else { duration }))
+            Some((
+                be32(payload, 12)?,
+                if duration == u32::MAX as u64 {
+                    0
+                } else {
+                    duration
+                },
+            ))
         }
         _ => None,
     }
@@ -537,7 +544,11 @@ fn riff_find<'a>(data: &'a [u8], want: &[u8; 4], list: bool) -> Option<&'a [u8]>
             &id == want
         };
         if matched {
-            return Some(if list { data.get(start + 4..end)? } else { data.get(start..end)? });
+            return Some(if list {
+                data.get(start + 4..end)?
+            } else {
+                data.get(start..end)?
+            });
         }
         // Chunks are padded to an even offset, and the pad byte is not counted
         // in the size. Missing this reads every chunk after an odd one as
@@ -771,12 +782,20 @@ fn mpeg_frame_count(bytes: &[u8], offset: usize, frame: &MpegFrame) -> Option<u6
 /// four-bit field — so index 0 is the `free` slot and is never read.
 const BITRATES: [[[u16; 15]; 3]; 2] = [
     [
-        [0, 32, 64, 96, 128, 160, 192, 224, 256, 288, 320, 352, 384, 416, 448],
-        [0, 32, 48, 56, 64, 80, 96, 112, 128, 160, 192, 224, 256, 320, 384],
-        [0, 32, 40, 48, 56, 64, 80, 96, 112, 128, 160, 192, 224, 256, 320],
+        [
+            0, 32, 64, 96, 128, 160, 192, 224, 256, 288, 320, 352, 384, 416, 448,
+        ],
+        [
+            0, 32, 48, 56, 64, 80, 96, 112, 128, 160, 192, 224, 256, 320, 384,
+        ],
+        [
+            0, 32, 40, 48, 56, 64, 80, 96, 112, 128, 160, 192, 224, 256, 320,
+        ],
     ],
     [
-        [0, 32, 48, 56, 64, 80, 96, 112, 128, 144, 160, 176, 192, 224, 256],
+        [
+            0, 32, 48, 56, 64, 80, 96, 112, 128, 144, 160, 176, 192, 224, 256,
+        ],
         [0, 8, 16, 24, 32, 40, 48, 56, 64, 80, 96, 112, 128, 144, 160],
         [0, 8, 16, 24, 32, 40, 48, 56, 64, 80, 96, 112, 128, 144, 160],
     ],
@@ -924,7 +943,11 @@ fn iso_title<R: Read + Seek>(source: &mut R, end: u64) -> Option<String> {
             else {
                 continue;
             };
-            let body = read_at(source, data, usize::try_from(data_len).ok()?.min(MAX_FIELD_BYTES))?;
+            let body = read_at(
+                source,
+                data,
+                usize::try_from(data_len).ok()?.min(MAX_FIELD_BYTES),
+            )?;
             if let Some(text) = ilst_text(&body) {
                 return Some(text);
             }
@@ -932,7 +955,11 @@ fn iso_title<R: Read + Seek>(source: &mut R, end: u64) -> Option<String> {
     }
 
     let (nam, nam_len) = iso_find(source, udta, udta_end, b"\xA9nam")?;
-    let body = read_at(source, nam, usize::try_from(nam_len).ok()?.min(MAX_FIELD_BYTES))?;
+    let body = read_at(
+        source,
+        nam,
+        usize::try_from(nam_len).ok()?.min(MAX_FIELD_BYTES),
+    )?;
     quicktime_text(&body)
 }
 
@@ -1023,8 +1050,17 @@ fn quicktime_text(body: &[u8]) -> Option<String> {
 /// of those.
 fn ebml_title<R: Read + Seek>(source: &mut R, end: u64) -> Option<String> {
     let (segment, segment_len) = ebml_find(source, 0, end, 0x1853_8067)?;
-    let (info, info_len) = ebml_find(source, segment, segment.checked_add(segment_len)?, 0x1549_A966)?;
-    let body = read_at(source, info, usize::try_from(info_len).ok()?.min(MAX_TAG_BYTES))?;
+    let (info, info_len) = ebml_find(
+        source,
+        segment,
+        segment.checked_add(segment_len)?,
+        0x1549_A966,
+    )?;
+    let body = read_at(
+        source,
+        info,
+        usize::try_from(info_len).ok()?.min(MAX_TAG_BYTES),
+    )?;
     let title = ebml_child(&body, 0x7BA9)?;
     // UTF-8 by the specification, and lossy rather than refused because a
     // producer's stray byte should cost one character rather than the name.
@@ -1159,7 +1195,8 @@ fn vorbis_title(data: &[u8]) -> Option<String> {
     let count = u32::from_le_bytes(data.get(pos..pos + 4)?.try_into().ok()?);
     pos += 4;
     for _ in 0..count.min(MAX_RECORDS as u32) {
-        let len = usize::try_from(u32::from_le_bytes(data.get(pos..pos + 4)?.try_into().ok()?)).ok()?;
+        let len =
+            usize::try_from(u32::from_le_bytes(data.get(pos..pos + 4)?.try_into().ok()?)).ok()?;
         let entry = data.get(pos + 4..pos + 4 + len)?;
         pos = pos.checked_add(4)?.checked_add(len)?;
         let Some(equals) = entry.iter().position(|&byte| byte == b'=') else {
@@ -1232,7 +1269,11 @@ fn id3v2_frames_title(header: &[u8], body: Vec<u8>) -> Option<String> {
     // Three layouts. Before 2.3 an id is three characters and a size three
     // bytes; from 2.3 both are four with two flag bytes after; and 2.4 alone
     // writes that size syncsafe, the way the tag's own is.
-    let (id_len, head_len) = if version < 3 { (3usize, 6usize) } else { (4usize, 10usize) };
+    let (id_len, head_len) = if version < 3 {
+        (3usize, 6usize)
+    } else {
+        (4usize, 10usize)
+    };
     let want: &[u8] = if version < 3 { b"TT2" } else { b"TIT2" };
 
     let mut pos = 0usize;
@@ -1252,7 +1293,11 @@ fn id3v2_frames_title(header: &[u8], body: Vec<u8>) -> Option<String> {
                 .iter()
                 .fold(0usize, |acc, &byte| (acc << 7) | (byte & 0x7F) as usize);
         }
-        let frame_flags = if version < 3 { 0u8 } else { *body.get(pos + head_len - 1)? };
+        let frame_flags = if version < 3 {
+            0u8
+        } else {
+            *body.get(pos + head_len - 1)?
+        };
         let start = pos.checked_add(head_len)?;
         if id == want {
             let mut value = body.get(start..start + len.min(MAX_FIELD_BYTES))?.to_vec();
@@ -1292,9 +1337,12 @@ fn desynchronise(data: &[u8]) -> Vec<u8> {
 fn skip_extended_header(body: &[u8], version: u8) -> Option<Vec<u8>> {
     let raw = body.get(0..4)?;
     let size = if version >= 4 {
-        raw.iter().fold(0usize, |acc, &b| (acc << 7) | (b & 0x7F) as usize)
+        raw.iter()
+            .fold(0usize, |acc, &b| (acc << 7) | (b & 0x7F) as usize)
     } else {
-        raw.iter().fold(0usize, |acc, &b| (acc << 8) | usize::from(b)) + 4
+        raw.iter()
+            .fold(0usize, |acc, &b| (acc << 8) | usize::from(b))
+            + 4
     };
     Some(body.get(size..)?.to_vec())
 }
@@ -1376,7 +1424,9 @@ fn riff_title<R: Read + Seek>(source: &mut R, end: u64) -> Option<String> {
         }
         if tagged.is_none() && id.eq_ignore_ascii_case(b"id3 ") {
             let want = usize::try_from(size).unwrap_or(0).min(MAX_TAG_BYTES);
-            tagged = read_at(source, body, want).as_deref().and_then(id3v2_tag_title);
+            tagged = read_at(source, body, want)
+                .as_deref()
+                .and_then(id3v2_tag_title);
         }
         // The same pad byte `riff_find` steps over, and for the same reason.
         let Some(next) = body.checked_add(size + (size & 1)) else {
@@ -1430,7 +1480,10 @@ mod tests {
     /// and far above the error in any division here.
     fn assert_seconds(got: Option<Seconds>, want: Seconds) {
         let got = got.expect("expected a duration");
-        assert!((got - want).abs() < 1e-4, "expected {want} seconds, got {got}");
+        assert!(
+            (got - want).abs() < 1e-4,
+            "expected {want} seconds, got {got}"
+        );
     }
 
     // --- ISO base media -----------------------------------------------------
@@ -1789,7 +1842,10 @@ mod tests {
 
     #[test]
     fn flac_says_it_outright() {
-        assert_seconds(probe_duration(&flac(44_100, 44_100 * 200), "audio/flac"), 200.0);
+        assert_seconds(
+            probe_duration(&flac(44_100, 44_100 * 200), "audio/flac"),
+            200.0,
+        );
     }
 
     #[test]
@@ -1830,7 +1886,10 @@ mod tests {
 
     #[test]
     fn a_wav_is_its_sound_over_its_byte_rate() {
-        assert_seconds(probe_duration(&wav(176_400, 176_400 * 3, false), "audio/wav"), 3.0);
+        assert_seconds(
+            probe_duration(&wav(176_400, 176_400 * 3, false), "audio/wav"),
+            3.0,
+        );
     }
 
     #[test]
@@ -1839,7 +1898,10 @@ mod tests {
         // the size. A walk that misses this reads everything after a metadata
         // block as garbage — which is most `.wav` files that have been through a
         // tagger at all.
-        assert_seconds(probe_duration(&wav(176_400, 88_200, true), "audio/wav"), 0.5);
+        assert_seconds(
+            probe_duration(&wav(176_400, 88_200, true), "audio/wav"),
+            0.5,
+        );
     }
 
     #[test]
@@ -1940,7 +2002,10 @@ mod tests {
         // files this was checked against found it and a synthetic one could
         // not.
         assert!((MP3_WALKED_SECONDS - MP3_DIVIDED_SECONDS).abs() > 1e-3);
-        assert_seconds(probe_duration(&mp3(100, None), "audio/mpeg"), MP3_WALKED_SECONDS);
+        assert_seconds(
+            probe_duration(&mp3(100, None), "audio/mpeg"),
+            MP3_WALKED_SECONDS,
+        );
     }
 
     #[test]
@@ -2026,9 +2091,15 @@ mod tests {
 
     #[test]
     fn a_picture_has_no_duration() {
-        assert_eq!(probe_duration(b"\x89PNG\r\n\x1a\nnot really", "image/png"), None);
+        assert_eq!(
+            probe_duration(b"\x89PNG\r\n\x1a\nnot really", "image/png"),
+            None
+        );
         assert_eq!(probe_duration(b"%PDF-1.7\n", "application/pdf"), None);
-        assert_eq!(probe_duration(&wav(176_400, 1024, false), "application/octet-stream"), None);
+        assert_eq!(
+            probe_duration(&wav(176_400, 1024, false), "application/octet-stream"),
+            None
+        );
     }
 
     #[test]
@@ -2083,7 +2154,10 @@ mod tests {
 
     #[test]
     fn a_film_is_named_by_its_ilst_even_with_the_movie_box_last() {
-        let file = mp4(&itunes_udta(&ilst_name(1, "The Interview".as_bytes()), true));
+        let file = mp4(&itunes_udta(
+            &ilst_name(1, "The Interview".as_bytes()),
+            true,
+        ));
         assert_eq!(title(&file, "video/mp4"), Some("The Interview".to_string()));
     }
 
@@ -2133,7 +2207,10 @@ mod tests {
     #[test]
     fn matroska_is_named_by_its_segment_info() {
         let file = mkv(&ebml_elem(&[0x7B, 0xA9], "Silo S03E04".as_bytes()));
-        assert_eq!(title(&file, "video/x-matroska"), Some("Silo S03E04".to_string()));
+        assert_eq!(
+            title(&file, "video/x-matroska"),
+            Some("Silo S03E04".to_string())
+        );
     }
 
     #[test]
@@ -2261,7 +2338,11 @@ mod tests {
         // in the sound.
         let mut file = b"fLaC".to_vec();
         file.extend_from_slice(&flac_block(0, true, &streaminfo(44_100, 44_100)));
-        file.extend_from_slice(&flac_block(4, true, &vorbis_comment(&["TITLE=in the audio"])));
+        file.extend_from_slice(&flac_block(
+            4,
+            true,
+            &vorbis_comment(&["TITLE=in the audio"]),
+        ));
         file.extend_from_slice(&vec![0xFF; 4096]);
         assert_eq!(title(&file, "audio/flac"), None);
     }
@@ -2346,7 +2427,9 @@ mod tests {
             (total & 0x7F) as u8,
         ]);
         file.extend_from_slice(&frame);
-        assert!(title(&file, "audio/mpeg").unwrap().starts_with("A name past"));
+        assert!(title(&file, "audio/mpeg")
+            .unwrap()
+            .starts_with("A name past"));
     }
 
     #[test]
@@ -2385,7 +2468,10 @@ mod tests {
             (size & 0x7F) as u8,
         ]);
         file.extend_from_slice(&padded);
-        assert_eq!(title(&file, "audio/mpeg"), Some("Sync\u{ff}test".to_string()));
+        assert_eq!(
+            title(&file, "audio/mpeg"),
+            Some("Sync\u{ff}test".to_string())
+        );
     }
 
     /// A `.wav` carrying one of the two things it can carry, or both.
@@ -2443,7 +2529,10 @@ mod tests {
     fn a_wav_can_keep_its_name_in_a_whole_id3_tag_after_the_sound() {
         // Fifteen of the twenty-seven titled RIFF files on D-52's corpus. A
         // reader that only knows `INAM` finds under half of them.
-        let file = riff_with(b"WAVE", &[id3_chunk(&text_frame(b"TIT2", 0, b"Bark output"))]);
+        let file = riff_with(
+            b"WAVE",
+            &[id3_chunk(&text_frame(b"TIT2", 0, b"Bark output"))],
+        );
         assert_eq!(title(&file, "audio/wav"), Some("Bark output".to_string()));
     }
 
@@ -2456,13 +2545,19 @@ mod tests {
                 info_list(b"the native field"),
             ],
         );
-        assert_eq!(title(&file, "audio/wav"), Some("the native field".to_string()));
+        assert_eq!(
+            title(&file, "audio/wav"),
+            Some("the native field".to_string())
+        );
     }
 
     #[test]
     fn an_avi_reads_the_same_two_places_a_wav_does() {
         let file = riff_with(b"AVI ", &[info_list(b"Holiday 1998")]);
-        assert_eq!(title(&file, "video/x-msvideo"), Some("Holiday 1998".to_string()));
+        assert_eq!(
+            title(&file, "video/x-msvideo"),
+            Some("Holiday 1998".to_string())
+        );
     }
 
     #[test]
@@ -2471,7 +2566,11 @@ mod tests {
         let file = id3(&text_frame(b"TIT2", 3, sprawling.as_bytes()));
         let got = title(&file, "audio/mpeg").expect("a title");
         assert!(got.starts_with("a title with whitespace long"));
-        assert!(got.chars().count() <= 120, "{} characters", got.chars().count());
+        assert!(
+            got.chars().count() <= 120,
+            "{} characters",
+            got.chars().count()
+        );
     }
 
     #[test]
@@ -2485,7 +2584,11 @@ mod tests {
     #[test]
     fn a_kind_that_carries_no_name_is_not_asked() {
         for mime in ["image/jpeg", "application/pdf", "application/octet-stream"] {
-            assert_eq!(title(&id3(&text_frame(b"TIT2", 0, b"x")), mime), None, "{mime}");
+            assert_eq!(
+                title(&id3(&text_frame(b"TIT2", 0, b"x")), mime),
+                None,
+                "{mime}"
+            );
         }
     }
 
@@ -2586,4 +2689,3 @@ mod tests {
         assert_eq!(differed, 0, "a title read two ways is a title read wrong");
     }
 }
-

@@ -404,7 +404,10 @@ mod tests {
         // local document gives. Resolving a relative src against either produces
         // a plausible URL to nothing.
         assert_eq!(source_url_of(&cf_html("SourceURL:about:blank")), None);
-        assert_eq!(source_url_of(&cf_html("SourceURL:file:///C:/notes.docx")), None);
+        assert_eq!(
+            source_url_of(&cf_html("SourceURL:file:///C:/notes.docx")),
+            None
+        );
         assert_eq!(source_url_of(&cf_html("SourceURL:")), None);
     }
 

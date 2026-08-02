@@ -26,15 +26,17 @@ mod clipboard;
 mod docstore;
 // `pub` for the same reason `sync` is, and now a command as well: `asset_title`
 // asks it what a folder is called (T-267), and asks `media` the same thing about
-// a tape (T-302). The reading surface (T-275) is what turns the rest of it — the
-// pages themselves — into commands.
+// a tape (T-302). The rest of it — the pages themselves — is `reading`.
 pub mod document;
 mod media;
-// `pub` for the reason `document` is: nothing in this file calls it yet. The
-// reading surface (T-275) is what turns it into a command.
+// `pub` for the reason `document` is, and reached through `reading` (T-318).
 pub mod pages;
 mod print;
 mod protocol;
+// The reading surface's side of the boundary (T-318): the commands that turn
+// `document` and `pages` from a reader nothing could call into a page on a
+// sheet of paper.
+mod reading;
 pub mod sync;
 // The other half of `document`: the rule that gives a file with no pages of its
 // own some anyway, so that a page reference means the same thing on both kinds
@@ -128,7 +130,10 @@ async fn sync_start(app: AppHandle, config: SyncConfig) -> Result<(), String> {
     // true in both: a relay-mode window that was invited still holds the secret
     // for when it later hosts the same board itself.
     if let Some(given) = config.secret.as_deref() {
-        if let Err(error) = app.state::<sync::secret::SecretStore>().remember(&config.board_id, given) {
+        if let Err(error) = app
+            .state::<sync::secret::SecretStore>()
+            .remember(&config.board_id, given)
+        {
             eprintln!("[sync] this board's secret is not being kept: {error}");
         }
     }
@@ -150,7 +155,9 @@ async fn sync_start(app: AppHandle, config: SyncConfig) -> Result<(), String> {
     // "asked for nothing in particular, so keep what is running", and is now
     // "asked for the secret the relay is already hosting". Same answer, arrived
     // at by knowing rather than by not knowing.
-    let secret = app.state::<sync::secret::SecretStore>().ensure(&config.board_id);
+    let secret = app
+        .state::<sync::secret::SecretStore>()
+        .ensure(&config.board_id);
 
     // Already hosting — but of *what*? A reload that asks for the same board
     // wants the relay it already has; one that asks for a different secret is
@@ -362,7 +369,11 @@ struct PendingInvite(std::sync::Mutex<Option<String>>);
 /// every link that arrives after that.
 #[tauri::command]
 async fn sync_take_invite(app: AppHandle) -> Option<String> {
-    app.state::<PendingInvite>().0.lock().expect("invite lock").take()
+    app.state::<PendingInvite>()
+        .0
+        .lock()
+        .expect("invite lock")
+        .take()
 }
 
 // --- which board this is (T-195) -------------------------------------------
@@ -546,7 +557,7 @@ fn schedule_variants(app: &AppHandle, sha256: String) {
 /// Generic in the error as well as the value: the asset store and the document
 /// log have separate error types on purpose — neither should be able to return
 /// the other's failures — and this only ever needs them to be printable.
-async fn blocking<T, E, F>(job: F) -> Result<T, String>
+pub(crate) async fn blocking<T, E, F>(job: F) -> Result<T, String>
 where
     F: FnOnce() -> Result<T, E> + Send + 'static,
     T: Send + 'static,
@@ -960,12 +971,8 @@ async fn doc_append_update(app: AppHandle, request: tauri::ipc::Request<'_>) -> 
 /// JSON arrays of numbers — see [`docstore::DocState::into_blob`].
 #[tauri::command]
 async fn doc_load(app: AppHandle) -> Result<tauri::ipc::Response, String> {
-    let blob = blocking(move || {
-        docstore_of(&app)?
-            .load()
-            .map(docstore::DocState::into_blob)
-    })
-    .await?;
+    let blob =
+        blocking(move || docstore_of(&app)?.load().map(docstore::DocState::into_blob)).await?;
     Ok(tauri::ipc::Response::new(blob))
 }
 
@@ -1276,6 +1283,12 @@ pub fn run() {
             // Where the next PDF is going, between the save dialog and the
             // print (T-207). One slot; the path never crosses the boundary.
             app.manage(print::PendingExport::default());
+            // One document held open and the pages read off it (T-299, T-318).
+            // Nothing in it is written down, so unlike the four above it takes
+            // no path and cannot fail to open: everything it holds is derived
+            // from a file the asset store already has, and losing all of it
+            // costs time and nothing else.
+            app.manage(pages::PageStore::default());
             if let Some(window) = app.get_webview_window("main") {
                 clipboard::forward_drops(&window, app.handle());
             }
@@ -1367,6 +1380,10 @@ pub fn run() {
             doc_compact,
             bundle_save_as,
             bundle_open,
+            reading::document_page_count,
+            reading::document_page,
+            reading::document_page_image,
+            reading::document_close,
             print::export_choose,
             print::export_pdf_write,
             print::export_image_write,
@@ -1416,7 +1433,10 @@ mod tests {
         // the relay is already hosting — so this arrives as an agreement rather
         // than as an absence. Re-hosting on a fresh port would drop every peer
         // already connected.
-        assert_eq!(hosting_change(true, Some("abc"), "abc"), HostingChange::Keep);
+        assert_eq!(
+            hosting_change(true, Some("abc"), "abc"),
+            HostingChange::Keep
+        );
     }
 
     #[test]
@@ -1426,8 +1446,10 @@ mod tests {
         // relay standing answers for the wrong board — advertising a
         // fingerprint no peer can match, which looks exactly like mDNS being
         // broken.
-        assert_eq!(hosting_change(true, Some("abc"), "def"), HostingChange::Restart);
+        assert_eq!(
+            hosting_change(true, Some("abc"), "def"),
+            HostingChange::Restart
+        );
         assert_eq!(hosting_change(true, None, "def"), HostingChange::Restart);
     }
 }
-

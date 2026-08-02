@@ -151,8 +151,14 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("board-id");
 
-        BoardStore::new(path.clone()).unwrap().remember("board-abc123").unwrap();
-        assert_eq!(BoardStore::new(path).unwrap().get().as_deref(), Some("board-abc123"));
+        BoardStore::new(path.clone())
+            .unwrap()
+            .remember("board-abc123")
+            .unwrap();
+        assert_eq!(
+            BoardStore::new(path).unwrap().get().as_deref(),
+            Some("board-abc123")
+        );
     }
 
     #[test]
@@ -169,7 +175,15 @@ mod tests {
         // Every one of them reads as "nobody has said", which resolves to the
         // default rather than to a room named after rubbish.
         let (_dir, store) = store();
-        for rubbish in ["", "   ", "two words", "a/b", "..", &"x".repeat(65), "board.1"] {
+        for rubbish in [
+            "",
+            "   ",
+            "two words",
+            "a/b",
+            "..",
+            &"x".repeat(65),
+            "board.1",
+        ] {
             fs::write(&store.path, rubbish).unwrap();
             assert_eq!(store.get(), None, "{rubbish:?} read back as a board");
         }
@@ -181,7 +195,15 @@ mod tests {
         // every other string that has ever come across that boundary, and this
         // one becomes a file name under `secrets/` on the very next launch.
         let (dir, store) = store();
-        for escape in ["", "..", "../secrets", "a/b", "a\\b", &"x".repeat(65), "demo."] {
+        for escape in [
+            "",
+            "..",
+            "../secrets",
+            "a/b",
+            "a\\b",
+            &"x".repeat(65),
+            "demo.",
+        ] {
             assert!(store.remember(escape).is_err(), "{escape:?} was written");
             assert_eq!(store.get(), None);
         }

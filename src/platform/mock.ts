@@ -34,6 +34,7 @@ import {
   type ClipboardManifest,
   type ClipboardPayload,
   type DocState,
+  type DocumentPage,
   type ExportKind,
   type Platform,
   type PlatformEvents,
@@ -291,6 +292,38 @@ export class MockPlatform implements Platform {
   async assetTitle(_sha256: string): Promise<string | null> {
     return null;
   }
+
+  /**
+   * Reading a page is missing here, and it is the same refusal `assetIngestBytes`
+   * already writes down about the page *count* — carried through to the pages
+   * themselves rather than reasoned about again.
+   *
+   * A PDF cannot be parsed in the browser without the megabyte of dependency
+   * D-46 section 4 exists to refuse. A text file *could* be paginated here,
+   * because its pagination is a rule rather than a parse — and that is exactly
+   * why it is not: the rule would then have two implementations in two
+   * languages, and a stored page reference would depend on which of them read
+   * the file. One writer, in `text.rs`.
+   *
+   * So `npm run dev` opens a case file and is told the page cannot be read,
+   * which is the same state a malformed PDF produces in the shell and therefore
+   * a path the reading surface has to draw anyway. Developing the surface itself
+   * wants `npm run tauri dev`.
+   */
+  documentPageCount(): Promise<number> {
+    return unavailable("Counting the pages of a document");
+  }
+
+  documentPage(): Promise<DocumentPage | null> {
+    return unavailable("Reading a page of a document");
+  }
+
+  documentPageImage(): Promise<Uint8Array> {
+    return unavailable("Lifting the image off a scanned page");
+  }
+
+  /** Nothing is held open, so there is nothing to let go of. */
+  async documentClose(): Promise<void> {}
 
   async docAppendUpdate(bytes: Uint8Array): Promise<void> {
     this.updates.push(bytes);

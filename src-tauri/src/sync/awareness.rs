@@ -87,7 +87,8 @@ impl Awareness {
                 None => {}
             }
 
-            self.clients.insert(client, ClientState { clock, json: state });
+            self.clients
+                .insert(client, ClientState { clock, json: state });
             changed.push(client);
         }
 
@@ -106,7 +107,10 @@ impl Awareness {
             let state = self.clients.get(client);
             write_var_uint(&mut out, *client);
             write_var_uint(&mut out, state.map_or(0, |s| s.clock));
-            write_var_string(&mut out, state.and_then(|s| s.json.as_deref()).unwrap_or("null"));
+            write_var_string(
+                &mut out,
+                state.and_then(|s| s.json.as_deref()).unwrap_or("null"),
+            );
         }
         out
     }
@@ -152,10 +156,15 @@ mod tests {
     #[test]
     fn a_new_client_arrives() {
         let mut awareness = Awareness::new();
-        let changed = awareness.apply(&update(&[(7, 1, r#"{"name":"Phil"}"#)])).unwrap();
+        let changed = awareness
+            .apply(&update(&[(7, 1, r#"{"name":"Phil"}"#)]))
+            .unwrap();
 
         assert_eq!(changed, vec![7]);
-        assert_eq!(state_of(&awareness, 7).as_deref(), Some(r#"{"name":"Phil"}"#));
+        assert_eq!(
+            state_of(&awareness, 7).as_deref(),
+            Some(r#"{"name":"Phil"}"#)
+        );
     }
 
     #[test]
@@ -163,13 +172,22 @@ mod tests {
         let mut awareness = Awareness::new();
         awareness.apply(&update(&[(7, 5, "\"five\"")])).unwrap();
 
-        assert_eq!(awareness.apply(&update(&[(7, 6, "\"six\"")])).unwrap(), vec![7]);
+        assert_eq!(
+            awareness.apply(&update(&[(7, 6, "\"six\"")])).unwrap(),
+            vec![7]
+        );
         assert_eq!(state_of(&awareness, 7).as_deref(), Some("\"six\""));
 
         // Late, out of order, or a duplicate. Nothing changes, and nothing is
         // broadcast — which is what stops a room of peers echoing each other.
-        assert!(awareness.apply(&update(&[(7, 4, "\"four\"")])).unwrap().is_empty());
-        assert!(awareness.apply(&update(&[(7, 6, "\"again\"")])).unwrap().is_empty());
+        assert!(awareness
+            .apply(&update(&[(7, 4, "\"four\"")]))
+            .unwrap()
+            .is_empty());
+        assert!(awareness
+            .apply(&update(&[(7, 6, "\"again\"")]))
+            .unwrap()
+            .is_empty());
         assert_eq!(state_of(&awareness, 7).as_deref(), Some("\"six\""));
     }
 
@@ -179,7 +197,10 @@ mod tests {
         awareness.apply(&update(&[(7, 3, "\"here\"")])).unwrap();
 
         // How one peer tells the room that a third party has gone.
-        assert_eq!(awareness.apply(&update(&[(7, 3, "null")])).unwrap(), vec![7]);
+        assert_eq!(
+            awareness.apply(&update(&[(7, 3, "null")])).unwrap(),
+            vec![7]
+        );
         assert_eq!(state_of(&awareness, 7), None);
     }
 
@@ -208,7 +229,10 @@ mod tests {
         awareness.apply(&update(&[(7, 4, "\"here\"")])).unwrap();
         awareness.remove(&[7]);
 
-        assert!(awareness.apply(&update(&[(7, 4, "\"here\"")])).unwrap().is_empty());
+        assert!(awareness
+            .apply(&update(&[(7, 4, "\"here\"")]))
+            .unwrap()
+            .is_empty());
         assert_eq!(state_of(&awareness, 7), None);
     }
 
@@ -255,7 +279,9 @@ mod tests {
     #[test]
     fn present_and_clients_disagree_once_somebody_leaves() {
         let mut awareness = Awareness::new();
-        awareness.apply(&update(&[(7, 1, "\"a\""), (8, 1, "\"b\"")])).unwrap();
+        awareness
+            .apply(&update(&[(7, 1, "\"a\""), (8, 1, "\"b\"")]))
+            .unwrap();
         awareness.remove(&[7]);
 
         assert_eq!(awareness.present(), vec![8]);

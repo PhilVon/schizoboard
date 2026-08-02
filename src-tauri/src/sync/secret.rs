@@ -226,7 +226,9 @@ impl SecretStore {
 /// carefully as a real one and would be worth nothing.
 fn looks_like_a_secret(value: &str) -> bool {
     (16..=128).contains(&value.len())
-        && value.chars().all(|c| c.is_ascii_hexdigit() && !c.is_uppercase())
+        && value
+            .chars()
+            .all(|c| c.is_ascii_hexdigit() && !c.is_uppercase())
 }
 
 /// Written whole or not at all, so a crash mid-write cannot leave a board
@@ -255,7 +257,9 @@ mod tests {
     fn a_secret_is_thirty_two_hex_characters() {
         let secret = generate();
         assert_eq!(secret.len(), SECRET_BYTES * 2);
-        assert!(secret.chars().all(|c| c.is_ascii_hexdigit() && !c.is_uppercase()));
+        assert!(secret
+            .chars()
+            .all(|c| c.is_ascii_hexdigit() && !c.is_uppercase()));
     }
 
     #[test]
@@ -326,9 +330,20 @@ mod tests {
         // Half a write, a stray editor, somebody's idea of a helpful comment.
         // Every one of them regenerates rather than being hosted with.
         let (_dir, store) = store();
-        for rubbish in ["", "   ", "not hex", "abc", &"f".repeat(129), "ABCDEF0123456789"] {
+        for rubbish in [
+            "",
+            "   ",
+            "not hex",
+            "abc",
+            &"f".repeat(129),
+            "ABCDEF0123456789",
+        ] {
             std::fs::write(store.root.join("board"), rubbish).unwrap();
-            assert_eq!(store.get("board"), None, "{rubbish:?} read back as a secret");
+            assert_eq!(
+                store.get("board"),
+                None,
+                "{rubbish:?} read back as a secret"
+            );
         }
     }
 
@@ -364,7 +379,10 @@ mod tests {
             "demo.",
             "demo..",
         ] {
-            assert!(store.remember(escape, &generate()).is_err(), "{escape:?} was written");
+            assert!(
+                store.remember(escape, &generate()).is_err(),
+                "{escape:?} was written"
+            );
             assert_eq!(store.get(escape), None);
         }
         // Nothing was created outside the store, and the store is still empty.

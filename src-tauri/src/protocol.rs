@@ -633,7 +633,11 @@ mod tests {
                 .body(Vec::new())
                 .unwrap();
             let response = respond(&store, &request);
-            assert_eq!(response.status(), StatusCode::PARTIAL_CONTENT, "from {start}");
+            assert_eq!(
+                response.status(),
+                StatusCode::PARTIAL_CONTENT,
+                "from {start}"
+            );
             assert_eq!(response.headers()[header::CONTENT_TYPE], "video/mp4");
             played.extend_from_slice(response.body());
         }

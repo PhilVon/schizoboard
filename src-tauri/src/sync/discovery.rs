@@ -345,7 +345,10 @@ mod tests {
         let info = advertisement("peer-1", "demo", &fingerprint, 4321).expect("should build");
 
         assert_eq!(info.get_property_val_str(KEY_BOARD), Some("demo"));
-        assert_eq!(info.get_property_val_str(KEY_FINGERPRINT), Some(&*fingerprint));
+        assert_eq!(
+            info.get_property_val_str(KEY_FINGERPRINT),
+            Some(&*fingerprint)
+        );
         assert_eq!(info.get_property_val_str(KEY_VERSION), Some(VERSION));
         assert_eq!(info.get_port(), 4321);
 
@@ -433,7 +436,11 @@ mod tests {
         // the webview has nowhere to put. The whole `fe80::/10` block, not just
         // the obvious `fe80:`.
         for link_local in ["fe80::1", "fe81::1", "feba::1", "febf:ffff::1"] {
-            assert_eq!(read_peer(&announcement(&[v6(link_local)])), None, "{link_local}");
+            assert_eq!(
+                read_peer(&announcement(&[v6(link_local)])),
+                None,
+                "{link_local}"
+            );
         }
         // And the addresses either side of the block are not link-local.
         assert!(read_peer(&announcement(&[v6("fe7f:ffff::1")])).is_some());
@@ -492,7 +499,11 @@ mod tests {
         assert_eq!(peer.port, 4322);
         // And it is the *other* one — the browse loop must skip our own
         // announcement, which comes back to us like everybody else's.
-        assert!(peer.instance.starts_with("schizoboard-test-second."), "{}", peer.instance);
+        assert!(
+            peer.instance.starts_with("schizoboard-test-second."),
+            "{}",
+            peer.instance
+        );
     }
 
     /// The same two boards, with different secrets.

@@ -139,6 +139,89 @@ export interface AssetMeta {
   pages: number | null;
 }
 
+// --- reading a document (T-297, T-299, T-318) -------------------------------
+
+/**
+ * One page of a case file, as the shell reads it.
+ *
+ * **`width` and `height` are points and are both zero for a text file**, which
+ * is the honest answer rather than a missing one. A PDF states the shape it is
+ * meant to be looked at in; a text file states nothing, so the sheet it goes on
+ * is the board's decision and `text.rs`'s 66×46 grid is what sizes it. A reading
+ * surface that treats a zero as a page shape draws a page with no area.
+ *
+ * `index` is one-based — the number printed on it, and the second half of the
+ * `(sha256, page)` pair every citation will carry (D-60).
+ */
+export interface DocumentPage {
+  readonly index: number;
+  readonly width: number;
+  readonly height: number;
+  readonly content: PageContent;
+}
+
+/**
+ * What is on a page. Five answers, and the distinctions between them are the
+ * whole of AC-681 and AC-682.
+ *
+ * `empty` and a `plain` page holding `""` would draw the same blank sheet and
+ * only one of them is allowed to: a page that yields nothing has to *say so*,
+ * because a blank sheet where an exhibit was is the failure this union exists to
+ * stop. `unsupported` is the same rule one step further along — this build
+ * cannot read what is there, and it names what rather than passing it off as
+ * empty.
+ *
+ * The decision is per page and not per document (D-46 section 4): a filing is
+ * routinely typed pages with scanned exhibits behind them, so `text` and `image`
+ * sit side by side inside one folder.
+ */
+export type PageContent =
+  | { readonly kind: "text"; readonly runs: readonly TextRun[]; readonly figures: readonly PageFigure[] }
+  | { readonly kind: "plain"; readonly text: string }
+  | { readonly kind: "image"; readonly image: PageImage }
+  | { readonly kind: "empty" }
+  | { readonly kind: "unsupported"; readonly reason: string };
+
+/**
+ * A run of text and the box it was set in — points from the page's top left,
+ * `y` downwards, `/Rotate` already applied.
+ *
+ * A run has **no identity**: it is a positional element of a vector in
+ * content-stream order, so nothing may cite one. A page survives every extractor
+ * improvement; "run 47" survives none of them (D-60).
+ */
+export interface TextRun {
+  readonly text: string;
+  readonly x: number;
+  readonly y: number;
+  readonly width: number;
+  readonly height: number;
+  readonly size: number;
+}
+
+/** A lifted image on a typed page, and where on it that image sits. */
+export interface PageFigure {
+  readonly x: number;
+  readonly y: number;
+  readonly width: number;
+  readonly height: number;
+  readonly content:
+    | { readonly kind: "image"; readonly image: PageImage }
+    | { readonly kind: "unsupported"; readonly reason: string };
+}
+
+/**
+ * What a lifted image is, without being it. `bytes` is a **length** — the bytes
+ * themselves come back from `documentPageImage`, because half a megabyte of
+ * scan through JSON is a third bigger again and nothing here would read it.
+ */
+export interface PageImage {
+  readonly mime: string;
+  readonly width: number;
+  readonly height: number;
+  readonly bytes: number;
+}
+
 /** Everything on disk for this board's document, as opaque frames. */
 export interface DocState {
   /** Most recent snapshot, or null on a board that has never been compacted. */
@@ -424,6 +507,61 @@ export interface Platform {
    * because D-47 measured that most of these strings are not names.
    */
   assetTitle(sha256: string): Promise<string | null>;
+
+  // --- reading a document (T-318) -----------------------------------------
+
+  /**
+   * How many pages, without reading one.
+   *
+   * The asset record's `pages` answers this without touching the disk and is
+   * what the folder's thickness is drawn from, so this is for the case that
+   * record cannot cover: a document ingested by a machine which could not count
+   * it — an older build, or a peer that has never held the bytes.
+   *
+   * Costs a structure load and no page read: 3 to 53 ms on the corpus D-47
+   * swept, 221 ms on the largest file that machine held.
+   */
+  documentPageCount(sha256: string): Promise<number>;
+
+  /**
+   * One page, by the number printed on it, one-based.
+   *
+   * `null` means there is no such page. That is a *different answer* from a page
+   * which came back `empty`, and collapsing the two would turn "you asked for
+   * page 300 of a 200-page filing" into "page 300 is blank".
+   *
+   * **Costs one page and not a document**, which is a requirement rather than an
+   * optimisation: T-299 measured a real 100-page scan at 5,860 ms to read
+   * through and 57 ms to read the first page of. The shell holds the structure
+   * open between calls, which is what makes turning a page affordable and what
+   * `documentClose` exists to give back.
+   */
+  documentPage(sha256: string, index: number): Promise<DocumentPage | null>;
+
+  /**
+   * The bytes of a lifted image — the page's own scan when `figure` is absent,
+   * or the nth figure on a typed page.
+   *
+   * Ask only when `documentPage` has already said there is an image at that
+   * pair; the page is in the shell's cache by then, so this is a copy rather
+   * than a second decode. An empty result means the pair names no image, which
+   * covers all four ways that can be true and is one thing to a caller.
+   */
+  documentPageImage(sha256: string, index: number, figure?: number): Promise<Uint8Array>;
+
+  /**
+   * The folder has been shut. Let the file go.
+   *
+   * The shell holds **one** document open at a time and holding one costs about
+   * the size of the file — a 51 MB scan is 51 MB of working set. The pages
+   * already read stay cached, so opening the same folder again does not re-do
+   * the work; it is the document-sized allocation this hands back.
+   *
+   * Nothing breaks if it is never called: the next document opened evicts this
+   * one. What it costs is one file's worth of memory held for as long as the
+   * board is up.
+   */
+  documentClose(sha256: string): Promise<void>;
 
   // --- document: an append-only log of opaque frames ----------------------
   docAppendUpdate(bytes: Uint8Array): Promise<void>;
