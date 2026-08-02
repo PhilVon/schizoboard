@@ -318,8 +318,10 @@ export class SelectTool implements Tool {
       { keys: "double-click a pin", does: "follow the whole thread" },
       // The gesture nothing else on the board suggests, which is this readout's
       // whole reason for existing: a case file offers *Open* on its menu and
-      // there is no other sign that the key exists.
-      { keys: "Enter", does: "open a case file, a tape or a cassette" },
+      // there is no other sign that the key exists. Shutting it says so here
+      // too, because clicking away deliberately does *not* do it (T-273) — so
+      // without this line an open folder is a state with no visible way out.
+      { keys: "Enter", does: "open a case file, and Esc shuts it" },
       { keys: "wheel", does: "sag one gap, selected string" },
       { keys: "Alt+wheel", does: "sag every gap at once", holds: ["Alt"] },
       { keys: "1-9", does: "slack presets, taut to slack" },
