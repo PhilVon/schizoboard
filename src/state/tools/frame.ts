@@ -320,7 +320,12 @@ export function stringAt(
   const board = camera.screenToBoard(screenX, screenY);
   const hit = hitString(board.x, board.y, STRING_GRAB_PX / camera.zoom);
   if (hit === null) return null;
-  if (hitTest(board.x, board.y) !== null && behindItems(scene, hit, shown)) return null;
+  // `behindItems` first, and the order is not style: this runs on every frame
+  // the cursor moves over a string, and `hitTest` is a walk of the items. The
+  // cheap half answers false for every string on every board that has never
+  // quoted a case file, which is what the short-circuit was already worth
+  // before there was a second way to be behind something.
+  if (behindItems(scene, hit, shown) && hitTest(board.x, board.y) !== null) return null;
   return hit;
 }
 
