@@ -804,6 +804,7 @@ export class SelectTool implements Tool {
       ctx.hitString,
       at.x,
       at.y,
+      ctx.shownPage,
     );
     if (hit === null || !ctx.selection.hasString(hit.string)) return null;
     const nodeId = ctx.scene.strings.get(hit.string)?.nodes[hit.node]?.nodeId;
@@ -908,6 +909,7 @@ export class SelectTool implements Tool {
       ctx.hitString,
       at.x,
       at.y,
+      ctx.shownPage,
     );
     if (onString !== null) {
       this.pendingString = onString;

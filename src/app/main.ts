@@ -2640,7 +2640,7 @@ async function boot(): Promise<void> {
       return;
     }
 
-    const hit = stringAt(scene, camera, hitItem, hitPin, hitString, e.clientX, e.clientY);
+    const hit = stringAt(scene, camera, hitItem, hitPin, hitString, e.clientX, e.clientY, shownPage);
     if (hit !== null) {
       const held = selection.hasString(hit.string);
       open(
@@ -3669,7 +3669,7 @@ async function boot(): Promise<void> {
         tools.current === select || isScissors(tools.modifier("Control"), tools.modifier("Alt"));
       const offer =
         asking && !select.gesturing
-          ? stringAt(scene, camera, hitItem, hitPin, hitString, cursor.x, cursor.y)
+          ? stringAt(scene, camera, hitItem, hitPin, hitString, cursor.x, cursor.y, shownPage)
           : null;
       hoveredString = offer && { x: offer.x, y: offer.y };
     }

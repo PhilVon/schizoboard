@@ -60,6 +60,7 @@ export class Scissors {
           ctx.hitString,
           input.at.x,
           input.at.y,
+          ctx.shownPage,
         );
         // No `keepPins` to pass: a string owns nothing but its nodes, so removing
         // it leaves every pin it hung from where it is (`crdt/ops/strings.ts`).
