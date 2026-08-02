@@ -103,9 +103,11 @@ describe("the tool info bar", () => {
     bar.sync(SELECT, held());
     bar.sync(MARKER, held());
     expect(lead()).toBe(`Marker (M) — draw`);
-    // The pen's two plain rows; its Ctrl row is behind the chip.
+    // The pen's three plain rows; its Ctrl row is behind the chip. The arrows
+    // joined them at T-278, when a page became something a pen can turn.
     expect(toolRows().map((r) => r.querySelector(".toolinfo-keys")?.textContent)).toEqual([
       "[ and ]",
+      "arrows",
       "Esc",
     ]);
   });

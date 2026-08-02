@@ -144,7 +144,8 @@ frame(t):
                 intersect viewport+margin; run sleep checks; apply impulses
   4. LAYOUT     recompute world pin positions for dirty items
   5. DOM        write transforms for dirty items only          ← WRITE PHASE
-  6. INK        re-raster items in the dirty-ink set
+  6. INK        re-raster items in the dirty-ink set, and any open case file
+                that has been turned to another page (T-278)
   7. ROPES      clear + draw under canvas, then over canvas, in screen space
   8. OVERLAY    remote cursors, ghosts, wet ink, selection chrome
   9. FLUSH      awareness (every 2nd frame), doc ops queued this frame

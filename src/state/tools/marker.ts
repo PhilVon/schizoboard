@@ -180,6 +180,12 @@ function hintFor(name: string, key: string, verb: string, nib: string): ToolHint
         holds: ["Control"],
       },
       { keys: "[ and ]", does: `size ${nib}` },
+      // The row that says redaction exists, and the only place on screen that
+      // does. Select's readout carries the same line for the same reason (the
+      // arrows are the one binding nobody would think to try) and it is here
+      // *again* because a person holding a pen has no reason to believe a key
+      // bound in another tool still works - which until T-278 it did not.
+      { keys: "arrows", does: "turn a page in an open case file" },
       // Not "finish" — `Escape` here *discards* the run in progress. A stroke is
       // committed on pointer-up and by nothing else, and a readout that said
       // otherwise would cost somebody a line they thought they had kept.

@@ -178,7 +178,8 @@ stroke: Y.Map {
   tool, color, size, opacity, seed,
   bbox: [x0, y0, x1, y1],
   z,
-  pts: Uint8Array          // packed
+  pts: Uint8Array,         // packed
+  page                     // optional; absent for a mark on the object itself
 }
 ```
 
@@ -189,6 +190,7 @@ stroke: Y.Map {
 | `bbox` | In the stroke's own coordinate space. Used for culling and hit-testing without unpacking `pts`. |
 | `z` | Ordering within the item or tile |
 | `pts` | Packed input points (§6.1) |
+| `page` | Which page of the item's document the mark is on, one-based. **Absent** for a mark on the object itself, which is every stroke on a photograph, on a sheet of paper, on the cover of a shut case file, and on bare cork. Never present on board ink. |
 
 **Coordinate space** is item-local for item strokes, board for board ink. It is decided at pen-down and never changes.
 
@@ -210,6 +212,38 @@ Roughly 3–4 bytes per point against 50-odd for JSON floats. Yjs stores `Uint8A
 Everything up to pen-up is local and ephemeral (§9). The commit is a single `Y.Map` insertion — which makes a stroke atomic for undo, deletion and hit-testing.
 
 **Erasing deletes stroke records.** The smudge eraser is itself stored as a normal stroke with `tool: 'erase'`, rendered with `destination-out`. Ink is never rasterised and flattened; that would destroy both undo and merge.
+
+### 6.3 The page a mark is on
+
+A case file is the only object on this board with two faces: a kraft cover when
+it is shut, and one page of the document inside it when it is open. So it is the
+only object for which "where the ink is" needs a second answer, and `page` is it
+(T-278). Marker on an open page is redaction.
+
+The rule the reader, the pen, the rubber and the raster all follow is one
+sentence: **a mark is drawn when the surface it was made on is the surface you
+are looking at.** A shut folder shows its cover, an open one shows the page, and
+a photograph shows everything — through the rule rather than as an exception to
+it.
+
+Three things it is not:
+
+- **It is not the reader's position.** Which page *you* are on is deliberately
+  local and never on the wire, for the reason the camera came off awareness. This
+  is a different fact about a different thing: where a mark was made, which is a
+  property of the mark and as durable as its own coordinates.
+- **It is not written unless it is a page.** A board of ordinary ink produces
+  byte-identical records to the build before this one, and a key that is absent
+  is also a key an older build cannot misread.
+- **It does not redact the text.** Page text is a derived local index read from
+  the file's own bytes (§2.6), and no ink reaches it — so `Ctrl+F` still finds a
+  name under a black bar on this machine. That is the honest answer rather than a
+  gap: the file is never written back to, and the *export* — the thing you hand
+  to somebody else — does carry the bar with no text under it. Q-279.
+
+The **wet** stroke carries the page too (§9.1), because a folder open here may be
+shut on the peer watching, and a run whose face is not the face they are looking
+at has to be drawn nowhere rather than across a kraft cover.
 
 ---
 
@@ -265,7 +299,7 @@ One state object per client, flushed at most every other frame. Never persisted;
   cursor:    { x, y, tool },
   selection: { items: [...], strings: [...], pins: [...] },
   grab:      null | { kind, ids, poses: [...], seq, t, phase },
-  wet:       [ { id, item, tool, color, size, opacity, base, pts: [...] }, ... ],
+  wet:       [ { id, item, page?, tool, color, size, opacity, base, pts: [...] }, ... ],
   locks:     { segments: [...] }
 }
 ```
@@ -285,6 +319,8 @@ Awareness has no append semantics, so naively sending the whole in-progress poly
 Instead send a **sliding window**: a `base` index plus the last 64 points. The receiver keeps everything it has ever seen for that stroke id and splices. This is self-healing across dropped updates as long as the window covers the gap — 64 points at 30 Hz is about two seconds — and the payload is constant-size.
 
 Points are decimated to roughly one per six screen pixels before sending. The remote render is a preview, not an archive; the real stroke arrives on commit.
+
+**`page` is optional and absent when there is none** (T-278) — the one field here that is not always sent, because nearly every stroke anybody draws is on no page at all and this is four characters of JSON thirty times a second that would say nothing. It is on the wire for the same reason `item` is: without it the receiver cannot know which surface to draw the ghost on. A folder open on the sender's board may be shut on the receiver's, or open at a different page, and a run whose face is not the face they are looking at is drawn *nowhere* rather than across a kraft cover. A `page` that is present and not a positive integer drops the whole run rather than falling back to the object — unlike a bad colour there is no nearly-right answer, because the two candidates are different surfaces.
 
 ### 9.2 The handoff race
 
@@ -427,3 +463,4 @@ The fuzz harness (Risk 3 in `DESIGN.md`) runs two documents through randomised c
 7. A stroke's `bbox` always contains its unpacked points.
 8. Cascades leave no orphaned strokes.
 9. Every `z` key is a valid fractional index and the total order is identical on both documents.
+10. A stroke's `page`, when it has one, is a positive integer — and a stroke on board ink never has one.

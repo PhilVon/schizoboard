@@ -25,13 +25,32 @@ let camera: Camera;
 let scene: Scene;
 let under: string | null;
 let done: number;
+/** Which page of the surface under the rubber is showing, for `shownPage` -
+ *  T-278. Null is a board with nothing open, which is every test written before
+ *  the ones about redaction. */
+let openPage: number | null;
+/** Every page turn the tool asked for, in order. A spy for the reason the
+ *  marker's test gives: an arrow leaves no other trace at all. */
+let turned: number[];
 
 function at(x: number, y: number, ctrl = false): PointerSample {
   return { x, y, shift: false, ctrl, alt: false };
 }
 
-/** A horizontal run of ink in whatever space the caller is putting it in. */
-function stroke(id: string, x0: number, y: number, x1: number, size = 6): SceneStroke {
+/**
+ * A horizontal run of ink in whatever space the caller is putting it in.
+ *
+ * `page` is which face of that space it is on, and null - the default, and what
+ * every test written before T-278 wants - is the object itself.
+ */
+function stroke(
+  id: string,
+  x0: number,
+  y: number,
+  x1: number,
+  size = 6,
+  page: number | null = null,
+): SceneStroke {
   const samples: InkSample[] = [];
   const steps = 10;
   for (let i = 0; i <= steps; i++) {
@@ -45,7 +64,7 @@ function stroke(id: string, x0: number, y: number, x1: number, size = 6): SceneS
     opacity: 1,
     seed: 1,
     z: "a0",
-    page: null,
+    page,
     bbox: [Math.min(x0, x1), y, Math.max(x0, x1), y],
     samples,
   };
@@ -84,6 +103,8 @@ beforeEach(() => {
   camera.setView(-500, -400, 1);
   scene = new Scene();
   under = null;
+  openPage = null;
+  turned = [];
   tool = new EraserTool({ onDone: () => done++ });
   ctx = {
     scene,
@@ -92,13 +113,20 @@ beforeEach(() => {
     selection: new Selection(),
     hitTest: () => under,
     inkHitTest: () => under,
-    shownPage: () => null,
+    /** Which face the surface is showing (T-278) - set by the tests about
+     *  redaction and null everywhere else. */
+    shownPage: () => openPage,
     hitPin: () => null,
     hitString: () => null,
     // Nothing to put a caret in, in a harness with no presentation (T-179).
     edit: () => undefined,
     open: () => false,
-    turnPage: () => false,
+    /** True, because a test that presses an arrow has something open, and the
+     *  tool ignores the answer, so the count is all there is to watch. */
+    turnPage: (by) => {
+      turned.push(by);
+      return true;
+    },
     held: new Set<string>(),
     write: {
       setPoses: () => {},
@@ -343,5 +371,124 @@ describe("the rubber itself", () => {
     tool.handle({ kind: "cancel" }, ctx);
     expect(tool.sweeping).toBe(false);
     expect(ids()).toEqual(["a"]);
+  });
+});
+
+/**
+ * The face that is showing - T-278.
+ *
+ * A rubber that took a mark on page four while the reader was looking at page
+ * three would be erasing something nobody can see, and there is no gesture on
+ * this board that does that. It fails silently in both directions and neither
+ * shows up under the hand: the mark you were aiming at is still there when you
+ * turn back to it, and one you never touched has gone.
+ */
+describe("erasing on the page that is showing", () => {
+  beforeEach(() => {
+    // A case file at the board origin, 400 across, so its local space and the
+    // board's differ only by the centring.
+    photo("f", 0, 0);
+  });
+
+  it("takes the mark on the open page and leaves the identical one behind it", () => {
+    // The same run twice, in the same place, on two pages of one filing, which
+    // is what a form struck through the same way on every page looks like, and
+    // the only fixture where geometry cannot break the tie.
+    scene.putStrokes("f", [stroke("three", -100, 0, 100, 6, 3), stroke("four", -100, 0, 100, 6, 4)]);
+    openPage = 3;
+
+    down(500, 400);
+    up(500, 400);
+
+    expect(ids()).toEqual(["three"]);
+  });
+
+  it("takes the cover marks off a shut item and leaves what is inside alone", () => {
+    scene.putStrokes("f", [stroke("cover", -100, 0, 100), stroke("inside", -100, 0, 100, 6, 3)]);
+    // Shut, so `shownPage` answers null - which is the object itself, the kraft
+    // of the folder rather than any page of it.
+    openPage = null;
+
+    down(500, 400);
+    up(500, 400);
+
+    // Both are under the rubber and only one is on the face being rubbed. The
+    // marks inside come back when the folder is turned up again, which is what
+    // makes it a filing rather than a stack of ink.
+    expect(ids()).toEqual(["cover"]);
+  });
+
+  it("does not put cork ink out of reach while a folder is open", () => {
+    scene.putBoardStrokes("0,0", [stroke("c", -100, 0, 100)]);
+    openPage = 3;
+
+    // `Ctrl` for the cork under the paper, which is the same escape hatch that
+    // reaches it in every other test here.
+    down(500, 400, true);
+    up(500, 400);
+
+    // The cork has one face and it is not page three of anything. A rubber that
+    // asked the open folder which page the *cork* was on would leave every mark
+    // on the board untouchable for as long as anything was turned up.
+    expect(ids()).toEqual(["c"]);
+    expect(erased[0]!.surface).toEqual({ kind: "tile", key: "0,0" });
+  });
+});
+
+/**
+ * Turning a page with the rubber still in hand - T-278.
+ *
+ * The same binding, for the same reason, as the marker's: rubbing out a mark on
+ * page four means getting to page four, and a tool that could not turn one would
+ * make that Escape, arrow, `E` for every page.
+ */
+describe("turning the page while the rubber is held", () => {
+  function key(code: string, mods: { shift?: boolean; ctrl?: boolean; alt?: boolean } = {}): void {
+    tool.handle(
+      {
+        kind: "key",
+        code,
+        shift: mods.shift ?? false,
+        ctrl: mods.ctrl ?? false,
+        alt: mods.alt ?? false,
+      },
+      ctx,
+    );
+  }
+
+  it("turns forward on the right arrow and back on the left", () => {
+    key("ArrowRight");
+    key("ArrowLeft");
+    key("ArrowLeft");
+
+    expect(turned).toEqual([1, -1, -1]);
+    // And the rubber stays in the reader's hand: this is not Escape by another
+    // name.
+    expect(done).toBe(0);
+  });
+
+  it("refuses mid-sweep, so the page cannot change under the hand", () => {
+    photo("f", 0, 0);
+    scene.putStrokes("f", [stroke("a", -100, 0, 100, 6, 3)]);
+    openPage = 3;
+
+    down(500, 400);
+    key("ArrowRight");
+    up(500, 400);
+
+    // A sweep asks which page is showing on every sample, so a turn accepted
+    // here would move the rubber onto a different face halfway along a stroke of
+    // the hand, taking ink off two pages in one gesture, on the second of which
+    // the reader never saw where the rubber was.
+    expect(turned).toEqual([]);
+    expect(ids()).toEqual(["a"]);
+  });
+
+  it("refuses with a modifier held, which is somebody else's shortcut", () => {
+    key("ArrowRight", { shift: true });
+    key("ArrowRight", { ctrl: true });
+    key("ArrowLeft", { alt: true });
+
+    expect(turned).toEqual([]);
   });
 });

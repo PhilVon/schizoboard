@@ -123,6 +123,40 @@ describe("what a copy takes", () => {
     expect(read[0]!.pts.length).toBeGreaterThan(0);
   });
 
+  it("carries which page a redaction was on, and writes no page for the rest", () => {
+    // A copy of a case file holds the same document with the same pages (the
+    // clip carries `assetId`), so a bar that came off page four belongs on page
+    // four of the copy. T-278.
+    const { itemId } = note(0, 0);
+    for (const page of [null, 4]) {
+      commitStroke(board, {
+        item: itemId,
+        tool: "marker",
+        color: page === null ? "#111111" : "#222222",
+        size: 4,
+        page,
+        samples: [
+          { x: 0, y: 0, pressure: 0.5 },
+          { x: 20, y: 20, pressure: 0.5 },
+        ],
+      });
+    }
+
+    const clip = copySubgraph(board, { items: [itemId], pins: [] })!;
+    expect(clip.items[0]!.strokes.map((s) => s.page)).toEqual([null, 4]);
+
+    const pasted = pasteClip(board, clip, { x: 800, y: 0 });
+    const strokes = board.items.get(pasted.items[0]!)!.get("strokes") as YMap;
+    const read = [...(strokes as unknown as Map<string, YMap>)].sort((a, b) =>
+      (readStroke(a[0], a[1])!.z < readStroke(b[0], b[1])!.z ? -1 : 1),
+    );
+    expect(read.map(([id, map]) => readStroke(id, map)!.page)).toEqual([null, 4]);
+    // And the cover mark's record has no key at all, so a paste of ordinary ink
+    // produces exactly the record the pen would have.
+    expect(read[0]![1].has("page")).toBe(false);
+    expect(read[1]![1].has("page")).toBe(true);
+  });
+
   it("keeps a photograph's hash and registers what it is on a board that has never seen it", () => {
     const [made] = createItems(board, [
       {

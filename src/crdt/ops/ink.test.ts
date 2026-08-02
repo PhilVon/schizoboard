@@ -752,3 +752,84 @@ describe("an id the caller brought with it", () => {
     expect([...strokeMap(b, id).keys()]).toEqual([]);
   });
 });
+
+/**
+ * T-278: which page of the item's document a mark is on.
+ *
+ * The property that matters most here is the *absent* one. Every stroke this
+ * application has written until now has no `page` key, and a build that started
+ * writing an explicit null would make every one of them count as edited the
+ * first time a peer touched it - so the first test is the one that would fail
+ * if the field were written unconditionally, and it is the reason the write is
+ * a conditional rather than a `set`.
+ */
+describe("the page a stroke is on", () => {
+  it("writes no key at all for a mark on the object itself", () => {
+    const b = board();
+    const item = note(b);
+    // Both spellings a caller can use for "there is no page", because both are
+    // reachable: the pen sends null, and everything that is not the pen leaves
+    // it out entirely.
+    commitStroke(b, { item, tool: "marker", color: "#000", size: 6, samples: samples(), page: null });
+    const map = strokeMap(b, item);
+    const id = [...map.keys()][0]!;
+    expect(map.get(id)!.has("page")).toBe(false);
+    expect(readStroke(id, map.get(id)!)!.page).toBeNull();
+
+    const other = note(b);
+    commitStroke(b, { item: other, tool: "marker", color: "#000", size: 6, samples: samples() });
+    const second = strokeMap(b, other);
+    expect(second.get([...second.keys()][0]!)!.has("page")).toBe(false);
+  });
+
+  it("stores the page a mark was drawn on, and reads it back", () => {
+    const b = board();
+    const item = note(b);
+    commitStroke(b, { item, tool: "marker", color: "#000", size: 6, samples: samples(), page: 4 });
+    expect(only(b, item).page).toBe(4);
+    expect(checkInvariants(b)).toEqual([]);
+  });
+
+  it("refuses a page on bare cork, where there is no document to have one", () => {
+    const b = board();
+    // `item: null` is the cork, and a tile belongs to no item - so a number here
+    // could only be a caller's mistake, and it must not reach the record.
+    commitStroke(b, { item: null, tool: "marker", color: "#000", size: 6, samples: samples(), page: 2 });
+    const tiles = [...b.boardInk.values()];
+    expect(tiles).toHaveLength(1);
+    const tile = tiles[0]!;
+    const id = [...tile.keys()][0]!;
+    expect(tile.get(id)!.has("page")).toBe(false);
+  });
+
+  it("keeps the mark and drops the page when the number is not one", () => {
+    const b = board();
+    // NaN is the reachable shape: the number comes off the reader's position,
+    // which is arithmetic against a page count that came from a peer's asset
+    // record. Losing which page a mark was on is a smaller wrong than losing the
+    // mark, so unlike a NaN *sample* this does not refuse the run.
+    for (const page of [Number.NaN, 0, -3, 1.5]) {
+      const item = note(b);
+      commitStroke(b, { item, tool: "marker", color: "#000", size: 6, samples: samples(), page });
+      expect(strokeMap(b, item).size, `page ${String(page)}`).toBe(1);
+      expect(only(b, item).page, `page ${String(page)}`).toBeNull();
+    }
+    expect(checkInvariants(b)).toEqual([]);
+  });
+
+  it("reads a nonsense page off the wire as no page", () => {
+    const b = board();
+    const item = note(b);
+    commitStroke(b, { item, tool: "marker", color: "#000", size: 6, samples: samples(), page: 3 });
+    const map = strokeMap(b, item);
+    const id = [...map.keys()][0]!;
+
+    // A peer on a build we have never seen, writing whatever it likes. The mark
+    // is still a mark somebody made; it goes back on the object, where it is at
+    // least visible and can be rubbed out.
+    for (const bad of ["4", 0, -1, 2.5, Number.NaN, null]) {
+      map.get(id)!.set("page", bad);
+      expect(readStroke(id, map.get(id)!)!.page, `page ${String(bad)}`).toBeNull();
+    }
+  });
+});

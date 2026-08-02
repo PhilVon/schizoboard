@@ -93,6 +93,9 @@ export class EraserTool implements Tool {
         holds: ["Control"],
       },
       { keys: "[ and ]", does: "size the rubber" },
+      // See the marker's copy of this row (T-278): the rubber follows the page
+      // as it turns, so it can reach a redaction without putting the tool down.
+      { keys: "arrows", does: "turn a page in an open case file" },
       { keys: "Esc", does: "give the board back" },
     ],
   };

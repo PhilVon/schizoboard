@@ -724,11 +724,15 @@ describe("the stroke in progress", () => {
 
   /** One run. The parameter is a list now, because a gesture that crosses off
    *  its surface is several (T-137). */
-  function wet(count: number, item: string | null = null): Parameters<Overlay["draw"]>[10] {
-    return count === 0 ? [] : [run(count, item)];
+  function wet(
+    count: number,
+    item: string | null = null,
+    page: number | null = null,
+  ): Parameters<Overlay["draw"]>[10] {
+    return count === 0 ? [] : [run(count, item, page)];
   }
 
-  function run(count: number, item: string | null = null) {
+  function run(count: number, item: string | null = null, page: number | null = null) {
     const samples = [];
     for (let i = 0; i < count; i++) samples.push({ x: i * 20, y: 0, pressure: 0.5 });
     return {
@@ -738,12 +742,12 @@ describe("the stroke in progress", () => {
       size: 6,
       opacity: 1,
       item,
-      page: null,
+      page,
       samples,
     };
   }
 
-  function draw(count: number, item: string | null = null): void {
+  function draw(count: number, item: string | null = null, page: number | null = null): void {
     overlay.draw(
       camera,
       scene,
@@ -755,7 +759,7 @@ describe("the stroke in progress", () => {
       null,
       null,
       null,
-      wet(count, item),
+      wet(count, item, page),
     );
   }
 
@@ -797,6 +801,45 @@ describe("the stroke in progress", () => {
     // samples in, and the origin is not a reasonable guess at one.
     draw(4, "gone");
     expect(calls.fills).toBe(0);
+  });
+
+  it("draws a mark on the page the reader is open at — T-278", () => {
+    add("folder-1");
+    overlay.setShownPage(() => 4);
+    draw(4, "folder-1", 4);
+    expect(calls.fills).toBe(1);
+  });
+
+  it("draws nothing for a mark on a face this screen is not showing", () => {
+    add("folder-1");
+    overlay.setShownPage(() => 4);
+
+    // Page three of the same folder. There is nowhere on this screen for it to
+    // be, which is the same answer as an item that has left the board — and
+    // drawing it anyway would put a peer's line from one page across another.
+    draw(4, "folder-1", 3);
+    expect(calls.fills).toBe(0);
+
+    // And the cover of a folder that is open. This is the frame T-278 exists to
+    // stop from the other direction: a mark filed against the object itself is
+    // not a mark on whatever page happens to be turned up.
+    draw(4, "folder-1", null);
+    expect(calls.fills).toBe(0);
+  });
+
+  it("treats every item as its own face when nothing has told it otherwise", () => {
+    add("folder-1");
+    // No resolver, which is a rig with no reader behind it — and every test in
+    // this file that is not about pages. Nothing is open, so nothing is on a
+    // page, and a stroke on the object itself is drawn.
+    draw(4, "folder-1", null);
+    expect(calls.fills).toBe(1);
+
+    // A run that claims a page on a board that has no reader has still named a
+    // surface this canvas cannot place, and inventing one is what would put it
+    // on the wrong thing.
+    draw(4, "folder-1", 4);
+    expect(calls.fills).toBe(1);
   });
 });
 
