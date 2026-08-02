@@ -81,6 +81,28 @@ export interface BoardClipboardOptions {
   onPasted?: (pasted: PastedClip) => void;
   /** Where a verb with no visible result says it happened (T-164). */
   say?: (message: string) => void;
+  /**
+   * Is something covering the board — T-324.
+   *
+   * True only while a film is on the set, which is the one thing in this
+   * application that takes the screen (DESIGN section 1.3). It is asked here
+   * rather than swallowed at the set, and the reason is the whole of the bug:
+   *
+   * > `ui/crt.ts` is a capture-phase **keydown** listener, and a keydown swallow
+   * > can only ever be a modal for keydowns.
+   *
+   * A `cut` is a different event from the `Ctrl`+`X` that caused it, so
+   * `stopPropagation` on the key does nothing to it; and a file dragged in from
+   * the OS arrives from the shell with no key involved at all. Two of the three
+   * routes into this board are therefore not keydowns, so the modal cannot be
+   * implemented once at the set however much one would like it to be. What
+   * *can* be implemented once is the predicate, which is this — one function,
+   * asked by the boundary that actually ingests.
+   *
+   * Optional, and false when absent: a harness with no set has nothing covering
+   * its board, which is the honest answer rather than a missing one.
+   */
+  covered?: () => boolean;
 }
 
 export class BoardClipboard {
@@ -144,6 +166,12 @@ export class BoardClipboard {
     // Inside a note's editor the clipboard belongs to the text, exactly as it
     // does for `Ctrl+Z` (`app/main.ts`).
     if (isTextTarget(event.target)) return;
+    // And nothing reaches a board somebody cannot see — see [`covered`]. This
+    // is the line whose absence let `Ctrl+X` behind a playing film delete two
+    // items nobody could look at (T-324, driven). The `cut` is the one that
+    // matters and the `copy` goes with it: a copy taken from an invisible
+    // selection is a paste you did not mean, one keystroke later.
+    if (this.options.covered?.() === true) return;
     const clip = copySubgraph(this.options.board, this.options.selection.snapshot());
     // Nothing selected. Not our event — leave the clipboard alone rather than
     // emptying it, because a copy that clears what you had is worse than one

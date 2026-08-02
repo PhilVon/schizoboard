@@ -352,7 +352,7 @@ Undo: text edits are character-level and merge into sensible entries by typing p
 | Play a cassette | The same `Enter`, the same *Open* — but nothing opens, nothing is covered and the camera does not move. Again to stop |
 | Shut it | `Escape`, or `Enter` again. **Selecting something else does not** — an open document is worked *against*, so a click on the board must not shut it |
 | Turn a page | `←` / `→` while a case file is open, **in any tool** — including with a pen or a rubber in hand, because redacting page four of a fifty-page filing must not be four keystrokes a page (T-278). Refused while a pointer is down, since a mark's page is fixed at the press. Clamped at both ends rather than wrapping, and the header says which page you are on out of how many — the pair a citation carries. Where you have got to is **local**: it never enters the document and never reaches a peer, for the reason a playhead does not. The set uses the same two keys to step a tape and they do not collide — it is the one modal on this board and takes its keys before anything else sees them, so only one of the two can ever be up |
-| Watch a tape | `Enter` on a video puts it on the set instead: `Space` plays, `←` / `→` step 5s, with `Shift` 30s. `Escape` shuts it |
+| Watch a tape | `Enter` on a video puts it on the set instead: `Space` plays, `←` / `→` step 5s, with `Shift` 30s. `Escape` shuts it. **Nothing else reaches the board while it is on** — including `Ctrl+X`, `Ctrl+C`, `Ctrl+V` and a file dragged in from the OS, none of which is a keydown by the time it arrives, and all of which used to (T-324) |
 
 Zoom range is **15% to 400%**. The board is unbounded in every direction.
 

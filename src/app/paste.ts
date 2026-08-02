@@ -105,6 +105,28 @@ export interface PasteOptions {
    * refusal that cannot be announced is still a refusal.
    */
   say?: (message: string) => void;
+  /**
+   * Is something covering the board — T-324.
+   *
+   * True only while a film is on the set, which is the one thing in this
+   * application that takes the screen (DESIGN section 1.3). It is asked here
+   * rather than swallowed at the set, and the reason is the whole of the bug:
+   *
+   * > `ui/crt.ts` is a capture-phase **keydown** listener, and a keydown swallow
+   * > can only ever be a modal for keydowns.
+   *
+   * A `cut` is a different event from the `Ctrl`+`X` that caused it, so
+   * `stopPropagation` on the key does nothing to it; and a file dragged in from
+   * the OS arrives from the shell with no key involved at all. Two of the three
+   * routes into this board are therefore not keydowns, so the modal cannot be
+   * implemented once at the set however much one would like it to be. What
+   * *can* be implemented once is the predicate, which is this — one function,
+   * asked by the boundary that actually ingests.
+   *
+   * Optional, and false when absent: a harness with no set has nothing covering
+   * its board, which is the honest answer rather than a missing one.
+   */
+  covered?: () => boolean;
 }
 
 /** Everything the clipboard held, read *synchronously* — see `onPaste`. */
@@ -166,6 +188,11 @@ export class Paste {
       // The shell has the paths and has not read them yet, so a sealed board
       // costs nothing here either — see `onPaste`.
       if (boardSealed(this.options.board)) return;
+      // **The route that settles where T-324's fix belongs.** A file dragged
+      // onto the window while a film is on the set involves no keydown at all —
+      // it comes from the shell — so no amount of swallowing at `ui/crt.ts`
+      // could ever have stopped it. See [`PasteOptions.covered`].
+      if (this.options.covered?.() === true) return;
       // Where it was dropped, read now rather than when the bytes finish
       // arriving — same reason as `onPaste`.
       const at = this.options.camera.screenToBoard(x, y);
@@ -194,6 +221,11 @@ export class Paste {
     // Not `preventDefault`ed — the board is not a text field, so letting the
     // event go on its way does nothing at all.
     if (boardSealed(this.options.board)) return;
+    // And nothing lands on a board somebody cannot see (T-324). Refused here
+    // for the same reason the seal is: a paste is up to thirty seconds of
+    // network and a fileful of bytes in the store, and both would be work done
+    // for an item nobody asked for.
+    if (this.options.covered?.() === true) return;
     const data = event.clipboardData;
     // Asked before anything is read out of the transfer: a token of ours on the
     // system clipboard means the last copy on this machine was a piece of this

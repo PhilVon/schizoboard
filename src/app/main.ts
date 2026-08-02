@@ -2696,6 +2696,17 @@ async function boot(): Promise<void> {
     native,
     board,
     camera,
+    // Nothing lands on a board somebody cannot see (T-324). The set is the only
+    // thing in this application that takes the screen, and it cannot enforce
+    // that itself: it is a keydown swallow, and neither a `paste` event nor the
+    // shell's own file drop is a keydown.
+    //
+    // **`isOpen`, not `showing`.** That one hands back "the caller's own id" and
+    // is the *empty string* when nothing is on, so `showing !== null` is true
+    // forever — which typechecks, and which shipped in the first version of this
+    // line. The unit tests could not see it because they inject this predicate;
+    // what caught it was a run where the board would take no paste at all.
+    covered: () => crt.isOpen,
     claim: (data, at) => boardClipboard?.claim(data, at) === true,
     cursor: () => tools.cursor,
     // Where a refused file says so (T-260). The same surface the export report
@@ -2809,6 +2820,17 @@ async function boot(): Promise<void> {
     board,
     camera,
     selection,
+    // Nothing lands on a board somebody cannot see (T-324). The set is the only
+    // thing in this application that takes the screen, and it cannot enforce
+    // that itself: it is a keydown swallow, and neither a `paste` event nor the
+    // shell's own file drop is a keydown.
+    //
+    // **`isOpen`, not `showing`.** That one hands back "the caller's own id" and
+    // is the *empty string* when nothing is on, so `showing !== null` is true
+    // forever — which typechecks, and which shipped in the first version of this
+    // line. The unit tests could not see it because they inject this predicate;
+    // what caught it was a run where the board would take no paste at all.
+    covered: () => crt.isOpen,
     scene,
     write: writer,
     cursor: () => tools.cursor,
