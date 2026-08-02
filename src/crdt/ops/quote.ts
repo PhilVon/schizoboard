@@ -7,6 +7,14 @@
  * > one string between them. There is no new machinery in that sentence.
  * > — D-46 section 3
  *
+ * That sentence has one word wrong in it now, and the word is load-bearing.
+ * **The source end is taped, not pinned** (Q-286): you cannot push a pin
+ * through a sheet lying inside a folder, and what holds a thread to paper is
+ * tape. It is a `kind` of pin rather than a new sort of string anchor, so
+ * nothing above changes — but `Scene.pinCount` skips it, which is what stops
+ * quoting a case file from ending its hang and throwing an open one 156 board
+ * units across the wall (T-328).
+ *
  * That last line is what this file is: **no new machinery**. There is no quote
  * relation, no citation record and nothing to migrate. A card is a `note` on
  * index stock, its reference is in its own text, and what says where it came
@@ -119,7 +127,10 @@ export interface QuoteCard {
   readonly itemId: string;
   /** The pin in the card, at its top centre — `createItems` puts it there. */
   readonly cardPin: string;
-  /** The pin in the source, where the selection was. */
+  /**
+   * The **tape** on the source, where the selection was — a pin of kind
+   * `tape`, so it anchors the thread without holding the page up (Q-286).
+   */
   readonly sourcePin: string;
   readonly stringId: string;
 }
@@ -215,6 +226,14 @@ export function createQuoteCard(
       parent: input.source.itemId,
       lx: input.source.lx,
       ly: input.source.ly,
+      // **Taped, not pinned — Q-286.** You cannot push a pin through a sheet
+      // lying inside a folder; the thing that holds a thread to paper is tape.
+      // It is still a pin in every other respect, which is what keeps D-1's
+      // "strings attach to pins, never to items" intact and keeps this op the
+      // shape T-281 built. What the kind buys is that `Scene.pinCount` skips
+      // it, so quoting a case file does not stop it hanging — and does not
+      // move an open one, whose turn is measured about its sole pin (T-328).
+      kind: "tape",
     });
     board.pins.set(source.id, source.map);
 

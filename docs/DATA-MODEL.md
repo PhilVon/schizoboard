@@ -93,7 +93,7 @@ pins: {
 |---|---|---|
 | `parent` | plain string \| null | `null` means free-floating in the cork. **The single source of truth for ownership.** |
 | `lx`, `ly` | plain number | Interpretation depends entirely on `parent`. When parented, these are item-local and **un-rotated**, which is why rotating an item transports its pins with no work. |
-| `kind` | plain string | `'pushpin' \| 'thumbtack' \| 'nail'` |
+| `kind` | plain string | `'pushpin' \| 'thumbtack' \| 'nail' \| 'tape'`. The first three are pushed into the board and hold the item up; **`tape` is stuck to the paper only** and holds a string to it without holding it to the wall, so it does not count toward the item's physics (§2.2). A build that has never heard of a kind falls back to `pushpin`, so it draws the wrong object rather than losing the anchor. |
 | `color` | plain string | |
 
 **Re-parenting is a two-field write inside one transaction:** set `parent`, convert `lx/ly` into the new frame. That is the entire drag-a-pin-onto-a-note feature at the data layer.

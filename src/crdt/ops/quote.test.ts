@@ -219,6 +219,34 @@ describe("what the card says", () => {
   });
 });
 
+describe("the source end is taped, not pinned", () => {
+  it("tapes the thread to the page it came out of", () => {
+    // Q-286. You cannot push a pin through a sheet lying inside a folder, and
+    // what holds a thread to paper is tape.
+    const itemId = source();
+    const made = quote(itemId)!;
+    expect(readPin(made.sourcePin, board.pins.get(made.sourcePin)!)!.kind).toBe("tape");
+  });
+
+  it("leaves the card's own pin a pin", () => {
+    // The card is a piece of paper on a corkboard and hangs from a pin like
+    // everything else. Only the end stuck to the page is tape.
+    const made = quote(source())!;
+    expect(readPin(made.cardPin, board.pins.get(made.cardPin)!)!.kind).toBe("pushpin");
+  });
+
+  it("is still a pin in every other respect", () => {
+    // Which is what keeps D-1 — strings attach to pins, never to items — and
+    // what T-284's citation tabs and T-285's thread-back hang off.
+    const itemId = source();
+    const made = quote(itemId)!;
+    const pin = readPin(made.sourcePin, board.pins.get(made.sourcePin)!)!;
+    expect(pin.parent).toBe(itemId);
+    const run = readString(made.stringId, board.strings.get(made.stringId)!)!;
+    expect(run.nodes.map((n) => n.pin)).toContain(made.sourcePin);
+  });
+});
+
 describe("a clipping, which is a picture rather than words", () => {
   const SHA = "b17c".padEnd(64, "0");
 

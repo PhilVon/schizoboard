@@ -57,13 +57,43 @@ export const SCHEMA_VERSION = 1;
  * stop.
  */
 export type ItemType = "polaroid" | "note" | "scrap" | "card";
-export type PinKind = "pushpin" | "thumbtack" | "nail";
+/**
+ * `tape` is the odd one and the oddness is deliberate — Q-286.
+ *
+ * The other three are objects pushed into the board, and DESIGN section 2.2
+ * builds the item's physics on exactly that: zero pins and it lies loose, one
+ * and it hangs, two and it is rigid. A piece of tape is stuck to the *paper*
+ * and to nothing else, so it holds a string to a page without holding the page
+ * to the wall — and it therefore does **not** count toward that physics
+ * (`Scene.pinCount`, which is where the exception lives).
+ *
+ * It is a pin kind rather than a new kind of string anchor because everything
+ * else about it is a pin: a string runs to it, it is dragged, it is cut, a
+ * citation tab hangs off it (T-284) and following a thread back lands on it
+ * (T-285). D-1's "strings attach to pins, never to items" is the sentence that
+ * would have to be given up otherwise, and giving it up costs a schema change
+ * to `StringNodeFields` that an older build answers by dropping the node — and
+ * with it the thread, which is the data-loss shape D-46 section 2 refused a new
+ * item type over.
+ *
+ * An older build reads a kind it does not know and falls back to `pushpin`
+ * below, so it draws a pinhead where this one draws tape. That is a wrong
+ * picture rather than a lost card, which is the trade this union is chosen for.
+ */
+export type PinKind = "pushpin" | "thumbtack" | "nail" | "tape";
 export type StringLayer = "over" | "under";
 export type StringMaterial = "string" | "yarn" | "wire";
 export type StrokeTool = "marker" | "highlighter" | "erase";
 
 const ITEM_TYPES: ReadonlySet<string> = new Set(["polaroid", "note", "scrap", "card"]);
-const PIN_KINDS: ReadonlySet<string> = new Set(["pushpin", "thumbtack", "nail"]);
+/**
+ * The kinds, as a list, so the renderer's own copy of the union can be held
+ * against this one — `tests/pin-kinds.test.ts`. `render/` does not import from
+ * `crdt/`, so the two declarations are separate by design and a kind added here
+ * and not there bakes a sprite of `NaN` pixels without a word.
+ */
+export const PIN_KIND_NAMES: readonly PinKind[] = ["pushpin", "thumbtack", "nail", "tape"];
+const PIN_KINDS: ReadonlySet<string> = new Set(PIN_KIND_NAMES);
 const STROKE_TOOLS: ReadonlySet<string> = new Set(["marker", "highlighter", "erase"]);
 
 /** Invariant 6 — merging never produces an item with zero or negative size. */
