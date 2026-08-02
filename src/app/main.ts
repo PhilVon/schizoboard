@@ -136,6 +136,7 @@ import type { BoardStatus } from "@/ui/toolhint";
 import { ToolInfo } from "@/ui/toolinfo";
 import { Flash } from "@/ui/flash";
 import { Notice } from "@/ui/notice";
+import { CLIP_MIME, CLIP_QUALITY, Clipper } from "@/app/clipping";
 import { SearchField, type Unsearched } from "@/ui/search";
 import { TuningPanel } from "@/ui/tuning";
 import { ContextMenu, type MenuEntry } from "@/ui/menu";
@@ -493,6 +494,12 @@ async function boot(): Promise<void> {
    * item, and nothing has to enforce that — a case file has no text to edit.
    */
   const opening = new PaperTurn(TURN_UP);
+  /**
+   * Assigned near the bottom of this function, where there is somewhere to say
+   * a sentence — T-282. Declared here because the tool machine is built long
+   * before that and has to be handed something to call.
+   */
+  let clipper: Clipper | null = null;
   /**
    * The caret, when there is one (DESIGN section 3.6).
    *
@@ -1862,6 +1869,11 @@ async function boot(): Promise<void> {
     // happened and nothing about documents; the reader knows which document is
     // open and how many pages it has, and answers whether anything moved.
     turnPage: (by) => reader.turn(by),
+    // A rectangle dragged over an open page (T-282). The tool measured it in
+    // the page's own frame and knows nothing else about it — what it turns
+    // into is `app/clipping.ts`'s, because it needs the DOM, an await and a
+    // round trip to Rust, and a tool may have none of the three.
+    clip: (itemId, rect) => clipper?.cut(itemId, rect),
     // Space+drag and middle-drag belong to the camera, not to the board.
     suppressed: () => navigation.panReady,
     readOnly: () => readOnly,
@@ -2762,6 +2774,72 @@ async function boot(): Promise<void> {
    * the board, so it is the first that needs telling.
    */
   const flash = new Flash(world.layers.ui);
+
+  /**
+   * Cutting a clipping out of an open page — T-282.
+   *
+   * Built here rather than beside the reader because it needs the one thing
+   * that lives at the very end of this file: somewhere to say a sentence. The
+   * tool reaches it through the indirection below, which is not ceremony —
+   * `ToolMachine` is constructed a thousand lines above this, and a cut cannot
+   * happen before there is a board to cut on.
+   */
+  clipper = new Clipper({
+    board,
+    scene,
+    /**
+     * Which page is on show and what is on it — the join neither half can make.
+     *
+     * `shownPage` above knows which item is open and which page number it is
+     * showing; the reader holds the page itself; the document holds what the
+     * file was called. This is the one place all three are in scope, which is
+     * the same argument `shownPage` itself makes one level down.
+     */
+    shownPage: (itemId) => {
+      const index = shownPage(itemId);
+      if (index === null) return null;
+      const sha256 = scene.cold(itemId)?.assetId ?? null;
+      if (sha256 === null) return null;
+      const page = reader.page(sha256, index).page;
+      if (page === null) return null;
+      const record = board.assets.get(sha256);
+      return {
+        sha256,
+        index: page.index,
+        content: page.content,
+        origName: (record ? readAsset(sha256, record)?.origName : null) ?? null,
+      };
+    },
+    rasterise: (itemId, ctx, camera) => items.rasteriseInFrame(scene, itemId, ctx, camera),
+    canvas: (w, h) => {
+      const canvas = document.createElement("canvas");
+      canvas.width = w;
+      canvas.height = h;
+      return canvas;
+    },
+    /**
+     * The encoder's answer, not the one asked for — `poster.ts`'s rule, and for
+     * its reason: a build without WebP hands back a PNG under the same call and
+     * says so on the blob, so storing it as the type we requested would put a
+     * mime in the record that the bytes disagree with.
+     */
+    encode: async (canvas) => {
+      const blob = await new Promise<Blob | null>((resolve) => {
+        canvas.toBlob(resolve, CLIP_MIME, CLIP_QUALITY);
+      });
+      if (blob === null) return null;
+      return { bytes: new Uint8Array(await blob.arrayBuffer()), mime: blob.type || CLIP_MIME };
+    },
+    ingest: (bytes, mime) => native.assetIngestBytes(bytes, mime),
+    stored: (sha256) => {
+      // Written into this store a moment ago, so this machine is a holder —
+      // `PosterGrabber` says the same thing for the same reason, and without it
+      // the card draws as undeveloped film until the next idle reconcile.
+      holdsAsset(sha256);
+      refreshAsset(sha256);
+    },
+    say: (message) => flash.say(message),
+  });
   /**
    * The tool drawer and the tool info bar — Phase 10, D-43.
    *

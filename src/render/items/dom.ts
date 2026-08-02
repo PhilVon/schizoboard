@@ -2938,6 +2938,49 @@ export class DomItemLayer implements ItemLayer {
     return rasteriseItems(items, ctx, camera, css);
   }
 
+  /**
+   * One item, square on in its own frame — the clipping painter (T-282).
+   *
+   * `rot: 0` and a centre at the origin are what make the frame item-local:
+   * `rasteriseItems` translates to the centre, turns by `rot` and then scales,
+   * so zeroing both leaves the item's own axes lying along the canvas's. A
+   * local point `(lx, ly)` then lands at `((lx - camera.x) * zoom, (ly -
+   * camera.y) * zoom)`, which is what lets the caller size a canvas to a
+   * rectangle it measured on the page and have that rectangle fill it exactly.
+   *
+   * The item's **own** `w`/`h` and not its bounds, because the clone is drawn
+   * from its centre. And the stylesheet is fetched per call rather than cached:
+   * a clipping is one gesture by one hand, where an export is three hundred
+   * items in a row, so the 52 kB is paid once either way and a cache here would
+   * be a font that could go stale behind a live reload.
+   */
+  async rasteriseInFrame(
+    scene: Scene,
+    itemId: string,
+    ctx: CanvasRenderingContext2D,
+    camera: RasterCamera,
+  ): Promise<RasterReport> {
+    const view = this.views.get(itemId);
+    const pose = scene.poseOf(itemId);
+    // Nothing mounted: culled, deleted, or never bound. There is no
+    // presentation to photograph, and an empty report says exactly that.
+    if (view === undefined || pose === null) {
+      return { items: 0, drawn: 0, inlined: 0, unreadable: 0, bytes: 0, inked: 0 };
+    }
+    const css = await exportStylesheet();
+    const item: RasterItem = {
+      id: itemId,
+      el: view.el,
+      rank: 0,
+      x: 0,
+      y: 0,
+      rot: 0,
+      w: pose.w,
+      h: pose.h,
+    };
+    return rasteriseItems([item], ctx, camera, css);
+  }
+
   get inked(): number {
     let n = 0;
     for (const view of this.views.values()) if (view.ink.live) n++;
