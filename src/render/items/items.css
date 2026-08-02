@@ -2323,6 +2323,72 @@ textarea.item-field::-webkit-scrollbar {
 }
 
 /*
+ * A picture on a typed page, re-flowed with the text — T-329, Q-289.
+ *
+ * In the flow and not at its page box, which is the whole of the answer: the
+ * lines around it have been re-set (Q-198), so a figure holding its original
+ * geometry would be the one thing on the sheet still claiming it, sitting on top
+ * of text that has moved out from under it. Here it is a block among the lines,
+ * at the point in the reading it was at.
+ *
+ * Its `width` and `aspect-ratio` are written inline by `figureNode`, because
+ * both are facts about *this* picture: how much of the type area it spanned and
+ * what shape it is. Nothing about them belongs to a stylesheet.
+ *
+ * The space above and below is the page's own paragraph spacing rather than a
+ * frame — a figure set into a document is separated by air, not ruled off.
+ */
+.leaf-figure {
+  display: block;
+  margin: 0.9em 0;
+  /* Never wider than the measure however the arithmetic came out. */
+  max-width: 100%;
+}
+
+.leaf-figure-image {
+  width: 100%;
+  height: 100%;
+  /* `contain` for the reason the scan below has it: a figure may not be cropped
+     to fit a box this side invented, and the box is its own proportions anyway
+     so there is normally nothing to letterbox. */
+  object-fit: contain;
+  object-position: center top;
+  display: block;
+  filter: drop-shadow(0 0.35% 0.7% rgb(60 42 24 / 26%));
+}
+
+/*
+ * A figure this build could not lift, holding its place and saying so.
+ *
+ * The board speaking about the document rather than the document speaking, so
+ * it takes `.leaf-note`'s voice — quiet, italic — and not the page's hand. What
+ * it must never be is nothing: a blank space where an exhibit was is the exact
+ * failure Rust reporting an unliftable figure exists to stop, and swallowing it
+ * here would be that silence one module further along.
+ *
+ * Dashed rather than solid, and only here: the empty box is the statement, and
+ * a solid rule around it would read as a frame somebody chose to put on it.
+ */
+.leaf-figure:not([data-figure="image"]) {
+  border: 0.1em dashed rgb(53 48 42 / 22%);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0.6em;
+  box-sizing: border-box;
+}
+
+.leaf-figure-note {
+  font-style: italic;
+  opacity: 0.55;
+  text-align: center;
+  /* The reason is a sentence from the shell and can be a long one; a figure's
+     box is whatever shape it is. Better to lose the tail of it than to have it
+     push the box out of the measure. */
+  overflow: hidden;
+}
+
+/*
  * A scan, lifted and laid on our own sheet — Q-199.
  *
  * `contain` and not `cover`: a page of evidence may not be cropped to fit a box,

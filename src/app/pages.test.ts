@@ -344,6 +344,173 @@ describe("what a long read holds", () => {
 });
 
 /**
+ * The pictures on a typed page — T-329.
+ *
+ * Rust has lifted these since Q-203 and this side asked for none of them, so a
+ * report's chart arrived as its caption and a blank space. What is asserted is
+ * this module's half: that each figure's bytes are asked for by the pair that
+ * names them, that a figure with nothing to fetch is not fetched, and that the
+ * URLs minted for them are let go of like every other one.
+ */
+describe("a page's figures", () => {
+  const figure = (over: Record<string, unknown> = {}) => ({
+    x: 72,
+    y: 200,
+    width: 400,
+    height: 300,
+    content: {
+      kind: "image" as const,
+      image: { mime: "image/png", bytes: 4, width: 800, height: 600 },
+    },
+    ...over,
+  });
+
+  /** A shell whose every page is typed and carries `figures`. */
+  function withFigures(figures: unknown[], over: Partial<Platform> = {}) {
+    const wanted: Array<number | undefined> = [];
+    return {
+      wanted,
+      ...shell({
+        documentPage: async (_sha: string, index: number) => ({
+          index,
+          width: 595,
+          height: 842,
+          content: {
+            kind: "text" as const,
+            runs: [{ text: "as the chart shows", x: 72, y: 96, width: 190, height: 12, size: 11 }],
+            figures,
+          },
+        }),
+        documentPageImage: async (_sha: string, _index: number, at?: number) => {
+          wanted.push(at);
+          return new Uint8Array([1, 2, 3, 4]);
+        },
+        ...over,
+      } as unknown as Partial<Platform>),
+    };
+  }
+
+  function stubUrls(): { minted: string[]; revoked: string[] } {
+    const minted: string[] = [];
+    const revoked: string[] = [];
+    let next = 0;
+    vi.stubGlobal("URL", {
+      ...URL,
+      createObjectURL: () => {
+        const url = `blob:fig-${++next}`;
+        minted.push(url);
+        return url;
+      },
+      revokeObjectURL: (url: string) => revoked.push(url),
+    });
+    return { minted, revoked };
+  }
+
+  it("asks for each figure's bytes by its own index, and hands back a URL each", async () => {
+    stubUrls();
+    const { native, wanted } = withFigures([figure(), figure({ y: 400 })]);
+    const reader = new PageReader(native, () => {});
+    reader.open(HASH, 1);
+    await settle();
+
+    // `documentPageImage` already took the `(page, figure)` pair — nothing in
+    // the shell had to change for this.
+    expect(wanted).toEqual([0, 1]);
+    expect(reader.page(HASH, 1).figureUrls).toEqual(["blob:fig-1", "blob:fig-2"]);
+    vi.unstubAllGlobals();
+  });
+
+  it("does not ask for a figure the shell already said it could not lift", async () => {
+    stubUrls();
+    const { native, wanted } = withFigures([
+      figure({ content: { kind: "unsupported", reason: "the figure is a JPX image" } }),
+      figure({ y: 400 }),
+    ]);
+    const reader = new PageReader(native, () => {});
+    reader.open(HASH, 1);
+    await settle();
+
+    // A round trip whose only possible answer is the empty one. The slot is
+    // still there and still null, so the leaf can hold its place and say why.
+    expect(wanted).toEqual([1]);
+    expect(reader.page(HASH, 1).figureUrls).toEqual([null, "blob:fig-1"]);
+    vi.unstubAllGlobals();
+  });
+
+  it("keeps the page when one figure will not read", async () => {
+    stubUrls();
+    const { native } = withFigures([figure(), figure({ y: 400 })], {
+      documentPageImage: async (_sha: string, _index: number, at?: number) => {
+        if (at === 0) throw new Error("the figure's stream is truncated");
+        return new Uint8Array([1, 2, 3, 4]);
+      },
+    } as unknown as Partial<Platform>);
+    const reader = new PageReader(native, () => {});
+    reader.open(HASH, 1);
+    await settle();
+
+    // A page whose words are here and whose chart would not read is still a
+    // page somebody can read. Letting the throw reach the page-level arm would
+    // throw away runs that arrived perfectly well.
+    const view = reader.page(HASH, 1);
+    expect(view.phase).toBe("ready");
+    expect(view.page?.content.kind).toBe("text");
+    expect(view.figureUrls).toEqual([null, "blob:fig-1"]);
+    vi.unstubAllGlobals();
+  });
+
+  it("revokes every figure's URL when the page leaves the window", async () => {
+    const { minted, revoked } = stubUrls();
+    const { native } = withFigures([figure(), figure({ y: 400 }), figure({ y: 600 })]);
+    const reader = new PageReader(native, () => {});
+    reader.open(HASH, 100);
+    for (let n = 0; n < 6; n++) {
+      reader.turn(1);
+      reader.page(HASH);
+      await settle();
+    }
+
+    // Three a page now rather than one, which is the whole reason a page holds
+    // a list of them: a page let go of with two of its three revoked leaks the
+    // third with nothing left pointing at it.
+    expect(reader.heldPages).toEqual({ pages: 3, urls: 9 });
+    expect(minted.length).toBeGreaterThan(9);
+    expect(revoked).toEqual(minted.slice(0, minted.length - 9));
+    vi.unstubAllGlobals();
+  });
+
+  it("mints nothing for a page shut while its figures were in flight", async () => {
+    const { minted } = stubUrls();
+    // Held open deliberately: the page itself has to have *landed* for this to
+    // be the guard under test. A shut before that is caught one check earlier,
+    // by the one the scan already had.
+    let release = (): void => {};
+    const held = new Promise<void>((r) => {
+      release = r;
+    });
+    const { native } = withFigures([figure(), figure({ y: 400 })], {
+      documentPageImage: async () => {
+        await held;
+        return new Uint8Array([1, 2, 3, 4]);
+      },
+    } as unknown as Partial<Platform>);
+
+    const reader = new PageReader(native, () => {});
+    reader.open(HASH, 1);
+    await settle();
+    reader.close(HASH);
+    release();
+    await settle();
+
+    // The bytes are dropped on the floor, which the collector takes care of. A
+    // blob URL minted before the check would not have been in `held.urls` for
+    // `forget` to find, and `forget` is the one place a URL may be revoked.
+    expect(minted).toEqual([]);
+    vi.unstubAllGlobals();
+  });
+});
+
+/**
  * Going straight to a page — T-286.
  *
  * The second way in, and the only one that is not a hand on the corner of a

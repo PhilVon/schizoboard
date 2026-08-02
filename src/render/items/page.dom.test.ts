@@ -18,8 +18,9 @@
 import { beforeEach, describe, expect, it } from "vitest";
 
 import type { PageView } from "@/app/pages";
-import type { PageContent } from "@/platform/types";
+import type { PageContent, PageFigure } from "@/platform/types";
 import { DomItemLayer, NO_FACTS, type AssetView } from "@/render/items/dom";
+import { cloneForExport, inlineAssets } from "@/render/items/raster";
 import { DirtySets } from "@/state/dirty";
 import { Scene, type ItemCold } from "@/state/scene";
 
@@ -85,11 +86,13 @@ const arrived = (
   content: PageContent,
   imageUrl: string | null = null,
   index = 1,
+  figureUrls: readonly (string | null)[] = [],
 ): PageView => ({
   phase: "ready",
   page: { index, width: 595, height: 842, content },
   reason: null,
   imageUrl,
+  figureUrls,
 });
 
 const bodyOf = (leaf: HTMLElement) => leaf.querySelector(".leaf-body")!.textContent;
@@ -175,6 +178,168 @@ describe("a scanned page", () => {
   });
 });
 
+/**
+ * A picture on a typed page — T-329, and Q-289 is the whole of where it goes.
+ *
+ * Rust has lifted these since Q-203 and nothing drew them, so a report's chart
+ * arrived as the caption and a blank space — which is the exact failure Q-203's
+ * answer was bought to stop, reached by a different road.
+ *
+ * What is asserted here is the *order*, because in-flow was chosen over the
+ * figure's own page box: the lines have been re-set, so a figure holding its
+ * original geometry would sit on text that has moved out from under it. So a
+ * figure goes after the last line above it and before the first line below it,
+ * and a caption stays with its picture.
+ */
+describe("a picture on a typed page", () => {
+  const CHART = {
+    x: 72,
+    y: 200,
+    width: 400,
+    height: 300,
+    content: {
+      kind: "image" as const,
+      image: { mime: "image/png", width: 800, height: 600, bytes: 51_200 },
+    },
+  };
+  const typed = (figures: PageFigure[]) =>
+    ({
+      kind: "text" as const,
+      runs: [
+        { text: "Figure 1 follows", x: 72, y: 96, width: 180, height: 12, size: 11 },
+        { text: "as the chart shows", x: 72, y: 560, width: 190, height: 12, size: 11 },
+      ],
+      figures,
+    }) satisfies PageContent;
+
+  /** The body's children in order, as "text" / "figure" — the reading order. */
+  const shapeOf = (leaf: HTMLElement): string[] =>
+    [...leaf.querySelector(".leaf-body")!.children].map((el) =>
+      el.classList.contains("leaf-figure") ? "figure" : "text",
+    );
+
+  it("is drawn at all, which is the bug", () => {
+    const leaf = leafOf(arrived(typed([CHART]), null, 1, ["blob:chart"]));
+    const image = leaf.querySelector<HTMLImageElement>(".leaf-figure-image");
+    expect(image?.getAttribute("src")).toBe("blob:chart");
+  });
+
+  it("sits between the line above it and the line below it", () => {
+    const leaf = leafOf(arrived(typed([CHART]), null, 1, ["blob:chart"]));
+    expect(shapeOf(leaf)).toEqual(["text", "figure", "text"]);
+    // And the text is all still there, in its own order, with nothing under the
+    // picture: in-flow is chosen precisely so that nothing is ever hidden.
+    expect(bodyOf(leaf)).toBe("Figure 1 followsas the chart shows");
+  });
+
+  it("goes first when it was above every line", () => {
+    const leaf = leafOf(
+      arrived(typed([{ ...CHART, y: 40 }]), null, 1, ["blob:chart"]),
+    );
+    expect(shapeOf(leaf)).toEqual(["figure", "text"]);
+  });
+
+  it("goes last when it was below every line", () => {
+    const leaf = leafOf(
+      arrived(typed([{ ...CHART, y: 700 }]), null, 1, ["blob:chart"]),
+    );
+    expect(shapeOf(leaf)).toEqual(["text", "figure"]);
+  });
+
+  it("is ordered down the page rather than by the order it was drawn in", () => {
+    // Content-stream order is not top-to-bottom order — a figure written last
+    // can sit at the head of the page — and reading order is what this builds.
+    const leaf = leafOf(
+      arrived(typed([{ ...CHART, y: 700 }, { ...CHART, y: 40 }]), null, 1, [
+        "blob:low",
+        "blob:high",
+      ]),
+    );
+    expect(shapeOf(leaf)).toEqual(["figure", "text", "figure"]);
+    const images = [...leaf.querySelectorAll<HTMLImageElement>(".leaf-figure-image")];
+    // And each one still has *its own* bytes: `figureUrls` is index for index
+    // with `figures`, and sorting for the reading must not disturb that pairing.
+    expect(images.map((one) => one.getAttribute("src"))).toEqual(["blob:high", "blob:low"]);
+  });
+
+  it("is as wide a share of the measure as it was on the page it came off", () => {
+    // The measure and not the page width: the runs above span 72..262, so a
+    // 400pt figure is wider than the type area and clamps to it. Mapping
+    // through the page's 595pt instead would draw a full-measure chart at
+    // three quarters of the text it sits between.
+    const leaf = leafOf(arrived(typed([{ ...CHART, width: 95 }]), null, 1, ["blob:chart"]));
+    const box = leaf.querySelector<HTMLElement>(".leaf-figure")!;
+    expect(box.style.width).toBe("50.00%");
+    expect(box.style.aspectRatio).toBe("95 / 300");
+  });
+
+  it("holds its place and says why when the shell could not lift it", () => {
+    // `document.rs` reports a figure it could not lift with its box and the
+    // reason rather than dropping it. Dropping it here instead would be that
+    // same silence one module further along — and a blank space where an
+    // exhibit was is what the whole five-armed union exists to stop.
+    const leaf = leafOf(
+      arrived(
+        typed([
+          { ...CHART, content: { kind: "unsupported", reason: "the figure is a JPX image" } },
+        ]),
+        null,
+        1,
+        [null],
+      ),
+    );
+    const box = leaf.querySelector<HTMLElement>(".leaf-figure")!;
+    expect(box.dataset["figure"]).toBe("unsupported");
+    expect(box.querySelector(".leaf-figure-note")!.textContent).toBe("the figure is a JPX image");
+  });
+
+  it("says so when a figure it could read brought back no bytes", () => {
+    const leaf = leafOf(arrived(typed([CHART]), null, 1, [null]));
+    const box = leaf.querySelector<HTMLElement>(".leaf-figure")!;
+    expect(box.dataset["figure"]).toBe("unreadable");
+    expect(box.querySelector(".leaf-figure-note")!.textContent).toMatch(/could not be read/);
+    expect(box.querySelector("img")).toBeNull();
+  });
+
+  /**
+   * And it is in the export, which is not a separate feature — an open folder
+   * exports with its page drawn (T-278), and this board has already shipped a
+   * composite that dropped everything with no painter behind it.
+   *
+   * Nothing was written for this: a figure is an `<img>` in the leaf's subtree,
+   * so it goes down the road the photographs and the lifted scan already take.
+   * The test is here because "it comes for free" is a claim about somebody
+   * else's code, and this is the assertion that says it is still true.
+   */
+  it("is carried into an export like every other picture on the board", async () => {
+    const layer = layerFor(() => arrived(typed([CHART]), null, 1, ["blob:chart"]));
+    put();
+    scene.setOpen("a", 1);
+    layer.sync(scene, dirty, null);
+
+    const clone = cloneForExport(host.querySelector(".item")!);
+    const cost = await inlineAssets(clone, async (url) => {
+      expect(url).toBe("blob:chart");
+      return { bytes: new Uint8Array([0x89, 0x50]), mime: "image/png" };
+    });
+
+    expect(cost.inlined).toBe(1);
+    expect(clone.querySelector(".leaf-figure-image")!.getAttribute("src")).toBe(
+      `data:image/png;base64,${btoa("\x89\x50")}`,
+    );
+  });
+
+  it("leaves a page with no figures on it exactly as it was", () => {
+    // The common page in every filing. It is written straight onto the body
+    // with no wrapper at all, which is what keeps `writeHand`'s guard in front
+    // of it — and what stops every page in a two-hundred-page scan carrying an
+    // element it has no use for.
+    const leaf = leafOf(arrived(typed([])));
+    expect(leaf.querySelector(".leaf-body")!.children).toHaveLength(0);
+    expect(bodyOf(leaf)).toBe("Figure 1 follows\nas the chart shows");
+  });
+});
+
 describe("a page with nothing readable on it", () => {
   it("says a blank page is blank rather than drawing a blank page", () => {
     const leaf = leafOf(arrived({ kind: "empty" }));
@@ -195,6 +360,7 @@ describe("a page with nothing readable on it", () => {
       page: null,
       reason: "the document is password protected",
       imageUrl: null,
+      figureUrls: [],
     });
     expect(leaf.dataset["page"]).toBe("unreadable");
     expect(noteOf(leaf)).toBe("the document is password protected");
@@ -204,7 +370,7 @@ describe("a page with nothing readable on it", () => {
     // Deliberately not a message. A page arrives in a handful of milliseconds
     // off a document the shell already has open, and a word that appears and
     // vanishes at that rate is a flicker rather than information.
-    const leaf = leafOf({ phase: "reading", page: null, reason: null, imageUrl: null });
+    const leaf = leafOf({ phase: "reading", page: null, reason: null, imageUrl: null, figureUrls: [] });
     expect(leaf.dataset["page"]).toBe("reading");
     expect(noteOf(leaf)).toBe("");
     expect(bodyOf(leaf)).toBe("");

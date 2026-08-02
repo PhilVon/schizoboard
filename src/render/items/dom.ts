@@ -71,7 +71,7 @@ import { Deck } from "@/render/items/deck";
 import { TextEditor, type ItemEditorHooks } from "@/render/items/editor";
 import { clearHand, writeHand } from "@/render/items/hand";
 import type { PageView } from "@/app/pages";
-import type { TextRun } from "@/platform/types";
+import type { PageFigure, TextRun } from "@/platform/types";
 import {
   exportStylesheet,
   rasteriseItems,
@@ -2373,6 +2373,10 @@ class CaseView implements View {
       view?.imageUrl ?? "",
       view?.reason ?? "",
       content?.kind === "text" ? content.runs.length : content?.kind === "plain" ? content.text.length : 0,
+      // The figures, and their bytes: a page whose chart is still being lifted
+      // and the same page with it in hand are two different sheets (T-329).
+      view?.figureUrls.join("|") ?? "",
+      content?.kind === "text" ? content.figures.length : 0,
     ].join(" ");
     if (digest === this.drawnPage) return;
     this.drawnPage = digest;
@@ -2418,7 +2422,7 @@ class CaseView implements View {
       scan.removeAttribute("src");
       setNote("");
     } else if (content.kind === "text") {
-      writeHand(body, linesOfRuns(content.runs), seed, true);
+      writePage(body, content.runs, content.figures, view.figureUrls, seed);
       scan.removeAttribute("src");
       setNote("");
     } else if (content.kind === "image") {
@@ -2632,7 +2636,29 @@ const CASE_TEXT_SIZE = 0.048;
  * lists.
  */
 export function linesOfRuns(runs: readonly TextRun[]): string {
-  if (runs.length === 0) return "";
+  return linesWithY(runs)
+    .map((line) => line.text)
+    .join("\n");
+}
+
+/** One re-set line, and the baseline it came off — points from the page's top. */
+interface Line {
+  readonly text: string;
+  readonly y: number;
+}
+
+/**
+ * The same lines, each still knowing where on the page it was.
+ *
+ * The `y` is kept for one caller and one purpose: putting a figure back among
+ * the text at the point it was read at (T-329). Everything else about the boxes
+ * is still thrown away, and this is deliberately not exported — a second
+ * consumer of line positions would be the facsimile Q-198 refused, arriving one
+ * function at a time.
+ */
+function linesWithY(runs: readonly TextRun[]): Line[] {
+  if (runs.length === 0) return [];
+  const lines: Line[] = [];
   let text = "";
   // The **line's** baseline and the tallest thing set on it — not the run
   // before, which is a bug a test caught rather than a refinement. A footnote
@@ -2644,20 +2670,204 @@ export function linesOfRuns(runs: readonly TextRun[]): string {
   for (const [at, run] of runs.entries()) {
     if (at > 0) {
       const broke = Math.abs(run.y - lineY) > Math.max(1, lineHeight * 0.5);
-      // A run that continues a line still needs a gap unless one end already
-      // has one: a PDF splits a line at every font and kerning change, and
-      // joining them bare runs the words together.
-      text += broke ? "\n" : /\s$/.test(text) || /^\s/.test(run.text) ? "" : " ";
       if (broke) {
+        lines.push({ text, y: lineY });
+        text = "";
         lineY = run.y;
         lineHeight = run.height;
       } else {
+        // A run that continues a line still needs a gap unless one end already
+        // has one: a PDF splits a line at every font and kerning change, and
+        // joining them bare runs the words together.
+        text += /\s$/.test(text) || /^\s/.test(run.text) ? "" : " ";
         lineHeight = Math.max(lineHeight, run.height);
       }
     }
     text += run.text;
   }
-  return text;
+  lines.push({ text, y: lineY });
+  return lines;
+}
+
+/**
+ * One thing on a re-typeset page, in the order somebody reads it — T-329, Q-289.
+ *
+ * ## Why a figure is in the flow and not at its box
+ *
+ * Q-198 chose to re-set a page rather than reproduce it, so by the time this
+ * runs *nothing* on the sheet stands where the PDF put it: the lines have been
+ * poured onto our paper at our measure in our hand. A figure pinned to its own
+ * page box would be the one element on that sheet still claiming the original
+ * geometry — a half-facsimile — and it would come down on top of lines that are
+ * not the lines it covered, because those lines have moved.
+ *
+ * So the figure is re-flowed with everything else, at the point in the reading
+ * where it was: after the last line above it, before the first line below it. A
+ * caption stays with its figure, which is the thing that actually has to
+ * survive, and nothing is ever hidden by anything.
+ *
+ * **Ordered by the figure's top edge**, so "everything that started above this
+ * picture comes before it" is the whole rule. A figure with text set beside it
+ * has that text after it rather than alongside — one column is what a re-set
+ * page is, and side-by-side would be the original geometry again.
+ *
+ * The price is that a full page of text carrying a figure can now run past the
+ * foot of the sheet, where before only the text could. That is the rule
+ * `.leaf-body` already states — a page holds a page, and what does not fit is
+ * the pagination being wrong — and a figure has to clear `FIGURE_COVERAGE` to
+ * be here at all, so a page carrying one has that much less text on it.
+ */
+export type PageBlock =
+  | { readonly kind: "text"; readonly text: string }
+  | {
+      readonly kind: "figure";
+      /** Its index in `figures`, which is what names its bytes: `figureUrls` is
+       *  index for index with that list and so is `documentPageImage`. */
+      readonly at: number;
+      readonly figure: PageFigure;
+    };
+
+export function pageBlocks(
+  runs: readonly TextRun[],
+  figures: readonly PageFigure[],
+): PageBlock[] {
+  const lines = linesWithY(runs);
+  // Content-stream order is not top-to-bottom order — a figure drawn last can
+  // sit at the head of the page — and reading order is what this is building.
+  const order = figures
+    .map((figure, at) => ({ figure, at }))
+    .sort((one, two) => one.figure.y - two.figure.y);
+
+  const blocks: PageBlock[] = [];
+  let from = 0;
+  const upTo = (y: number): void => {
+    let to = from;
+    while (to < lines.length && lines[to]!.y < y) to++;
+    if (to > from) {
+      blocks.push({ kind: "text", text: lines.slice(from, to).map((line) => line.text).join("\n") });
+      from = to;
+    }
+  };
+
+  for (const { figure, at } of order) {
+    upTo(figure.y);
+    blocks.push({ kind: "figure", at, figure });
+  }
+  upTo(Infinity);
+  return blocks;
+}
+
+/**
+ * A typed page onto the sheet — its lines, and any figure among them (T-329).
+ *
+ * **A page with no figures is written exactly as it was before they existed**,
+ * straight onto the body with `writeHand`'s own guard in front of it. That is
+ * not a shortcut kept for its own sake: it is the overwhelmingly common page,
+ * and the alternative was giving every page in every filing a wrapper element
+ * it has no use for so that this function could have one shape.
+ *
+ * The body is emptied before a page carrying figures is built, and before a
+ * plain one that is replacing such a page — `writeHand` recognises text it has
+ * already written by a key on the host, and the host of a page with figures on
+ * it holds children that key knows nothing about.
+ */
+function writePage(
+  body: HTMLElement,
+  runs: readonly TextRun[],
+  figures: readonly PageFigure[],
+  urls: readonly (string | null)[],
+  seed: number,
+): void {
+  if (figures.length === 0) {
+    if (body.firstElementChild !== null) clearHand(body);
+    writeHand(body, linesOfRuns(runs), seed, true);
+    return;
+  }
+
+  clearHand(body);
+  const measure = measureOf(runs);
+  for (const block of pageBlocks(runs, figures)) {
+    if (block.kind === "text") {
+      const lines = document.createElement("div");
+      lines.className = "leaf-lines";
+      writeHand(lines, block.text, seed, true);
+      body.append(lines);
+      continue;
+    }
+    body.append(figureNode(block.figure, urls[block.at] ?? null, measure));
+  }
+}
+
+/**
+ * One figure, at the width it had on the page it came off.
+ *
+ * The width is a fraction of the **measure** — the text's own left and right
+ * edges on the original page — and not of the page's width, which was the first
+ * attempt and is wrong by the margins. A chart set to the full width of the type
+ * area is a chart that reaches both margins, and mapping it through the page's
+ * width instead draws it at around three quarters of our measure, visibly short
+ * of the text it sits between. The measure is derived from the runs rather than
+ * guessed at, and clamped at 1 for a figure wider than the text it was set with.
+ *
+ * The height is an `aspect-ratio` rather than a second mapping. Points to sheet
+ * vertically would be a second arithmetic with a second way to be wrong, and
+ * the only thing a picture actually owes is its own proportions.
+ *
+ * A figure with no bytes still gets its box and says why — `document.rs`
+ * reports a figure it could not lift rather than dropping it, and dropping it
+ * *here* instead would be the same silence one module further along. A blank
+ * space where an exhibit was is the failure this whole union exists to stop.
+ */
+function figureNode(figure: PageFigure, url: string | null, measure: number): HTMLElement {
+  const el = document.createElement("div");
+  el.className = "leaf-figure";
+  el.style.width = `${(measure > 0 ? Math.min(1, figure.width / measure) * 100 : 100).toFixed(2)}%`;
+  if (figure.width > 0 && figure.height > 0) {
+    el.style.aspectRatio = `${figure.width} / ${figure.height}`;
+  }
+
+  if (figure.content.kind === "image" && url !== null) {
+    el.dataset["figure"] = "image";
+    const image = document.createElement("img");
+    image.className = "leaf-figure-image";
+    image.alt = "";
+    image.src = url;
+    el.append(image);
+    return el;
+  }
+
+  el.dataset["figure"] = figure.content.kind === "unsupported" ? "unsupported" : "unreadable";
+  const note = document.createElement("div");
+  note.className = "leaf-figure-note";
+  // The shell's own sentence where there is one — "the figure is written inline
+  // in the page's content stream, which this build does not lift" — because it
+  // names what stopped it and a generic one does not. The other arm is a figure
+  // this build *can* read whose bytes did not come back.
+  note.textContent =
+    figure.content.kind === "unsupported"
+      ? figure.content.reason
+      : "this figure could not be read";
+  el.append(note);
+  return el;
+}
+
+/**
+ * The width of the type area on the page these runs came off, in points.
+ *
+ * Zero for runs that carry no boxes at all, which is a caller's cue to fall
+ * back rather than divide by it. Runs of zero width are skipped: a run with no
+ * box contributes no edge, and one at x=0 would otherwise drag the left margin
+ * to the corner of the page.
+ */
+function measureOf(runs: readonly TextRun[]): number {
+  let left = Infinity;
+  let right = -Infinity;
+  for (const run of runs) {
+    if (run.width <= 0) continue;
+    left = Math.min(left, run.x);
+    right = Math.max(right, run.x + run.width);
+  }
+  return right > left ? right - left : 0;
 }
 
 

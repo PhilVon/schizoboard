@@ -921,9 +921,12 @@ fn joined(runs: &[TextRun]) -> String {
 ///
 /// Text wins over an image, because D-46 section 4 re-typesets what it can and
 /// only shows the original where there is nothing to set. A page with both — a
-/// typed page carrying a figure — is a text page, and the figure is not lifted:
-/// the decision the design asked for is which of the two a page *is*, not a
-/// merge of the two.
+/// typed page carrying a figure — is a text page, and the decision the design
+/// asked for is which of the two a page *is*.
+///
+/// It is not a merge, and it is not a drop either: Q-203 settled that the figure
+/// comes too, carried beside the runs with its box. The reading surface re-flows
+/// it among the re-set lines (T-329, Q-289).
 fn decide(
     doc: &Document,
     runs: Vec<TextRun>,

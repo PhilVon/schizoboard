@@ -37,8 +37,11 @@
  *
  * **The blob URLs are the one thing that leaks if this is wrong.** A lifted scan
  * is half a megabyte the browser holds until the URL is revoked, and a page turn
- * mints one a turn. So every URL this creates is revoked in exactly one place —
- * `forget` — and every path that drops a page goes through it.
+ * mints one a turn — and since T-329 a typed page mints one per figure on it as
+ * well. So every URL this creates is revoked in exactly one place — `forget` —
+ * and every path that drops a page goes through it. That is also why a figure's
+ * bytes are turned into a URL only *after* the check that the page is still
+ * held: bytes dropped on the floor are collected, and a blob URL is not.
  *
  * ## Why the neighbours are fetched rather than merely kept
  *
@@ -83,9 +86,31 @@ export interface PageView {
    * it, which is the same undeveloped-film shape a photograph already has.
    */
   readonly imageUrl: string | null;
+  /**
+   * The same thing for a typed page's figures — index for index with
+   * `content.figures`, so the nth entry belongs to the nth figure and nothing
+   * has to be matched up by anything else (T-329).
+   *
+   * `null` in a slot is a figure with no bytes to show: one this build could
+   * not lift, which carries its own sentence instead, or one whose read came
+   * back empty. Empty on every page that is not a typed one.
+   *
+   * A figure is asked for on its own road for the reason the page image is —
+   * half a megabyte of JPEG has no business inside a JSON value — and
+   * `documentPageImage` already takes the `(page, figure)` pair that names one.
+   */
+  readonly figureUrls: readonly (string | null)[];
 }
 
-const READING: PageView = { phase: "reading", page: null, reason: null, imageUrl: null };
+const NO_FIGURES: readonly (string | null)[] = [];
+
+const READING: PageView = {
+  phase: "reading",
+  page: null,
+  reason: null,
+  imageUrl: null,
+  figureUrls: NO_FIGURES,
+};
 
 /**
  * How many pages either side of the one being read are held, and fetched ahead.
@@ -105,8 +130,13 @@ const NEIGHBOURS = 1;
 /** One page, and whatever we have made of it. */
 interface Held {
   view: PageView;
-  /** Revoked in `forget` and nowhere else. */
-  url: string | null;
+  /**
+   * Every blob URL this page minted — the scan's, or one per lifted figure.
+   * Revoked in `forget` and nowhere else, which is why they are held together
+   * rather than read back off the view: a page with four figures has four URLs
+   * to let go of and exactly one place that may do it.
+   */
+  urls: readonly string[];
 }
 
 export class PageReader {
@@ -156,7 +186,7 @@ export class PageReader {
     const held = this.held.get(key);
     if (held !== undefined) return held.view;
 
-    this.held.set(key, { view: READING, url: null });
+    this.held.set(key, { view: READING, urls: [] });
     void this.fetch(key, sha256, index);
     return READING;
   }
@@ -205,7 +235,7 @@ export class PageReader {
    */
   get heldPages(): { pages: number; urls: number } {
     let urls = 0;
-    for (const held of this.held.values()) if (held.url) urls++;
+    for (const held of this.held.values()) urls += held.urls.length;
     return { pages: this.held.size, urls };
   }
 
@@ -315,7 +345,7 @@ export class PageReader {
   /** The one place a blob URL is revoked. */
   private forget(key: string): void {
     const held = this.held.get(key);
-    if (held?.url) URL.revokeObjectURL(held.url);
+    for (const url of held?.urls ?? []) URL.revokeObjectURL(url);
     this.held.delete(key);
   }
 
@@ -329,6 +359,7 @@ export class PageReader {
           page: null,
           reason: "there is no page here",
           imageUrl: null,
+          figureUrls: NO_FIGURES,
         });
         return;
       }
@@ -339,14 +370,51 @@ export class PageReader {
       if (page.content.kind === "image") {
         const bytes = await this.native.documentPageImage(sha256, index);
         if (!this.held.has(key)) return;
-        if (bytes.byteLength > 0) {
-          url = URL.createObjectURL(
-            new Blob([bytes as unknown as BlobPart], { type: page.content.image.mime }),
-          );
-        }
+        url = blobUrl(bytes, page.content.image.mime);
       }
 
-      this.land(key, sha256, index, { phase: "ready", page, reason: null, imageUrl: url }, url);
+      // And so does every figure on a typed page (T-329). Together rather than
+      // one after another: they are independent reads off a document the shell
+      // already has open, and a page carrying six of them would otherwise be
+      // six round trips deep before the sheet could be drawn.
+      let figureUrls: readonly (string | null)[] = NO_FIGURES;
+      const figures = page.content.kind === "text" ? page.content.figures : [];
+      if (figures.length > 0) {
+        const lifted = await Promise.all(
+          figures.map(async (figure, at) => {
+            // A figure this build could not lift has a sentence and no bytes.
+            // Asking for them anyway would be a round trip whose only possible
+            // answer is the empty one.
+            if (figure.content.kind !== "image") return null;
+            try {
+              return await this.native.documentPageImage(sha256, index, at);
+            } catch {
+              // Caught per figure and not left to take the page down with it.
+              // A page whose words are here and whose chart would not read is
+              // still a page somebody can read — the page-level `unreadable`
+              // arm is for a page that has *nothing*, and reaching it from here
+              // would throw away runs that arrived perfectly well.
+              return null;
+            }
+          }),
+        );
+        // Every URL is minted on this side of the check, which is what keeps
+        // `forget` the only place one is ever revoked: a page shut while its
+        // figures were in flight drops bytes, which the collector takes, rather
+        // than blob URLs, which it does not.
+        if (!this.held.has(key)) return;
+        figureUrls = figures.map((figure, at) =>
+          figure.content.kind === "image" ? blobUrl(lifted[at] ?? null, figure.content.image.mime) : null,
+        );
+      }
+
+      this.land(
+        key,
+        sha256,
+        index,
+        { phase: "ready", page, reason: null, imageUrl: url, figureUrls },
+        [url, ...figureUrls].filter((one): one is string => one !== null),
+      );
     } catch (error) {
       if (!this.held.has(key)) return;
       // The shell's own sentence, which `document.rs` writes to be read: "the
@@ -358,6 +426,7 @@ export class PageReader {
         page: null,
         reason: sentenceOf(error),
         imageUrl: null,
+        figureUrls: NO_FIGURES,
       });
     }
   }
@@ -367,14 +436,14 @@ export class PageReader {
     sha256: string,
     index: number,
     view: PageView,
-    url: string | null = null,
+    urls: readonly string[] = [],
   ): void {
     // Through `forget`, so this stays the one place a blob URL is revoked. It
     // matters now that the window lets a page go: a scan let go of and asked
     // for again has two fetches in flight against one key, and whichever loses
     // would otherwise leave half a megabyte behind with nothing pointing at it.
     this.forget(key);
-    this.held.set(key, { view, url });
+    this.held.set(key, { view, urls });
     // Only the page on the sheet is worth a redraw. A neighbour arriving
     // changes nothing anybody is looking at, and `arrived` is a whole item
     // rebind — so an unconditional call here would make fetching ahead cost a
@@ -393,4 +462,17 @@ export class PageReader {
 function sentenceOf(error: unknown): string {
   const said = error instanceof Error ? error.message : String(error);
   return said.trim() || "this page could not be read";
+}
+
+/**
+ * Lifted bytes as something an `<img>` can point at, or `null` for no bytes.
+ *
+ * Zero length is the shell saying it has nothing here rather than an error —
+ * `reading.rs` answers an empty vector for a `(page, figure)` pair it cannot
+ * satisfy — and a blob URL over an empty blob is a broken-image box, which is
+ * the one thing this feature exists to stop putting on a sheet.
+ */
+function blobUrl(bytes: Uint8Array | null, mime: string): string | null {
+  if (bytes === null || bytes.byteLength === 0) return null;
+  return URL.createObjectURL(new Blob([bytes as unknown as BlobPart], { type: mime }));
 }
