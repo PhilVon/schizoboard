@@ -136,7 +136,7 @@ import type { BoardStatus } from "@/ui/toolhint";
 import { ToolInfo } from "@/ui/toolinfo";
 import { Flash } from "@/ui/flash";
 import { Notice } from "@/ui/notice";
-import { SearchField } from "@/ui/search";
+import { SearchField, type Unsearched } from "@/ui/search";
 import { TuningPanel } from "@/ui/tuning";
 import { ContextMenu, type MenuEntry } from "@/ui/menu";
 
@@ -731,9 +731,17 @@ async function boot(): Promise<void> {
    * Beside `posters` because it is the same shape for the same reason: a queue
    * of one, fed from the record probe, doing work that costs a file read per
    * object and would otherwise all start at once when a board of them mounts.
-   * Nothing reads it yet — T-286 is the search that will.
+   *
+   * The hook is the search field's (T-286), and it is installed *later* rather
+   * than written here: `search` and `searchField` are five hundred lines down
+   * and there is an `await` between the two, so a folder whose read lands in
+   * that window would touch a `const` in its dead zone — a `ReferenceError`
+   * thrown inside a `.catch(() => undefined)`, which is the shape of a bug that
+   * costs a session. The default does nothing, which is also the right
+   * behaviour for a board with no search open.
    */
-  const textIndex = new TextIndex(native);
+  let documentTextArrived: (sha256: string) => void = () => {};
+  const textIndex = new TextIndex(native, (sha256) => documentTextArrived(sha256));
 
   // Awaited, not fired and forgotten: `listen` is itself a round trip, and an
   // `asset:ready` emitted before it resolves is simply lost — which would
@@ -1206,8 +1214,20 @@ async function boot(): Promise<void> {
    * **Nothing is filtered, hidden, dimmed or listed** (DESIGN section 2.5). The
    * board you are looking at while you search is the same board, item for item;
    * all that changes is where the camera is standing and which one thing is lit.
+   *
+   * The fourth piece is `TextIndex`, and it is handed in as one function (T-286)
+   * so that `Search` keeps knowing nothing about assets: what is *inside* an
+   * item, asked as "which page of it says this". Three hops, all of them ones
+   * something else here already makes — the item wears an asset, the index was
+   * filled when that asset appeared, and a hash nobody indexed answers null.
+   * Not gated on the record's kind: a photograph's hash has no pages, so it
+   * misses on the same line rather than on a check that could disagree with the
+   * one `assetFacts` makes.
    */
-  const search = new Search();
+  const search = new Search((itemId, needle) => {
+    const sha256 = scene.cold(itemId)?.assetId ?? null;
+    return sha256 === null ? null : textIndex.find(sha256, needle);
+  });
   const flight = new Flight();
   /** The board coordinates a match's box occupies; reused, like every other
    *  bounds in this file. */
@@ -1227,6 +1247,16 @@ async function boot(): Promise<void> {
    */
   const flyTo = (id: string | null): void => {
     if (id === null) return;
+    // A match inside a case file is a match on a *page*, and the folder shut on
+    // the cork is not where it is — D-46 section 4: "a match flies the camera to
+    // the folder and opens it at the page". So the open carries the flight, at
+    // its own zoom floor, which is the one a page can be read at rather than the
+    // one the board's handwriting can (T-321).
+    const page = search.pageOf(id);
+    if (page !== null && readInside(id, page)) {
+      foundPending = id;
+      return;
+    }
     const box = scene.boundsOf(id, 0, foundBox);
     if (box === null) return;
     // A floor under the landing zoom, not a target — Q-153. From a fitted board
@@ -1308,10 +1338,24 @@ async function boot(): Promise<void> {
     // takes the board away.
     if (kindOfItem(itemId) === "video") return watchItem(itemId);
     if (opening.itemId === itemId) return closeOpen();
-    // One open thing at a time, held at the fork rather than trusted to the two
-    // branches. `opening.open` replaces a turn already in progress on its own;
-    // the set is a different object and would otherwise be left on behind a
-    // folder, which is a state no single `Escape` could get out of.
+    readItem(itemId);
+    return true;
+  };
+
+  /**
+   * Turn this folder up and fly to it — the open itself, with no toggle in it.
+   *
+   * Split out of `openItem` for the search (T-286), which must be able to land
+   * on the same folder twice without the second landing shutting it. The toggle
+   * is a property of the *gesture* — `Enter` on a selection, the menu's Open —
+   * rather than of opening, and a search stepping through four matches in one
+   * filing is not four presses.
+   */
+  const readItem = (itemId: string): void => {
+    // One open thing at a time, held here rather than trusted to the two
+    // branches above. `opening.open` replaces a turn already in progress on its
+    // own; the set is a different object and would otherwise be left on behind
+    // a folder, which is a state no single `Escape` could get out of.
     crt.close();
     opening.open(itemId);
     // Say which file is being read, so the shell holds that one open and lets
@@ -1324,6 +1368,26 @@ async function boot(): Promise<void> {
     }
     const box = scene.boundsOf(itemId, 0, foundBox);
     if (box !== null) flight.toBox(camera, box, undefined, pageReadingZoom(itemId));
+  };
+
+  /**
+   * Open this case file at `page`, and say whether it could be — T-286.
+   *
+   * False for anything without a readable inside, which is the whole of the
+   * caller's fallback: the flight it would have made is the flight it makes.
+   * A tape is refused here rather than put on, and deliberately — a recording
+   * has no page, its transcript is a sidecar nobody has written yet (T-287),
+   * and a search that started the film would be the loudest thing on this board
+   * happening because somebody typed a third character.
+   */
+  const readInside = (itemId: string, page: number): boolean => {
+    if (!openable(itemId) || kindOfItem(itemId) === "video") return false;
+    readItem(itemId);
+    // After the open rather than inside it: `reader.open` is idempotent on the
+    // document already being read and leaves its page where it is, which is
+    // what lets the second match in one filing turn a page instead of
+    // reopening the file underneath itself.
+    reader.goto(page);
     return true;
   };
 
@@ -1405,10 +1469,47 @@ async function boot(): Promise<void> {
     return true;
   };
 
+  /**
+   * How much of what matched has pages nobody can read — T-286, Q-273.
+   *
+   * Over the matches rather than over the board, which is what makes it a
+   * footnote to *this* answer: a filing full of scans that has nothing to do
+   * with the query is not something the field should be talking about.
+   *
+   * A folder is counted `whole` when the shell could not read it at all or
+   * every page of it is silent, and `part` when some of it was readable. Only
+   * documents can be either — nothing else is ever asked, so a note and a
+   * photograph sit at `unasked` and fall out here.
+   */
+  const unsearchedAmongMatches = (): Unsearched => {
+    let whole = 0;
+    let part = 0;
+    for (const id of search.ids) {
+      const sha256 = scene.cold(id)?.assetId ?? null;
+      if (sha256 === null) continue;
+      const found = textIndex.of(sha256);
+      if (found.phase === "unreadable") {
+        whole += 1;
+        continue;
+      }
+      if (found.phase !== "read" || found.pages.length === 0) continue;
+      const silent = found.silence.scan + found.silence.empty + found.silence.unreadable;
+      if (silent === 0) continue;
+      if (silent === found.pages.length) whole += 1;
+      else part += 1;
+    }
+    return { whole, part };
+  };
+
+  /** The count and its footnote, from wherever the answer last changed. */
+  const reportSearch = (): void => {
+    searchField.report(search.ordinal, search.count, unsearchedAmongMatches());
+  };
+
   const searchField = new SearchField(world.layers.ui, {
     typed: (query) => {
       flyTo(search.run(scene, query));
-      searchField.report(search.ordinal, search.count);
+      reportSearch();
     },
     stepped: (delta) => {
       // Re-walked before stepping, and forced, because the board moves under a
@@ -1417,7 +1518,7 @@ async function boot(): Promise<void> {
       // cursor into a list that was true when you stopped typing.
       search.run(scene, searchField.value, true);
       flyTo(search.step(delta));
-      searchField.report(search.ordinal, search.count);
+      reportSearch();
     },
     closed: () => {
       // The query is dropped with the field. A search you closed is over, and a
@@ -1458,9 +1559,26 @@ async function boot(): Promise<void> {
     // nothing. `open()` has selected the text, so typing still replaces it.
     if (reopened) {
       flyTo(search.run(scene, searchField.value, true));
-      searchField.report(search.ordinal, search.count);
+      reportSearch();
     }
   });
+
+  /**
+   * A case file finishing its read, with the field open — T-286.
+   *
+   * The hook `TextIndex` was built without and now has one caller. Deferred to
+   * here rather than written at the index's construction because `search` and
+   * `searchField` did not exist yet at that line; see there.
+   *
+   * `refresh` rather than `run(force)`: the answer changes, the camera must
+   * not. Somebody typing a query while twenty filings are still being read
+   * would otherwise be flown at each one as it landed.
+   */
+  documentTextArrived = () => {
+    if (!searchField.isOpen) return;
+    search.refresh(scene);
+    reportSearch();
+  };
 
   /**
    * Ctrl+Z · Ctrl+Shift+Z (DESIGN section 3.7), and Ctrl+Y because this is a

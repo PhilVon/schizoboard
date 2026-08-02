@@ -172,6 +172,48 @@ describe("the search field", () => {
     expect(count().classList.contains("is-none")).toBe(true);
   });
 
+  /**
+   * What the field admits about a scan — T-286, Q-273, D-46 section 5.
+   *
+   * A scanned page has no text and there is no OCR, so it can never match. The
+   * count on its own would let that read as a board that has nothing to say on
+   * the subject, which is a different and untrue sentence.
+   */
+  it("names the matched folders with pages nothing could read", () => {
+    const field = new SearchField(host, handlers());
+    field.open();
+    input().value = "asbestos";
+    field.report(3, 7, { whole: 0, part: 1 });
+    expect(count().textContent).toBe("3 of 7 · 1 folder part-scanned");
+
+    // A filing that is photographs of paper throughout is not *part* anything.
+    field.report(3, 7, { whole: 2, part: 0 });
+    expect(count().textContent).toBe("3 of 7 · 2 folders not searchable");
+
+    // Both kinds at once says the weaker thing, which is true of both.
+    field.report(3, 7, { whole: 1, part: 1 });
+    expect(count().textContent).toBe("3 of 7 · 2 folders with unread pages");
+  });
+
+  it("says it beside a miss too, which is where it matters most", () => {
+    const field = new SearchField(host, handlers());
+    field.open();
+    input().value = "asbestos";
+    // The silent miss D-46 section 5 asks this field to stop letting through:
+    // nothing was found *and* there was a filing nobody could look inside.
+    field.report(0, 0, { whole: 1, part: 0 });
+    expect(count().textContent).toBe("none · 1 folder not searchable");
+    expect(count().classList.contains("is-none")).toBe(true);
+  });
+
+  it("says nothing about scans when nothing that matched had any", () => {
+    const field = new SearchField(host, handlers());
+    field.open();
+    input().value = "hit";
+    field.report(3, 7, { whole: 0, part: 0 });
+    expect(count().textContent).toBe("3 of 7");
+  });
+
   it("writes no DOM for an unchanged readout", () => {
     const field = new SearchField(host, handlers());
     field.open();

@@ -60,6 +60,7 @@
  */
 
 import { isHash } from "@/crdt/sync/assets";
+import { normalise } from "@/lib/textnorm";
 import type { NoText, PageText, Platform } from "@/platform/types";
 
 /** What is known about one document's text right now. */
@@ -101,31 +102,30 @@ const UNASKED: DocumentIndex = { phase: "unasked", pages: [], silence: NO_SILENC
 const READING: DocumentIndex = { phase: "reading", pages: [], silence: NO_SILENCE };
 const UNREADABLE: DocumentIndex = { phase: "unreadable", pages: [], silence: NO_SILENCE };
 
-/**
- * Lowercased, with every run of whitespace collapsed to one space and the ends
- * trimmed.
- *
- * The one normaliser, applied to the haystack when it lands and to the needle
- * on every ask — because a needle normalised by a different rule than the text
- * is a search that misses on exactly the phrases somebody typed carefully.
- */
-export function normalise(text: string): string {
-  return text.toLowerCase().replace(/\s+/g, " ").trim();
-}
-
 export class TextIndex {
   private readonly held = new Map<string, DocumentIndex>();
   private queue: Promise<unknown> = Promise.resolve();
 
   /**
-   * No arrival callback, and that is a decision rather than an omission.
+   * @param arrived Called when a document's text lands, readable or not.
    *
-   * Nothing an index holds is drawn, so there is no repaint to schedule — the
-   * only thing that could want telling is a search field already on screen when
-   * a folder finishes reading, and there is no search field reading this yet
-   * (T-286). A hook with no caller is a hook nobody can check.
+   * There was no such hook until T-286, on the argument that nothing an index
+   * holds is drawn and a hook with no caller is a hook nobody can check. The
+   * caller exists now and is exactly the case that argument named: a search
+   * field already on screen while a folder is still being read. Without this,
+   * a query typed during those few hundred milliseconds keeps the answer it
+   * had — the count would say `2 of 2` on a board where three folders say the
+   * word, and nothing would ever correct it.
+   *
+   * It fires **per document rather than per board**, and the caller re-walks
+   * on each. A board of forty folders is forty walks over a few hundred items
+   * spread across the seconds the queue takes, which is beneath the cost of one
+   * keystroke's worth of typing.
    */
-  constructor(private readonly native: Platform) {}
+  constructor(
+    private readonly native: Platform,
+    private readonly arrived: (sha256: string) => void = () => {},
+  ) {}
 
   /**
    * Read this document's text if it has not been read.
@@ -187,6 +187,11 @@ export class TextIndex {
       // a case file whose pages nobody can look inside. The folder is still
       // findable by its label, which is what `Search` already does.
       this.held.set(sha256, UNREADABLE);
+      // Announced like any other landing. A file the shell refused is not a
+      // non-event for a search field: it is the difference between "still
+      // reading" and "there is nothing in here to find", and only the second
+      // of those is a sentence worth putting on screen.
+      this.arrived(sha256);
       return;
     }
     const pages: string[] = [];
@@ -200,5 +205,6 @@ export class TextIndex {
       silence[page.why] += 1;
     }
     this.held.set(sha256, { phase: "read", pages, silence });
+    this.arrived(sha256);
   }
 }

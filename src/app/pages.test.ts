@@ -214,3 +214,68 @@ describe("letting the file go", () => {
     await settle();
   });
 });
+
+/**
+ * Going straight to a page — T-286.
+ *
+ * The second way in, and the only one that is not a hand on the corner of a
+ * sheet: a search match is a `(document, page)` pair and the flight lands on
+ * the second half of it.
+ */
+describe("opening at a page", () => {
+  it("goes to the page and says so", () => {
+    const { native } = shell();
+    const arrived = vi.fn();
+    const reader = new PageReader(native, arrived);
+    reader.open(HASH, 60);
+
+    expect(reader.goto(41)).toBe(true);
+    expect(reader.pageAt).toBe(41);
+    expect(arrived).toHaveBeenCalledWith(HASH);
+  });
+
+  it("clamps to the document rather than trusting the number", () => {
+    const { native } = shell();
+    const reader = new PageReader(native, () => {});
+    reader.open(HASH, 12);
+
+    // A page number derived from an index built off the bytes, against a count
+    // that came off the record — the two can disagree, and a reader must not
+    // end up at page 400 of a twelve-page filing.
+    reader.goto(400);
+    expect(reader.pageAt).toBe(12);
+    reader.goto(0);
+    expect(reader.pageAt).toBe(1);
+    reader.goto(-3);
+    expect(reader.pageAt).toBe(1);
+  });
+
+  it("answers false when it is already there, and when nothing is open", () => {
+    const { native } = shell();
+    const arrived = vi.fn();
+    const reader = new PageReader(native, arrived);
+
+    // Nothing open: there is no page to be at.
+    expect(reader.goto(3)).toBe(false);
+
+    reader.open(HASH, 9);
+    expect(reader.goto(1)).toBe(false);
+    expect(arrived).not.toHaveBeenCalled();
+  });
+
+  it("keeps the page when the document it is already reading is opened again", () => {
+    const { native } = shell();
+    const reader = new PageReader(native, () => {});
+    reader.open(HASH, 50);
+    reader.goto(41);
+
+    // What a search stepping onto a second match in the same filing does. If
+    // `open` reset here, the second match would land on page one.
+    reader.open(HASH, 50);
+    expect(reader.pageAt).toBe(41);
+
+    // A different one is a different reading, and starts at the front.
+    reader.open(OTHER, 50);
+    expect(reader.pageAt).toBe(1);
+  });
+});

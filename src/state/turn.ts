@@ -103,6 +103,24 @@ export class PaperTurn {
   }
 
   /**
+   * The one left behind by a straight switch, until it has been marked dirty.
+   *
+   * The scene holds **one** flattened item and one open one, so taking the slot
+   * for a second item is what puts the first back — the state is already right
+   * the moment [`open`] is called. What is not right is the *picture*: nothing
+   * marks the abandoned item dirty, so its view keeps drawing the pose and the
+   * page it last bound, and a folder shut a second ago stays a white sheet with
+   * a page number on it until something unrelated happens to touch it.
+   *
+   * Found in the running app (T-286): a search stepping from one case file to
+   * the next left the first one open behind it. It was reachable before search
+   * — `Enter` on a second folder is the same call — and invisible in every unit
+   * test, because a scene reads correctly while a DOM layer nobody told does
+   * not.
+   */
+  private dropped: string | null = null;
+
+  /**
    * Start laying `itemId` flat.
    *
    * Switching straight from one note to another puts the first one back
@@ -112,6 +130,10 @@ export class PaperTurn {
    */
   open(itemId: string): void {
     if (this.subject !== itemId) {
+      // Kept rather than acted on here: this has no scene and no dirty sets,
+      // and inventing arguments for them would put the one place that knows
+      // about the switch in every caller instead.
+      if (this.subject !== null) this.dropped = this.subject;
       this.subject = itemId;
       this.t = 0;
     }
@@ -129,6 +151,13 @@ export class PaperTurn {
   }
 
   step(scene: Scene, dirty: DirtySets, dtMs: number): void {
+    // Before anything else, and unconditionally: the item that was dropped is
+    // already back in the scene's terms and only its picture is behind. Below
+    // the early return it would be missed on exactly the frame it matters.
+    if (this.dropped !== null) {
+      dirty.item(this.dropped);
+      this.dropped = null;
+    }
     const id = this.subject;
     if (id === null) return;
 
