@@ -6,9 +6,12 @@
  * often, what is kept, and what a needle is tested against once it is.
  */
 
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
-import { TextIndex, normalise } from "@/app/textindex";
+import { TextIndex } from "@/app/textindex";
+// Moved to `lib/` when `Search` became its second caller (T-286) — the tests
+// stay here, where the rule's consequences are visible.
+import { normalise } from "@/lib/textnorm";
 import type { PageText, Platform } from "@/platform/types";
 
 const HASH = "a".repeat(64);
@@ -175,5 +178,39 @@ describe("normalise", () => {
     expect(normalise("  WITNESS\n\n\tSTATEMENT  ")).toBe("witness statement");
     expect(normalise("")).toBe("");
     expect(normalise("   \n  ")).toBe("");
+  });
+});
+
+/**
+ * The arrival hook — T-286.
+ *
+ * There was none until a search field needed one: a query typed while twenty
+ * filings are still being read keeps the answer it had, and nothing would ever
+ * correct it. Both landings count, because "still reading" and "there is
+ * nothing in here to find" are different sentences.
+ */
+describe("saying when a document has landed", () => {
+  it("calls back once per document, after its pages are readable", async () => {
+    const { native } = shell({ [HASH]: text("Witness statement") });
+    const seen: string[] = [];
+    const index = new TextIndex(native, (sha256) => {
+      // Called *after* the entry is in place — a caller that re-walks on this
+      // and found the old answer would be worse than no callback at all.
+      seen.push(sha256);
+      expect(index.find(sha256, "witness")).toBe(1);
+    });
+    for (let i = 0; i < 5; i++) index.wants(HASH);
+    await index.idle();
+    expect(seen).toEqual([HASH]);
+  });
+
+  it("calls back for a file the shell would not read at all", async () => {
+    const { native } = shell({ [HASH]: new Error("the document is password protected") });
+    const arrived = vi.fn();
+    const index = new TextIndex(native, arrived);
+    index.wants(HASH);
+    await index.idle();
+    expect(arrived).toHaveBeenCalledWith(HASH);
+    expect(index.of(HASH).phase).toBe("unreadable");
   });
 });

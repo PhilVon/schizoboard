@@ -166,6 +166,30 @@ export class PageReader {
   }
 
   /**
+   * Go to a page by number, one-based, and answer whether anything moved.
+   *
+   * The other way in, beside [`turn`], and the only one that is not a hand on
+   * the corner of a sheet: a search match is a `(document, page)` pair (T-286)
+   * and the flight has to land on the second half of it. Clamped like `turn`,
+   * for the same reason and against a worse input — a page number derived from
+   * an index read off bytes that may have been indexed before the record said
+   * how many pages there were.
+   *
+   * It is **not** part of `open`. Opening at a page and then turning is two acts
+   * on one object, and `open` is idempotent precisely so that a search stepping
+   * twice through the same folder does not shut and reopen the file underneath
+   * itself.
+   */
+  goto(page: number): boolean {
+    if (this.reading === null) return false;
+    const to = Math.min(this.count, Math.max(1, Math.trunc(page)));
+    if (to === this.at) return false;
+    this.at = to;
+    this.arrived(this.reading);
+    return true;
+  }
+
+  /**
    * The folder has been shut. Drop its pages and let the shell release the file.
    *
    * `documentClose` names the hash rather than saying "whatever is open",

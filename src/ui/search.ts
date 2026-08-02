@@ -38,6 +38,25 @@
  * says is "3 of 7", and the answer to "which 7" is: fly through them.
  */
 
+/**
+ * How much of what matched cannot be searched — T-286, Q-273, D-46 section 5.
+ *
+ * A scanned page is an image of paper. It has no text, there is no OCR, and
+ * there will not be one, so it can never match anything — which makes a search
+ * over a board of court filings quietly narrower than it looks. The counts are
+ * **of the folders that did match**, not of the board: Q-273 chose to say this
+ * only where it bears on the answer in front of you, rather than to carry a
+ * standing warning about filings the query has nothing to do with.
+ */
+export interface Unsearched {
+  /** Matched folders with nothing readable in them at all. */
+  readonly whole: number;
+  /** Matched folders with some pages readable and some not. */
+  readonly part: number;
+}
+
+const NOTHING_UNSEARCHED: Unsearched = { whole: 0, part: 0 };
+
 /** What the field reports upward. All three are plain intents; this module
  *  knows nothing about the scene, the camera or the flight. */
 export interface SearchHandlers {
@@ -138,15 +157,22 @@ export class SearchField {
   }
 
   /**
-   * Write the readout: "3 of 7", or that there is nothing.
+   * Write the readout: "3 of 7", or that there is nothing — and what of it
+   * could not be looked inside.
    *
    * Blank rather than "0 of 0" for an empty query — a field you have just
    * opened has not failed to find anything, it has not been asked yet, and a
    * zero sitting there reads as the former.
+   *
+   * The second clause is the honesty D-46 section 5 asks for by name: "the
+   * search field should say so rather than letting a silent miss read as a
+   * failure to find". It is one short clause after a middle dot on the same
+   * line, because a second line would move the count off the strip and this is
+   * a footnote to the number rather than a message of its own.
    */
-  report(ordinal: number, total: number): void {
-    const text =
-      this.input.value.trim() === "" ? "" : total === 0 ? "none" : `${ordinal} of ${total}`;
+  report(ordinal: number, total: number, unsearched: Unsearched = NOTHING_UNSEARCHED): void {
+    const found = total === 0 ? "none" : `${ordinal} of ${total}`;
+    const text = this.input.value.trim() === "" ? "" : found + aside(unsearched);
     if (text === this.written) return;
     this.written = text;
     this.count.textContent = text;
@@ -156,4 +182,27 @@ export class SearchField {
   destroy(): void {
     this.el.remove();
   }
+}
+
+/**
+ * The clause about what could not be looked inside, or nothing at all.
+ *
+ * Three sentences rather than one with a number in it, because a folder of
+ * photographs of paper and a typed filing with two exhibits behind it are
+ * different facts and only one of them is *part*-anything. The mixed case says
+ * the weaker thing about both, which is true of both: there are pages in there
+ * nobody read.
+ *
+ * "Folder" rather than "document" or "case file": it is the word the object on
+ * the cork is drawn as, and the only one somebody can point at.
+ */
+function aside({ whole, part }: Unsearched): string {
+  if (whole === 0 && part === 0) return "";
+  if (whole > 0 && part > 0) return ` · ${whole + part} folders with unread pages`;
+  if (whole > 0) return ` · ${whole} ${folders(whole)} not searchable`;
+  return ` · ${part} ${folders(part)} part-scanned`;
+}
+
+function folders(n: number): string {
+  return n === 1 ? "folder" : "folders";
 }

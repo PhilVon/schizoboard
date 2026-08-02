@@ -83,9 +83,9 @@ src/
     mock.ts           the same interface for browser dev, so the frontend runs with no shell
     index.ts · env.ts which of the two is in use, and how that is decided
 
-  lib/                sixteen dependency-free helpers — angle, carry, cellgrid, ids,
+  lib/                seventeen dependency-free helpers — angle, carry, cellgrid, ids,
                       ink, inkhit, material, palette, polaroid, pressure, rotate,
-                      seed, slack, strokepack, style, textdiff. Imports nothing
+                      seed, slack, strokepack, style, textdiff, textnorm. Imports nothing
                       OUTSIDE lib/ — a few reach sideways to each other — and there
                       is an eslint rule saying so, which is what stops rule 2 being
                       laundered through here.

@@ -20,14 +20,24 @@
  * keystroke: reading a `Y.Text` per item per character typed would be the one
  * place in the application that pays CRDT costs for a read.
  *
- * Nothing else on the board holds prose. Strokes are packed points, pins and
- * strings carry colours and materials, and an asset's original filename is not
- * mirrored into the scene at all.
+ * Nothing else on the board holds prose *in the document*. Strokes are packed
+ * points, pins and strings carry colours and materials, and an asset's original
+ * filename is not mirrored into the scene at all.
+ *
+ * ## And then there are the case files, which hold prose somewhere else
+ *
+ * A folder's item text is its label; the fifty pages inside it are bytes, and
+ * what they say is a **derived local index** that never enters the document
+ * (D-46 section 2, `app/textindex.ts`). Search reaches them through [`Insides`]
+ * — a function handed in at construction, so this module keeps knowing nothing
+ * about assets, the shell, or which layer read the file. A hit is still an
+ * *item*: you are taken to the folder on the cork, and the page it matched on
+ * is what the caller opens it at.
  *
  * ## It is a walk, and that is a decision rather than an oversight
  *
- * There is no text index and no text-changed signal — `state/dirty.ts` has
- * `dirty.item(id)` and nothing finer, so an index would have to be rebuilt from
+ * For the board's own text there is no index and no text-changed signal —
+ * `state/dirty.ts` has `dirty.item(id)` and nothing finer, so one would have to be rebuilt from
  * a signal that does not exist, or rebuilt wholesale, which is the walk again
  * with a cache in front of it. At board scale — hundreds of items, not
  * hundreds of thousands — a substring test per item per keystroke is beneath
@@ -49,7 +59,29 @@
  * which is the property that matters.
  */
 
+import { normalise } from "@/lib/textnorm";
 import type { Bounds, Scene } from "@/state/scene";
+
+/**
+ * What is *inside* an item, for the walk to look at after its text — T-286.
+ *
+ * A case file's pages are not in the document and never will be (D-46 section
+ * 2): they are a derived local index off the bytes, held by `app/textindex.ts`,
+ * which is a layer this module may not import and should not know about. So the
+ * question is asked as a function, and a board with no documents on it — every
+ * test in `search.test.ts` bar the ones about this — passes nothing and gets the
+ * walk it always had.
+ *
+ * Returns the **one-based page** the needle is on, or null for an item with
+ * nothing inside it, nothing inside it that matches, or nothing readable inside
+ * it at all. One-based because that is the number printed on the page and the
+ * one the reading surface takes.
+ *
+ * Asked with the needle already normalised, and asked once per item per walk.
+ */
+export type Insides = (itemId: string, needle: string) => number | null;
+
+const NOTHING_INSIDE: Insides = () => null;
 
 /**
  * A board search, and a cursor into its answer.
@@ -58,6 +90,13 @@ import type { Bounds, Scene } from "@/state/scene";
  * collaborator between one `Enter` and the next, and an id that has stopped
  * meaning anything is a miss to skip rather than a slot pointing at whatever
  * moved into it.
+ *
+ * **Ids only, even now that a match can be a page.** A case-file hit is an item
+ * *and* a page, and the page is deliberately not carried in this list: it is
+ * asked for again at flight time by [`pageOf`], off the same index the walk read
+ * it from. A parallel array would be a second copy of an answer that is already
+ * cheap to re-derive and could disagree with the first — and every reader of
+ * `ids` (the overlay's borders, the `n of m`) wants items rather than pages.
  */
 export class Search {
   /** Matching ids in reading order. */
@@ -84,6 +123,8 @@ export class Search {
 
   /** Reused by the sort; `boundsOf` writes into whatever it is handed. */
   private readonly box: Bounds = { minX: 0, minY: 0, maxX: 0, maxY: 0 };
+
+  constructor(private readonly inside: Insides = NOTHING_INSIDE) {}
 
   get count(): number {
     return this.hits.length;
@@ -130,7 +171,9 @@ export class Search {
    * — it flashes the current match rather than doing nothing.
    */
   run(scene: Scene, query: string, force = false): string | null {
-    const needle = query.trim().toLowerCase();
+    // The index's rule rather than this module's old one — `lib/textnorm.ts`
+    // says why they had to become the same rule.
+    const needle = normalise(query);
     if (needle === this.query && !force) return null;
     this.query = needle;
 
@@ -179,6 +222,44 @@ export class Search {
   }
 
   /**
+   * Walk again for the query already in hand, without moving the camera.
+   *
+   * For the one event that changes the answer while nobody is typing: a case
+   * file finishing its read with the field open (`TextIndex`'s arrival hook).
+   * `run(force)` cannot serve that — it *answers* with an id, and the caller
+   * would fly to it, so a folder landing in the background would throw the
+   * camera at whatever it landed on.
+   *
+   * The cursor stays on the item you were reading if it is still a match. If it
+   * is not — which only happens when the item went away — the count is what
+   * changed and `Enter` starts from the top, the same as any other walk.
+   */
+  refresh(scene: Scene): void {
+    const was = this.current;
+    const before = this.hits;
+    this.hits = this.query === "" ? [] : this.walk(scene, this.query);
+    if (!same(before, this.hits)) this.matchVersion += 1;
+    const kept = was === null ? -1 : this.hits.indexOf(was);
+    this.at = kept >= 0 ? kept : this.hits.length === 0 ? -1 : 0;
+  }
+
+  /**
+   * Which page of `id`'s case file the current query is on, or null.
+   *
+   * Null for every ordinary item: a note matched on its own text and has no
+   * inside to open. So this is also the question "is this match a page?", which
+   * is what `app/main.ts` branches on before deciding whether flying there
+   * means opening the folder as well.
+   *
+   * Re-derived rather than remembered — see the class comment. It is a substring
+   * scan over one document's pages, off an index that is already in memory.
+   */
+  pageOf(id: string): number | null {
+    if (this.query === "") return null;
+    return this.inside(id, this.query);
+  }
+
+  /**
    * Drop the query and the cursor.
    *
    * Called when the field closes and when the document underneath is replaced —
@@ -202,8 +283,15 @@ export class Search {
       // The `=== ""` half is an early out rather than a rule — a blank note
       // cannot contain a non-empty needle anyway. It is here because a board is
       // mostly photographs with no caption, and this runs per keystroke.
-      if (text === undefined || text === "") continue;
-      if (text.toLowerCase().includes(needle)) hits.push(id);
+      if (text !== undefined && text !== "" && normalise(text).includes(needle)) {
+        hits.push(id);
+        continue;
+      }
+      // Its label missed; what is *in* it may not have. A folder's label is
+      // usually a filename and the interesting sentence is on page forty
+      // (T-286) — and the two are one hit either way, because the thing you
+      // are taken to is the object on the cork rather than a result row.
+      if (this.inside(id, needle) !== null) hits.push(id);
     }
     if (hits.length < 2) return hits;
 

@@ -365,3 +365,183 @@ describe("the matches, for the painter", () => {
     expect(search.version).toBeGreaterThan(before);
   });
 });
+
+/**
+ * Inside a case file — T-286.
+ *
+ * The board's own text is mirrored onto `ItemCold.text`; a folder's fifty pages
+ * are not, and never will be (D-46 section 2). What is asserted here is only
+ * this module's half of that: that the walk asks, that an answer makes the
+ * *item* a match, and that the page comes back out again at flight time.
+ */
+describe("Search, inside the case files", () => {
+  /** A stand-in for `TextIndex.find` — `{ item: { needle: page } }`. */
+  function insides(pages: Record<string, Record<string, number>>) {
+    const asked: Array<[string, string]> = [];
+    const inside = (id: string, needle: string): number | null => {
+      asked.push([id, needle]);
+      return pages[id]?.[needle] ?? null;
+    };
+    return { inside, asked };
+  }
+
+  it("finds a folder on what is inside it, when its own label says nothing", () => {
+    const scene = new Scene();
+    add(scene, "note", "shopping");
+    add(scene, "folder", "permit-2019-final.pdf");
+    const { inside } = insides({ folder: { asbestos: 41 } });
+
+    const search = new Search(inside);
+    expect(search.run(scene, "asbestos")).toBe("folder");
+    expect(search.count).toBe(1);
+    // And the page, which is the half the item id cannot carry.
+    expect(search.pageOf("folder")).toBe(41);
+    expect(search.pageOf("note")).toBe(null);
+  });
+
+  it("is one match, not two, for a folder whose label and pages both say it", () => {
+    const scene = new Scene();
+    add(scene, "folder", "asbestos survey");
+    const { inside } = insides({ folder: { asbestos: 3 } });
+
+    const search = new Search(inside);
+    search.run(scene, "asbestos");
+    expect([...search.ids]).toEqual(["folder"]);
+  });
+
+  it("does not look inside an item its own text already matched", () => {
+    const scene = new Scene();
+    add(scene, "folder", "asbestos survey");
+    const { inside, asked } = insides({ folder: { asbestos: 3 } });
+
+    const search = new Search(inside);
+    search.run(scene, "asbestos");
+    // The walk short-circuits: a hit is a hit, and the page is only fetched if
+    // somebody flies there. Asking anyway would be a file's worth of substring
+    // scanning per keystroke for an answer nothing reads.
+    expect(asked).toEqual([]);
+  });
+
+  it("orders a page match by where the folder is, not by which page it is on", () => {
+    const scene = new Scene();
+    add(scene, "low", "", { y: 900 });
+    add(scene, "high", "", { y: 100 });
+    const { inside } = insides({ low: { writ: 2 }, high: { writ: 90 } });
+
+    const search = new Search(inside);
+    // Reading order over the cork. The page inside a filing is not a position
+    // on the board and cannot be allowed to become one.
+    expect(search.run(scene, "writ")).toBe("high");
+    expect([...search.ids]).toEqual(["high", "low"]);
+  });
+
+  it("has no page for a query that is over", () => {
+    const scene = new Scene();
+    add(scene, "folder", "");
+    const { inside } = insides({ folder: { writ: 2 } });
+
+    const search = new Search(inside);
+    search.run(scene, "writ");
+    search.clear();
+    expect(search.pageOf("folder")).toBe(null);
+  });
+
+  it("asks with the needle normalised, so both sides test the same string", () => {
+    const scene = new Scene();
+    add(scene, "folder", "");
+    const { inside, asked } = insides({});
+
+    const search = new Search(inside);
+    search.run(scene, "  Witness   Statement \n");
+    expect(asked).toEqual([["folder", "witness statement"]]);
+  });
+});
+
+/**
+ * One normalisation rule — T-286.
+ *
+ * The bug this pins down is a difference nobody could have explained from the
+ * outside: before `lib/textnorm.ts` was one function, the index collapsed runs
+ * of whitespace and the walk did not, so a phrase typed with two spaces found
+ * the case file and missed the note pinned beside it.
+ */
+describe("Search, and how a needle is normalised", () => {
+  it("collapses whitespace on both sides of the test", () => {
+    const scene = new Scene();
+    add(scene, "note", "the  witness\nstatement");
+
+    const search = new Search();
+    expect(search.run(scene, "witness statement")).toBe("note");
+    search.clear();
+    expect(search.run(scene, "witness   statement")).toBe("note");
+    search.clear();
+    // And the same needle finds the case file, which is the point of there
+    // being one rule rather than two that agree most of the time.
+    const filed = new Scene();
+    add(filed, "folder", "");
+    const search2 = new Search((_id, needle) => (needle === "witness statement" ? 7 : null));
+    expect(search2.run(filed, "witness   statement")).toBe("folder");
+  });
+});
+
+/**
+ * Re-walking without moving — T-286.
+ *
+ * A folder finishes reading a second after somebody typed the query. The count
+ * has to change and the camera must not, which is the whole reason this is not
+ * `run(force)`.
+ */
+describe("Search.refresh", () => {
+  it("picks up matches that only became findable after the walk", () => {
+    const scene = new Scene();
+    add(scene, "folder", "");
+    let read = false;
+    const search = new Search((_id, needle) => (read && needle === "writ" ? 12 : null));
+
+    search.run(scene, "writ");
+    expect(search.count).toBe(0);
+
+    read = true;
+    search.refresh(scene);
+    expect(search.count).toBe(1);
+    expect(search.current).toBe("folder");
+    expect(search.pageOf("folder")).toBe(12);
+  });
+
+  it("keeps the cursor on the match being read when others arrive", () => {
+    const scene = new Scene();
+    add(scene, "a", "writ", { y: 0 });
+    add(scene, "b", "writ", { y: 400 });
+    add(scene, "late", "", { y: 200 });
+    let read = false;
+    const search = new Search((id, _n) => (read && id === "late" ? 3 : null));
+
+    search.run(scene, "writ");
+    search.step(1);
+    expect(search.current).toBe("b");
+
+    read = true;
+    search.refresh(scene);
+    // Three matches now, and `late` sorts between them — but the cursor is on
+    // the item, not on the index, so it is still the one being read.
+    expect(search.count).toBe(3);
+    expect(search.current).toBe("b");
+    expect(search.ordinal).toBe(3);
+  });
+
+  it("bumps the version when the answer changed, and not when it did not", () => {
+    const scene = new Scene();
+    add(scene, "a", "writ");
+    const search = new Search();
+    search.run(scene, "writ");
+    const held = search.version;
+
+    search.refresh(scene);
+    expect(search.version).toBe(held);
+
+    scene.removeItem("a");
+    search.refresh(scene);
+    expect(search.version).toBeGreaterThan(held);
+    expect(search.current).toBe(null);
+  });
+});

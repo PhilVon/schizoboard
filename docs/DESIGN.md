@@ -345,7 +345,7 @@ Undo: text edits are character-level and merge into sensible entries by typing p
 | Fit board | `Ctrl+0` |
 | Actual size | `Ctrl+1` |
 | Frame selection | `F` |
-| Search | `Ctrl+F` — flies the camera to a match. **Never filters or hides.** |
+| Search | `Ctrl+F` — flies the camera to a match, and inside a case file opens it at the page. **Never filters or hides.** |
 | Next / previous match | `Enter` / `Shift+Enter` while the field is open |
 | Close the search | `Escape` |
 | Open a case file | `Enter` on a selection of exactly one, or the item menu's *Open* — flies the camera the way search does |
@@ -370,6 +370,10 @@ The match you arrive at flashes, one at a time, in the same amber §7.6 uses. Fl
 Off-screen matches get nothing. A tick at the viewport edge pointing at each of them was the third option on Q-176 and is the one that changes what search *is*: this marks what is already in front of you, and the field's count ("3 of 7") stays the entire summary of what is not.
 
 Refining a query does not move you: as long as the match you are reading still matches, the camera stays on it. Search is the one shortcut handled *before* the text-field bail, because the thing it opens is itself a text field.
+
+**And it looks inside the case files** (T-286, D-46 §5). A folder matches on what is *in* it as well as on its label, and arriving at one **opens it at the page** — the same turn and the same flight the *Open* gesture makes (§3.7's floor, at the page's type size rather than the board's hand). That is search doing the one thing §1.5 permits, finding a connection you did not know was there, rather than the thing it forbids: it still flies to an object on the cork, there is still no result list, and a folder that matched on page forty is one match rather than forty. The pages themselves are a derived local index and never enter the document (D-46 §2), so a machine holding none of the bytes searches labels and finds nothing inside — the same machine that cannot show you the photographs either. A tape is never opened by a search: a recording has no page, and starting a film because somebody typed a third character would be the loudest thing on this board happening by accident.
+
+The field says what it could not look inside (Q-273): "3 of 7 · 1 folder part-scanned". A scanned page is an image of paper, there is no OCR (D-46 §6), and so it can never match — the count alone would let that read as a board with nothing to say on the subject. It is said of the folders that **matched**, not of the board, so it bears on the answer in front of you rather than standing as a warning about filings the query has nothing to do with.
 
 A flight lands at a zoom the match can be **read** at (Q-153) — `READING_ZOOM` in `render/lod.ts`, the zoom at which the board's 19-unit handwriting is drawn at 10.5 screen pixels. It is a *floor and not a target*: search from 100% and nothing about the zoom changes. It exists because searching from a fitted board otherwise carries you to a flat card — §6.6 stops drawing per-glyph text below 35%, so "the match" at that zoom is a rectangle, and arriving somewhere you cannot read is close to not having arrived. This is the one place the camera takes a zoom decision on your behalf, and it only ever zooms *in*. A match too large to fit at that zoom is fitted instead: an item filling the viewport is one whose place you can no longer be in any doubt about, which is what the search was for.
 
