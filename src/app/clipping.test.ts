@@ -491,6 +491,7 @@ describe("what a rectangle yields, by what is on the page", () => {
       ly: -140,
       kind: "pushpin",
       color: "#c8352f",
+      page: null,
       wx: 0,
       wy: -140,
     });
@@ -519,6 +520,7 @@ describe("what a rectangle yields, by what is on the page", () => {
       ly: -140,
       kind: "pushpin",
       color: "#c8352f",
+      page: null,
       wx: 0,
       wy: -140,
     });

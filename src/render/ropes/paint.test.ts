@@ -115,7 +115,7 @@ function stubCanvas(): HTMLCanvasElement {
 }
 
 function pin(id: string, x: number, y: number): void {
-  scene.putPin({ id, parent: null, lx: x, ly: y, kind: "pushpin", color: "#c8352f", wx: x, wy: y });
+  scene.putPin({ id, parent: null, lx: x, ly: y, kind: "pushpin", color: "#c8352f", page: null, wx: x, wy: y });
 }
 
 /** A string in both the scene mirror and the rope set, the way the binding

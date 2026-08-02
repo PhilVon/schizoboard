@@ -42,6 +42,7 @@ function pin(over: Partial<PinNode> = {}): PinNode {
     ly: -60,
     kind: "pushpin",
     color: "#f00",
+    page: null,
     wx: 0,
     wy: 0,
     ...over,

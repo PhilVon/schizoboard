@@ -137,6 +137,31 @@ export interface PinFields {
   ly: number;
   kind: PinKind;
   color: string;
+  /**
+   * Which page of the parent's document this pin is stuck to, or null for a pin
+   * in the object itself — T-330, and the exact counterpart of
+   * [`StrokeFields.page`].
+   *
+   * Null is every pin this application has ever written until now, and — as
+   * with a mark — it is an answer rather than a missing one: a pushpin through a
+   * photograph, through a sheet of paper and through the *cover* of a shut case
+   * file are all the same thing, and none of them belongs to anything narrower
+   * than the item. A number means the tape was stuck to a page that was on show,
+   * so it goes inside the folder when it shuts and comes back when it is turned
+   * to that page again.
+   *
+   * In practice it is a `tape`'s field, because tape is the only thing this
+   * board sticks to a page (Q-286) — but it is declared on the pin rather than
+   * on the kind, for the reason ink declares it on the stroke rather than on the
+   * tool. It says *where the pin is*, and where a pin is has never depended on
+   * what sort of pin it is.
+   *
+   * It is not the reader's position: `app/pages.ts` keeps which page **you** are
+   * on local and off the wire, and this is a durable property of the pin, as
+   * durable as its own coordinates. One-based, so a stored 0 reads as the absent
+   * field it almost certainly is.
+   */
+  page: number | null;
   createdBy: number;
   createdAt: number;
 }
@@ -387,6 +412,11 @@ export function readPin(id: string, map: YMap): PinFields | null {
     ly: num(map.get("ly"), 0),
     kind: (PIN_KINDS.has(kind) ? kind : "pushpin") as PinKind,
     color: str(map.get("color"), "#c8352f"),
+    // A page on a *free* pin is nonsense the same way a page on board ink is:
+    // the cork has no document, so there is nothing for the number to index. It
+    // is dropped here rather than at the writer alone, because the writer is
+    // ours and this is not.
+    page: parent === null ? null : readPage(map.get("page")),
     createdBy: num(map.get("createdBy"), 0),
     createdAt: num(map.get("createdAt"), 0),
   };
@@ -470,24 +500,36 @@ export function readStroke(id: string, map: YMap): StrokeFields | null {
 }
 
 /**
- * The page a stroke is on, and every other answer is null.
+ * Whether a value is a page number — one-based, whole, and real.
  *
- * Absent is the common case by a very long way — no stroke written before T-278
- * has the key at all, and no stroke on anything but an open case file has it
- * since — so this is a miss almost every time it is called and is written to be
- * cheap on the miss.
+ * The one predicate for it, exported because there are now three writers with
+ * the same question (`ops/ink.ts` at the pen, `ops/pins.ts` at the tape, and
+ * `readPage` below at every read) and a fourth copy of `Number.isInteger(n) &&
+ * n >= 1` is how the pen and the tape end up disagreeing about what page 0
+ * means.
+ */
+export function isPageNumber(value: unknown): value is number {
+  return typeof value === "number" && Number.isInteger(value) && value >= 1;
+}
+
+/**
+ * The page a stroke or a pin is on, and every other answer is null.
+ *
+ * Absent is the common case by a very long way — nothing written before T-278
+ * has the key at all, and nothing on anything but an open case file has it since
+ * — so this is a miss almost every time it is called and is written to be cheap
+ * on the miss.
  *
  * A non-integer, a zero and a negative are all null rather than clamped, which
- * is the opposite of what `size` and `opacity` do two lines above. The reason is
+ * is the opposite of what `size` and `opacity` do in `readStroke`. The reason is
  * what the field decides: a nonsense width should still be erasable rather than
  * invisible, so it is clamped into range; a nonsense *page* has no range to be
- * clamped into, and picking one would file somebody's mark on a page they never
- * drew on. Null puts it back on the object, where it is at least visible and can
- * be rubbed out.
+ * clamped into, and picking one would file somebody's mark — or somebody's
+ * thread — on a page they never opened. Null puts it back on the object, where
+ * it is at least visible and can be rubbed out or cut.
  */
 function readPage(value: unknown): number | null {
-  if (typeof value !== "number" || !Number.isInteger(value) || value < 1) return null;
-  return value;
+  return isPageNumber(value) ? value : null;
 }
 
 function readBbox(value: unknown): readonly [number, number, number, number] {

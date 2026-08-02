@@ -29,7 +29,7 @@ function add(scene: Scene, id: string, pose: Partial<ItemPose> = {}): void {
 }
 
 function pin(scene: Scene, id: string, parent: string | null = null): void {
-  scene.putPin({ id, parent, lx: 0, ly: 0, kind: "pin", color: "#a00", wx: 0, wy: 0 });
+  scene.putPin({ id, parent, lx: 0, ly: 0, kind: "pin", color: "#a00", page: null, wx: 0, wy: 0 });
 }
 
 function string(scene: Scene, id: string, pins: string[]): void {

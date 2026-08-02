@@ -63,6 +63,7 @@ function span(id: string, y: number, layer = "over"): void {
       ly: y,
       kind: "pushpin",
       color: "#c8352c",
+      page: null,
       wx: x,
       wy: y,
     });
@@ -109,7 +110,7 @@ function wearing(id: string, assetId: string, pose: Partial<ItemPose> = {}): voi
 
 /** A pin in an item, or in the bare cork when `parent` is null. */
 function pin(id: string, parent: string | null, lx = 0, ly = 0): void {
-  scene.putPin({ id, parent, lx, ly, kind: "pushpin", color: "#c8352c", wx: lx, wy: ly });
+  scene.putPin({ id, parent, lx, ly, kind: "pushpin", color: "#c8352c", page: null, wx: lx, wy: ly });
 }
 
 /** The verb rows, which is everything that is not a picker. */

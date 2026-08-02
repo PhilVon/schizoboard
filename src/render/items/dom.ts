@@ -35,6 +35,7 @@ import "@/render/items/items.css";
 // width — and the world wrapper is a zero-width point carrying the camera
 // transform, so every percentage in an item would silently compute to zero.
 import { carryScale } from "@/lib/carry";
+import type { ShownPage } from "@/render/facing";
 import type { InkSample } from "@/lib/ink";
 import {
   CAPTION_BOTTOM,
@@ -223,17 +224,12 @@ export type FirstSight = (itemId: string) => boolean;
 export type PageResolver = (sha256: string) => PageView | null;
 
 /**
- * Which page of an item's document is the face on show, or null for the object
- * itself — T-278.
- *
- * By item id rather than by asset hash, which is the opposite of
- * [`PageResolver`] beside it and is not an inconsistency. That one asks *what is
- * on this page of this file*, which is a question about the file and would be
- * answered identically for two folders holding it. This one asks *which face is
- * this thing showing*, which is a question about the object: one folder is open
- * and the other is shut, and they are holding the same document.
+ * Which face an item is showing — `render/facing.ts`, and re-exported here
+ * because this layer was its first caller and is where everything still looks
+ * for it. It moved when a *pin* learned the same question (T-330) and a
+ * predicate over it needed somewhere neutral to live.
  */
-export type ShownPage = (itemId: string) => number | null;
+export type { ShownPage };
 
 /**
  * What the document says a file is — as distinct from [`AssetView`], which is

@@ -37,6 +37,7 @@
 import "@/render/pins/pins.css";
 
 import type { CameraPose } from "@/render/cork";
+import { tucked, type ShownPage } from "@/render/facing";
 import {
   HEAD_FRACTION,
   pinSprite,
@@ -177,9 +178,28 @@ export class PinLayer {
    * frame it happens on is otherwise a clean one that this method returns from.
    */
   private hovered: string | null = null;
+  /** See [`setShownPage`]. */
+  private shownPage: ShownPage | null = null;
 
   constructor(host: HTMLElement) {
     this.host = host;
+  }
+
+  /**
+   * Which face each item is showing — T-330, and the same function the item
+   * layer, the overlay and the pen are handed.
+   *
+   * A tape belongs to a page, so a thread taped to page four is inside the
+   * folder when it shuts and behind the sheet when you turn past it. The pin
+   * itself is the easy half of that: it is simply not drawn, not exported and
+   * not grabbable while its page is not the page on show.
+   *
+   * Set rather than passed, because it is fixed for the life of the shell and
+   * `sync` runs every frame. Null until the shell wires it, which is a board
+   * with nothing open — see `tucked`.
+   */
+  setShownPage(resolve: ShownPage): void {
+    this.shownPage = resolve;
   }
 
   get mounted(): number {
@@ -207,6 +227,15 @@ export class PinLayer {
     }
 
     for (const [id, pin] of scene.pins) {
+      // Inside a shut folder, or under the sheet on show — T-330. Pooled like
+      // an off-screen pin rather than hidden with a class, because it is the
+      // same fact: a pin nobody can see costs a node for nothing, and this one
+      // stays away for as long as somebody reads another page.
+      if (tucked(pin, this.shownPage)) {
+        const view = this.views.get(id);
+        if (view) this.unmount(id, view);
+        continue;
+      }
       const sx = (pin.wx - camera.x) * zoom;
       const sy = (pin.wy - camera.y) * zoom;
       if (
@@ -280,6 +309,12 @@ export class PinLayer {
     const size = pinScreenSize(camera.zoom);
     let drawn = 0;
     for (const pin of scene.pins.values()) {
+      // A shut folder exports shut and an open one exports with its page
+      // showing (DESIGN section 3.7), so a tape on page four is in neither
+      // picture — T-330. The same rule the screen draws by, asked of the same
+      // resolver, because an export that disagreed with the window about what
+      // is on the board would be the worse of the two.
+      if (tucked(pin, this.shownPage)) continue;
       const { canvas } = sprite(pin.kind as PinKind, pin.color);
       // No 2D context to bake with. Draw nothing rather than a black square —
       // the same answer `bind` gives the element.
@@ -317,6 +352,10 @@ export class PinLayer {
     let best: string | null = null;
     let bestDist = radius * radius;
     for (const [id, pin] of scene.pins) {
+      // You cannot grab what you cannot see — T-330. Without this a tape inside
+      // a shut folder still takes a press: it drags, it cuts, and the scissors
+      // offer to cut a thread at a point on a cover with nothing drawn on it.
+      if (tucked(pin, this.shownPage)) continue;
       const dx = (pin.wx - camera.x) * camera.zoom - screenX;
       const dy = (pin.wy - camera.y) * camera.zoom - screenY;
       const dist = dx * dx + dy * dy;

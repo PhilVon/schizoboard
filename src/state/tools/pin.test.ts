@@ -204,6 +204,7 @@ describe("pinning an item that hangs", () => {
       ly: -60,
       kind: "pushpin",
       color: "#c8352f",
+      page: null,
       wx: -80,
       wy: -60,
     });
@@ -244,7 +245,7 @@ describe("pinning an item that hangs", () => {
   it("settles nothing when the item was already rigid", () => {
     put("a", { w: 200, h: 200 });
     for (const [id, lx] of [["p1", -80], ["p2", 80]] as const) {
-      scene.putPin({ id, parent: "a", lx, ly: -60, kind: "pushpin", color: "#c8352f", wx: lx, wy: -60 });
+      scene.putPin({ id, parent: "a", lx, ly: -60, kind: "pushpin", color: "#c8352f", page: null, wx: lx, wy: -60 });
     }
     down(0, 0);
     up(0, 0);

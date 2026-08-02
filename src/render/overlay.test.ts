@@ -503,7 +503,7 @@ describe("Overlay, strings", () => {
  */
 describe("chrome for a selected pin", () => {
   function putPin(id: string, parent: string | null, x: number, y: number): void {
-    scene.putPin({ id, parent, lx: x, ly: y, kind: "pushpin", color: "#c8352f", wx: x, wy: y });
+    scene.putPin({ id, parent, lx: x, ly: y, kind: "pushpin", color: "#c8352f", page: null, wx: x, wy: y });
   }
 
   it("rings each selected pin where the pin is", () => {
@@ -1122,6 +1122,7 @@ describe("Overlay, the undo flash", () => {
       ly: 0,
       kind: "pin",
       color: "#a8322c",
+      page: null,
       wx: 0,
       wy: 0,
     });

@@ -143,6 +143,13 @@ export interface ClipPin {
   readonly ly: number;
   readonly kind: PinKind;
   readonly color: string;
+  /**
+   * Which page of the parent's document it is stuck to, or null — T-330, and
+   * carried for the reason a stroke's is: a copied case file that loses which
+   * page its threads were taped to comes back with every one of them on page
+   * one, which is a worse answer than none.
+   */
+  readonly page: number | null;
 }
 
 export interface ClipString {
@@ -279,6 +286,7 @@ export function copySubgraph(board: BoardDoc, selection: ClipSelection): BoardCl
       ly: pin.parent === null ? pin.ly - anchor.y : pin.ly,
       kind: pin.kind,
       color: pin.color,
+      page: pin.page,
     })),
     strings,
     anchor,
@@ -390,6 +398,10 @@ export function pasteClip(
         ly: parent === null ? at.y + clipped.ly : clipped.ly,
         kind: clipped.kind,
         color: clipped.color,
+        // `buildPin` writes the key only when there is one and only on a
+        // parented pin, exactly as `ops/ink.ts` writes a stroke's — so a paste
+        // of ordinary pins produces the records the pin tool would (T-330).
+        page: clipped.page,
       });
       board.pins.set(pin.id, pin.map);
       pinIds.push(pin.id);

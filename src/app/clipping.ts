@@ -332,7 +332,14 @@ export class Clipper {
         y: where.y,
         w: size.w,
         h: size.h,
-        source: { itemId, lx: (rect.minX + rect.maxX) / 2, ly: (rect.minY + rect.maxY) / 2 },
+        // `page.index` and not the reader's position read a second time: the
+        // tape is stuck to the page the rectangle was drawn on — T-330.
+        source: {
+          itemId,
+          lx: (rect.minX + rect.maxX) / 2,
+          ly: (rect.minY + rect.maxY) / 2,
+          page: page.index,
+        },
       },
     );
   }
@@ -467,7 +474,15 @@ export class Clipper {
         y: where.y,
         w: size.w,
         h: size.h,
-        source: { itemId, lx: (rect.minX + rect.maxX) / 2, ly: (rect.minY + rect.maxY) / 2 },
+        // The page the rectangle was drawn on, which by now may not be the page
+        // the reader is on — the bytes went to disk and back while it was in
+        // flight, and the arrow keys work throughout (T-330).
+        source: {
+          itemId,
+          lx: (rect.minX + rect.maxX) / 2,
+          ly: (rect.minY + rect.maxY) / 2,
+          page: page.index,
+        },
         clipping: { sha256, asset },
       },
       // **No settle, and that is a consequence of the tape** (Q-286).

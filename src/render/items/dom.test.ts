@@ -1349,7 +1349,7 @@ describe("paper curl at unpinned corners", () => {
   }
 
   function pin(id: string, lx: number, ly: number): void {
-    scene.putPin({ id, parent: null, lx, ly, kind: "pushpin", color: "#f00", wx: 0, wy: 0 });
+    scene.putPin({ id, parent: null, lx, ly, kind: "pushpin", color: "#f00", page: null, wx: 0, wy: 0 });
   }
 
   it("curls every corner of a sheet nothing is holding", () => {
@@ -1375,6 +1375,7 @@ describe("paper curl at unpinned corners", () => {
       ly: -85,
       kind: "pushpin",
       color: "#f00",
+      page: null,
       wx: 0,
       wy: 0,
     });
@@ -1474,6 +1475,7 @@ describe("tape", () => {
       ly: 0,
       kind: "pushpin",
       color: "#f00",
+      page: null,
       wx: 0,
       wy: 0,
     });

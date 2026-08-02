@@ -106,7 +106,7 @@ function source(...list: DrawnPeer[]): PeerSource {
 
 /** Free-floating, so its world position is the one given rather than an item's. */
 function pin(id: string, wx: number, wy: number): void {
-  scene.putPin({ id, parent: null, lx: 0, ly: 0, kind: "pin", color: "#c0392b", wx, wy });
+  scene.putPin({ id, parent: null, lx: 0, ly: 0, kind: "pin", color: "#c0392b", page: null, wx, wy });
 }
 
 /** Centred on the origin, so screen coordinates come out of the camera alone. */

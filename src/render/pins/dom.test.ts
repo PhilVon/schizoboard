@@ -30,7 +30,7 @@ let dirty: DirtySets;
 let layer: PinLayer;
 
 function pin(id: string, wx: number, wy: number): PinNode {
-  return { id, parent: null, lx: wx, ly: wy, kind: "pushpin", color: "#c8352f", wx, wy };
+  return { id, parent: null, lx: wx, ly: wy, kind: "pushpin", color: "#c8352f", page: null, wx, wy };
 }
 
 /** The layer only redraws a dirty frame, which is what the loop hands it. */

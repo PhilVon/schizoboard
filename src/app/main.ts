@@ -1849,6 +1849,14 @@ async function boot(): Promise<void> {
   // And which face of an item is showing, so a peer's mark on page four is not
   // drawn on the cover of a folder that is shut here (T-278).
   overlay.setShownPage(shownPage);
+  // And the three layers that draw what is *stuck to* a page (T-330): a tape on
+  // page four is inside a shut folder and behind the sheet on show while you
+  // read page twelve, and the thread it holds goes with it. One function, four
+  // layers, for the reason the item layer is handed it — what a thing is filed
+  // against and what is drawn have to be one answer.
+  pins.setShownPage(shownPage);
+  ropesUnder.setShownPage(shownPage);
+  ropesOver.setShownPage(shownPage);
   // Screen space, because a pin's grab radius is in screen pixels and has a
   // floor — see `render/pins/dom.ts`.
   const hitPin = (sx: number, sy: number): string | null => pins.hitTest(scene, camera, sx, sy);
@@ -3587,7 +3595,52 @@ async function boot(): Promise<void> {
   let hoveredString: { x: number; y: number } | null = null;
   let hoverAskedX = Number.NaN;
   let hoverAskedY = Number.NaN;
+
+  /**
+   * The face that was on show last frame — T-330, and this is
+   * `ItemInk.stalePage`'s argument (T-278) one layer up.
+   *
+   * A tape and the thread it holds are drawn from what page a folder is
+   * showing, and that changes three ways: the folder opens, the folder shuts,
+   * and the reader turns. **None of the three is a document edit.** So nothing
+   * marks a pin or a string dirty, and the two layers that would have to redraw
+   * are exactly the two written to cost nothing when nothing moved — the rope
+   * painter returns on the frame before it looks at a string, and the pin layer
+   * returns on `dirty.isClean`. Without this the thread stays on the canvas it
+   * was on when you turned the page, for as long as the board is still.
+   *
+   * Here, and not in either layer, because the layers are handed
+   * `shownPage(itemId)` and cannot ask the question this needs — *which* item is
+   * open — without being told a second fact that could disagree with the first.
+   * `opening` and `reader` are both in scope here, and this is the only place
+   * they are.
+   *
+   * The old face is dirtied as well as the new one, and that is not symmetry for
+   * its own sake: shutting a folder means the tape that was on show is now put
+   * away, and the item it was on is no longer the one `shownPage` answers for.
+   */
+  let facingItem: string | null = null;
+  let facingAt = 0;
+  const facingChanged = (): void => {
+    if (opening.itemId === facingItem && reader.pageAt === facingAt) return;
+    const was = facingItem;
+    facingItem = opening.itemId;
+    facingAt = reader.pageAt;
+    // Nothing has ever been taped to a page on this board. The overwhelmingly
+    // common case, and it costs a `size` — every folder anybody opens without
+    // quoting from it lands here.
+    if (scene.pagedPins.size === 0) return;
+    for (const itemId of was === facingItem ? [was] : [was, facingItem]) {
+      if (itemId === null) continue;
+      for (const pinId of scene.pinsParentedTo(itemId)) {
+        if (scene.pins.get(pinId)?.page == null) continue;
+        dirty.pin(pinId);
+        for (const sid of scene.stringsThrough(pinId)) dirty.string(sid);
+      }
+    }
+  };
   loop.on("layout", () => {
+    facingChanged();
     // World pin positions for items that moved. Nothing reads the DOM.
     // `dirty.pins` gets a pass too, and with the *item* set — which for a free
     // pin dragged across bare cork is empty, and an empty set is exactly right:

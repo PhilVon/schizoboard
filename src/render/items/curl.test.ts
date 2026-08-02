@@ -25,7 +25,7 @@ function pose(over: Partial<ItemPose> = {}): ItemPose {
 }
 
 function pin(id: string, parent: string | null, lx: number, ly: number): PinNode {
-  return { id, parent, lx, ly, kind: "pushpin", color: "#f00", wx: 0, wy: 0 };
+  return { id, parent, lx, ly, kind: "pushpin", color: "#f00", page: null, wx: 0, wy: 0 };
 }
 
 /** A seed that would be taped if nothing else were holding the sheet. */

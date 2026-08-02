@@ -213,6 +213,7 @@ describe("rendering in the past", () => {
       ly: 10,
       kind: "pushpin",
       color: "#c8352f",
+      page: null,
       wx: 20,
       wy: 10,
     });

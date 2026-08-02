@@ -19,7 +19,7 @@ import { freshId, mutate, type BoardDoc } from "@/crdt/doc";
 import { Origin } from "@/crdt/origins";
 import { boardToLocal, removePinsFromStrings } from "@/crdt/ops/cascade";
 import { writePoses, type Pose } from "@/crdt/ops/items";
-import { readItem, type PinKind, type YMap } from "@/crdt/schema";
+import { isPageNumber, readItem, type PinKind, type YMap } from "@/crdt/schema";
 
 /** Board units in from the top edge, where a default pin goes. */
 export const DEFAULT_PIN_INSET = 16;
@@ -32,6 +32,19 @@ export interface CreatePinInput {
   ly: number;
   kind?: PinKind;
   color?: string;
+  /**
+   * Which page of `parent`'s document the pin is stuck to — T-330, and see
+   * `PinFields.page` for what it means.
+   *
+   * Left out by everything except a tape stuck to an open case file, and
+   * **written only when it is a page**: a pushpin in a photograph, in a note or
+   * in a shut folder stores no key at all rather than storing an explicit null.
+   * That is `ops/ink.ts`'s argument for the same field and it is not tidiness —
+   * a board of ordinary pins has to produce byte-identical records to the build
+   * before this one, or every pin anybody has ever pushed in counts as edited
+   * the first time a peer on this version touches it.
+   */
+  page?: number | null;
 }
 
 /** Builds the map. Caller supplies the transaction — cascades need to compose. */
@@ -52,6 +65,12 @@ export function buildPin(board: BoardDoc, input: CreatePinInput): { id: string; 
   map.set("ly", Number.isFinite(input.ly) ? input.ly : 0);
   map.set("kind", input.kind ?? "pushpin");
   map.set("color", input.color ?? "#c8352f");
+  // Only when there is one — see [`CreatePinInput.page`]. A free pin is refused
+  // a page outright rather than trusted not to carry one: it is in the cork,
+  // the cork belongs to no item and has no document to have a page of, so a
+  // number here could only be a caller's mistake. The same two guards
+  // `ops/ink.ts` puts on a stroke's, for the same two reasons.
+  if (input.parent !== null && isPageNumber(input.page)) map.set("page", input.page);
   map.set("createdBy", board.doc.clientID);
   map.set("createdAt", Date.now());
   return { id, map };

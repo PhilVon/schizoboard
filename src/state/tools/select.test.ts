@@ -107,7 +107,7 @@ function paper(id: string, x: number, y: number, w = 200, h = 100, rot = 0): voi
 function putPin(id: string, parent: string | null, wx: number, wy: number): void {
   // `lx`/`ly` are the same numbers for a free pin, and for a parented one the
   // tests below place the item at the origin unrotated, so they still are.
-  scene.putPin({ id, parent, lx: wx, ly: wy, kind: "pushpin", color: "#c8352f", wx, wy });
+  scene.putPin({ id, parent, lx: wx, ly: wy, kind: "pushpin", color: "#c8352f", page: null, wx, wy });
 }
 
 /**
@@ -1507,6 +1507,7 @@ describe("turning a hanging item", () => {
       ly: -60,
       kind: "pushpin",
       color: "#c8352f",
+      page: null,
       wx: -80,
       wy: -60,
     });
@@ -1543,6 +1544,7 @@ describe("turning a hanging item", () => {
         ly: -60,
         kind: "pushpin",
         color: "#c8352f",
+        page: null,
         wx: lx,
         wy: -60,
       });
@@ -1574,6 +1576,7 @@ describe("turning a hanging item", () => {
         ly: -40,
         kind: "pushpin",
         color: "#c8352f",
+        page: null,
         wx: 0,
         wy: -40,
       });
@@ -2213,6 +2216,7 @@ describe("moving a pin between items that hang", () => {
       ly: -60,
       kind: "pushpin",
       color: "#c8352f",
+      page: null,
       wx: x - 80,
       wy: y - 60,
     });

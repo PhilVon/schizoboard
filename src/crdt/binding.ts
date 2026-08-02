@@ -218,6 +218,7 @@ export class Binding {
       ly: fields.ly,
       kind: fields.kind,
       color: fields.color,
+      page: fields.page,
       // Keep the last known world position until LAYOUT recomputes it, so a
       // pin never flashes at the origin for one frame.
       wx: existing?.wx ?? fields.lx,

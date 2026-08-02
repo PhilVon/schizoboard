@@ -52,7 +52,7 @@ function pull(tool: Tool, from: [number, number], to: [number, number]): void {
 }
 
 function putPin(id: string, parent: string | null, wx: number, wy: number): void {
-  scene.putPin({ id, parent, lx: wx, ly: wy, kind: "pushpin", color: "#c8352f", wx, wy });
+  scene.putPin({ id, parent, lx: wx, ly: wy, kind: "pushpin", color: "#c8352f", page: null, wx, wy });
 }
 
 function putItem(id: string, x: number, y: number): void {
