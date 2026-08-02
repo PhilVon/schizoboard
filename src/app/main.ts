@@ -25,6 +25,7 @@ import {
   sealBoard,
   snapshot,
 } from "@/crdt/doc";
+import { PageReader } from "@/app/pages";
 import * as ops from "@/crdt/ops";
 import { readAsset, SCHEMA_VERSION } from "@/crdt/schema";
 import {
@@ -78,6 +79,7 @@ import {
   canBeOpened,
   carriesItsOwnName,
   caseNumber,
+  PAGE_TEXT_SIZE,
   titleWorthWriting,
   type AssetKind,
 } from "@/lib/objects";
@@ -88,7 +90,7 @@ import { Culler } from "@/render/cull";
 import { BoardInkLayer } from "@/render/ink/board";
 import { DomItemLayer, NO_FACTS, type AssetFacts, type AssetView } from "@/render/items/dom";
 import { NO_AGEING, WALL_CLOCK } from "@/render/items/wear";
-import { Lod, READING_ZOOM } from "@/render/lod";
+import { Lod, readingZoomFor, READING_ZOOM } from "@/render/lod";
 import { FrameLoop } from "@/render/loop";
 import { Overlay, type PendingRun } from "@/render/overlay";
 import { Janitor } from "@/crdt/janitor";
@@ -491,6 +493,23 @@ async function boot(): Promise<void> {
    * `onInput` is wired to the document in T-180; for now the field is a
    * scratchpad, and closing it throws the text away.
    */
+  /**
+   * The pages of whatever case file is open (T-320).
+   *
+   * Here rather than inside the layer for the reason `assetUrl` is here: it
+   * needs the shell, and the layer is a renderer. What it hands back is what is
+   * known *now* plus a phase, because a view cannot await — the same shape every
+   * asynchronous thing this renderer draws already takes.
+   */
+  const reader = new PageReader(native, (sha256) => {
+    // Whatever is wearing this file, redrawn. Narrow enough that a page landing
+    // costs one item: a document is open on one folder at a time, and a board
+    // holding the same file twice is a case nobody has ever produced.
+    for (const id of scene.itemIds()) {
+      if (scene.cold(id)?.assetId === sha256) dirty.item(id);
+    }
+  });
+
   const items = new DomItemLayer(world.layers.world, assetUrl, assetFacts, {
     /**
      * Straight to the document, not queued to phase 9 like a tool's writes.
@@ -515,7 +534,12 @@ async function boot(): Promise<void> {
       // clicking away mid-rise does not snap.
       if (flatten.itemId === id) flatten.close();
     },
-  });
+  },
+  // The page open on a case file (T-320). A hash and not an item id, because a
+  // page is a fact about the file: two folders of one document are one set of
+  // pages. Which page the reader is on is T-321's, so this answers for
+  // whichever that is.
+  (sha256) => reader.page(sha256));
 
   /**
    * How old the board thinks its items are — DESIGN section 4.7, and Q-105,
@@ -1272,9 +1296,43 @@ async function boot(): Promise<void> {
     // folder, which is a state no single `Escape` could get out of.
     crt.close();
     opening.open(itemId);
+    // Say which file is being read, so the shell holds that one open and lets
+    // go of whatever it was holding. Not the *page* — asking for one is what
+    // fetches it, and the layer does that when it draws.
+    const reading = scene.cold(itemId)?.assetId ?? null;
+    if (reading !== null) {
+      const record = board.assets.get(reading);
+      reader.open(reading, (record ? readAsset(reading, record)?.pages : null) ?? null);
+    }
     const box = scene.boundsOf(itemId, 0, foundBox);
-    if (box !== null) flight.toBox(camera, box, undefined, READING_ZOOM);
+    if (box !== null) flight.toBox(camera, box, undefined, pageReadingZoom(itemId));
     return true;
+  };
+
+  /**
+   * The zoom floor for arriving at an open case file — T-321.
+   *
+   * **Not `READING_ZOOM`**, which is what this used until now and is the wrong
+   * question by about a factor of two. That floor is the board's own hand at 19
+   * units; a page is typed at `PAGE_TEXT_SIZE` of the folder's width, which is
+   * 8.4 — so arriving at 55 per cent over a document put you in front of type
+   * less than half the size the number was measured on. A legible board and an
+   * unreadable page.
+   *
+   * One expression rather than a new idea: the same `READABLE_PX`, asked about
+   * the type the thing is actually set in. It comes out around 125 per cent,
+   * where the board's-hand floor gives 55.
+   *
+   * A floor and not a target, like every other use of it. Opening a document you
+   * are already reading at 300 per cent changes no zoom at all.
+   */
+  const pageReadingZoom = (itemId: string): number => {
+    const slot = scene.slotOf(itemId);
+    const w = slot === undefined ? 0 : (scene.w[slot] ?? 0);
+    // A folder with no width yet is a folder whose record has not arrived. The
+    // board's own floor is the honest answer there rather than a division by
+    // zero, and the flight is a floor so being conservative costs nothing.
+    return w > 0 ? readingZoomFor(w * PAGE_TEXT_SIZE) : READING_ZOOM;
   };
 
   /**
@@ -1295,6 +1353,11 @@ async function boot(): Promise<void> {
     // is no reading of it under which one press should leave the other up.
     const wasWatching = crt.close();
     if (opening.itemId === null) return wasWatching;
+    // Let the file go. On a 51 MB scan that is 51 MB of working set the shell
+    // was holding open, and it is held until somebody says — Rust cannot infer
+    // that a folder has been shut.
+    const wasReading = scene.cold(opening.itemId)?.assetId ?? null;
+    if (wasReading !== null) reader.close(wasReading);
     opening.close();
     return true;
   };
@@ -1549,6 +1612,10 @@ async function boot(): Promise<void> {
     edit: startEditing,
     /** `Enter` on a selection of exactly one opens it (T-274, Q-257). */
     open: openItem,
+    // Turning a page in whatever is open (T-321). The tool knows a keystroke
+    // happened and nothing about documents; the reader knows which document is
+    // open and how many pages it has, and answers whether anything moved.
+    turnPage: (by) => reader.turn(by),
     // Space+drag and middle-drag belong to the camera, not to the board.
     suppressed: () => navigation.panReady,
     readOnly: () => readOnly,

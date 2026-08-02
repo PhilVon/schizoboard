@@ -65,6 +65,9 @@ let opens: string[];
 let closes: (string | null)[];
 /** What the app would answer: whether there was anything open to shut. */
 let wasOpen: boolean;
+/** Page turns the tool asked for, and what the app would answer (T-321). */
+let turns: number[];
+let turnable: boolean;
 let ctx: ToolContext;
 
 /** Insertion order is paint order, as it is in the real layer for equal z. */
@@ -253,6 +256,8 @@ beforeEach(() => {
   opens = [];
   closes = [];
   wasOpen = false;
+  turns = [];
+  turnable = true;
   ctx = {
     scene,
     dirty,
@@ -267,6 +272,10 @@ beforeEach(() => {
       if (itemId === null) return closes.push(null) > 0 && wasOpen;
       opens.push(itemId);
       return true;
+    },
+    turnPage: (by) => {
+      turns.push(by);
+      return turnable;
     },
     held,
     write: {
@@ -466,6 +475,38 @@ describe("selecting", () => {
     // And it comes back the moment the hand is off.
     key("Enter");
     expect(opens).toEqual(["folder"]);
+  });
+
+  /**
+   * T-321. The arrows were the only unbound keys on this board, which is half of
+   * why they are the right ones; the other half is that every reader anybody has
+   * used turns a page with them.
+   */
+  it("turns a page on the arrows, forward on right and back on left", () => {
+    put("folder", 100, 100);
+    selection.replace(["folder"]);
+    key("ArrowRight");
+    key("ArrowLeft");
+    expect(turns).toEqual([1, -1]);
+  });
+
+  it("does not turn a page while a modifier is down", () => {
+    // Shift+arrow is the shape a selection nudge would take if this board ever
+    // grows one, and claiming it now would be spending a binding on nothing.
+    put("folder", 100, 100);
+    selection.replace(["folder"]);
+    key("ArrowRight", { shift: true });
+    key("ArrowLeft", { ctrl: true });
+    key("ArrowRight", { alt: true });
+    expect(turns).toEqual([]);
+  });
+
+  it("asks even with nothing selected, because the open folder is not the selection", () => {
+    // Opening does not hold a selection: a quote card pulled out onto the board
+    // is selected while the folder it came from is still open, and the arrows
+    // have to keep working. So the tool asks and the app answers.
+    key("ArrowRight");
+    expect(turns).toEqual([1]);
   });
 
   it("shuts an open case file on Escape before it drops the selection", () => {

@@ -194,6 +194,21 @@ function appearanceRows(
   write: BoardWriter,
   live: readonly string[],
   clicked: string,
+  /**
+   * A case object gets the writing strip and not the paper one (T-320).
+   *
+   * T-317 took both away, on the argument that a folder is made of its own
+   * furniture — "no paper stock to choose for one and no hand to set its label
+   * in". Half of that is still true and half of it stopped being true when the
+   * folder got an inside: there is no stock to choose, because the sheet is the
+   * A4 the object is cut around, but there is very much a hand to set, and it is
+   * the one D-46 section 4 promised — "the clean face available per document for
+   * something that has to be read rather than admired".
+   *
+   * The label is unaffected either way. A case number is typed because it is a
+   * thing that was printed, and `CaseView` has never asked `faceOf` about it.
+   */
+  writingOnly = false,
 ): MenuEntry[] {
   // The clicked item's own overrides decide what is marked. A mixed selection
   // has no single answer and inventing one - "marked when they all agree" -
@@ -211,8 +226,7 @@ function appearanceRows(
     run: set(patch),
   });
 
-  return [
-    {
+  const paper: MenuEntry = {
       label: "Paper",
       divided: true,
       choices: [
@@ -226,9 +240,10 @@ function appearanceRows(
           }),
         ),
       ],
-    },
-    {
+  };
+  const writing: MenuEntry = {
       label: "Writing",
+      divided: writingOnly,
       choices: [
         asItWas(style.fontFamily !== undefined, { fontFamily: undefined }),
         {
@@ -244,8 +259,8 @@ function appearanceRows(
           run: set({ fontFamily: "clean" }),
         },
       ],
-    },
-  ];
+  };
+  return writingOnly ? [writing] : [paper, writing];
 }
 export function itemMenuRows(
   scene: Scene,
@@ -435,8 +450,16 @@ export function itemMenuRows(
    * same reason: a mixed selection has no single answer, and the one under the
    * cursor is the one the menu is about.
    */
-  if (!isCaseObject(kindOf?.(clicked) ?? "unknown")) {
+  const kind = kindOf?.(clicked) ?? "unknown";
+  if (!isCaseObject(kind)) {
     rows.push(...appearanceRows(scene, write, live, clicked));
+  } else if (kind === "document") {
+    // The one case object with something to read inside it (T-320). A tape and
+    // a cassette keep T-317's answer in full: there is no stock to choose and
+    // nothing written to set, so neither strip is offered and the menu stays
+    // short. A folder now has a page, and the face that page is set in is the
+    // thing D-46 section 4 promised.
+    rows.push(...appearanceRows(scene, write, live, clicked, true));
   }
 
   /**

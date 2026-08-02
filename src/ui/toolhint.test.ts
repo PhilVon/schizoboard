@@ -97,6 +97,10 @@ describe("the resting split", () => {
       "R+drag",
       "double-click a pin",
       "Enter",
+      // Beside `Enter` because it is only meaningful once that has been used,
+      // and at rest because it is behind no modifier — the arrows are the one
+      // binding on this board nobody would think to try on cork (T-321).
+      "arrows",
       "wheel",
       "1-9",
     ]);
@@ -234,10 +238,15 @@ describe("the tool line", () => {
   });
 
   /** The real one, not the toy — the eight tools' copy reaching the bar. */
-  it("reads select's own ten rows before the ambient three", () => {
+  it("reads select's own rows before the ambient three", () => {
     const line = toolLine(SELECT);
+    const own = SELECT.rows.length;
     expect(line.lead).toBe(`Select (V) — ${SELECT.verb}`);
-    expect(line.rows.slice(0, 10).map((r) => r.keys)).toEqual(SELECT.rows.map((r) => r.keys));
-    expect(line.rows.slice(10)).toEqual(AMBIENT);
+    // Counted off the tool rather than written out: this assertion is about the
+    // *order* — a tool's own rows, then the three every tool shares — and
+    // spelling the number here means every new row is a failing test that says
+    // nothing (T-321 added one).
+    expect(line.rows.slice(0, own).map((r) => r.keys)).toEqual(SELECT.rows.map((r) => r.keys));
+    expect(line.rows.slice(own)).toEqual(AMBIENT);
   });
 });

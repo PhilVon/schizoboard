@@ -90,6 +90,7 @@ describe("the tool info bar", () => {
       "R+drag",
       "double-click a pin",
       "Enter",
+      "arrows",
       "wheel",
       "1-9",
     ]);
@@ -192,6 +193,7 @@ describe("the tool info bar", () => {
         "R+drag",
         "double-click a pin",
         "Enter",
+        "arrows",
         "wheel",
         "1-9",
       ]);

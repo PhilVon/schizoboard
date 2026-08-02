@@ -121,6 +121,7 @@ beforeEach(() => {
     hitString,
     edit: () => undefined,
     open: () => false,
+    turnPage: () => false,
     held: new Set<string>(),
     write: {
       deleteStrings: (ids) => writes.push({ kind: "deleteStrings", ids: [...ids] }),

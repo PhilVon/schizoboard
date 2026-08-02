@@ -534,13 +534,29 @@ describe("the item context menu", () => {
       );
     };
 
-    it("offers no Paper or Writing strip to any of the three", () => {
-      for (const kind of ["document", "video", "audio"] as const) {
+    it("offers neither strip to a tape or a cassette", () => {
+      for (const kind of ["video", "audio"] as const) {
         scene = new Scene();
         const labels = rowsFor(kind).map((r) => r.label);
         expect(labels, kind).not.toContain("Paper");
         expect(labels, kind).not.toContain("Writing");
       }
+    });
+
+    /**
+     * A folder is the exception, and it became one in T-320 rather than being
+     * missed in T-317. Half of that task's argument is still exactly right —
+     * there is no paper stock to choose for a folder, because the sheet inside
+     * it is the A4 the object is cut around — and the other half stopped being
+     * true the moment the folder had an inside: there is a hand to set, and it
+     * is the one D-46 section 4 promised, "the clean face available per document
+     * for something that has to be read rather than admired".
+     */
+    it("offers a folder the Writing strip and still no Paper", () => {
+      scene = new Scene();
+      const labels = rowsFor("document").map((r) => r.label);
+      expect(labels).toContain("Writing");
+      expect(labels).not.toContain("Paper");
     });
 
     it("still offers them to a photograph and to a note", () => {

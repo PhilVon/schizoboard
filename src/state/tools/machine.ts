@@ -88,6 +88,8 @@ export interface ToolMachineOptions {
    * terms as `edit` above: a headless harness has nowhere to open anything.
    */
   open?: (itemId: string | null) => boolean;
+  /** Turn a page in whatever case file is open (T-321). */
+  turnPage?: (by: number) => boolean;
   /** True when navigation owns the pointer — space held, or mid-pan. */
   suppressed?: () => boolean;
   /**
@@ -197,6 +199,7 @@ export class ToolMachine {
       hitString: options.hitString,
       edit: options.edit ?? (() => undefined),
       open: options.open ?? (() => false),
+      turnPage: options.turnPage ?? (() => false),
       held: this.heldKeys,
     };
     this.attach();
@@ -533,6 +536,29 @@ export class ToolMachine {
         case "Escape":
         case "Delete":
         case "Backspace":
+          this.push({ kind: "key", code: e.code, shift: e.shiftKey, ctrl: e.ctrlKey, alt: e.altKey });
+          e.preventDefault();
+          break;
+        /**
+         * > Left/Right turn a page in an open case file — DESIGN section 3.9,
+         * and T-321.
+         *
+         * Forwarded here rather than handled in `app/main.ts` for the reason
+         * `Enter` is: what a key means depends on the tool, and this list is
+         * what says which keys a tool may ever see.
+         *
+         * `preventDefault` because the webview scrolls the document behind the
+         * board on an arrow otherwise, which moves the whole world by a line.
+         *
+         * **No auto-repeat**, because of the `e.repeat` guard above rather than
+         * in spite of it. Holding an arrow to flick through a filing is a fair
+         * thing to want and it is not what this would buy: every page is an IPC
+         * round trip and a re-typeset, so a held key at the keyboard's repeat
+         * rate would queue work faster than it can be drawn. A press a page is
+         * the honest speed.
+         */
+        case "ArrowLeft":
+        case "ArrowRight":
           this.push({ kind: "key", code: e.code, shift: e.shiftKey, ctrl: e.ctrlKey, alt: e.altKey });
           e.preventDefault();
           break;

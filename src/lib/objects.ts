@@ -207,6 +207,26 @@ function units(mm: { w: number; h: number }): ObjectSize {
 export const A4_UNITS: ObjectSize = units({ w: 210, h: 297 });
 
 /**
+ * The type a page inside a case file is set in, as a fraction of the folder's
+ * width — 0.01746 of 481 units, which is 8.4.
+ *
+ * Here beside `A4_UNITS` and the folder it belongs to, rather than in the
+ * renderer that draws it, because **two sides need it and neither owns it**.
+ * `render/items/dom.ts` sizes the page with it; `app/main.ts` derives the zoom a
+ * camera has to reach for that page to be legible (`readingZoomFor`). A number
+ * exported from the renderer to the wiring module would be a layout constant
+ * doing camera work from the wrong side of a boundary.
+ *
+ * It was **measured rather than derived**, and the measurement is written up on
+ * T-320: a glyph in the board's hand advances 0.377 em on average, so the
+ * sheet's 277.8-unit measure holds about 85 characters at this size, and a page
+ * of real prose draws in 34 lines of the 37 that fit. Deriving it twice, from
+ * the printed measure a text face would have, gave 6.8 and left the bottom two
+ * fifths of every page blank.
+ */
+export const PAGE_TEXT_SIZE = 0.01746;
+
+/**
  * How big a file's object is, before a byte of it has arrived — and there is no
  * "before" about it, because none of the three has a size that depends on its
  * contents. A photograph is the odd one out on this board: it is the only thing

@@ -350,6 +350,7 @@ Undo: text edits are character-level and merge into sensible entries by typing p
 | Close the search | `Escape` |
 | Open a case file | `Enter` on a selection of exactly one, or the item menu's *Open* — flies the camera the way search does |
 | Shut it | `Escape`, or `Enter` again. **Selecting something else does not** — an open document is worked *against*, so a click on the board must not shut it |
+| Turn a page | `←` / `→` while a case file is open. Clamped at both ends rather than wrapping, and the header says which page you are on out of how many — the pair a citation carries. Where you have got to is **local**: it never enters the document and never reaches a peer, for the reason a playhead does not. The set uses the same two keys to step a tape and they do not collide — it is the one modal on this board and takes its keys before anything else sees them, so only one of the two can ever be up |
 | Watch a tape | `Enter` on a video puts it on the set instead: `Space` plays, `←` / `→` step 5s, with `Shift` 30s. `Escape` shuts it |
 
 Zoom range is **15% to 400%**. The board is unbounded in every direction.
@@ -402,6 +403,7 @@ Strings         1–9 slack presets · Alt+wheel whole-string slack · Enter/Esc
 Search          Ctrl+F find · Enter next match · Shift+Enter previous · Esc close
 Case files      Enter opens the selected document, tape or cassette · item menu → Open
                 Esc or Enter again shuts it · clicking away does not (T-273)
+                Left/Right turn a page in an open one (T-321)
 The set         a tape takes the screen, and only a tape (T-276)
                 Space play/pause · Left/Right 5s · Shift+Left/Right 30s · Home to the start
 ```
