@@ -1113,3 +1113,154 @@ describe("the twist", () => {
     expect(pitch(6, 1.9)).toBeCloseTo(11.4, 6);
   });
 });
+
+/**
+ * A tape belongs to a page, and so does the gap that ends at it — T-330.
+ *
+ * `layer` has been a fact about a whole string since it existed, and this is
+ * the first thing that is true of one *gap*: a thread taped to page four runs
+ * under the sheet on show whenever page four is not it, and a shut folder shows
+ * no page so a shut folder's threads run under the folder and disappear into
+ * it. That is the same sentence twice rather than two cases (Q-291).
+ *
+ * Nine strokes is three batches; three is one; zero is a canvas that was not
+ * this string's business.
+ */
+describe("a thread taped to a page", () => {
+  /** A tape stuck to `page` of the folder `parent`, at a board point. */
+  function tape(id: string, x: number, y: number, parent: string, page: number): void {
+    scene.putPin({ id, parent, lx: x, ly: y, kind: "tape", color: "#c8352f", page, wx: x, wy: y });
+  }
+
+  /** A run through three pins — two gaps — so that "only the gap that ends at
+   *  the tape" is a claim these tests can tell apart from "the whole string". */
+  function run(id: string, a: string, b: string, c: string): void {
+    scene.putString({
+      id,
+      nodes: [
+        { nodeId: `${id}-n0`, pin: a, slackAfter: 0.2 },
+        { nodeId: `${id}-n1`, pin: b, slackAfter: 0.2 },
+        { nodeId: `${id}-n2`, pin: c, slackAfter: 0.2 },
+      ],
+      color: "#a8322c",
+      thickness: 3,
+      material: "string",
+      layer: "over",
+      closed: false,
+    });
+    ropes.setString(scene, dirty, id, [a, b, c], [0.2, 0.2, 0.2], false);
+  }
+
+  it("draws where it always did while its page is the page on show", () => {
+    const over = new RopeLayer(stubCanvas(), "over");
+    over.setShownPage(() => 4);
+    tape("t", 0, 0, "folder", 4);
+    string("s1", "t", "p2", { layer: "over" });
+
+    draw(over);
+    expect(calls.strokes).toHaveLength(3);
+  });
+
+  it("goes under the sheet when the reader has turned past it", () => {
+    const over = new RopeLayer(stubCanvas(), "over");
+    const under = new RopeLayer(stubCanvas(), "under");
+    over.setShownPage(() => 12);
+    under.setShownPage(() => 12);
+    tape("t", 0, 0, "folder", 4);
+    string("s1", "t", "p2", { layer: "over" });
+
+    expect(over.draw(scene, ropes, camera, dirty)).toBe(false);
+    expect(calls.strokes).toHaveLength(0);
+    draw(under);
+    expect(calls.strokes).toHaveLength(3);
+  });
+
+  /**
+   * Q-291, and the whole reason this is not a visibility toggle. A shut folder
+   * shows no page, so the thread goes *under* it rather than away — the card is
+   * still visibly threaded to where it came from, and the string disappears into
+   * the folder the way a thread taped inside one does.
+   */
+  it("runs under a shut folder rather than not being drawn at all", () => {
+    const under = new RopeLayer(stubCanvas(), "under");
+    under.setShownPage(() => null);
+    tape("t", 0, 0, "folder", 4);
+    string("s1", "t", "p2", { layer: "over" });
+
+    expect(draw(under)).toBe(true);
+    expect(calls.strokes).toHaveLength(3);
+  });
+
+  /**
+   * The claim the whole per-gap split exists for. Pull a pin out of the middle
+   * of a quote card's thread (T-46) and the half that never went near the folder
+   * has to go on drawing where it always did — tucking the run would hide it
+   * behind every note between the folder and the card.
+   */
+  it("takes only the gap that reaches it, not the rest of the run", () => {
+    const over = new RopeLayer(stubCanvas(), "over");
+    const under = new RopeLayer(stubCanvas(), "under");
+    over.setShownPage(() => null);
+    under.setShownPage(() => null);
+    tape("t", 0, 0, "folder", 4);
+    pin("p3", 400, 0);
+    run("s1", "t", "p2", "p3");
+
+    draw(over);
+    // The far gap, `p2` to `p3`, which the folder has nothing to do with.
+    expect(calls.strokes).toHaveLength(3);
+    calls.strokes.length = 0;
+    draw(under);
+    // And the near one, taken off the over canvas and put behind the paper.
+    expect(calls.strokes).toHaveLength(3);
+  });
+
+  /**
+   * Turning a page is not a document edit, so nothing in the frame marks this
+   * string dirty and the painter is written to return before it looks at one.
+   * `dirtyFacing` is what supplies the missing edit; this pins the half of that
+   * bargain the painter owes — given the string, it must redraw on the *new*
+   * face rather than keep the geometry it cached on the old one.
+   */
+  it("moves canvas when the page turns under it", () => {
+    const under = new RopeLayer(stubCanvas(), "under");
+    let page: number | null = 4;
+    under.setShownPage(() => page);
+    tape("t", 0, 0, "folder", 4);
+    string("s1", "t", "p2", { layer: "over" });
+
+    // On the page: the over canvas's business, not this one's.
+    expect(draw(under)).toBe(false);
+
+    page = 12;
+    dirty.string("s1");
+    expect(draw(under)).toBe(true);
+    expect(calls.strokes).toHaveLength(3);
+  });
+
+  /** An export draws the board as it stands, and a shut folder exports shut. */
+  it("exports on the canvas it is drawn on", () => {
+    const under = new RopeLayer(stubCanvas(), "under");
+    under.setShownPage(() => null);
+    tape("t", 0, 0, "folder", 4);
+    string("s1", "t", "p2", { layer: "over" });
+
+    const target = stubCanvas().getContext("2d")!;
+    expect(under.drawInto(target, scene, ropes, camera)).toBe(1);
+  });
+
+  /**
+   * The gate everything else in this file depends on. A board with no tape
+   * stuck to a page must take the path it took before this existed, which is
+   * the whole of the claim that 3,431 tests did not move.
+   */
+  it("costs an ordinary board nothing", () => {
+    const over = new RopeLayer(stubCanvas(), "over");
+    over.setShownPage(() => null);
+    string("s1", "p1", "p2", { layer: "over" });
+
+    expect(scene.pagedPins.size).toBe(0);
+    draw(over);
+    expect(calls.strokes).toHaveLength(3);
+  });
+});

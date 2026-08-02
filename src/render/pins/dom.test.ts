@@ -313,3 +313,101 @@ describe("drawing the pins into an export", () => {
     expect(calls).toEqual([]);
   });
 });
+
+/**
+ * A tape belongs to a page, not to the folder — T-330.
+ *
+ * The pin's half of it is the easy half and is one rule: it is drawn, exported
+ * and grabbable only while its page is the page on show. A shut folder shows no
+ * page, so a tape inside one is never on show — the same sentence covering the
+ * folder being shut and the reader being on page twelve, which is Q-291's whole
+ * point. What the *thread* does is `render/ropes/paint.ts`'s.
+ */
+describe("a tape stuck to a page", () => {
+  function tape(id: string, page: number): PinNode {
+    return {
+      id,
+      parent: "folder",
+      lx: 100,
+      ly: 100,
+      kind: "tape",
+      color: "#c8352f",
+      page,
+      wx: 100,
+      wy: 100,
+    };
+  }
+
+  beforeEach(() => {
+    scene.putPin(tape("t", 4));
+    scene.putPin(pin("ordinary", 200, 200));
+  });
+
+  it("is mounted when the folder is open at its page", () => {
+    layer.setShownPage(() => 4);
+    sync();
+    expect(layer.mounted).toBe(2);
+  });
+
+  it("is not mounted when the reader has turned past it", () => {
+    layer.setShownPage(() => 12);
+    sync();
+    expect(layer.mounted).toBe(1);
+  });
+
+  it("is not mounted when the folder is shut", () => {
+    layer.setShownPage(() => null);
+    sync();
+    expect(layer.mounted).toBe(1);
+  });
+
+  /** And it comes back, rather than being unmounted once and forgotten. */
+  it("comes back when the page is turned to again", () => {
+    let page: number | null = null;
+    layer.setShownPage(() => page);
+    sync();
+    expect(layer.mounted).toBe(1);
+    page = 4;
+    sync();
+    expect(layer.mounted).toBe(2);
+  });
+
+  /**
+   * You cannot grab what you cannot see. Without this a tape inside a shut
+   * folder still takes a press: it drags, it cuts, and the scissors offer to cut
+   * a thread at a point on a cover with nothing drawn on it.
+   */
+  it("takes no press while it is put away", () => {
+    layer.setShownPage(() => null);
+    sync();
+    expect(layer.hitTest(scene, camera, 100, 100)).toBeNull();
+    layer.setShownPage(() => 4);
+    expect(layer.hitTest(scene, camera, 100, 100)).toBe("t");
+  });
+
+  /**
+   * An export of a shut folder is an export of a shut folder. The rule is asked
+   * of the same resolver the screen asks, because an export that disagreed with
+   * the window about what is on the board would be the worse of the two.
+   */
+  it("is not in an export of a shut folder", () => {
+    const drawn: unknown[] = [];
+    const ctx = { drawImage: (...args: unknown[]) => drawn.push(args) };
+    const sprite = (): { url: string; canvas: HTMLCanvasElement } => ({
+      url: "",
+      canvas: document.createElement("canvas"),
+    });
+    layer.setShownPage(() => null);
+    expect(layer.drawInto(ctx, scene, camera, sprite)).toBe(1);
+    layer.setShownPage(() => 4);
+    expect(layer.drawInto(ctx, scene, camera, sprite)).toBe(2);
+  });
+
+  /** A pin with no page is on the object, and nothing about it changes — which
+   *  is every pin on every board that has never quoted a case file. */
+  it("leaves an ordinary pin alone whatever is open", () => {
+    layer.setShownPage(() => 99);
+    sync();
+    expect(layer.hitTest(scene, camera, 200, 200)).toBe("ordinary");
+  });
+});

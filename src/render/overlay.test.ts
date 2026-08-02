@@ -467,6 +467,50 @@ describe("Overlay, strings", () => {
     expect(seen[1]!.width).toBeGreaterThanOrEqual(9);
   });
 
+  /**
+   * A thread taped inside a shut folder — T-330.
+   *
+   * This canvas is above the items, so a halo along a gap that has gone behind
+   * the paper is the outline of a string drawn across a folder with no string on
+   * it: the strongest possible way of saying the thing is there, on the one
+   * frame it is not. The rope painter has already taken that gap off the over
+   * canvas; the chrome has to agree with it or the selection contradicts the
+   * drawing.
+   */
+  it("does not ring a gap that has gone under the page on show", () => {
+    scene.putPin({
+      id: "p0",
+      parent: "folder",
+      lx: 0,
+      ly: 0,
+      kind: "tape",
+      color: "#c8352f",
+      page: 4,
+      wx: 0,
+      wy: 0,
+    });
+    putString();
+    selection.replaceStrings(["s"]);
+    let page: number | null = 4;
+    overlay.setShownPage(() => page);
+
+    // Open at the page it came off: the halo is drawn, and the canvas cleared
+    // for it.
+    draw();
+    expect(calls.clearRect).toBe(1);
+
+    // Shut. `dirtyFacing` is what marks the string on the frame a folder shuts,
+    // because shutting one writes nothing to the document — this canvas skips a
+    // frame on the same test the rope painter does, and the string it is handed
+    // is what wakes both.
+    page = null;
+    dirty.string("s");
+    draw();
+    // Cleared once more, and nothing put back: what is left is a card on the
+    // cork with no outline running to a folder that has no string on it.
+    expect(calls.clearRect).toBe(2);
+  });
+
   it("restrokes a selected string that is still moving, and nothing else", () => {
     putString();
     selection.replaceStrings(["s"]);
