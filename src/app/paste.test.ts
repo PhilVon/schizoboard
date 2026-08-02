@@ -117,6 +117,9 @@ let board: BoardDoc;
 let native: FakeNative;
 let camera: Camera;
 let paste: Paste;
+/** Whether something is over the board, for T-324's gate. False everywhere but
+ *  the one describe that is about it. */
+let covered = false;
 let cursor: { x: number; y: number } | null;
 let created: string[];
 let transactions: number;
@@ -202,12 +205,14 @@ beforeEach(async () => {
   created = [];
   claim = null;
   said = [];
+  covered = false;
   paste = new Paste({
     native: native as unknown as Platform,
     board,
     camera,
     claim: (data, at) => claim?.(data, at) === true,
     cursor: () => cursor,
+    covered: () => covered,
     onCreated: (ids) => created.push(...ids),
     say: (message) => said.push(message),
   });
@@ -598,6 +603,52 @@ describe("a handful at once", () => {
  * done for an item that is never going to exist, and the second leaves the
  * bytes behind on a board whose collector has also been stopped.
  */
+/**
+ * T-324, and it is the *drop* that decides where the fix belongs.
+ *
+ * The bug was that `Ctrl`+`X` reached the board behind a film covering the
+ * screen: `ui/crt.ts` swallows keydowns, and a `cut` is a different event from
+ * the key that caused it. The obvious repair - name the three clipboard keys at
+ * the set - would have fixed exactly half of it, because a file dragged onto
+ * the window arrives from the *shell* with no keydown anywhere in the story. So
+ * the predicate is asked here, at the boundary that actually ingests.
+ */
+describe("while something is covering the board", () => {
+  it("ingests nothing from the clipboard and creates nothing", async () => {
+    covered = true;
+
+    await firePaste({ files: [imageFile(2048)] });
+    await firePaste({ text: "a sentence" });
+
+    expect(native.calls).toEqual([]);
+    expect(itemsOnBoard()).toEqual([]);
+    expect(created).toEqual([]);
+  });
+
+  /** The route no keydown swallow could ever have stopped. */
+  it("takes no file dropped in from the shell", async () => {
+    covered = true;
+
+    native.drop(["C:/holiday.png"], 100, 100);
+    await settle();
+
+    expect(native.calls).toEqual([]);
+    expect(itemsOnBoard()).toEqual([]);
+  });
+
+  it("takes both again the moment the set comes off", async () => {
+    covered = true;
+    native.drop(["C:/holiday.png"], 100, 100);
+    await settle();
+    expect(itemsOnBoard()).toEqual([]);
+
+    covered = false;
+    native.drop(["C:/holiday.png"], 100, 100);
+    await settle();
+    expect(itemsOnBoard()).toHaveLength(1);
+  });
+});
+
 describe("on a sealed board", () => {
   it("ingests nothing and creates nothing", async () => {
     sealBoard(board);

@@ -69,6 +69,10 @@ function itemsOnBoard(): { id: string; x: number; y: number; text: string }[] {
   }));
 }
 
+/** Whether something is over the board, for T-324's gate. False everywhere
+ *  above the one describe that is about it. */
+let covered = false;
+
 beforeEach(() => {
   board = openBoardDoc();
   initialiseBoard(board);
@@ -86,6 +90,7 @@ beforeEach(() => {
     deletePins: () => {},
   } as unknown as BoardWriter;
 
+  covered = false;
   clipboard = new BoardClipboard({
     board,
     camera,
@@ -93,6 +98,7 @@ beforeEach(() => {
     scene,
     write,
     cursor: () => null,
+    covered: () => covered,
     onPasted: (pasted) => {
       selection.replaceThread(pasted.items, pasted.strings, pasted.freePins);
     },
@@ -322,5 +328,67 @@ describe("on a sealed board", () => {
 
     clipboard.duplicate();
     expect(itemsOnBoard()).toHaveLength(1);
+  });
+});
+
+/**
+ * T-324: the clipboard does not reach a board somebody cannot see.
+ *
+ * The bug this is about was not in this file. `ui/crt.ts` implements the set as
+ * a capture-phase **keydown** listener, and a `cut` is a different event from
+ * the `Ctrl`+`X` that caused it - so `stopPropagation` on the key never touched
+ * it, and these two listeners answered a board behind a film covering the
+ * screen. Driven before the fix: two selected notes deleted, on a board nobody
+ * could look at.
+ *
+ * Asserted here rather than at the set because the set cannot answer for it: a
+ * file dragged in from the OS is not a keydown either (`app/paste.test.ts` has
+ * that half).
+ */
+describe("while something is covering the board", () => {
+  function held(): void {
+    const { itemId } = note(0, 0, "the sentence");
+    selection.replace([itemId]);
+    covered = true;
+  }
+
+  it("takes no cut, so nothing is deleted behind a film", () => {
+    held();
+
+    const transfer = fire("cut");
+
+    expect(deletes).toEqual([]);
+    // And nothing was announced to the system clipboard either, so a paste a
+    // keystroke later cannot put back what was never taken.
+    expect(transfer.getData(CLIP_MIME)).toBe("");
+    expect(said).toEqual([]);
+    expect(itemsOnBoard()).toHaveLength(1);
+  });
+
+  /**
+   * The copy goes with the cut, which is the one of the two worth arguing.
+   * Copying changes no document and could have been allowed - but a copy taken
+   * from a selection nobody can see is a paste you did not mean, one keystroke
+   * later, and the whole point of the set is that the board is not there.
+   */
+  it("takes no copy either", () => {
+    held();
+
+    const transfer = fire("copy");
+
+    expect(transfer.getData(CLIP_MIME)).toBe("");
+    expect(transfer.getData("text/plain")).toBe("");
+    expect(said).toEqual([]);
+  });
+
+  it("lets go again when the set does", () => {
+    held();
+    fire("cut");
+    expect(deletes).toEqual([]);
+
+    // The film comes off. Nothing about the refusal is latched.
+    covered = false;
+    fire("cut");
+    expect(deletes).toHaveLength(1);
   });
 });
