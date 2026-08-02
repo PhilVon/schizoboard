@@ -56,7 +56,7 @@
 
 import { fibre } from "@/lib/material";
 import { presetSlack } from "@/lib/slack";
-import { tucked, tuckedGap, type ShownPage } from "@/render/facing";
+import { tucked, tuckedGap, type ShownPage } from "@/state/facing";
 import { LIGHT_DX, LIGHT_DY, SHADOW_RGB } from "@/render/items/shadow";
 import type { RopeSet } from "@/sim/ropes";
 import type { Camera } from "@/state/camera";

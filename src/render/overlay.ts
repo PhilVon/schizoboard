@@ -27,7 +27,7 @@
 import { carryScale } from "@/lib/carry";
 import type { WetStroke } from "@/lib/ink";
 import { rotateOut } from "@/lib/rotate";
-import { tuckedGap } from "@/render/facing";
+import { tuckedGap } from "@/state/facing";
 import { type ItemFrame, WetInk } from "@/render/ink/wet";
 
 /**

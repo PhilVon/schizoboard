@@ -37,7 +37,7 @@
 import "@/render/pins/pins.css";
 
 import type { CameraPose } from "@/render/cork";
-import { tucked, type ShownPage } from "@/render/facing";
+import { tucked, type ShownPage } from "@/state/facing";
 import {
   HEAD_FRACTION,
   pinSprite,

@@ -14,6 +14,7 @@
  * is four chances to disagree about what a shut folder shows.
  */
 
+import type { DirtySets } from "@/state/dirty";
 import type { PinNode, Scene } from "@/state/scene";
 
 /**
@@ -93,4 +94,47 @@ export function tuckedGap(
   if (first !== undefined && tucked(first, shown)) return true;
   const second = scene.pins.get(b);
   return second !== undefined && tucked(second, shown);
+}
+
+/**
+ * Mark what has to be redrawn because the face on show has changed — T-330.
+ *
+ * This is `ItemInk.stalePage`'s argument (T-278) applied to the two layers
+ * below the ink. A folder opening, a folder shutting and a page turning are
+ * **not document edits**, so nothing marks a pin or a string dirty — and the two
+ * layers that would have to redraw are precisely the two written to cost nothing
+ * when nothing moved. The rope painter returns on the frame before it looks at a
+ * string; the pin layer returns on `dirty.isClean`. Without this the thread
+ * stays on whichever canvas it was on when you turned the page, for as long as
+ * the board is still.
+ *
+ * **Both faces, the one being left and the one arrived at.** Shutting a folder
+ * puts away a tape that was on show, and by then the item is no longer the one
+ * the resolver answers for — asking only about the new face would redraw
+ * nothing at all on the one transition where everything changes.
+ *
+ * Free on a board with no tape stuck to a page, which is every board that has
+ * never quoted a case file.
+ */
+export function dirtyFacing(
+  scene: Scene,
+  dirty: DirtySets,
+  was: string | null,
+  now: string | null,
+): void {
+  if (scene.pagedPins.size === 0) return;
+  dirtyPagedPins(scene, dirty, was);
+  if (now !== was) dirtyPagedPins(scene, dirty, now);
+}
+
+function dirtyPagedPins(scene: Scene, dirty: DirtySets, itemId: string | null): void {
+  if (itemId === null) return;
+  for (const pinId of scene.pinsParentedTo(itemId)) {
+    // `pinsParentedTo` and not `pinsOf`: a page is a fact about the frame the
+    // pin's numbers are in, which is the parent, and not about which sheets it
+    // happens to be lying over.
+    if (scene.pins.get(pinId)?.page == null) continue;
+    dirty.pin(pinId);
+    for (const sid of scene.stringsThrough(pinId)) dirty.string(sid);
+  }
 }

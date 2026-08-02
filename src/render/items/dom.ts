@@ -35,7 +35,7 @@ import "@/render/items/items.css";
 // width — and the world wrapper is a zero-width point carrying the camera
 // transform, so every percentage in an item would silently compute to zero.
 import { carryScale } from "@/lib/carry";
-import type { ShownPage } from "@/render/facing";
+import type { ShownPage } from "@/state/facing";
 import type { InkSample } from "@/lib/ink";
 import {
   CAPTION_BOTTOM,
