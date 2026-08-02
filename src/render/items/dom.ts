@@ -2025,6 +2025,15 @@ class CaseView implements View {
     // these are the same strings, so there is one place to be wrong about them.
     if (this.pageNumber) this.pageNumber.textContent = this.number.textContent;
     if (this.pageMeta) this.pageMeta.textContent = this.meta.textContent;
+    // And which face the page is set in — AC-678's "clean face available per
+    // document, for something that has to be read rather than admired".
+    //
+    // `style.fontFamily`, which is the field DESIGN section 3.6 already has and
+    // T-225 already gave a home, rather than a second per-document preference
+    // that would then have to be kept in step with it. The *label* is unaffected
+    // and deliberately so: a case number is typed because it is a thing that was
+    // printed, so this view has never asked `faceOf` about it and still does not.
+    if (this.leaf) this.leaf.dataset["face"] = faceOf(cold);
     // In the hand, because the two hand-written lines are the two that came from
     // a person: one of them from whoever made the document, one from whoever is
     // looking at it. `titleWorthWriting` is what keeps the first from being the
@@ -2477,29 +2486,40 @@ const CASE_TEXT_SIZE = 0.048;
  * extra steps, and the whole argument for this feature is that a document should
  * look like it belongs on this wall rather than like a viewer embedded in it.
  *
- * A new line when the baseline moves by more than half the run's own height:
- * half, because superscripts, footnote marks and a mid-line font change all
- * shift `y` a little and none of them is a line break. Runs arrive in
- * content-stream order, which is *usually* reading order and is not guaranteed
- * to be — a two-column page can interleave. That is a known limit of the
- * extractor rather than of this function, and it is the same limit T-297 lists.
+ * A new line when the baseline moves by more than half a line: half, because
+ * superscripts, footnote marks and a mid-line font change all shift `y` a little
+ * and none of them is a line break.
+ *
+ * Runs arrive in content-stream order, which is *usually* reading order and is
+ * not guaranteed to be — a two-column page can interleave. That is a known limit
+ * of the extractor rather than of this function, and it is one T-297 already
+ * lists.
  */
 export function linesOfRuns(runs: readonly TextRun[]): string {
   if (runs.length === 0) return "";
   let text = "";
-  let lastY = runs[0]!.y;
-  let lastHeight = runs[0]!.height;
+  // The **line's** baseline and the tallest thing set on it — not the run
+  // before, which is a bug a test caught rather than a refinement. A footnote
+  // mark is a 7-unit run on a 12-unit line, so measuring the next run against
+  // the mark's own height puts the threshold at 3.5 and breaks the line coming
+  // back off it. A small run must not be able to narrow the gate behind itself.
+  let lineY = runs[0]!.y;
+  let lineHeight = runs[0]!.height;
   for (const [at, run] of runs.entries()) {
     if (at > 0) {
-      const broke = Math.abs(run.y - lastY) > Math.max(1, lastHeight * 0.5);
-      // A run that continues a line still needs a gap unless the last one ended
-      // in one: a PDF splits a line at every font and kerning change, and
+      const broke = Math.abs(run.y - lineY) > Math.max(1, lineHeight * 0.5);
+      // A run that continues a line still needs a gap unless one end already
+      // has one: a PDF splits a line at every font and kerning change, and
       // joining them bare runs the words together.
       text += broke ? "\n" : /\s$/.test(text) || /^\s/.test(run.text) ? "" : " ";
+      if (broke) {
+        lineY = run.y;
+        lineHeight = run.height;
+      } else {
+        lineHeight = Math.max(lineHeight, run.height);
+      }
     }
     text += run.text;
-    lastY = run.y;
-    lastHeight = run.height;
   }
   return text;
 }
