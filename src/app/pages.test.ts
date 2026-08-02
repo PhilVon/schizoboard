@@ -41,7 +41,7 @@ function shell(over: Partial<Platform> = {}) {
   return { native, closed, asked };
 }
 
-/** Let the fetch settle — one page is one `await` on this side. */
+/** Let the fetch settle — one page is one `await` on this side, and a scan two. */
 const settle = () => new Promise((r) => setTimeout(r, 0));
 
 describe("which page is being read", () => {
@@ -112,7 +112,7 @@ describe("which page is being read", () => {
 });
 
 describe("what is asked of the shell", () => {
-  it("asks for the page being read, without being told which", async () => {
+  it("asks for the page being read and its neighbours, without being told which", async () => {
     const { native, asked } = shell();
     const reader = new PageReader(native, () => {});
     reader.open(HASH, 4);
@@ -120,9 +120,15 @@ describe("what is asked of the shell", () => {
     reader.turn(2);
     reader.page(HASH);
     await settle();
+    // Opening asks for 1 and the one after it; landing on 3 asks for 3 and 4,
+    // and finds 2 already here (T-279, Q-276). Nobody said which page: the
+    // layer asked for "the page", and the window either side of it is this
+    // module's own doing.
     expect(asked).toEqual([
       { sha256: HASH, index: 1 },
+      { sha256: HASH, index: 2 },
       { sha256: HASH, index: 3 },
+      { sha256: HASH, index: 4 },
     ]);
   });
 
@@ -135,10 +141,11 @@ describe("what is asked of the shell", () => {
 
     expect(reader.page(HASH).phase).toBe("ready");
     expect(reader.page(HASH).page?.index).toBe(1);
+    // Two, and both from the open: page one and the neighbour held ahead of it.
     // Asking is what fetches, and the layer asks on every frame the folder is
-    // open — so a second ask that reached the shell would be an IPC round trip
+    // open — so a further ask that reached the shell would be an IPC round trip
     // per frame.
-    expect(asked).toHaveLength(1);
+    expect(asked).toHaveLength(2);
   });
 
   it("carries the shell's own sentence when a document will not open", async () => {
@@ -195,9 +202,9 @@ describe("letting the file go", () => {
     reader.open(HASH, 2);
     reader.page(HASH);
     await settle();
-    // Asked again, because the pages went with the close. The shell keeps its
-    // own cache, so this costs a memory copy rather than a re-read.
-    expect(asked).toHaveLength(2);
+    // Both pages asked for again, because they went with the close. The shell
+    // keeps its own cache, so this costs a memory copy rather than a re-read.
+    expect(asked).toHaveLength(4);
   });
 
   it("survives a shell that will not let go", async () => {
@@ -212,6 +219,127 @@ describe("letting the file go", () => {
     // on, so it must not reach the frame as an unhandled rejection.
     expect(() => reader.close(HASH)).not.toThrow();
     await settle();
+  });
+});
+
+/**
+ * The window — T-279, Q-276.
+ *
+ * The rule is the culler's, one level down: hold the page being read and the
+ * one either side, and let the rest go. What these assert is the bound itself
+ * and the blob URLs that make it matter, because those are the two things a
+ * screenshot of a single sheet can never show.
+ */
+describe("what a long read holds", () => {
+  it("holds three pages however far through a document you get", async () => {
+    const { native } = shell();
+    const reader = new PageReader(native, () => {});
+    reader.open(HASH, 1000);
+
+    for (let n = 0; n < 200; n++) {
+      reader.turn(1);
+      reader.page(HASH);
+      await settle();
+    }
+
+    expect(reader.pageAt).toBe(201);
+    // Two hundred pages read, three held. Before this rule it was one entry per
+    // page visited: 199 pages and 77 MiB of blob URLs to draw a 200-page scan.
+    expect(reader.heldPages.pages).toBe(3);
+  });
+
+  it("holds two at either end rather than reaching past the covers", async () => {
+    const { native } = shell();
+    const reader = new PageReader(native, () => {});
+    reader.open(HASH, 40);
+    await settle();
+    // Page 1 has one neighbour, not two — there is no page zero to ask for, and
+    // asking would land as "there is no page here" on the sheet's own paper.
+    expect(reader.heldPages.pages).toBe(2);
+
+    reader.goto(40);
+    await settle();
+    expect(reader.heldPages.pages).toBe(2);
+  });
+
+  it("finds the page already here when you turn back", async () => {
+    const { native, asked } = shell();
+    const reader = new PageReader(native, () => {});
+    reader.open(HASH, 40);
+    reader.turn(1);
+    await settle();
+    const sofar = asked.length;
+
+    // The gesture the window is for other than memory: turning back to re-read
+    // the page you just left costs nothing, because it never went anywhere.
+    expect(reader.turn(-1)).toBe(true);
+    expect(reader.page(HASH).phase).toBe("ready");
+    await settle();
+    expect(asked).toHaveLength(sofar);
+  });
+
+  it("does not redraw the folder when a neighbour lands", async () => {
+    const arrived = vi.fn();
+    const { native } = shell();
+    const reader = new PageReader(native, arrived);
+    reader.open(HASH, 40);
+    reader.page(HASH);
+    await settle();
+    arrived.mockClear();
+
+    // Page 3 is fetched ahead by this turn; page 2 is what goes on the sheet
+    // and is already here. So the only redraw is the turn's own — a neighbour
+    // arriving changes nothing anybody is looking at, and `arrived` is a whole
+    // item rebind.
+    reader.turn(1);
+    expect(arrived).toHaveBeenCalledTimes(1);
+    await settle();
+    expect(arrived).toHaveBeenCalledTimes(1);
+  });
+
+  it("revokes a scan's blob URL when its page leaves the window", async () => {
+    const minted: string[] = [];
+    const revoked: string[] = [];
+    let next = 0;
+    vi.stubGlobal("URL", {
+      ...URL,
+      createObjectURL: () => {
+        const url = `blob:page-${++next}`;
+        minted.push(url);
+        return url;
+      },
+      revokeObjectURL: (url: string) => revoked.push(url),
+    });
+
+    const { native } = shell({
+      documentPage: async (_sha: string, index: number) => ({
+        index,
+        width: 595,
+        height: 842,
+        content: {
+          kind: "image" as const,
+          image: { mime: "image/jpeg", bytes: 4, width: 1200, height: 1600 },
+        },
+      }),
+      documentPageImage: async () => new Uint8Array([1, 2, 3, 4]),
+    } as unknown as Partial<Platform>);
+
+    const reader = new PageReader(native, () => {});
+    reader.open(HASH, 100);
+    for (let n = 0; n < 10; n++) {
+      reader.turn(1);
+      reader.page(HASH);
+      await settle();
+    }
+
+    // Half a megabyte a page in the real thing, and the browser holds it until
+    // the URL is revoked. Everything minted but the three in the window has to
+    // have been let go of, or the window bounds the Map and nothing else.
+    expect(minted.length).toBeGreaterThan(3);
+    expect(revoked).toEqual(minted.slice(0, minted.length - 3));
+    expect(reader.heldPages).toEqual({ pages: 3, urls: 3 });
+
+    vi.unstubAllGlobals();
   });
 });
 
