@@ -39,6 +39,7 @@ function run(id: string, samples: InkSample[], over: Partial<WetStroke> = {}): W
     size: DEFAULT_INK_SIZE,
     opacity: 1,
     item: null,
+    page: null,
     samples,
     ...over,
   };
@@ -92,6 +93,44 @@ describe("what it refuses to take off the wire", () => {
     expect(readWet([wire({ item: null })])).toHaveLength(1);
     expect(readWet([wire({ item: "photo-1" })])[0]!.item).toBe("photo-1");
     expect(readWet([wire({ item: "" })])).toHaveLength(0);
+  });
+
+  it("reads a run with no page as being on the object itself", () => {
+    // Absent is what `state/wetwire.ts` sends for the overwhelmingly common
+    // stroke — the key is left off rather than written as null, to save four
+    // characters thirty times a second — so it has to arrive here as an answer
+    // and not as a hole.
+    expect(readWet([wire()])[0]!.page).toBe(null);
+    // The same statement said out loud. Nothing this repository sends writes it
+    // this way, but it means exactly what the absence means and there is no
+    // reason to throw a stranger's mark away for saying so.
+    expect(readWet([wire({ page: null })])[0]!.page).toBe(null);
+  });
+
+  it("reads the page a folder's mark was made on", () => {
+    expect(readWet([wire({ item: "folder-1", page: 4 })])[0]!.page).toBe(4);
+    expect(readWet([wire({ item: "folder-1", page: 1 })])[0]!.page).toBe(1);
+  });
+
+  it("drops a run whose page is not a page, rather than falling back to the cover", () => {
+    // Deliberately unlike every *other* field with a sensible default, and for
+    // the reason the colour above is dropped rather than substituted: there is
+    // no nearly-right answer here. The two candidates are different surfaces,
+    // and reading an unusable page as "the object itself" is exactly how a
+    // peer's redaction of page four ends up painted across the kraft cover of a
+    // folder that is lying shut on this screen.
+    expect(readWet([wire({ page: "4" })])).toHaveLength(0);
+    expect(readWet([wire({ page: 0 })])).toHaveLength(0);
+    expect(readWet([wire({ page: -1 })])).toHaveLength(0);
+    expect(readWet([wire({ page: 2.5 })])).toHaveLength(0);
+    expect(readWet([wire({ page: Number.NaN })])).toHaveLength(0);
+  });
+
+  it("drops only the run with the bad page, so the rest of the pen survives", () => {
+    const got = readWet([wire({ id: "a" }), wire({ id: "b", page: 0 }), wire({ id: "c", page: 2 })]);
+    expect(got.map((r) => r.id)).toEqual(["a", "c"]);
+    // And the good ones keep their own answers rather than the dropped one's.
+    expect(got.map((r) => r.page)).toEqual([null, 2]);
   });
 
   it("drops one bad run and keeps the rest, like locks", () => {
@@ -251,6 +290,49 @@ describe("the splice, against the real sender", () => {
     expect(stroke!.size).toBe(22);
     expect(stroke!.opacity).toBe(0.4);
     expect(stroke!.item).toBe("note-9");
+  });
+
+  it("carries the face of the folder the mark was made on — T-278", () => {
+    const sender = new WetWire();
+    const ink = new PeerInk();
+    sender.update(
+      [
+        run(
+          "r1",
+          [
+            { x: 0, y: 0, pressure: 1 },
+            { x: 80, y: 0, pressure: 1 },
+          ],
+          { item: "folder-1", page: 4 },
+        ),
+      ],
+      1,
+    );
+    ink.splice(readWet(sender.payload()));
+
+    // Through the real sender rather than a hand-written message, because the
+    // page is the one field the two halves disagree about in shape: it is
+    // omitted on the wire and null here, so a double would only prove I held
+    // the same belief twice. What the painter is handed has to be the page.
+    const [stroke] = [...ink.drawable()];
+    expect(stroke!.page).toBe(4);
+    expect(stroke!.item).toBe("folder-1");
+
+    // And the other half of the same round trip: a mark on the bare cork comes
+    // out as no page at all, not as a page that went missing.
+    const cork = new WetWire();
+    const bare = new PeerInk();
+    cork.update(
+      [
+        run("r2", [
+          { x: 0, y: 0, pressure: 1 },
+          { x: 80, y: 0, pressure: 1 },
+        ]),
+      ],
+      1,
+    );
+    bare.splice(readWet(cork.payload()));
+    expect([...bare.drawable()][0]!.page).toBe(null);
   });
 });
 
@@ -552,6 +634,7 @@ describe("the handoff — section 9.2", () => {
         opacity: 1,
         seed: 1,
         z: "a0",
+        page: null,
         bbox: [0, 0, 12800, 0],
         samples,
       },

@@ -277,6 +277,7 @@ beforeEach(() => {
       turns.push(by);
       return turnable;
     },
+    shownPage: () => null,
     held,
     write: {
       setPoses: (poses, phase) => writes.push({ kind: "poses", phase, poses: new Map(poses) }),

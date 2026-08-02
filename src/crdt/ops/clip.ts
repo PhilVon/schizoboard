@@ -93,6 +93,17 @@ export interface ClipStroke {
   /** The packed points, copied — a clip never aliases the document it came
    *  from, or a paste would put the live bytes back in beside themselves. */
   readonly pts: Uint8Array;
+  /**
+   * Which page of the item's document this is on, or null for the object
+   * itself — T-278.
+   *
+   * Copied through, which is the only answer that makes sense: the paste
+   * carries the item's `assetId`, so the copy holds the same document with the
+   * same pages, and a redaction that came off page four belongs on page four of
+   * the copy. Ink is item-local, and the page is one more fact about where in
+   * the item it is.
+   */
+  readonly page: number | null;
 }
 
 export interface ClipItem {
@@ -344,6 +355,9 @@ export function pasteClip(
         inkZ = keyAbove(inkZ);
         stroke.set("z", inkZ);
         stroke.set("bbox", [...clippedStroke.bbox]);
+        // Only when there is one, exactly as `ops/ink.ts` writes it — a paste of
+        // ordinary ink has to produce the same record the pen would (T-278).
+        if (clippedStroke.page !== null) stroke.set("page", clippedStroke.page);
         // Sliced again on the way in, so two pastes of one clip do not share a
         // buffer between two documents' worth of history.
         stroke.set("pts", clippedStroke.pts.slice());
@@ -467,6 +481,7 @@ function strokesOf(item: YMap | undefined): ClipStroke[] {
     seed: stroke.seed,
     bbox: [...stroke.bbox] as [number, number, number, number],
     pts: stroke.pts.slice(),
+    page: stroke.page,
   }));
 }
 

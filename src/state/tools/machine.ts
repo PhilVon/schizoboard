@@ -71,6 +71,15 @@ export interface ToolMachineOptions {
    * wired in `app/main.ts`, where it is emphatically not the same function.
    */
   inkHitTest?: (boardX: number, boardY: number) => string | null;
+  /**
+   * `ToolContext.shownPage` (T-278) — which page of a case file is the face on
+   * show.
+   *
+   * Optional, and the default is "nothing is open", which is the whole truth for
+   * every caller that has no document reader behind it: the tests in this
+   * directory and the spike rig, where an item has one face and ink goes on it.
+   */
+  shownPage?: (itemId: string) => number | null;
   /** Screen space, not board — see `ToolContext.hitPin`. */
   hitPin: (screenX: number, screenY: number) => string | null;
   /** Board space, and against the rope particles — see `ToolContext.hitString`. */
@@ -195,6 +204,7 @@ export class ToolMachine {
       write: options.write,
       hitTest: options.hitTest,
       inkHitTest: options.inkHitTest ?? options.hitTest,
+      shownPage: options.shownPage ?? (() => null),
       hitPin: options.hitPin,
       hitString: options.hitString,
       edit: options.edit ?? (() => undefined),

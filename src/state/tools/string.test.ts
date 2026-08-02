@@ -106,6 +106,7 @@ beforeEach(() => {
     },
     // The string tool never asks the pen's question; same answer either way.
     inkHitTest: () => null,
+    shownPage: () => null,
     hitPin: (sx, sy) => {
       for (const hit of pinHits) {
         if (Math.hypot(hit.sx - sx, hit.sy - sy) <= 12) return hit.id;

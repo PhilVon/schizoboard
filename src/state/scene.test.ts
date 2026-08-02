@@ -1069,6 +1069,7 @@ describe("Scene stroke surfaces", () => {
       opacity: 1,
       seed: 1,
       z: "a0",
+      page: null,
       bbox: [0, 0, 10, 10],
       samples: [
         { x: 0, y: 0, pressure: 0.5 },
@@ -1138,6 +1139,107 @@ describe("Scene stroke surfaces", () => {
     scene.putStrokes("note", [stroke("s1")]);
     scene.clear();
     expect(scene.strokeSurface("s1")).toBeNull();
+  });
+});
+
+/**
+ * T-278: which of an item's marks are on the face you are looking at.
+ *
+ * The rule is one sentence and these are the four surfaces it has to be right
+ * about at once - a shut folder, an open one, a photograph, and an item whose
+ * ink is on two pages. Written against `strokesOn` rather than against the
+ * renderer because this is where the rule lives; what the renderer does with
+ * the answer is `render/items/dom.test.ts`.
+ */
+describe("Scene.strokesOn - the face that is showing", () => {
+  function stroke(id: string, page: number | null, z = "a0"): SceneStroke {
+    return {
+      id,
+      tool: "marker",
+      color: "#1f1b17",
+      size: 4,
+      opacity: 1,
+      seed: 1,
+      z,
+      bbox: [0, 0, 10, 10],
+      page,
+      samples: [
+        { x: 0, y: 0, pressure: 0.5 },
+        { x: 10, y: 10, pressure: 0.5 },
+      ],
+    };
+  }
+
+  it("shows an ordinary item's ink whole, and shows none of it on a page", () => {
+    const scene = new Scene();
+    scene.putStrokes("photo", [stroke("a", null), stroke("b", null, "a1")]);
+
+    // A photograph has one face and always will, so the whole list comes back -
+    // and it is the *same array*, which is the cost claim this rule rests on.
+    expect(scene.strokesOn("photo", null)).toBe(scene.strokesOf("photo"));
+    // And the other half of the same sentence: ask about a page and a surface
+    // with no pages has nothing on it. Not a shortcut past the filter - it is
+    // what keeps a folder's cover marks off the page you opened it to read.
+    expect(scene.strokesOn("photo", 1)).toHaveLength(0);
+  });
+
+  it("splits a case file's ink between its cover and its pages", () => {
+    const scene = new Scene();
+    scene.putStrokes("folder", [
+      stroke("cover", null),
+      stroke("p1", 1, "a1"),
+      stroke("p4a", 4, "a2"),
+      stroke("p4b", 4, "a3"),
+    ]);
+
+    expect(scene.strokesOn("folder", null).map((s) => s.id)).toEqual(["cover"]);
+    expect(scene.strokesOn("folder", 1).map((s) => s.id)).toEqual(["p1"]);
+    expect(scene.strokesOn("folder", 4).map((s) => s.id)).toEqual(["p4a", "p4b"]);
+    // A page nobody has marked shows nothing, rather than showing the cover.
+    expect(scene.strokesOn("folder", 3)).toHaveLength(0);
+    // And every mark is still on the item, which is what shutting it gives back.
+    expect(scene.strokesOf("folder")).toHaveLength(4);
+  });
+
+  it("keeps paint order inside a page", () => {
+    const scene = new Scene();
+    // Handed over out of order, because the binding's map order is not the
+    // document's - `putStrokes` sorts and the filter must not undo that.
+    scene.putStrokes("folder", [stroke("top", 2, "a9"), stroke("bottom", 2, "a1")]);
+    expect(scene.strokesOn("folder", 2).map((s) => s.id)).toEqual(["bottom", "top"]);
+  });
+
+  it("stops filtering when the last paged mark is erased", () => {
+    const scene = new Scene();
+    scene.putStrokes("folder", [stroke("cover", null), stroke("p1", 1, "a1")]);
+    expect(scene.strokesOn("folder", null)).not.toBe(scene.strokesOf("folder"));
+
+    // The page mark rubbed out. The item is an ordinary one again, and has to
+    // go back to the free answer rather than staying on the filtered path for
+    // the rest of the session.
+    scene.putStrokes("folder", [stroke("cover", null)]);
+    expect(scene.strokesOn("folder", null)).toBe(scene.strokesOf("folder"));
+  });
+
+  it("forgets an item's pages when the item goes", () => {
+    const scene = new Scene();
+    scene.putItem(
+      { id: "f", type: "polaroid", z: "a0", seed: 1, assetId: null, createdBy: 1, createdAt: 0, text: "" },
+      { x: 0, y: 0, rot: 0, w: 100, h: 100 },
+    );
+    scene.putStrokes("f", [stroke("p1", 1)]);
+    scene.removeItem("f");
+
+    // The id is free to be reused, and a fresh item wearing it must not inherit
+    // a rule about pages from an item that has gone.
+    scene.putStrokes("f", [stroke("plain", null)]);
+    expect(scene.strokesOn("f", null)).toBe(scene.strokesOf("f"));
+  });
+
+  it("has nothing to say about an item with no ink", () => {
+    const scene = new Scene();
+    expect(scene.strokesOn("nobody", null)).toHaveLength(0);
+    expect(scene.strokesOn("nobody", 2)).toHaveLength(0);
   });
 });
 

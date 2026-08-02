@@ -539,6 +539,7 @@ describe("the stroke under the pen", () => {
     size: 6,
     opacity: 1,
     item: null,
+    page: null,
     samples: [],
   };
 

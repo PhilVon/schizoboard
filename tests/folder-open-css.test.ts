@@ -19,7 +19,7 @@
 
 import { describe, expect, it } from "vitest";
 
-import { A4_UNITS, objectSizeFor } from "../src/lib/objects";
+import { A4_UNITS, objectSizeFor, openSheetOf } from "../src/lib/objects";
 
 import { declarations } from "./css-declarations";
 
@@ -82,6 +82,30 @@ describe("the sheet inside an open folder", () => {
     // fold — puts the head of the page outside the folder at one end.
     expect(folder!.w * (side / 100)).toBeCloseTo((folder!.w - A4.w) / 2, 0);
     expect(folder!.h * (top / 100)).toBeCloseTo((folder!.h - A4.h) / 2, 0);
+  });
+
+  /**
+   * T-278 gave the same box a second reader, and it is not a stylesheet.
+   *
+   * A mark on a page has to stop where the paper stops, and the pen, the wet
+   * stroke and the committed raster all ask in board units about the item's own
+   * frame — none of which a CSS percentage can be handed to. So `openSheetOf`
+   * states the box in that frame and this asserts it is the same box the
+   * stylesheet draws, computed the long way round from the inset and the
+   * rotation rather than from `A4_UNITS` directly. Both sides being wrong
+   * together is the failure the whole file is built to make impossible.
+   */
+  it("is the same box the pen is clipped to", () => {
+    const { top, side } = inset(page.get("inset")!);
+    // The unrotated box, off the stylesheet's own percentages.
+    const unrotatedW = folder!.w * (1 - (2 * side) / 100);
+    const unrotatedH = folder!.h * (1 - (2 * top) / 100);
+    // The quarter turn swaps them, which is the whole reason this is not just
+    // `A4_UNITS` written twice: get the swap the wrong way round and the page is
+    // drawn portrait while the ink is clipped landscape.
+    const sheet = openSheetOf(folder!.w, folder!.h);
+    expect(sheet.w).toBeCloseTo(unrotatedH, 0);
+    expect(sheet.h).toBeCloseTo(unrotatedW, 0);
   });
 });
 

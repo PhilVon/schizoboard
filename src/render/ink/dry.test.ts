@@ -138,6 +138,7 @@ function stroke(over: Partial<SceneStroke> = {}): SceneStroke {
     z: "a0",
     bbox: [x0, y0, x1, y1],
     samples: pts,
+    page: null,
     ...over,
   };
 }

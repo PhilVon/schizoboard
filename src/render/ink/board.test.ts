@@ -49,6 +49,7 @@ function ink(key: string, cx: number, cy: number, count = 1): void {
       opacity: 1,
       seed: 1,
       z: `a${i}`,
+      page: null,
       bbox: [cx - 20, cy - 20, cx + 20, cy + 20],
       samples: [
         { x: cx - 20, y: cy - 20, pressure: 0.5 },
@@ -143,6 +144,7 @@ describe("what is mounted", () => {
         opacity: 1,
         seed: 1,
         z: "a0",
+        page: null,
         bbox: [500, 500, 5500, 5500],
         samples: [
           { x: 500, y: 500, pressure: 0.5 },
@@ -215,6 +217,7 @@ describe("a smudge that lands in a different tile from the ink it rubs", () => {
       opacity: 1,
       seed: 1,
       z: tool === "erase" ? "a9" : "a0",
+      page: null,
       bbox: [x0, 0, x1, 0],
       samples: [
         { x: x0, y: 0, pressure: 0.5 },

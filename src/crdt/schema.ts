@@ -159,6 +159,28 @@ export interface StrokeFields {
   z: string;
   bbox: readonly [number, number, number, number];
   pts: Uint8Array;
+  /**
+   * Which page of the item's document this mark is on, or null for a mark on
+   * the object itself — T-278.
+   *
+   * Null is every stroke this application has ever written until now, and it is
+   * an answer rather than a missing one: a photograph, a sheet of paper and the
+   * *cover* of a shut case file are all one surface, and a mark on one of them
+   * belongs to the item and nothing narrower. A number means the item was open
+   * at that page when the hand came down, and the mark is on the page rather
+   * than on the folder holding it — so it goes away when the folder shuts and
+   * comes back when it is turned to that page again.
+   *
+   * **It is not the reader's position and must not be confused with it.**
+   * `app/pages.ts` keeps which page *you* are on deliberately local and off the
+   * wire, for the reason the camera came off awareness (T-226). This is a
+   * different fact about a different thing: where a mark was made, which is a
+   * property of the mark and as durable as its own coordinates.
+   *
+   * One-based, like everything else that counts pages on this board, so that a
+   * stored 0 reads as the absent field it almost certainly is.
+   */
+  page: number | null;
 }
 
 export interface AssetFields {
@@ -413,7 +435,29 @@ export function readStroke(id: string, map: YMap): StrokeFields | null {
     z,
     bbox: readBbox(map.get("bbox")),
     pts,
+    page: readPage(map.get("page")),
   };
+}
+
+/**
+ * The page a stroke is on, and every other answer is null.
+ *
+ * Absent is the common case by a very long way — no stroke written before T-278
+ * has the key at all, and no stroke on anything but an open case file has it
+ * since — so this is a miss almost every time it is called and is written to be
+ * cheap on the miss.
+ *
+ * A non-integer, a zero and a negative are all null rather than clamped, which
+ * is the opposite of what `size` and `opacity` do two lines above. The reason is
+ * what the field decides: a nonsense width should still be erasable rather than
+ * invisible, so it is clamped into range; a nonsense *page* has no range to be
+ * clamped into, and picking one would file somebody's mark on a page they never
+ * drew on. Null puts it back on the object, where it is at least visible and can
+ * be rubbed out.
+ */
+function readPage(value: unknown): number | null {
+  if (typeof value !== "number" || !Number.isInteger(value) || value < 1) return null;
+  return value;
 }
 
 function readBbox(value: unknown): readonly [number, number, number, number] {

@@ -72,6 +72,7 @@ beforeEach(() => {
     selection: new Selection(),
     hitTest,
     inkHitTest: hitTest,
+    shownPage: () => null,
     hitPin: () => null,
     hitString: () => null,
     // Nothing to put a caret in, in a harness with no presentation (T-179).

@@ -93,6 +93,9 @@ export class EraserTool implements Tool {
         holds: ["Control"],
       },
       { keys: "[ and ]", does: "size the rubber" },
+      // See the marker's copy of this row (T-278): the rubber follows the page
+      // as it turns, so it can reach a redaction without putting the tool down.
+      { keys: "arrows", does: "turn a page in an open case file" },
       { keys: "Esc", does: "give the board back" },
     ],
   };
@@ -191,6 +194,26 @@ export class EraserTool implements Tool {
         this.cancel(ctx);
         return;
       case "key":
+        /**
+         * Turning a page with the pen still in hand — T-278.
+         *
+         * The binding is the select tool's (T-321) and the reason it has to be
+         * here too is redaction: blacking out a name on page four of a fifty
+         * page filing means turning to page four, and a pen that could not turn
+         * one would make that Escape, arrow, rubber for every page — four
+         * keystrokes to do what the arrow already does, on the one gesture this
+         * page-aware ink was built for.
+         *
+         * Refused while the hand is down, which is the same guard select makes
+         * against its own gestures and matters more here: the run's page is
+         * fixed at the press (see `MarkerTool.pageOn`), so a turn mid-stroke would file
+         * the mark on a page nobody could still see it on.
+         */
+        if (input.code === "ArrowLeft" || input.code === "ArrowRight") {
+          if (this.erasing || input.shift || input.ctrl || input.alt) return;
+          ctx.turnPage(input.code === "ArrowLeft" ? -1 : 1);
+          return;
+        }
         if (input.code === "Escape") {
           this.reset();
           this.options.onDone?.();
@@ -235,7 +258,11 @@ export class EraserTool implements Tool {
       this.reset();
       return;
     }
-    this.take({ kind: "item", id }, ctx.scene.strokesOf(id), local.x, local.y, ctx);
+    // The face that is showing, not the item's whole ink (T-278). A rubber that
+    // could take away a mark on page 4 while you are looking at page 3 would be
+    // erasing something nobody can see, and there is no gesture on this board
+    // that does that.
+    this.take({ kind: "item", id }, ctx.scene.strokesOf(id), local.x, local.y, ctx, ctx.shownPage(id));
   }
 
   /**
@@ -253,7 +280,9 @@ export class EraserTool implements Tool {
       const [x0, y0, x1, y1] = tile.bbox;
       const reach = this.nib;
       if (bx < x0 - reach || bx > x1 + reach || by < y0 - reach || by > y1 + reach) continue;
-      this.take({ kind: "tile", key: tile.key }, tile.strokes, bx, by, ctx);
+      // Cork ink is on no page and there is no other face of the cork to be on
+      // — see [`take`]'s `page`, which this satisfies rather than opts out of.
+      this.take({ kind: "tile", key: tile.key }, tile.strokes, bx, by, ctx, null);
     }
   }
 
@@ -269,10 +298,17 @@ export class EraserTool implements Tool {
     x: number,
     y: number,
     ctx: ToolContext,
+    page: number | null,
   ): void {
     let hits: string[] | null = null;
     for (const stroke of strokes) {
       if (this.taken.has(stroke.id)) continue;
+      // Compared here rather than filtering the list first, which
+      // `Scene.strokesOn` would do in one line. This runs a dozen times a frame
+      // for the whole length of a sweep, and the note below on allocating only
+      // when something is hit is the same argument: a filtered array per sample
+      // is the allocation that note exists to avoid.
+      if (stroke.page !== page) continue;
       if (!strokeHit(stroke.samples, stroke.bbox, stroke.size, x, y, this.nib / 2)) continue;
       this.taken.add(stroke.id);
       (hits ??= []).push(stroke.id);

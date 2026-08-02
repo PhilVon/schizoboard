@@ -145,6 +145,19 @@ function live(): WetStroke | null {
  * is what every test written before T-186 assumes.
  */
 let paperAt: ((bx: number, by: number) => string | null) | null = null;
+/** Which page of the surface under the pen is showing, for `shownPage` — T-278.
+ *  Null is a board with nothing open, which is every test above the ones about
+ *  redaction. */
+let openPage: number | null = null;
+/**
+ * Every page turn the tool asked for, in order - T-278.
+ *
+ * A spy rather than the `() => false` this harness held before, because the
+ * arrows are the one thing the pen does that leaves no trace: no stroke, no
+ * write, nothing in the scene. A call that never happened and a call that
+ * happened are identical from everywhere else in this file.
+ */
+let turned: number[];
 
 /** Every run in flight, for the tests that are about the crossing itself. */
 function runs(): readonly WetStroke[] {
@@ -161,6 +174,8 @@ beforeEach(() => {
   under = null;
   byGeometry = false;
   paperAt = null;
+  openPage = null;
+  turned = [];
   tool = new MarkerTool({ onDone: () => done++ });
   ctx = {
     scene,
@@ -183,12 +198,21 @@ beforeEach(() => {
      * written. `paperAt` is null by default and the two agree.
      */
     inkHitTest: (bx, by) => (paperAt ?? ctx.hitTest)(bx, by),
+    /** Which face the surface is showing (T-278). Null unless a test has opened
+     *  something, which is every test written before this one. */
+    shownPage: () => openPage,
     hitPin: () => null,
     hitString: () => null,
     // Nothing to put a caret in, in a harness with no presentation (T-179).
     edit: () => undefined,
     open: () => false,
-    turnPage: () => false,
+    /** True, because a test that presses an arrow has something open. The tool
+     *  ignores the answer either way, which is what leaves the count as the only
+     *  thing an arrow can be observed by. */
+    turnPage: (by) => {
+      turned.push(by);
+      return true;
+    },
     held: new Set<string>(),
     write: {
       setPoses: () => {},
@@ -1192,5 +1216,184 @@ describe("the strip between a sheet's rectangle and its paper", () => {
     // because nothing asked it anything.
     expect(committed).toHaveLength(1);
     expect(committed[0]!.item).toBeNull();
+  });
+});
+
+/**
+ * Which face of the paper the mark went on - T-278.
+ *
+ * A mark made on an open case file belongs to the page that was showing; a mark
+ * on anything else belongs to the object. The two are one field on the run and
+ * both halves fail silently, because ink with the wrong page on it is drawn in
+ * exactly the right place for as long as you stay on the page you drew it on.
+ * You find out by turning to page five and reading a redaction that was struck
+ * through page three, or by turning back to three and finding it gone.
+ *
+ * `shownPage` is the *application's* answer rather than the scene's, for the
+ * reason `state/tools/tool.ts` gives: the scene knows an item is open and
+ * nothing about what is on the paper. So the harness holds it in [`openPage`]
+ * and these tests set it the way a reader would: open the folder, then draw.
+ */
+describe("which page a mark is filed against", () => {
+  /**
+   * A case file: a sheet spanning board 0..200 on both axes, hit-tested by
+   * geometry so that a stroke can genuinely run off it. The same fixture the
+   * crossing suite uses, with an asset on it. The item type is a document's
+   * (`app/ingest.ts`), and nothing in this file reads either field.
+   */
+  function folder(id: string, cx = 100, cy = 100): void {
+    scene.putItem(
+      {
+        id,
+        type: "polaroid",
+        z: "a0",
+        seed: 1,
+        assetId: "doc",
+        createdBy: 1,
+        createdAt: 0,
+        text: "",
+      },
+      { x: cx, y: cy, rot: 0, w: 200, h: 200 },
+    );
+    byGeometry = true;
+  }
+
+  it("files a run against the page that was showing under the pen", () => {
+    folder("f");
+    openPage = 3;
+    down(100, 100);
+    move([at(120, 100)]);
+    up(140, 100);
+
+    expect(committed).toHaveLength(1);
+    expect(committed[0]!.item).toBe("f");
+    expect(committed[0]!.page).toBe(3);
+  });
+
+  it("files a run on the same paper against no page when nothing is open", () => {
+    folder("f");
+    down(100, 100);
+    move([at(120, 100)]);
+    up(140, 100);
+
+    // Null is the *object* - the folder's own kraft cover, and the whole of what
+    // a photograph has. Not page zero and not "the first page": a tool that
+    // coalesced the missing answer to a number would file every mark on the
+    // board onto a page of a document most items do not have, and every one of
+    // them would disappear the first time something was opened.
+    expect(committed[0]!.item).toBe("f");
+    expect(committed[0]!.page).toBeNull();
+  });
+
+  /**
+   * The crossing, which is where the field has to move rather than merely be
+   * set. T-137 breaks a line at the edge of the paper and glues each piece to
+   * what it is actually over; the face travels with the surface because it is a
+   * fact *about* the surface, and the cork has exactly one.
+   */
+  it("gives the page to the run on the paper and none to the run on the cork", () => {
+    folder("f");
+    openPage = 3;
+    down(100, 100);
+    move([at(150, 100), at(250, 100)]);
+    up(300, 100);
+
+    expect(committed.map((run) => run.item)).toEqual(["f", null]);
+    // A hand-over that carried the page across would file the cork's half of the
+    // line onto page three of a folder it is not inside, and the cork would then
+    // show that half only while the folder happened to be open at it.
+    expect(committed.map((run) => run.page)).toEqual([3, null]);
+  });
+
+  it("picks the page up at the edge when the hand crosses the other way", () => {
+    folder("f");
+    openPage = 3;
+    down(300, 100);
+    move([at(250, 100), at(150, 100)]);
+    up(100, 100);
+
+    expect(committed.map((run) => run.item)).toEqual([null, "f"]);
+    // The direction a hand-over that merely *cleared* the page would still pass.
+    // This one has to go and ask.
+    expect(committed.map((run) => run.page)).toEqual([null, 3]);
+  });
+
+  it("carries no page when Ctrl at the press forced the cork under an open folder", () => {
+    folder("f");
+    openPage = 3;
+    tool.handle({ kind: "down", at: { ...at(100, 100), ctrl: true } }, ctx);
+    move([at(150, 100)]);
+    up(180, 100);
+
+    // `Ctrl` is the escape hatch for a mark you want on the cork *behind* the
+    // paper, and the cork has no pages. One filed on page three of the folder it
+    // was deliberately put behind would vanish the moment the reader turned
+    // over, which is the opposite of what the escape hatch is for.
+    expect(committed).toHaveLength(1);
+    expect(committed[0]!.item).toBeNull();
+    expect(committed[0]!.page).toBeNull();
+  });
+});
+
+/**
+ * Turning a page with the pen still in hand - T-278.
+ *
+ * The binding is the select tool's (T-321), and the reason the marker needs it
+ * too is the gesture page-aware ink was built for: blacking out a name on page
+ * four of a fifty page filing means *getting to* page four, and a pen that could
+ * not turn one would make that Escape, arrow, `M` for every page.
+ */
+describe("turning the page while the marker is held", () => {
+  function key(
+    code: string,
+    mods: { shift?: boolean; ctrl?: boolean; alt?: boolean } = {},
+  ): void {
+    tool.handle(
+      {
+        kind: "key",
+        code,
+        shift: mods.shift ?? false,
+        ctrl: mods.ctrl ?? false,
+        alt: mods.alt ?? false,
+      },
+      ctx,
+    );
+  }
+
+  it("turns forward on the right arrow and back on the left", () => {
+    key("ArrowRight");
+    key("ArrowRight");
+    key("ArrowLeft");
+
+    expect(turned).toEqual([1, 1, -1]);
+    // And it is not Escape by another name: the pen stays in the reader's hand,
+    // because the next thing they are going to do is draw on the page they just
+    // turned to.
+    expect(done).toBe(0);
+  });
+
+  it("refuses while the hand is down, so a run cannot outlive the page it is on", () => {
+    camera.setView(0, 0, 1);
+    photo("f", 0, 0);
+    openPage = 3;
+    down(500, 400);
+    move([at(520, 400)]);
+    key("ArrowRight");
+    up(540, 400);
+
+    // The run's page is fixed at the press and is not re-asked, so a turn
+    // accepted here would leave the mark filed against a page that is no longer
+    // the one the hand is drawing on. The mark would simply be somewhere nobody
+    // is looking.
+    expect(turned).toEqual([]);
+    expect(committed[0]!.page).toBe(3);
+  });
+
+  it("refuses with a modifier held, which is somebody else's shortcut", () => {
+    key("ArrowRight", { shift: true });
+    key("ArrowRight", { ctrl: true });
+    key("ArrowLeft", { alt: true });
+
+    expect(turned).toEqual([]);
   });
 });

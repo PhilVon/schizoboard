@@ -351,12 +351,32 @@ Undo: text edits are character-level and merge into sensible entries by typing p
 | Open a case file | `Enter` on a selection of exactly one, or the item menu's *Open* — flies the camera the way search does |
 | Play a cassette | The same `Enter`, the same *Open* — but nothing opens, nothing is covered and the camera does not move. Again to stop |
 | Shut it | `Escape`, or `Enter` again. **Selecting something else does not** — an open document is worked *against*, so a click on the board must not shut it |
-| Turn a page | `←` / `→` while a case file is open. Clamped at both ends rather than wrapping, and the header says which page you are on out of how many — the pair a citation carries. Where you have got to is **local**: it never enters the document and never reaches a peer, for the reason a playhead does not. The set uses the same two keys to step a tape and they do not collide — it is the one modal on this board and takes its keys before anything else sees them, so only one of the two can ever be up |
+| Turn a page | `←` / `→` while a case file is open, **in any tool** — including with a pen or a rubber in hand, because redacting page four of a fifty-page filing must not be four keystrokes a page (T-278). Refused while a pointer is down, since a mark's page is fixed at the press. Clamped at both ends rather than wrapping, and the header says which page you are on out of how many — the pair a citation carries. Where you have got to is **local**: it never enters the document and never reaches a peer, for the reason a playhead does not. The set uses the same two keys to step a tape and they do not collide — it is the one modal on this board and takes its keys before anything else sees them, so only one of the two can ever be up |
 | Watch a tape | `Enter` on a video puts it on the set instead: `Space` plays, `←` / `→` step 5s, with `Shift` 30s. `Escape` shuts it |
 
 Zoom range is **15% to 400%**. The board is unbounded in every direction.
 
 **A thousand-page filing is three pages of memory** (T-279, Q-276). One sheet is drawn however long the document is, and the reader holds the page you are on and the one either side — the culling rule the board already runs, one level down: keep what is near, let go of the rest. It **fetches** those neighbours rather than merely keeping them, which is a page ahead of what anybody asked to see. That is not for the speed, which was never a problem — a cold page is 6 to 11 ms, under a frame either way — but so that a turn never passes through the state where the sheet is blank and its header says how thick the folder is instead of which page you are on. What it is for is the memory: before the window, reading a 200-page scan end to end held all 199 pages and 77 MiB of lifted JPEG to draw one of them, and a thousand-page one — a court record rather than an edge case — would have held 388 MiB.
+
+**Marker on an open page is redaction** (T-278). Nothing new is held: ink already
+belongs to whatever it is over, in that thing's local space, so a black bar over
+a name travels with the document, survives shutting the folder, and comes back
+when you turn to that page again. The one addition is that a stroke records which
+page it was on — a case file is the only object on this board with two faces, and
+"where is this mark" needs a second answer only for it. A shut folder shows what
+was drawn on its kraft, an open one shows the page, and a photograph shows
+everything, all through one sentence rather than three special cases. The pen and
+the rubber follow the page as it turns, and the writable paper is the A4 sheet
+standing in the folder rather than the kraft around it.
+
+**It is a mark rather than an edit** (Q-279), and both halves of that are
+deliberate. We never write back to the file (§1.4), so the words under the bar
+are still in the file and still in the local page index — `Ctrl+F` will find a
+redacted name on your own machine and open the folder at the page you covered it
+on. What *is* redacted is the thing you hand to somebody else: ink is drawn into
+an image or PDF export, and an open case file exports with its page showing, so
+the bar is on the artifact and there is no text under it. A board that quietly
+edited the evidence to make its own search agree would be the worse of the two.
 
 **The one modal, and why a tape gets it when a document does not** (T-276, Q-197). A film covers the screen. Nothing else in this application ever has — every other surface is a corner-anchored strip that takes no press it did not ask for — and the exception is not a concession to how video is usually shown. It is the line the two activities were always on either side of. Reading is done *against* the wall: you pull a quote out onto the board and look back at the page, so a document that covered the board would break the loop it exists for. Watching is linear, full-attention and done once, and there is nothing to look back at — a board visible behind a film is a board you are not using, and a stylised CRT is the picture that says which of the two you are doing.
 
@@ -414,7 +434,8 @@ Strings         1–9 slack presets · Alt+wheel whole-string slack · Enter/Esc
 Search          Ctrl+F find · Enter next match · Shift+Enter previous · Esc close
 Case files      Enter opens the selected document, tape or cassette · item menu → Open
                 Esc or Enter again shuts it · clicking away does not (T-273)
-                Left/Right turn a page in an open one (T-321)
+                Left/Right turn a page in an open one, in any tool (T-321, T-278)
+                marker on an open page is redaction — it stays on that page (T-278)
 The set         a tape takes the screen, and only a tape (T-276)
                 Space play/pause · Left/Right 5s · Shift+Left/Right 30s · Home to the start
 ```

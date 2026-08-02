@@ -25,6 +25,7 @@ function run(id: string, samples: InkSample[], over: Partial<WetStroke> = {}): W
     size: DEFAULT_INK_SIZE,
     opacity: 1,
     item: null,
+    page: null,
     samples,
     ...over,
   };
@@ -382,6 +383,70 @@ describe("a gesture that crossed an edge", () => {
     const payload = wire.payload()[0]!;
     expect(payload.base).toBe(0);
     expect(points(payload.pts)).toHaveLength(3);
+  });
+});
+
+describe("the page a run is on", () => {
+  it("says nothing at all about a mark that is on no page", () => {
+    const wire = new WetWire();
+    wire.update([run("r1", line(10, 10), { item: "photo-1" })], 1);
+
+    const [payload] = wire.payload();
+    // The key is *absent*, not present and null, and `toBeUndefined` would pass
+    // on either. This message goes out thirty times a second and nearly every
+    // stroke anybody draws is on no page at all, so `"page":null` would be four
+    // characters of JSON per run per message that say nothing.
+    expect("page" in payload!).toBe(false);
+    expect(Object.keys(payload!)).not.toContain("page");
+  });
+
+  it("names the page when the mark was made on one", () => {
+    const wire = new WetWire();
+    wire.update([run("r1", line(10, 10), { item: "folder-1", page: 4 })], 1);
+
+    const [payload] = wire.payload();
+    expect(payload!.page).toBe(4);
+    expect("page" in payload!).toBe(true);
+  });
+
+  it("goes on saying it as the window slides down the stroke", () => {
+    const wire = new WetWire();
+    const samples: InkSample[] = [];
+
+    // Every message of a long mark, not just the first. A receiver splices from
+    // whichever window happened to reach it, so each one has to describe the
+    // surface on its own — a page carried only on the message that opened the
+    // run would leave a peer who joined mid-stroke, or who dropped one update,
+    // drawing the rest of it on the wrong face.
+    for (let batch = 0; batch < 20; batch += 1) {
+      for (let i = 0; i < 10; i += 1) {
+        samples.push({ x: samples.length * 10, y: 0, pressure: 0.5 });
+      }
+      wire.update([run("r1", samples, { item: "folder-1", page: 4 })], 1);
+      expect(wire.payload()[0]!.page).toBe(4);
+    }
+    // And the window really has moved off the start by now, so the last of
+    // those was a message with none of the run's opening points in it.
+    expect(wire.payload()[0]!.base).toBeGreaterThan(0);
+  });
+
+  it("answers per run, so a gesture that left the folder is not still on page four", () => {
+    const wire = new WetWire();
+    wire.update(
+      [
+        run("r1", line(10, 10), { item: "folder-1", page: 4 }),
+        run("r2", line(10, 10), { item: null }),
+      ],
+      1,
+    );
+
+    const payload = wire.payload();
+    // One hand, one gesture, two surfaces (T-137) — and the page belongs to the
+    // run rather than to the message. A sender that hoisted one answer for the
+    // whole payload would paint the cork half of a line drawn off the edge of an
+    // open folder onto page four of it.
+    expect(payload[0]!.page).toBe(4);
+    expect("page" in payload[1]!).toBe(false);
   });
 });
 

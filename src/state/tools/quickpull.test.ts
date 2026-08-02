@@ -102,6 +102,7 @@ beforeEach(() => {
     selection: new Selection(),
     hitTest,
     inkHitTest: hitTest,
+    shownPage: () => null,
     hitPin,
     hitString: () => null,
     edit: () => undefined,

@@ -415,6 +415,8 @@ export class Overlay {
    * before T-186 and is still true of a photograph.
    */
   private paperOf: PaperResolver | null = null;
+  /** See [`setShownPage`]. */
+  private shownPageOf: ((itemId: string) => number | null) | null = null;
 
   constructor(canvas: HTMLCanvasElement) {
     this.canvas = canvas;
@@ -424,6 +426,19 @@ export class Overlay {
   /** Tell the overlay where to ask. See [`paperOf`]. */
   setPaperResolver(resolve: PaperResolver): void {
     this.paperOf = resolve;
+  }
+
+  /**
+   * And which face of an item is showing — T-278, and the same function the pen
+   * and the item layer are handed.
+   *
+   * Null until set, which draws every wet stroke as if it were on the object
+   * itself. That is the right answer for a caller with no shell behind it and
+   * the right *shape* of answer too: a rig with no reader has nothing open, so
+   * nothing is on a page.
+   */
+  setShownPage(resolve: (itemId: string) => number | null): void {
+    this.shownPageOf = resolve;
   }
 
   /**
@@ -809,7 +824,7 @@ export class Overlay {
     if (!this.cleared) this.clear(ctx);
     let drew = false;
     for (const run of wet) {
-      if (this.wetInk.draw(ctx, camera, run, this.inkFrame(scene, run.item))) drew = true;
+      if (this.wetInk.draw(ctx, camera, run, this.inkFrame(scene, run.item, run.page))) drew = true;
     }
     return drew;
   }
@@ -851,7 +866,11 @@ export class Overlay {
     let drew = false;
     for (const peer of peers.peers()) {
       for (const run of peer.ink.drawable()) {
-        if (this.wetInk.draw(ctx, camera, run, this.inkFrame(scene, run.item))) drew = true;
+        // The page is the peer's, checked against ours inside [`inkFrame`]: a
+        // folder they have open at page four may be shut here, or open at
+        // another page, and their mark then has nowhere on this screen to be
+        // (T-278).
+        if (this.wetInk.draw(ctx, camera, run, this.inkFrame(scene, run.item, run.page))) drew = true;
       }
     }
     return drew;
@@ -871,10 +890,15 @@ export class Overlay {
    * just-dropped item takes to settle back to full size, since a pointer drawing
    * ink is not a pointer dragging paper.
    */
-  private inkFrame(scene: Scene, itemId: string | null): ItemFrame | null {
+  private inkFrame(scene: Scene, itemId: string | null, page: number | null): ItemFrame | null {
     if (itemId === null) return null;
     const slot = scene.slotOf(itemId);
     if (slot === undefined) return null;
+    // The mark is on a face this screen is not showing — T-278. Null for the
+    // reason above rather than as a new one: there is nowhere for the ink to be,
+    // which is the same answer as an item that has left the board, and the
+    // painter already knows what to do with it.
+    if (page !== (this.shownPageOf?.(itemId) ?? null)) return null;
     const angle = scene.renderRot(slot);
     this.ink.cx = scene.renderX(slot);
     this.ink.cy = scene.renderY(slot);

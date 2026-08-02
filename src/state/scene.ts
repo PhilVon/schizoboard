@@ -209,6 +209,10 @@ export interface SceneStroke {
   /** `[x0, y0, x1, y1]`, round the points, in the item's local frame. */
   bbox: readonly [number, number, number, number];
   samples: readonly InkSample[];
+  /** Which page of the item's document this is on, or null for the object
+   *  itself — T-278. See `crdt/schema.ts`'s `StrokeFields.page`, and
+   *  [`Scene.strokesOn`] for who asks. */
+  page: number | null;
 }
 
 /**
@@ -466,6 +470,19 @@ export class Scene {
    * each would allocate per stroke on every ink edit.
    */
   private readonly strokeAt = new Map<string, InkSurface>();
+
+  /**
+   * Which items have any ink filed against a page — T-278, and it exists so
+   * that [`strokesOn`] can be free for everything else.
+   *
+   * A set of the exceptions rather than a count or a map of pages: the question
+   * asked of it is "is this item's ink all on one face", and for every
+   * photograph, note and shut-and-unmarked folder on the board the answer is
+   * yes and the stored array can be handed straight back. Maintained by
+   * `putStrokes`, which is the only writer, so it cannot drift from the lists it
+   * describes.
+   */
+  private readonly paged = new Set<string>();
 
   /**
    * The reverse of `PinNode.parent`: which pins hold each item.
@@ -1003,6 +1020,7 @@ export class Scene {
     // through the observer, in the same entry.
     this.unfile(this.strokes.get(id));
     this.strokes.delete(id);
+    this.paged.delete(id);
     // Dropped rather than cleared, unlike every other frame: `layoutOver`
     // rebuilds from `slots`, and an item that has left it would never be visited
     // again — so a set left behind would answer `pinCount` with the pins that
@@ -1061,12 +1079,21 @@ export class Scene {
     this.unfile(this.strokes.get(itemId));
     if (strokes.length === 0) {
       this.strokes.delete(itemId);
+      this.paged.delete(itemId);
       return;
     }
     const sorted = [...strokes].sort(compareStrokes);
     this.strokes.set(itemId, sorted);
     const surface: InkSurface = { kind: "item", id: itemId };
-    for (const stroke of sorted) this.strokeAt.set(stroke.id, surface);
+    let paged = false;
+    for (const stroke of sorted) {
+      this.strokeAt.set(stroke.id, surface);
+      if (stroke.page !== null) paged = true;
+    }
+    // Recorded here, once per edit, rather than rediscovered by whoever asks —
+    // see [`strokesOn`], whose whole cost model is that this is already known.
+    if (paged) this.paged.add(itemId);
+    else this.paged.delete(itemId);
   }
 
   /**
@@ -1077,6 +1104,42 @@ export class Scene {
    */
   strokesOf(itemId: string): readonly SceneStroke[] {
     return this.strokes.get(itemId) ?? EMPTY_STROKES;
+  }
+
+  /**
+   * An item's ink **on the face that is showing** — T-278.
+   *
+   * `page` is null for everything on this board except a case file that is
+   * currently open, in which case it is the page it is open at. The rule is one
+   * sentence and the rest of this note is why it costs nothing:
+   *
+   * > A mark is drawn when the surface it was made on is the surface you are
+   * > looking at.
+   *
+   * So a shut folder shows what was drawn on its kraft and none of what is on
+   * the pages inside it, an open one shows the page and not the cover it has
+   * folded away, and a photograph — which has no second face and never will —
+   * shows everything, through the same rule rather than as an exception to it.
+   *
+   * **Both common cases return the stored array itself.** An item with no paged
+   * ink is every item that is not a case file plus every case file nobody has
+   * marked up, which is very nearly all of them, and it answers with one set
+   * lookup and no allocation. The filter runs only for an item that genuinely
+   * has ink on more than one face, which is a folder somebody has redacted.
+   *
+   * Live, like `strokesOf` — read it and let it go.
+   */
+  strokesOn(itemId: string, page: number | null): readonly SceneStroke[] {
+    const all = this.strokes.get(itemId);
+    if (all === undefined) return EMPTY_STROKES;
+    if (!this.paged.has(itemId)) {
+      // Nothing here is on a page, so a shut item shows all of it — and an open
+      // one shows none of it. That second answer is not a shortcut past the
+      // filter; it *is* the filter's answer, and it is the one that keeps a
+      // folder's cover marks off the page you opened it to read.
+      return page === null ? all : EMPTY_STROKES;
+    }
+    return all.filter((stroke) => stroke.page === page);
   }
 
   /** Is there anything to raster? The renderer's cheapest question, and for
@@ -1889,6 +1952,7 @@ export class Scene {
     this.pins.clear();
     this.strings.clear();
     this.strokes.clear();
+    this.paged.clear();
     this.boardInk.clear();
     this.strokeAt.clear();
     this.byParent.clear();

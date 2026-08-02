@@ -650,6 +650,7 @@ describe("ink", () => {
         opacity: 1,
         seed: 1,
         z: "a0",
+        page: null,
         bbox: [-span / 2, 0, span / 2, 0],
         samples,
       },
@@ -2377,6 +2378,7 @@ describe("a folder, a tape and a cassette", () => {
           opacity: 1,
           seed: 1,
           z: "a0",
+          page: null,
           bbox: [-20, 0, 20, 0],
           samples: [
             { x: -20, y: 0, pressure: 0.5 },
