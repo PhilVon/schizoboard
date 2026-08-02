@@ -1337,6 +1337,12 @@ async function boot(): Promise<void> {
     // gesture with a flag: a document is read *against* the board and a film
     // takes the board away.
     if (kindOfItem(itemId) === "video") return watchItem(itemId);
+    // And the third object, which takes over nothing at all (T-277). A cassette
+    // does not turn up to be read and does not go on a set: it plays where it
+    // hangs, the spools turn, and the board is exactly as usable as it was —
+    // which D-46 section 4 calls the strongest reading of *nothing blocks
+    // thinking* anywhere in this feature.
+    if (kindOfItem(itemId) === "audio") return hearItem(itemId);
     if (opening.itemId === itemId) return closeOpen();
     readItem(itemId);
     return true;
@@ -1445,6 +1451,41 @@ async function boot(): Promise<void> {
   };
 
   /**
+   * Press play on a cassette — T-277.
+   *
+   * **The camera does not move, nothing opens, and nothing is taken over.** The
+   * tape's `watchItem` below says the board is about to be covered so moving the
+   * camera first would be waste; this one says something stronger, which is that
+   * the board is not going anywhere at all. You press play and carry on working,
+   * and the only thing that changes on screen is the tape moving between two
+   * reels on an object you can still drag, pin, string and draw on.
+   *
+   * The want is raised here rather than in the renderer, and it is the same
+   * claim `filmFor` makes for a film: `assetUrl`'s want says *an item wearing
+   * this is on screen*, and this one says *somebody has asked to hear it*. A
+   * recording whose bytes have not arrived plays nothing and says so by doing
+   * nothing audible — the press is not refused, because the file is on its way
+   * and pressing again when it lands is the whole of what the person has to do.
+   *
+   * The original rather than a variant, on the same line the film takes: the
+   * shell makes downscales of pictures and nothing else.
+   */
+  const hearItem = (itemId: string): boolean => {
+    const sha256 = scene.cold(itemId)?.assetId ?? null;
+    if (sha256 === null) return false;
+    const here = assets.isReady(sha256);
+    if (!here && exchange !== null) {
+      exchange.want(sha256, Priority.VISIBLE);
+      assets.requesting(sha256);
+    }
+    items.hear(itemId, here ? native.assetUrl(sha256, "original") : "");
+    // True whether or not a sound came out: the press was understood, and a
+    // caller falling through to some other reading of the key because a
+    // transfer had not finished would be a worse answer than silence.
+    return true;
+  };
+
+  /**
    * Put a tape on.
    *
    * > Watching a tape is linear, full-attention and done once. — D-46 section 4
@@ -1465,6 +1506,12 @@ async function boot(): Promise<void> {
     // labels on one recording and putting it on twice is putting it on.
     if (crt.showing === film.id) return closeOpen();
     opening.close();
+    // One thing plays at a time (DESIGN section 3.7). A cassette playing behind
+    // a film is two recordings at once out of one pair of speakers, which is
+    // the one case where "carry on working" is not what anybody meant — and
+    // unlike the folder, which may stay open behind nothing at all, this is a
+    // sound competing with a sound.
+    items.hush();
     crt.open(film);
     return true;
   };

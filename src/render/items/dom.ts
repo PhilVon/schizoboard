@@ -66,6 +66,7 @@ import {
 import { cornerCurl, cornerFace, CURL_PROPS, FACE_PROPS } from "@/render/items/curl";
 import { edgePoints, EDGE_PROPS, insideEdge } from "@/render/items/edge";
 import { ItemInk } from "@/render/ink/canvas";
+import { Deck } from "@/render/items/deck";
 import { TextEditor, type ItemEditorHooks } from "@/render/items/editor";
 import { clearHand, writeHand } from "@/render/items/hand";
 import type { PageView } from "@/app/pages";
@@ -426,6 +427,25 @@ interface View {
    * forgotten would be inherited by whichever note got this node next.
    */
   adopt(field: HTMLTextAreaElement | null): void;
+  /**
+   * Take the deck's audio element in, or give it back — T-277.
+   *
+   * The same bargain `adopt` above makes, for the same reason and against a
+   * worse failure: a field inherited out of the pool is somebody else's caret,
+   * and an element inherited out of the pool is somebody else's *recording*,
+   * still playing. Answered only by the cassette; there is nothing inside a
+   * photograph to hear.
+   */
+  hold(audio: HTMLAudioElement | null): void;
+  /**
+   * How much of the tape is on the take-up reel, 0 to 1 — the position, which
+   * on a cassette *is* the object (T-268).
+   *
+   * One custom property; `items.css` turns it into the two pack radii and the
+   * span between them. Offered to every view and answered by the cassette, like
+   * `setPage` one paragraph below.
+   */
+  setReeled(reeled: number): void;
   /**
    * How curled each of the four corners is, clockwise from the top left
    * (`curl.ts`). Offered rather than computed here, because the answer is a
@@ -1163,6 +1183,11 @@ class PolaroidView implements View {
     this.frame.append(field);
   }
 
+  /** There is nothing inside a photograph to hear — T-277. */
+  hold(_audio: HTMLAudioElement | null): void {}
+
+  setReeled(_reeled: number): void {}
+
   /**
    * Give the editor the box the static caption has.
    *
@@ -1597,6 +1622,11 @@ class PaperView implements View {
     this.surface.insertBefore(field, this.bend);
   }
 
+  /** A sheet of paper says nothing out loud — T-277. */
+  hold(_audio: HTMLAudioElement | null): void {}
+
+  setReeled(_reeled: number): void {}
+
   release(): void {
     clearHand(this.body);
     this.boundCold = null;
@@ -1781,6 +1811,11 @@ class CaseView implements View {
   /** The width the per-item type sizes were written for. */
   private sizedFor = -1;
   private field: HTMLTextAreaElement | null = null;
+  /** The deck's element while this view is the one playing (T-277). */
+  private audio: HTMLAudioElement | null = null;
+  /** What `--reeled` last said, so four writes a second become none while a
+   *  spool has not visibly moved. */
+  private reeled = 0;
   private readonly written = new Float32Array(CURL_PROPS.length + FACE_PROPS.length).fill(-9);
   /**
    * What `writeLight` last wrote — the light in this object's frame and the
@@ -2438,10 +2473,53 @@ class CaseView implements View {
     this.caption.parentNode?.appendChild(field);
   }
 
+  /**
+   * Take the deck's element in, or give it back — T-277.
+   *
+   * Inside the shell rather than beside the item, so that an item deleted, a
+   * board closed or a node pooled takes the element out of the document with
+   * it and the sound stops with the object. Nothing is drawn by it: what says
+   * a cassette is playing is the tape moving between its reels.
+   *
+   * Idempotent, like `adopt` above and for a related reason rather than the
+   * same one — re-appending a media element is a `remove` and an `insert`, and
+   * a media element that leaves the document is paused by the user agent
+   * (D-48). Doing it on every DOM phase would be a stutter a frame long, four
+   * times a second, for the rest of the recording.
+   */
+  hold(audio: HTMLAudioElement | null): void {
+    if (audio === null) {
+      if (this.audio?.parentNode === this.body) this.audio.remove();
+      this.audio = null;
+      return;
+    }
+    if (this.audio === audio && audio.parentNode === this.body) return;
+    this.audio = audio;
+    this.body.append(audio);
+  }
+
+  setReeled(reeled: number): void {
+    // Rounded before the compare, because this arrives off `timeupdate` and a
+    // spool is drawn from a square root of it — a thousandth of a two-hour
+    // recording is seven seconds and not a pixel of pack radius.
+    const wound = Math.round(reeled * 1000) / 1000;
+    if (wound === this.reeled) return;
+    this.reeled = wound;
+    if (wound === 0) this.el.style.removeProperty("--reeled");
+    else this.el.style.setProperty("--reeled", wound.toFixed(3));
+  }
+
   release(): void {
     clearHand(this.title);
     clearHand(this.caption);
     this.adopt(null);
+    // And the recording, on exactly the argument the two lines above make about
+    // the caret: a pooled node keeps its subtree, and the one thing worse than
+    // inheriting somebody else's caption is inheriting their tape, still
+    // playing. The layer stops the deck before it releases a playing view, so
+    // this is the second of the two doors rather than the only one.
+    this.hold(null);
+    this.setReeled(0);
     this.boundCold = null;
     // Belt and braces with the line above, and said plainly because a mutant
     // that removed it survived: `boundCold = null` is already enough to force
@@ -2470,7 +2548,12 @@ class CaseView implements View {
     // nothing has written since the tab became a gummed label — so the reset had
     // stopped naming the same set of properties the bind does, which is the drift
     // the comment above is about, caught in the act.
-    for (const prop of ["--spill", "--bulk", "--arrived"]) this.el.style.removeProperty(prop);
+    // `--reeled` is in the list because `setReeled(0)` above only removes it
+    // when it was written; naming it here is what keeps the reset and the bind
+    // describing the same set, which is what the comment above is about.
+    for (const prop of ["--spill", "--bulk", "--arrived", "--reeled"]) {
+      this.el.style.removeProperty(prop);
+    }
     for (const el of this.ages) el.style.removeProperty("filter");
     for (const prop of [...CURL_PROPS, ...FACE_PROPS]) this.el.style.removeProperty(prop);
     this.tape.release();
@@ -2598,6 +2681,22 @@ export class DomItemLayer implements ItemLayer {
   private readonly editor: TextEditor | null;
   /** The view holding the field, so the previous one can be told to let go. */
   private editorView: View | null = null;
+
+  /**
+   * The one player, and the view holding it — T-277, and the caret's shape one
+   * object along (`deck.ts` says why it is one element rather than one per
+   * cassette).
+   *
+   * Built unconditionally, unlike the editor: a deck with nothing playing owns
+   * a detached `<audio>` and costs nothing, and there is no hooks argument to be
+   * absent — where the caret has to tell somebody what was typed, this only ever
+   * writes back onto a view this layer already owns.
+   */
+  private readonly deck = new Deck({
+    onMoved: (itemId, reeled) => this.views.get(itemId)?.setReeled(reeled),
+    onLetGo: (itemId) => this.views.get(itemId)?.setReeled(0),
+  });
+  private deckView: View | null = null;
 
   /**
    * Paint order over the **whole scene**, not over what is mounted, plus the z
@@ -2919,6 +3018,36 @@ export class DomItemLayer implements ItemLayer {
   }
 
   /**
+   * Which item is making a sound — T-277, and the question D-50's exemption
+   * asks. Null when nothing is playing, including a cassette paused half way
+   * through.
+   */
+  get playing(): string | null {
+    return this.deck.playing;
+  }
+
+  /**
+   * Press play on this cassette, or press it again to stop. Answers whether it
+   * is now playing.
+   *
+   * The URL comes from the caller for the reason the CRT's does (`app/main.ts`,
+   * `filmFor`): asking to *hear* something is a stronger claim on an asset than
+   * this layer's own resolver makes when it draws an object, and the want that
+   * goes with it belongs beside the record rather than in the renderer.
+   */
+  hear(itemId: string, url: string): boolean {
+    const playing = this.deck.press(itemId, url);
+    this.parkDeck();
+    return playing;
+  }
+
+  /** Stop, and let the recording go — the tape comes out of the machine. */
+  hush(): void {
+    this.deck.stop();
+    this.parkDeck();
+  }
+
+  /**
    * Put the field on the view the edited item currently has, take it off
    * whichever view had it before, and focus it once it is in the document.
    *
@@ -2940,6 +3069,38 @@ export class DomItemLayer implements ItemLayer {
       editor.focusParked();
     } else {
       editor.field.remove();
+    }
+  }
+
+  /**
+   * Put the deck's element on the view the playing item currently has — T-277.
+   *
+   * `parkEditor`'s twin, for the same reason word for word: views are pooled,
+   * so "the view for this item" is a question that has to be re-asked on every
+   * DOM phase, and an element left where it was is inherited by whatever mounts
+   * next out of the pool.
+   *
+   * The difference is what happens when the item has **no** view. The field is
+   * simply removed from the document — a caret with nothing to sit in is a
+   * caret that has gone away — and taking the audio element out likewise stops
+   * the sound, because a media element removed from a document is paused
+   * (D-48). That is why the culler exempts a playing item (D-50): so this arm
+   * is reached only when the sound has already stopped, or when the item itself
+   * has gone.
+   */
+  private parkDeck(): void {
+    const id = this.deck.loaded;
+    const view = id === null ? undefined : this.views.get(id);
+    if (this.deckView && this.deckView !== view) this.deckView.hold(null);
+    this.deckView = view ?? null;
+    if (view) {
+      view.hold(this.deck.element);
+      // Where the tape is, said again — a view fresh out of the pool was
+      // released and reads rewound, and `timeupdate` will not fire for a
+      // cassette that is sitting paused to correct it.
+      view.setReeled(this.deck.reeled);
+    } else {
+      this.deck.element.remove();
     }
   }
 
@@ -2984,10 +3145,34 @@ export class DomItemLayer implements ItemLayer {
      * end the sentence you were in the middle of.
      */
     const writing = this.editing;
+    /**
+     * And the cassette that is playing — D-50, the second exemption, and the
+     * one the ADR says turns this from a special case into a list.
+     *
+     * The same sentence as the one above with two words changed: unmounting it
+     * would pull a media element out of the document, and a media element
+     * removed from the document is **paused** by the user agent (HTML
+     * 4.8.11.15, measured in D-48). Panning away from the recording you were
+     * listening to would stop it, and panning back would not start it again —
+     * the element comes back paused and nothing in the application knows to
+     * press play.
+     *
+     * *Playing*, not loaded: a cassette paused half way through is an ordinary
+     * item, may be culled like any other, and loses nothing by it — the
+     * position is on the deck's element, which never goes into the pool.
+     */
+    const sounding = this.deck.playing;
 
     // Unmount anything that left the scene or the viewport.
     for (const [id, view] of this.views) {
-      if ((wanted.has(id) || id === writing) && scene.has(id)) continue;
+      if ((wanted.has(id) || id === writing || id === sounding) && scene.has(id)) continue;
+      // A recording whose *item* has gone — deleted here, or deleted by a peer
+      // mid-sentence — stops, because there is no longer an object making the
+      // sound. A cassette merely culled keeps its recording loaded and its
+      // position, both of which live on the deck's element rather than on the
+      // node being pooled; `release` takes the element back out, and pressing
+      // play again picks up where it was.
+      if (id === this.deck.loaded && !scene.has(id)) this.hush();
       view.release();
       view.el.remove();
       this.pool[view.archetype].push(view);
@@ -3038,11 +3223,20 @@ export class DomItemLayer implements ItemLayer {
     // And the note being written on, if the culler had left it out. Never
     // coarsely: it has a caret in it, so somebody is looking at it closely.
     if (writing !== null && !wanted.has(writing)) this.place(scene, dirty, writing, recurl, false);
-
+    // And the cassette that is playing, on the same argument and one weaker
+    // detail: nobody is necessarily *looking* at it, so it may mount coarsely
+    // like any other off-screen item. What it may not do is not mount at all.
+    if (sounding !== null && !wanted.has(sounding) && sounding !== writing) {
+      this.place(scene, dirty, sounding, recurl, storm);
+    }
 
     // Last, so it sees this frame's mounts: a note that has just come back into
     // the viewport has a different view from the one it left with.
     this.parkEditor();
+    // And the recording, which has the same problem for the same reason — plus
+    // one of its own: a view that has just come back out of the pool was
+    // released, and a released view reads rewound until it is told otherwise.
+    this.parkDeck();
 
     // `scene.size`, not `views.size`: the order covers the board, so what
     // invalidates it is an item arriving or leaving the board, never the
@@ -3518,6 +3712,11 @@ export class DomItemLayer implements ItemLayer {
     // Before the views, since it takes the field out of one of them.
     this.editor?.destroy();
     this.editorView = null;
+    // And the recording, for the same reason and one more: a window going away
+    // with a cassette still playing would keep making the sound until the
+    // element was collected.
+    this.deck.destroy();
+    this.deckView = null;
     // `release()` and not just `remove()`, because a released node frees its ink
     // canvas's backing store — dropping the element alone leaves the bitmap
     // alive until the collector gets to it, and a torn-down layer still holding

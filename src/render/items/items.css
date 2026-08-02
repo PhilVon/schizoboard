@@ -2612,10 +2612,13 @@ textarea.item-field::-webkit-scrollbar {
  * right, and that is what a tape wound to its start looks like.
  *
  * So position is drawn by the object rather than by a bar over it, which is
- * DESIGN 1.3 applied to a transport control. There is no producer for
- * `--reeled` yet: T-257 is where playback lands and Q-250 parked the wiring
- * there deliberately, so until then every tape on the board reads as rewound,
- * which is exactly what an unplayed tape is.
+ * DESIGN 1.3 applied to a transport control. `--reeled` has a producer since
+ * T-277: the deck writes it from the playing element's own clock
+ * (`render/items/deck.ts`), four or so times a second while a cassette plays,
+ * and removes it when the recording is let go. A tape nobody has played still
+ * has no property at all and falls back to 0, which is what rewound is — and
+ * Q-275 settled that these two spools are the *whole* readout, with no meter
+ * beside them: the meter belongs to a deck, and this board has no deck.
  */
 .case-reel.is-supply {
   --wound: calc(var(--arrived, 1) * (1 - var(--reeled, 0)));
