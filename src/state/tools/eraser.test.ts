@@ -45,6 +45,7 @@ function stroke(id: string, x0: number, y: number, x1: number, size = 6): SceneS
     opacity: 1,
     seed: 1,
     z: "a0",
+    page: null,
     bbox: [Math.min(x0, x1), y, Math.max(x0, x1), y],
     samples,
   };
@@ -91,6 +92,7 @@ beforeEach(() => {
     selection: new Selection(),
     hitTest: () => under,
     inkHitTest: () => under,
+    shownPage: () => null,
     hitPin: () => null,
     hitString: () => null,
     // Nothing to put a caret in, in a harness with no presentation (T-179).

@@ -514,6 +514,23 @@ export interface ToolContext {
    */
   inkHitTest(boardX: number, boardY: number): string | null;
   /**
+   * Which page of this item's document is the face on show, or null for the
+   * object itself — T-278.
+   *
+   * Null for everything but the one case file that is open, and that is the
+   * whole of the rule: a photograph has one face, a shut folder shows its
+   * cover, and only a folder that has been turned up is showing something that
+   * is not itself.
+   *
+   * Asked rather than derived from the scene because the scene does not know.
+   * It knows an item is *open* (`openOf`) and nothing about what is on the
+   * paper — the reader that decides which page is drawn is `app/pages.ts`, and
+   * it deliberately knows nothing about items in return. The application is the
+   * one place that holds both, so it is the one place that can answer, exactly
+   * as it is for `inkHitTest` and paint order.
+   */
+  shownPage(itemId: string): number | null;
+  /**
    * The pin under a **screen** point, or null.
    *
    * Screen rather than board, unlike every other geometry question a tool asks,

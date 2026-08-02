@@ -1069,6 +1069,7 @@ describe("Scene stroke surfaces", () => {
       opacity: 1,
       seed: 1,
       z: "a0",
+      page: null,
       bbox: [0, 0, 10, 10],
       samples: [
         { x: 0, y: 0, pressure: 0.5 },

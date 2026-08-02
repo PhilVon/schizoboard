@@ -300,6 +300,18 @@ export class ItemInk {
    * would leave a rind of mark it could not reach.
    */
   private edge: SheetOutline | null = null;
+  /**
+   * The face this bitmap was rastered for: a page of an open case file, or null
+   * for the object itself — T-278.
+   *
+   * The page counterpart of [`staleBox`], and it exists for the same reason: the
+   * ink phase is woken by a document edit, and turning a page is not one. What
+   * is drawn changed without a stroke being written, so something has to
+   * remember what was drawn last, and the canvas that drew it is the honest
+   * place. Null on a fresh canvas, which is what every item that is not an open
+   * folder stays at forever.
+   */
+  private page: number | null = null;
 
   constructor(host: HTMLElement) {
     this.canvas = new InkCanvas(host, "item-ink");
@@ -319,6 +331,7 @@ export class ItemInk {
     w: number,
     h: number,
     edge: SheetOutline | null = null,
+    page: number | null = null,
   ): void {
     // Remembered so that a resize re-rasters: the clip is a function of the
     // item's size, and a note dragged wider has to give back the ink its old
@@ -326,6 +339,7 @@ export class ItemInk {
     this.boxW = w;
     this.boxH = h;
     this.edge = edge;
+    this.page = page;
     this.canvas.update(strokes, scale, paperBox(w, h, this.paper), edge);
   }
 
@@ -347,6 +361,19 @@ export class ItemInk {
    */
   staleBox(w: number, h: number): boolean {
     return this.canvas.live && (w !== this.boxW || h !== this.boxH);
+  }
+
+  /**
+   * Is the bitmap holding a face the item is no longer showing? — T-278.
+   *
+   * Unlike [`staleBox`], this does **not** ask whether the canvas is live, and
+   * the asymmetry is the whole of what it is for. A resize only matters to a
+   * canvas that has ink on it; a page turn matters most to one that has none,
+   * because page four having a redaction on it when page three had nothing is
+   * exactly the moment a bitmap has to appear.
+   */
+  stalePage(page: number | null): boolean {
+    return page !== this.page;
   }
 
   release(): void {

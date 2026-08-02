@@ -235,6 +235,18 @@ export class MarkerTool implements Tool {
    * whole gesture.
    */
   private space: string | null = null;
+  /**
+   * The face of [`space`] the live run is on: a page of an open case file, or
+   * null for the object itself — T-278.
+   *
+   * Fixed with `space` and only ever with it. Which page is showing cannot
+   * change while a pointer is down — the arrows are a key, and a key is not
+   * something the hand on the pen is also pressing — so this is asked at the
+   * two moments the surface is decided and never in between. The alternative,
+   * asking per sample beside `surfaceAt`, would buy nothing and would let one
+   * mark be filed across two pages if it ever became wrong.
+   */
+  private pageOn: number | null = null;
   /** `Ctrl` at the press: board space, and no hand-over. Read only on the way
    *  into [`add`], so letting go of `Ctrl` mid-line changes nothing. */
   private forced = false;
@@ -400,6 +412,7 @@ export class MarkerTool implements Tool {
         // into it.
         this.forced = input.at.ctrl;
         this.space = this.forced ? null : this.surfaceAt(input.at, ctx);
+        this.pageOn = this.space === null ? null : ctx.shownPage(this.space);
         // The pen, fixed for this stroke — see the note on [`strokeInk`].
         this.strokeInk = this.ink;
         this.strokeNib = this.nib;
@@ -428,6 +441,26 @@ export class MarkerTool implements Tool {
         this.cancel(ctx);
         return;
       case "key":
+        /**
+         * Turning a page with the pen still in hand — T-278.
+         *
+         * The binding is the select tool's (T-321) and the reason it has to be
+         * here too is redaction: blacking out a name on page four of a fifty
+         * page filing means turning to page four, and a pen that could not turn
+         * one would make that Escape, arrow, marker for every page — four
+         * keystrokes to do what the arrow already does, on the one gesture this
+         * page-aware ink was built for.
+         *
+         * Refused while the hand is down, which is the same guard select makes
+         * against its own gestures and matters more here: the run's page is
+         * fixed at the press (see [`pageOn`]), so a turn mid-stroke would file
+         * the mark on a page nobody could still see it on.
+         */
+        if (input.code === "ArrowLeft" || input.code === "ArrowRight") {
+          if (this.drawing || input.shift || input.ctrl || input.alt) return;
+          ctx.turnPage(input.code === "ArrowLeft" ? -1 : 1);
+          return;
+        }
         if (input.code === "Escape") {
           this.reset();
           this.options.onDone?.();
@@ -468,6 +501,7 @@ export class MarkerTool implements Tool {
     this.samples = [];
     this.runs = [];
     this.space = null;
+    this.pageOn = null;
     this.drawing = false;
     if (runs.length === 0) return;
     this.drying = runs;
@@ -501,6 +535,7 @@ export class MarkerTool implements Tool {
       size: this.strokeNib,
       opacity: this.opacity,
       item: this.space,
+      page: this.pageOn,
       samples: this.samples,
     };
   }
@@ -574,7 +609,7 @@ export class MarkerTool implements Tool {
         // reaches the edge rather than stopping at the last sample inside it.
         this.place(board.x, board.y, pressure, ctx);
         if (!this.drawing) return;
-        this.handOver(under);
+        this.handOver(under, under === null ? null : ctx.shownPage(under));
       }
     }
     this.place(board.x, board.y, pressure, ctx);
@@ -599,9 +634,14 @@ export class MarkerTool implements Tool {
    * is what the hand did, and `crdt/ops/ink.ts` is the thing that decides whether
    * a run packed to anything worth writing.
    */
-  private handOver(next: string | null): void {
+  private handOver(next: string | null, page: number | null): void {
     if (this.samples.length > 0) this.runs.push(this.snapshot());
     this.space = next;
+    // The face travels with the surface, because it is a fact *about* the
+    // surface. Draw from a photograph onto the page of the open folder beside it
+    // and the two halves are filed on two different faces of two different
+    // things, which is what T-137's crossing rule has always meant.
+    this.pageOn = page;
     // A fresh array, never a clear: the run just pushed is holding this one.
     this.samples = [];
     // And a fresh name. The piece just closed keeps the old one — it is a
@@ -686,6 +726,7 @@ export class MarkerTool implements Tool {
     this.samples = [];
     this.runs = [];
     this.space = null;
+    this.pageOn = null;
     this.forced = false;
     this.drawing = false;
   }

@@ -299,6 +299,17 @@ export interface WetStroke {
    * sliding off a photograph as it swings.
    */
   readonly item: string | null;
+  /**
+   * The page of [`item`]'s document the run is on, or null for the object
+   * itself — T-278.
+   *
+   * Fixed with [`item`] and for the same reason, one step further in: the space
+   * is decided at the press and a crossing starts a new run, so which *face* of
+   * that surface was showing is decided at the same two moments and never in
+   * between. A page cannot be turned mid-stroke — the arrows are a key and the
+   * pointer is down — so this is a fact the run can hold rather than ask.
+   */
+  readonly page: number | null;
   /** The space [`item`] names, oldest first. */
   readonly samples: readonly InkSample[];
 }

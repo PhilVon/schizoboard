@@ -135,6 +135,24 @@ export interface PresenceWetRun {
   readonly id: string;
   /** The item the points are local to, or null for board space. */
   readonly item: string | null;
+  /**
+   * Which page of `item`'s document the sender is drawing on, or absent for the
+   * object itself — T-278.
+   *
+   * On the wire for the same reason `item` is: without it the receiver cannot
+   * know which surface to draw the ghost on. A folder open on the sender's board
+   * may be shut on the receiver's, or open at a different page, and a run whose
+   * face is not the face they are looking at has to be drawn *nowhere* rather
+   * than on whatever is showing. Otherwise a peer redacting page four paints a
+   * black bar across the kraft cover of a folder that is lying shut, for as long
+   * as their hand is moving.
+   *
+   * **Optional**, unlike every other field here, which is the one concession to
+   * a channel that costs bytes per frame: nearly every stroke anybody draws is
+   * on no page at all, and this is four characters of JSON thirty times a second
+   * that would say nothing.
+   */
+  readonly page?: number;
   readonly tool: InkTool;
   readonly color: string;
   /** Board units, and item-local units — the two are the same scale. */
@@ -182,6 +200,7 @@ class RunWindow {
   /** The run as it was born. None of these change for the life of a run. */
   readonly id: string;
   readonly item: string | null;
+  readonly page: number | null;
   readonly tool: InkTool;
   readonly color: string;
   readonly size: number;
@@ -213,6 +232,7 @@ class RunWindow {
   constructor(run: WetStroke) {
     this.id = run.id;
     this.item = run.item;
+    this.page = run.page;
     this.tool = run.tool;
     this.color = run.color;
     this.size = run.size;
@@ -290,6 +310,10 @@ class RunWindow {
     return {
       id: this.id,
       item: this.item,
+      // Spread rather than written as `page: this.page`, so the key is absent
+      // on the overwhelmingly common run rather than present and null — see
+      // [`PresenceWetRun.page`].
+      ...(this.page === null ? null : { page: this.page }),
       tool: this.tool,
       color: this.color,
       size: this.size,

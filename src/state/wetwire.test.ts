@@ -25,6 +25,7 @@ function run(id: string, samples: InkSample[], over: Partial<WetStroke> = {}): W
     size: DEFAULT_INK_SIZE,
     opacity: 1,
     item: null,
+    page: null,
     samples,
     ...over,
   };

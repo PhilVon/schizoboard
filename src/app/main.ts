@@ -547,7 +547,11 @@ async function boot(): Promise<void> {
   // page is a fact about the file: two folders of one document are one set of
   // pages. Which page the reader is on is T-321's, so this answers for
   // whichever that is.
-  (sha256) => reader.page(sha256));
+  (sha256) => reader.page(sha256),
+  // And which face each item is showing (T-278) — the same function the pen is
+  // handed, deliberately: what a mark is filed against and what is drawn have to
+  // be one answer. Declared below, hoisted to here.
+  (itemId) => shownPage(itemId));
 
   /**
    * How old the board thinks its items are — DESIGN section 4.7, and Q-105,
@@ -1111,6 +1115,8 @@ async function boot(): Promise<void> {
             color: run.color,
             size: run.size,
             opacity: run.opacity,
+            // Which page it was drawn on, when it was drawn on one — T-278.
+            page: run.page,
             samples: run.samples,
           })),
         );
@@ -1454,6 +1460,32 @@ async function boot(): Promise<void> {
   };
 
   /**
+   * Which page of this item is the face on show — T-278, and null for every
+   * item on the board except the one case file that is open.
+   *
+   * This is the join the pen and the renderer both need and neither can make.
+   * `opening` knows which item is turned up and nothing about what is written on
+   * it; `reader` knows which page is drawn and, deliberately, nothing about
+   * items (`app/pages.ts` — "an item id would be a second fact about the same
+   * page"). Here is the only place that holds both, which is why it is a
+   * function passed down rather than a method on either of them.
+   *
+   * **`opening.itemId` rather than `scene.openOf`**, and the difference shows
+   * for 300 ms twice per open. The scene's number is how far the turn has got,
+   * so it is 0 on the frame the fold begins and a fraction on the ones after;
+   * this is the *answer*, true from the press. A mark made while the cover is
+   * still coming up belongs to the page you asked to see, because asking to see
+   * it is what you did. Shutting is the same claim from the other side: the item
+   * is let go of at the press, so ink drawn over a folder that is folding back
+   * down goes on its cover, which is what it is turning into.
+   *
+   * A tape and a cassette never reach here: neither turns up to be read, so
+   * neither is ever `opening.itemId` (see `openItem`).
+   */
+  const shownPage = (itemId: string): number | null =>
+    opening.itemId === itemId ? reader.pageAt : null;
+
+  /**
    * Press play on a cassette — T-277.
    *
    * **The camera does not move, nothing opens, and nothing is taken over.** The
@@ -1776,6 +1808,9 @@ async function boot(): Promise<void> {
   // (T-186) — a wet stroke stopping somewhere the committed one does not is a
   // mark that changes shape at pen-up.
   overlay.setPaperResolver((forScene, id) => items.silhouetteOf(forScene, id));
+  // And which face of an item is showing, so a peer's mark on page four is not
+  // drawn on the cover of a folder that is shut here (T-278).
+  overlay.setShownPage(shownPage);
   // Screen space, because a pin's grab radius is in screen pixels and has a
   // floor — see `render/pins/dom.ts`.
   const hitPin = (sx: number, sy: number): string | null => pins.hitTest(scene, camera, sx, sy);
@@ -1792,6 +1827,8 @@ async function boot(): Promise<void> {
     write: writer,
     hitTest: hitItem,
     inkHitTest: hitPaper,
+    // And which face of it is showing, for the pen and the rubber both (T-278).
+    shownPage,
     hitPin,
     hitString,
     /** A double-click on paper puts a caret in it (Q-92). */

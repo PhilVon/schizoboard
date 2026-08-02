@@ -129,6 +129,10 @@ const MAX_RETIRED = 64;
 export interface PeerWetRun {
   readonly id: string;
   readonly item: string | null;
+  /** Which page of `item` the sender is drawing on, or null for the object
+   *  itself — T-278. Absent on the wire means null here; see
+   *  `state/wetwire.ts`'s `PresenceWetRun.page` for why it is sent that way. */
+  readonly page: number | null;
   readonly tool: InkTool;
   readonly color: string;
   readonly size: number;
@@ -157,6 +161,14 @@ function readRun(value: unknown): PeerWetRun | null {
   const item = run.item;
   if (item !== null && (typeof item !== "string" || item === "")) return null;
 
+  // Absent is the common case and means the object itself. A page that is
+  // present and nonsense drops the whole run rather than falling back to the
+  // object: unlike a bad colour, there is no answer here that is nearly right —
+  // the two candidates are different surfaces, and drawing a peer's redaction on
+  // the cover of a shut folder is the exact thing this field exists to stop.
+  const page = run.page === undefined ? null : run.page;
+  if (page !== null && (!finite(page) || !Number.isInteger(page) || page < 1)) return null;
+
   const tool = run.tool;
   if (!isDrawnTool(tool)) return null;
 
@@ -182,7 +194,7 @@ function readRun(value: unknown): PeerWetRun | null {
     if (!finite(n)) return null;
   }
 
-  return { id, item, tool, color, size, opacity, base, pts: pts as readonly number[] };
+  return { id, item, page, tool, color, size, opacity, base, pts: pts as readonly number[] };
 }
 
 /** The same array for every peer holding no pen, which is nearly all of them
@@ -219,6 +231,7 @@ export function readWet(value: unknown): readonly PeerWetRun[] {
 class RemoteRun implements WetStroke {
   readonly id: string;
   readonly item: string | null;
+  readonly page: number | null;
   readonly tool: InkTool;
   readonly color: string;
   readonly size: number;
@@ -247,6 +260,7 @@ class RemoteRun implements WetStroke {
   constructor(run: PeerWetRun) {
     this.id = run.id;
     this.item = run.item;
+    this.page = run.page;
     this.tool = run.tool;
     this.color = run.color;
     this.size = run.size;

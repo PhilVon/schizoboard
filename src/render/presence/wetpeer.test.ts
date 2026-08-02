@@ -39,6 +39,7 @@ function run(id: string, samples: InkSample[], over: Partial<WetStroke> = {}): W
     size: DEFAULT_INK_SIZE,
     opacity: 1,
     item: null,
+    page: null,
     samples,
     ...over,
   };
@@ -552,6 +553,7 @@ describe("the handoff — section 9.2", () => {
         opacity: 1,
         seed: 1,
         z: "a0",
+        page: null,
         bbox: [0, 0, 12800, 0],
         samples,
       },

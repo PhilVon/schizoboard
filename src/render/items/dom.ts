@@ -47,6 +47,7 @@ import {
   fitLabel,
   PAGE_TEXT_SIZE,
   folderBulk,
+  openSheetOf,
   pagesLabel,
   runtimeLabel,
   titleWorthWriting,
@@ -222,6 +223,19 @@ export type FirstSight = (itemId: string) => boolean;
 export type PageResolver = (sha256: string) => PageView | null;
 
 /**
+ * Which page of an item's document is the face on show, or null for the object
+ * itself — T-278.
+ *
+ * By item id rather than by asset hash, which is the opposite of
+ * [`PageResolver`] beside it and is not an inconsistency. That one asks *what is
+ * on this page of this file*, which is a question about the file and would be
+ * answered identically for two folders holding it. This one asks *which face is
+ * this thing showing*, which is a question about the object: one folder is open
+ * and the other is shut, and they are holding the same document.
+ */
+export type ShownPage = (itemId: string) => number | null;
+
+/**
  * What the document says a file is — as distinct from [`AssetView`], which is
  * what this machine can currently *show* of it.
  *
@@ -363,6 +377,12 @@ export interface Silhouette {
   readonly worn: number;
   readonly w: number;
   readonly h: number;
+  /** Whether this is the *sheet inside* an open case file rather than the
+   *  object's own edge — T-278. A cache key like the four above, and a boolean
+   *  rather than the turn's progress on purpose: the paper is the same size all
+   *  the way through a fold, and keying on a number that moves every frame would
+   *  rebuild the polygon sixty times an open. */
+  readonly open: boolean;
   /** `x, y` pairs about the item's centre. */
   readonly points: Float32Array;
   readonly n: number;
@@ -2842,13 +2862,28 @@ export class DomItemLayer implements ItemLayer {
     assetFacts: AssetLookup = () => NO_FACTS,
     editor?: ItemEditorHooks,
     pageOf: PageResolver = () => null,
+    shownPage: ShownPage = () => null,
   ) {
     this.host = host;
     this.assetUrl = assetUrl;
     this.assetFacts = assetFacts;
     this.editor = editor ? new TextEditor(editor) : null;
     this.pageOf = pageOf;
+    this.shownPage = shownPage;
   }
+
+  /**
+   * Which page of a case file is the face on show — T-278, and the same
+   * function the pen is handed (`state/tools/tool.ts`'s `ToolContext`).
+   *
+   * The same one deliberately. What a mark is filed against and what is drawn
+   * have to be one answer, or ink lands on a page and reappears on another.
+   *
+   * Defaults to "nothing is open", which is right for every caller with no shell
+   * behind it — the spike rig, and the tests in this directory, where a folder
+   * has no reader and its ink is all on the object.
+   */
+  private readonly shownPage: ShownPage;
 
   /**
    * The page open on a case file — T-320. Defaults to "nothing is open", which
@@ -2969,6 +3004,13 @@ export class DomItemLayer implements ItemLayer {
         const slot = scene.slotOf(id);
         if (!view || slot === undefined) continue;
         if (view.ink.staleBox(scene.w[slot]!, scene.h[slot]!)) this.inkPending.add(id);
+        // And an open case file that has been turned to another page — T-278.
+        // The ink on it changed without a stroke being written, which is a thing
+        // no other surface on this board can do. It reaches here because the
+        // reader dirties every item wearing the document when the page lands
+        // (`app/main.ts`), so this costs one comparison on an item that was
+        // going to be looked at anyway.
+        else if (scene.hasInk(id) && view.ink.stalePage(this.shownPage(id))) this.inkPending.add(id);
       }
     }
     if (this.inkPending.size === 0) return;
@@ -2983,12 +3025,18 @@ export class DomItemLayer implements ItemLayer {
       // The sheet's outline goes with it: committed ink stops at the paper, not
       // at the rectangle (T-186), and it is the *same* polygon the pen tested
       // and the wet stroke was clipped to.
+      // The face that is showing, and nothing on the other faces — T-278. The
+      // silhouette below moves with it: an open folder's writable paper is the
+      // sheet standing in it rather than the kraft round the sheet, so the same
+      // call that picks the strokes picks what they are clipped to.
+      const page = this.shownPage(id);
       view.ink.update(
-        scene.strokesOf(id),
+        scene.strokesOn(id, page),
         this.inkScale,
         scene.w[slot]!,
         scene.h[slot]!,
         this.silhouette(scene, id, slot),
+        page,
       );
       budget--;
     }
@@ -3527,6 +3575,14 @@ export class DomItemLayer implements ItemLayer {
 
   private silhouette(scene: Scene, id: string, slot: number): Silhouette | null {
     const cold = scene.coldAt(slot);
+    // An open case file is showing paper rather than kraft, and the paper is
+    // what a mark is allowed to sit on — T-278. It comes before the archetype
+    // test below because a folder fails that test: nothing with a file behind it
+    // is cut to a ragged edge, and this is not a ragged edge. It is a rectangle,
+    // it is a different rectangle from the item's, and it is the only thing on
+    // this board whose writable surface is smaller than what you can pick up in
+    // both axes at once.
+    if (cold !== null && scene.openOf(slot) > 0) return this.sheet(id, cold, slot, scene);
     // A sheet of paper is the only thing on this board with a silhouette. The
     // question is the *type* on its own and never the asset, which is why this
     // is the one caller that does not need a lookup: nothing with a file behind
@@ -3537,7 +3593,7 @@ export class DomItemLayer implements ItemLayer {
     const w = scene.w[slot]!;
     const h = scene.h[slot]!;
     const held = this.edges.get(id);
-    if (held && held.cold === cold && held.worn === worn && held.w === w && held.h === h) {
+    if (held && !held.open && held.cold === cold && held.worn === worn && held.w === w && held.h === h) {
       return held;
     }
     const edge = sheetEdgeOf(cold, worn);
@@ -3547,8 +3603,48 @@ export class DomItemLayer implements ItemLayer {
       worn,
       w,
       h,
+      open: false,
       n,
       points: edgePoints(edge.outline, w, h, new Float32Array(n * 2)),
+    };
+    this.edges.set(id, fresh);
+    return fresh;
+  }
+
+  /**
+   * The sheet standing inside an open case file, as a silhouette — T-278.
+   *
+   * Four points and a rectangle, which is what makes it worth going through the
+   * same cache and the same type as a torn sheet's twenty-vertex walk: all three
+   * things that ask about writable paper — the pen's hit test, the wet stroke's
+   * clip and the committed raster's — ask through one accessor, and a page that
+   * answered any of them differently would be a mark that moved at pen-up.
+   *
+   * Anticlockwise from the top-left in the item's own unrotated frame, because
+   * that is the frame ink is stored in and the frame `edgePoints` produces. The
+   * size comes from `lib/objects.ts`, not from this file's own arithmetic — see
+   * `openSheetOf` for why the two axes swap.
+   */
+  private sheet(id: string, cold: ItemCold, slot: number, scene: Scene): Silhouette {
+    const w = scene.w[slot]!;
+    const h = scene.h[slot]!;
+    const held = this.edges.get(id);
+    if (held && held.open && held.cold === cold && held.w === w && held.h === h) return held;
+    const sheet = openSheetOf(w, h);
+    const hx = sheet.w / 2;
+    const hy = sheet.h / 2;
+    const fresh: Silhouette = {
+      cold,
+      // No wear on it: a sheet's ragged edge is a property of the *stock*, and
+      // this is a page of somebody's filing rather than a piece of the board's
+      // own paper. Recorded as zero rather than left out so the cache key above
+      // stays the shape every other entry has.
+      worn: 0,
+      w,
+      h,
+      open: true,
+      n: 4,
+      points: new Float32Array([-hx, -hy, hx, -hy, hx, hy, -hx, hy]),
     };
     this.edges.set(id, fresh);
     return fresh;

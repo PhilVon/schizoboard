@@ -249,6 +249,30 @@ export function objectSizeFor(kind: AssetKind): ObjectSize | null {
   }
 }
 
+/**
+ * The sheet inside an open case file, **in the folder's own unrotated frame** —
+ * which is the frame ink is stored in, and the reason this exists (T-278).
+ *
+ * `items.css` already draws this box, as two percentages of the folder, and the
+ * comment above `.folder-page` works the arithmetic out longhand. What it cannot
+ * do is hand the numbers to anything: a mark on a page has to stop where the
+ * paper stops, and the pen, the wet stroke and the raster all ask in board units
+ * about an item's local frame. So the stylesheet keeps the copy it can express
+ * and this is the writer, exactly as `A4_UNITS` is the writer of the percentages
+ * — `folder-open-css.test.ts` is what holds the two together.
+ *
+ * **The swap is the quarter turn.** The sheet is A4 upright inside the folder
+ * and then rotated -90 degrees to lie in it the way paper actually lies in a
+ * folder, so the box it ends up occupying is A4's *height* across and its
+ * *width* down. Taking `w` and `h` rather than reading `objectSizeFor` is what
+ * keeps that true of a folder somebody has resized: both axes are a proportion
+ * of the item, which is what a CSS percentage is.
+ */
+export function openSheetOf(w: number, h: number): ObjectSize {
+  const folder = units(FOLDER_MM);
+  return { w: (h * A4_UNITS.h) / folder.h, h: (w * A4_UNITS.w) / folder.w };
+}
+
 // --- what is written on them ------------------------------------------------
 
 /**

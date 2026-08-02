@@ -82,6 +82,19 @@ export interface CommitStrokeInput {
    *  stroke at every edge it crosses (T-137) and each piece arrives here in the
    *  frame of the surface it ended up on. */
   samples: readonly InkSample[];
+  /**
+   * Which page of `item`'s document the hand was over — T-278, and see
+   * `StrokeFields.page` for what it means.
+   *
+   * Left out by everything except the pen on an open case file, and **written
+   * only when it is a page**: a mark on a photograph, on a note or on a shut
+   * folder stores no key at all rather than storing an explicit null. That is
+   * not tidiness. A board of ordinary ink has to produce byte-identical records
+   * to the build before this one — otherwise every stroke anybody has ever drawn
+   * counts as edited the first time a peer on this version touches it — and a
+   * key that is absent is also a key an older build cannot misread.
+   */
+  page?: number | null;
 }
 
 /**
@@ -187,6 +200,11 @@ export function commitStrokes(
       stroke.set("z", keyAbove(topStroke(map)));
       stroke.set("bbox", [...p.bbox]);
       stroke.set("pts", p.pts);
+      // Only when there is one — see [`CommitStrokeInput.page`]. A run on bare
+      // cork is refused a page outright rather than trusted not to carry one:
+      // the tile it lands in belongs to no item and has no document to have a
+      // page of, so a number here could only be a caller's mistake.
+      if (input.item !== null && isPage(input.page)) stroke.set("page", input.page);
       map.set(id, stroke as YMap);
       out.push({ id, item: input.item, tile });
     }
@@ -262,6 +280,23 @@ function writable(input: CommitStrokeInput): boolean {
     if (!Number.isFinite(sample.pressure)) return false;
   }
   return true;
+}
+
+/**
+ * Whether a page number is one — and this is invariant 1's clause for the field
+ * rather than a tidiness check.
+ *
+ * `writable` above refuses a whole run for one NaN sample and says why at
+ * length; a NaN page is the same breach arriving through a different door, and
+ * the door is a real one. The number comes from the reader's position, which is
+ * arithmetic on a keystroke, and `Math.min(count, Math.max(1, at + by))` is NaN
+ * for a NaN count — which is what a document whose page count came off a peer's
+ * asset record could be. The whole *run* is not refused for it, unlike a bad
+ * sample: the mark is a mark and the hand made it, and losing which page it was
+ * on is a smaller wrong than losing the mark. It goes on the object instead.
+ */
+function isPage(page: number | null | undefined): page is number {
+  return typeof page === "number" && Number.isInteger(page) && page >= 1;
 }
 
 /**

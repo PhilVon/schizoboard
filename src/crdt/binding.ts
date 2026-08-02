@@ -93,6 +93,7 @@ function readStrokes(map: Y.Map<YMap>): SceneStroke[] {
       // Measured, not the record's — see `SceneStroke`.
       bbox: boundsOfSamples(samples),
       samples,
+      page: fields.page,
     });
   }
   return strokes;

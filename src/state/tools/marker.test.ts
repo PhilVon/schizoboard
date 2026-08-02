@@ -145,6 +145,10 @@ function live(): WetStroke | null {
  * is what every test written before T-186 assumes.
  */
 let paperAt: ((bx: number, by: number) => string | null) | null = null;
+/** Which page of the surface under the pen is showing, for `shownPage` — T-278.
+ *  Null is a board with nothing open, which is every test above the ones about
+ *  redaction. */
+let openPage: number | null = null;
 
 /** Every run in flight, for the tests that are about the crossing itself. */
 function runs(): readonly WetStroke[] {
@@ -161,6 +165,7 @@ beforeEach(() => {
   under = null;
   byGeometry = false;
   paperAt = null;
+  openPage = null;
   tool = new MarkerTool({ onDone: () => done++ });
   ctx = {
     scene,
@@ -183,6 +188,9 @@ beforeEach(() => {
      * written. `paperAt` is null by default and the two agree.
      */
     inkHitTest: (bx, by) => (paperAt ?? ctx.hitTest)(bx, by),
+    /** Which face the surface is showing (T-278). Null unless a test has opened
+     *  something, which is every test written before this one. */
+    shownPage: () => openPage,
     hitPin: () => null,
     hitString: () => null,
     // Nothing to put a caret in, in a harness with no presentation (T-179).
