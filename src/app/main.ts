@@ -142,7 +142,7 @@ import {
   Clipper,
   readingCorners,
   screenQuad,
-  toWordBounds,
+  passageBetween,
 } from "@/app/clipping";
 import { SearchField, type Unsearched } from "@/ui/search";
 import { TuningPanel } from "@/ui/tuning";
@@ -2850,9 +2850,14 @@ async function boot(): Promise<void> {
      * What is left here is the one call that needs a document.
      *
      * `caretRangeFromPoint` rather than `caretPositionFromPoint`: both exist in
-     * this webview, the first hands back a `Range` already, and the page is a
-     * single text node — `writeHand` sets it with `plain` (Q-269), so there are
-     * no per-glyph spans to walk and nothing finer than an offset to ask for.
+     * this webview and the first hands back a `Range` already, which is what
+     * `passageBetween` takes.
+     *
+     * What those two carets are worth reading *as* is next door too, and since
+     * T-332 it is not `toString()`: a page carrying a figure is built out of
+     * blocks with the figure between them, so a range across one has three
+     * elements in it and one of those can be the board's own sentence about a
+     * figure it could not lift.
      */
     passage: (itemId, rect) => {
       const quad = screenQuad(scene, camera, itemId, rect);
@@ -2861,34 +2866,7 @@ async function boot(): Promise<void> {
       const from = document.caretRangeFromPoint(ends[0].x, ends[0].y);
       const to = document.caretRangeFromPoint(ends[1].x, ends[1].y);
       if (from === null || to === null) return "";
-      const span = document.createRange();
-      try {
-        // Whole words, or the card carries a fragment with its front bitten
-        // off — driven, and the card read "ed the vehicle parked outside the
-        // premises". Only when both carets landed in the same node, which for
-        // a page is always: `writeHand` sets it plain, so `.leaf-body` holds
-        // one text node and nothing finer.
-        if (
-          from.startContainer === to.startContainer &&
-          typeof from.startContainer.textContent === "string"
-        ) {
-          const [a, b] = toWordBounds(
-            from.startContainer.textContent,
-            from.startOffset,
-            to.startOffset,
-          );
-          span.setStart(from.startContainer, a);
-          span.setEnd(from.startContainer, b);
-          return span.toString();
-        }
-        span.setStart(from.startContainer, from.startOffset);
-        span.setEnd(to.startContainer, to.startOffset);
-      } catch {
-        // The two carets landed in nodes with no common order — a rectangle
-        // that started on the page and ended off it. Nothing was selected.
-        return "";
-      }
-      return span.toString();
+      return passageBetween(from, to);
     },
     stored: (sha256) => {
       // Written into this store a moment ago, so this machine is a holder —

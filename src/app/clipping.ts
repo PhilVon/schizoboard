@@ -579,3 +579,112 @@ export function toWordBounds(text: string, start: number, end: number): readonly
 function isSpace(ch: string): boolean {
   return /\s/.test(ch);
 }
+
+/**
+ * What is written between two carets, as a quotation of the *document* — T-332.
+ *
+ * Here rather than in `app/main.ts` beside the hit test that produces the two
+ * carets, on the standing rule this file's `toWordBounds` is already an example
+ * of: the wiring module has no tests, so a decision left there is a decision
+ * nothing checks. What stays up there is the one call that needs a document.
+ *
+ * ## Why this is not `span.toString()`
+ *
+ * It was, and it was right while a page was one text node. T-320 wrote the
+ * whole page onto `.leaf-body` with `writeHand`, so a caret anywhere on it
+ * landed in the same node and a range across it was a substring. T-329 ended
+ * that: a page carrying a figure is built out of `.leaf-lines` blocks with the
+ * figure between them, and a rectangle spanning one — which is the ordinary way
+ * to take the paragraph above a chart and the caption below it — is a range
+ * over three elements. Driven on the real page, `toString()` gave
+ *
+ *     "pha betaBOARD SAYSgamma de"
+ *
+ * and every part of that is a defect:
+ *
+ * - **The board's own sentence is inside the quotation.** A figure this build
+ *   could not lift says so where the figure was, and that is the *board*
+ *   speaking about the document. Carrying it onto a card as though the document
+ *   said it is the worst of the three by a distance — it is a quotation of
+ *   something nobody wrote, going on a wall as evidence.
+ * - **Both ends are bitten off**, because the whole-word repair was guarded on
+ *   both carets landing in one node and they no longer do. That is the exact
+ *   fragment — *"ed the vehicle parked outside the premises"* — that the repair
+ *   was added to stop.
+ * - **The blocks run together with no gap**, where the one text node had the
+ *   line break the document put there.
+ *
+ * So the ends are widened in whatever node each one landed in — the same rule
+ * applied twice rather than a second rule — and the text is taken block by
+ * block, with the board's voice dropped.
+ */
+export function passageBetween(from: Range, to: Range): string {
+  const doc = from.startContainer.ownerDocument;
+  if (doc === null) return "";
+  // Both ends inside the board's own sentence about a figure: nothing of the
+  // document was under the rectangle at all. One end inside it is dropped by
+  // the walk below, which is the same answer arrived at one step later.
+  if (inBoardVoice(from.startContainer) && inBoardVoice(to.startContainer)) return "";
+
+  const span = doc.createRange();
+  try {
+    if (
+      from.startContainer === to.startContainer &&
+      typeof from.startContainer.textContent === "string"
+    ) {
+      // One node, which is every page with no figure on it. Unchanged, and the
+      // two offsets go in together so a rectangle dragged right to left still
+      // widens outwards rather than collapsing.
+      const [a, b] = toWordBounds(
+        from.startContainer.textContent,
+        from.startOffset,
+        to.startOffset,
+      );
+      span.setStart(from.startContainer, a);
+      span.setEnd(from.startContainer, b);
+    } else {
+      span.setStart(from.startContainer, wordEdge(from, "start"));
+      span.setEnd(to.startContainer, wordEdge(to, "end"));
+    }
+  } catch {
+    // The two carets landed in nodes with no common order — a rectangle that
+    // started on the page and ended off it. Nothing was selected.
+    return "";
+  }
+  return quotationIn(span);
+}
+
+/** One caret widened to the edge of the word it is standing in. */
+function wordEdge(caret: Range, which: "start" | "end"): number {
+  const text = caret.startContainer.textContent;
+  if (typeof text !== "string") return caret.startOffset;
+  const bounds = toWordBounds(text, caret.startOffset, caret.startOffset);
+  return which === "start" ? bounds[0] : bounds[1];
+}
+
+/** Whether a node is inside the sentence the board writes where a figure it
+ *  could not lift was — see `render/items/dom.ts`'s `figureNodes`. */
+function inBoardVoice(node: Node): boolean {
+  const el = node.nodeType === 1 ? (node as Element) : node.parentElement;
+  return el?.closest(".leaf-figure-note") != null;
+}
+
+/**
+ * The range's text, block by block, with the board's voice left out.
+ *
+ * The clone is what makes this affordable: `cloneContents` hands back the
+ * selection as a tree, so a note can be *removed* rather than recognised
+ * character by character in a string that has already lost the structure.
+ *
+ * Blocks join with a newline because that is what the page had. On a page with
+ * no figures the fragment is a single text node and this returns it unchanged,
+ * which is what keeps every page in every filing exactly as T-320 left it.
+ */
+function quotationIn(span: Range): string {
+  const cut = span.cloneContents();
+  for (const note of [...cut.querySelectorAll(".leaf-figure-note")]) note.remove();
+  return [...cut.childNodes]
+    .map((node) => node.textContent ?? "")
+    .filter((part) => part !== "")
+    .join("\n");
+}
