@@ -150,11 +150,74 @@ describe("the page appearing", () => {
   });
 });
 
-describe("the header at the head of the page", () => {
-  it("is set in the typed face and not in the board's hand", () => {
-    // Q-267: a case number at the head of a page is a filing convention, and it
-    // is the same typed face the tab wears. The hand is for what a person wrote.
-    expect(leaf.get("font-family")).toContain("Source Sans 3");
-    expect(leaf.get("font-family")).not.toContain("Patrick Hand");
+describe("what a page is set in", () => {
+  /**
+   * This assertion said the opposite one commit ago, and the reason is Q-269
+   * rather than a correction. T-319 put only a header on the sheet and set the
+   * whole leaf in the typed face to match the tab; T-320 measured what a page of
+   * prose costs and asked, and the answer was the board's own hand set *plainly*
+   * — same family as every note, without the per-character jitter, at 0.2 ms a
+   * page against 16.3.
+   */
+  it("is the board's own hand, so a page belongs on this wall", () => {
+    expect(leaf.get("font-family")).toContain("Patrick Hand");
+  });
+
+  it("offers the clean face per document, and changes only the face", () => {
+    // AC-678: "for something that has to be read rather than admired". If this
+    // ever changed the margins or the leading as well, a page would repaginate
+    // when somebody switched face — and pagination is the half that has to hold
+    // still (D-60).
+    const clean = declarations('.folder-leaf[data-face="clean"]');
+    expect(clean.get("font-family")).toContain("Source Sans 3");
+    expect(clean.has("padding")).toBe(false);
+    expect(clean.has("font-size")).toBe(false);
+  });
+
+  /**
+   * The one number this whole task turns on.
+   *
+   * It cannot be asserted as pure arithmetic, because the thing it depends on —
+   * how many characters of Patrick Hand fit a line — is a fact about a font
+   * file. So `ADVANCE_EM` is *measured*, on the running app, and named here with
+   * its provenance; what this test then checks is the consequence, which is the
+   * part a stylesheet edit could quietly break.
+   *
+   * Two earlier attempts to derive this were wrong in opposite directions, and
+   * both looked right on paper. The first assumed ~0.5 em and made the type too
+   * large; the second measured `scrollHeight` on a flex child with
+   * `overflow: hidden`, which reports the *box* rather than the text, so both
+   * of its numbers moved together and neither was the text.
+   */
+  it("holds a page of text, and roughly fills the sheet with it", () => {
+    /** Measured: 85 characters of continuous prose in a 277.8-unit measure at
+     *  8.4 units. Includes word spaces, which is what makes it wider than a
+     *  glyph-only average would be and narrower than a printed text face. */
+    const ADVANCE_EM = 0.377;
+    /** `text.rs`: COLS × ROWS, and a page of real prose fills about two thirds
+     *  of the cells — 2,968 characters, measured on this repo's own DESIGN.md. */
+    const PAGE_CHARS = 2968;
+
+    const folder = objectSizeFor("document")!;
+    const pad = /([\d.]+)%\s+([\d.]+)%/.exec(leaf.get("padding")!)!;
+    // A padding percentage resolves against the containing block's WIDTH in
+    // *both* axes. Getting that wrong is how the first pass came out optimistic.
+    const vertical = A4.w * (Number.parseFloat(pad[1]!) / 100);
+    const side = A4.w * (Number.parseFloat(pad[2]!) / 100);
+    const measure = A4.w - 2 * side;
+    const leading = Number.parseFloat(leaf.get("line-height")!);
+
+    // `LEAF_TEXT_SIZE` in dom.ts, as a fraction of the folder's width.
+    const body = folder.w * 0.01746;
+    const header = body * 1.2 * 1.9; // 1.2em, plus its rule and the gap under it
+    const rowsThatFit = Math.floor((A4.h - 2 * vertical - header) / (body * leading));
+    const drawnLines = Math.ceil(PAGE_CHARS / (measure / (ADVANCE_EM * body)));
+
+    // It fits — a page that overflowed would lose its foot behind `overflow:
+    // hidden`, silently, which is the worst way for this to be wrong.
+    expect(drawnLines).toBeLessThanOrEqual(rowsThatFit);
+    // And it fills. At the size this task first shipped, a page drew in 28 lines
+    // of 46 and left the bottom two fifths of every sheet blank.
+    expect(drawnLines / rowsThatFit).toBeGreaterThan(0.85);
   });
 });

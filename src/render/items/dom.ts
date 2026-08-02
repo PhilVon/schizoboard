@@ -67,6 +67,8 @@ import { edgePoints, EDGE_PROPS, insideEdge } from "@/render/items/edge";
 import { ItemInk } from "@/render/ink/canvas";
 import { TextEditor, type ItemEditorHooks } from "@/render/items/editor";
 import { clearHand, writeHand } from "@/render/items/hand";
+import type { PageView } from "@/app/pages";
+import type { TextRun } from "@/platform/types";
 import {
   exportStylesheet,
   rasteriseItems,
@@ -206,6 +208,16 @@ export type AssetResolver = (sha256: string, screenPx: number) => AssetView;
  * seeing one of them come up is not having seen the other.
  */
 export type FirstSight = (itemId: string) => boolean;
+
+/**
+ * What page is open on this case file, if any — T-320.
+ *
+ * Takes the asset hash and not the item id, because a page is a fact about the
+ * file rather than about the thing on the wall: two folders of the same document
+ * are the same pages. Which page is `state/` 's business (T-321) and not this
+ * layer's, so the resolver answers for whichever one the reader is on.
+ */
+export type PageResolver = (sha256: string) => PageView | null;
 
 /**
  * What the document says a file is — as distinct from [`AssetView`], which is
@@ -419,6 +431,15 @@ interface View {
    * question about pins and the view has never heard of one.
    */
   setCurl(corners: Float32Array, faces: Float32Array): void;
+  /**
+   * The page open on this item, or null for an item that is not a case file or
+   * is not open (T-320).
+   *
+   * Offered to every view and answered only by the folder, which is the bargain
+   * `setCurl` above already takes — the layer asks the same question of every
+   * item and each material answers for itself. A polaroid has no inside.
+   */
+  setPage(view: PageView | null): void;
   /**
    * Which corners are taped, as `tape.ts`'s mask.
    *
@@ -1112,6 +1133,10 @@ class PolaroidView implements View {
    * frame, and the reason a photograph on a real board bends at the corner is
    * that somebody bent it. The pins hold this one exactly as much either way.
    */
+  /** Nothing to open. See the interface — every view is offered this and each
+   *  one answers for its own material. */
+  setPage(): void {}
+
   setCurl(): void {}
 
   setTape(seed: number, corners: number): void {
@@ -1474,6 +1499,10 @@ class PaperView implements View {
     }
   }
 
+  /** Nothing to open. See the interface — every view is offered this and each
+   *  one answers for its own material. */
+  setPage(): void {}
+
   setCurl(corners: Float32Array, faces: Float32Array): void {
     writeCurl(this.el, corners, faces, this.written);
   }
@@ -1716,6 +1745,14 @@ class CaseView implements View {
   /** The sheet's own frame, upright, and the one thing on this object whose
    *  type is sized to a page rather than to the label on a box. */
   private readonly leaf: HTMLDivElement | null = null;
+  /** The page's text, its lifted scan, and the sentence for a page that has
+   *  neither — a folder's only, and null on the two cassettes. */
+  private readonly leafBody: HTMLDivElement | null = null;
+  private readonly leafScan: HTMLImageElement | null = null;
+  private readonly leafNote: HTMLDivElement | null = null;
+  /** What `setPage` last drew, so a page that has not changed is not rewritten
+   *  on every frame the folder is open. A page turn changes it; a pan does not. */
+  private drawnPage = "";
 
   private boundCold: ItemCold | null = null;
   /**
@@ -1814,7 +1851,17 @@ class CaseView implements View {
       this.pageMeta = div("leaf-meta");
       const header = div("leaf-header");
       header.append(this.pageNumber, this.pageMeta);
-      leaf.append(header);
+      // What is on the page, and it is three elements rather than one because
+      // the three answers are different *materials*: text set on the sheet, a
+      // scan laid on it, and a sentence about why there is neither. Built once
+      // and switched by class, so a page turn writes content rather than
+      // restructuring the sheet.
+      this.leafBody = div("leaf-body");
+      this.leafScan = document.createElement("img");
+      this.leafScan.className = "leaf-scan";
+      this.leafScan.alt = "";
+      this.leafNote = div("leaf-note");
+      leaf.append(header, this.leafBody, this.leafScan, this.leafNote);
       const page = div("folder-page");
       page.append(leaf);
       this.body.append(back, sheets, page, front);
@@ -2205,6 +2252,98 @@ class CaseView implements View {
   }
 
   /**
+   * Draw the page that is open on this case file — T-320.
+   *
+   * Called only for the item that is actually open, so the cost of a page is
+   * paid once per document rather than once per folder on the board. Guarded on
+   * what was last drawn, because the layer offers this on every frame the folder
+   * is open and rewriting a page a person is reading is both wasted work and a
+   * visible reflow under their eyes.
+   *
+   * ## Five answers, and the distinctions are the whole of AC-681 and AC-682
+   *
+   * A typed page is its runs, re-set on our paper — Q-198 chose that over a
+   * facsimile, so the boxes Rust measured are used to work out where the *lines*
+   * were and then thrown away. A page of a text file is its text, which has no
+   * boxes at all. A scan is its lifted image laid on the sheet (Q-199), which is
+   * the one place this feature shows the original and does not reintroduce a
+   * facsimile, because nothing is being rendered — an image is being put on a
+   * piece of paper, which is what this board already does with a photograph.
+   *
+   * And the two that must never pass as a blank sheet: a page with nothing on it
+   * says so, and one this build cannot read says what stopped it. A filing is
+   * routinely typed pages with scanned exhibits behind them, so all five sit
+   * side by side inside one document.
+   */
+  setPage(view: PageView | null): void {
+    const body = this.leafBody;
+    const scan = this.leafScan;
+    const note = this.leafNote;
+    if (body === null || scan === null || note === null || this.leaf === null) return;
+
+    const page = view?.page ?? null;
+    const content = page?.content ?? null;
+    // Everything that decides what is drawn, as one string. A digest rather than
+    // five compared fields for the reason the facts digest above is one: this
+    // runs on every frame a folder is open and none of it changes between turns.
+    const digest = [
+      view?.phase ?? "none",
+      page?.index ?? 0,
+      content?.kind ?? "-",
+      view?.imageUrl ?? "",
+      view?.reason ?? "",
+      content?.kind === "text" ? content.runs.length : content?.kind === "plain" ? content.text.length : 0,
+    ].join(" ");
+    if (digest === this.drawnPage) return;
+    this.drawnPage = digest;
+
+    const seed = this.boundCold?.seed ?? 0;
+    const setNote = (say: string): void => {
+      note.textContent = say;
+    };
+
+    if (view === null || view.phase === "reading") {
+      // The paper is there and nothing is on it yet. Deliberately not a message:
+      // a page arrives in a handful of milliseconds off a cached document, and a
+      // word that appears and vanishes at that rate is a flicker rather than
+      // information.
+      clearHand(body);
+      scan.removeAttribute("src");
+      setNote("");
+    } else if (view.phase === "unreadable" || content === null) {
+      clearHand(body);
+      scan.removeAttribute("src");
+      setNote(view.reason ?? "this page could not be read");
+    } else if (content.kind === "plain") {
+      // `plain` — the flag, not the content kind. Q-269: the hand's face without
+      // the per-glyph jitter, which measured 0.2 ms a page against 16.3.
+      writeHand(body, content.text, seed, true);
+      scan.removeAttribute("src");
+      setNote("");
+    } else if (content.kind === "text") {
+      writeHand(body, linesOfRuns(content.runs), seed, true);
+      scan.removeAttribute("src");
+      setNote("");
+    } else if (content.kind === "image") {
+      clearHand(body);
+      if (view.imageUrl) scan.src = view.imageUrl;
+      else scan.removeAttribute("src");
+      setNote("");
+    } else if (content.kind === "empty") {
+      clearHand(body);
+      scan.removeAttribute("src");
+      setNote("this page is blank");
+    } else {
+      clearHand(body);
+      scan.removeAttribute("src");
+      setNote(content.reason);
+    }
+
+    this.leaf.dataset["page"] =
+      view === null ? "reading" : view.phase === "ready" ? (content?.kind ?? "reading") : view.phase;
+  }
+
+  /**
    * **No case object curls**, which now includes the folder (T-314, Q-243).
    *
    * Not a special case — it is the same shape as `PolaroidView.setCurl`, which
@@ -2327,16 +2466,77 @@ const NUMBER_SIZE = 0.055;
 const TITLE_SIZE = 0.058;
 /** And the rest, which is the runtime, the page count and the caption. */
 const CASE_TEXT_SIZE = 0.048;
+
 /**
- * The open page's type, as a fraction of the folder's width.
+ * Text runs, back into lines.
  *
- * 0.017 of 480 units is about 8, which is 11 point at this board's scale — a
- * document header, and about a fifth of the gummed label above it. That is the
- * whole distinction: a label is sized to be read off a shelf and a page is sized
- * to be read at a desk, and pretending otherwise is how a document ends up
- * looking like a poster of itself.
+ * Rust hands back a run and the box it was set in, and Q-198 chose to *re-set*
+ * the text rather than reproduce the page — so the boxes are used for the one
+ * thing they are still needed for, which is working out where the line breaks
+ * were, and then thrown away. Reproducing the boxes would be a facsimile with
+ * extra steps, and the whole argument for this feature is that a document should
+ * look like it belongs on this wall rather than like a viewer embedded in it.
+ *
+ * A new line when the baseline moves by more than half the run's own height:
+ * half, because superscripts, footnote marks and a mid-line font change all
+ * shift `y` a little and none of them is a line break. Runs arrive in
+ * content-stream order, which is *usually* reading order and is not guaranteed
+ * to be — a two-column page can interleave. That is a known limit of the
+ * extractor rather than of this function, and it is the same limit T-297 lists.
  */
-const LEAF_TEXT_SIZE = 0.017;
+export function linesOfRuns(runs: readonly TextRun[]): string {
+  if (runs.length === 0) return "";
+  let text = "";
+  let lastY = runs[0]!.y;
+  let lastHeight = runs[0]!.height;
+  for (const [at, run] of runs.entries()) {
+    if (at > 0) {
+      const broke = Math.abs(run.y - lastY) > Math.max(1, lastHeight * 0.5);
+      // A run that continues a line still needs a gap unless the last one ended
+      // in one: a PDF splits a line at every font and kerning change, and
+      // joining them bare runs the words together.
+      text += broke ? "\n" : /\s$/.test(text) || /^\s/.test(run.text) ? "" : " ";
+    }
+    text += run.text;
+    lastY = run.y;
+    lastHeight = run.height;
+  }
+  return text;
+}
+
+/**
+ * The open page's **body** type, as a fraction of the folder's width. The header
+ * is a multiple of it in `items.css`, so there is one size on a page.
+ *
+ * 0.01746 of 481 units is 8.4, and it was **measured rather than derived** —
+ * two attempts to derive it were both wrong, in opposite directions, and the
+ * board comment on T-320 records why.
+ *
+ * The thing that cannot be reasoned about is how many characters of this hand
+ * fit a line. `text.rs` charges a page 66 columns; the sheet's 277.8-unit
+ * measure actually holds about 85 of them at this size, because an average
+ * glyph in Patrick Hand advances 0.377 em rather than the ~0.5 a printed text
+ * face does. So the grid and the layout do not agree line for line and were
+ * never going to — D-60 is explicit that pagination is defined in bytes and is
+ * blind to the typeface — and what has to be true is only that a page's worth
+ * of text *fits the sheet and roughly fills it*.
+ *
+ * At 8.4 a 66-by-46 page of real prose draws in 34 lines of the 37 that fit:
+ * full, with three lines of headroom for prose with longer words in it. At 8.7
+ * it is exactly 35 of 35, which is the crossover and no margin at all, and at
+ * 9.0 it overflows. At the 6.8 this task first shipped, a page drew in 28 lines
+ * of 46 and left the bottom two fifths of every sheet blank — which is what the
+ * first screenshot showed and what sent this back to be measured.
+ *
+ * So `text.rs`'s 66 by 46 survives its one look (D-60), and nothing stored
+ * moves. What moved is the type it is set in.
+ *
+ * A label is sized to be read off a shelf and a page is sized to be read at a
+ * desk, so this is deliberately about a fifth of the gummed label's size and
+ * deliberately too small to read at board scale. The floor that fixes that is a
+ * camera problem (T-321) rather than a type one.
+ */
+const LEAF_TEXT_SIZE = 0.01746;
 /** How much of a folder's width the gummed label may take, inside its own
  *  padding — the number `items.css` writes, here as well because `fitLabel`
  *  needs the box the name has to fit in. */
@@ -2521,12 +2721,22 @@ export class DomItemLayer implements ItemLayer {
     assetUrl: AssetResolver,
     assetFacts: AssetLookup = () => NO_FACTS,
     editor?: ItemEditorHooks,
+    pageOf: PageResolver = () => null,
   ) {
     this.host = host;
     this.assetUrl = assetUrl;
     this.assetFacts = assetFacts;
     this.editor = editor ? new TextEditor(editor) : null;
+    this.pageOf = pageOf;
   }
+
+  /**
+   * The page open on a case file — T-320. Defaults to "nothing is open", which
+   * is the right answer for every caller that has no shell behind it: the spike
+   * rig and most of the tests here, where a folder draws its paper and nothing
+   * is set on it.
+   */
+  private readonly pageOf: PageResolver;
 
   get mounted(): number {
     return this.views.size;
@@ -2906,6 +3116,7 @@ export class DomItemLayer implements ItemLayer {
       // — this is how a peer's typing reaches an open field (T-180). It is a
       // string comparison for the local echo, which is every other case.
       if (this.editor?.itemId === id) this.editor.receive(cold.text);
+      const open = scene.openOf(slot);
       view.transform(
         // The rendered centre, not the stored one: a hanging item turns about
         // its pin, and `drift` is the half of that which is a translation
@@ -2919,8 +3130,14 @@ export class DomItemLayer implements ItemLayer {
         // Off the scene's own reader, like the three above it and for the same
         // reason: this is a drawn transient and nothing about it is in the
         // document, so an item's own record cannot answer it (T-319).
-        scene.openOf(slot),
+        open,
       );
+      // The page, and **only for the item that is actually open** — so a
+      // document costs what a document costs once, rather than once per folder
+      // on a board of them. `null` puts a view back to bare paper, which is what
+      // a folder being shut has to do or the next one opened inherits the last
+      // one's page.
+      view.setPage(open > 0 && cold.assetId ? this.pageOf(cold.assetId) : null);
     }
 
     // After the transform, not before: `cornerCurl` reads the pose the sheet is

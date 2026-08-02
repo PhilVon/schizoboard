@@ -2214,15 +2214,57 @@ textarea.item-field::-webkit-scrollbar {
   box-shadow: 0 0.4% 1.2% rgb(60 42 24 / 22%);
 }
 
-/* The page's own frame, upright because its parent carries the quarter turn.
-   Everything written on a page is sized off this one font-size. */
+/*
+ * The page's own frame, upright because its parent carries the quarter turn.
+ * Everything written on a page is sized off this one font-size, which is the
+ * BODY size — the header is a multiple of it below.
+ *
+ * **The margins and the type size are one decision, not two**, and this is where
+ * `text.rs`'s 66 by 46 grid got the single look D-60 reserved for it.
+ *
+ * The arithmetic that is worth writing down, because it is not recoverable by
+ * reading: a CSS padding percentage resolves against the containing block's
+ * WIDTH in *both* axes, so 4.2% by 7.4% of a 326-unit sheet is 13.7 units top
+ * and bottom and 24.1 either side. That leaves a 277.8-unit measure and, after
+ * the header, about 421 units of column.
+ *
+ * What cannot be derived is how many characters of this hand fit that measure,
+ * and two attempts to derive it were wrong in opposite directions. Measured: it
+ * holds about 85 at `LEAF_TEXT_SIZE`, because a glyph in Patrick Hand advances
+ * 0.377 em on average rather than the ~0.5 a printed text face does. So the
+ * grid's 66 columns and this measure's 85 do not agree, and were never going to
+ * — D-60 defines pagination in bytes and is deliberately blind to the typeface.
+ * What has to be true is that a page's worth of text fits the sheet and roughly
+ * fills it, and at 8.4 units a real page draws in 34 lines of the 37 that fit.
+ *
+ * The lever, if that ever stops being true, is the grid rather than this:
+ * layout is downstream of pagination and has to stay that way, or a stylesheet
+ * edit moves every citation anybody stored.
+ */
 .folder-leaf {
   position: absolute;
   inset: 0;
   padding: 4.2% 7.4%;
   overflow: hidden;
-  font-family: "Source Sans 3", ui-sans-serif, system-ui, sans-serif;
+  display: flex;
+  flex-direction: column;
+  /* Q-269: the board's own hand, set plainly. The face is ours — this is the
+     same family every note wears — and what is gone is the per-character jitter,
+     which measured 16.3 ms a page against 0.2. On a note the jitter is the whole
+     point; on two thousand words of a filing it is a claim the document does not
+     make, and `hand.ts`'s 512-glyph cap would have put a visible band a quarter
+     of the way down the page. */
+  font-family: "Patrick Hand", "Segoe Script", "Bradley Hand", cursive;
+  line-height: 1.33;
   color: #35302a;
+}
+
+/* The clean face, per document — AC-678, "for something that has to be read
+   rather than admired". The one difference is the typeface; everything else
+   about the sheet is the same sheet. */
+.folder-leaf[data-face="clean"] {
+  font-family: "Source Sans 3", ui-sans-serif, system-ui, sans-serif;
+  line-height: 1.4;
 }
 
 /*
@@ -2232,6 +2274,10 @@ textarea.item-field::-webkit-scrollbar {
  * rather than by a gap: that is what a case file's header actually looks like.
  */
 .leaf-header {
+  /* Bigger than the body, the way a document header is, and expressed in `em` so
+     it moves with the one number above rather than being a second size. */
+  font-size: 1.2em;
+  flex: none;
   display: flex;
   align-items: baseline;
   justify-content: space-between;
@@ -2253,6 +2299,90 @@ textarea.item-field::-webkit-scrollbar {
 .leaf-meta {
   flex: none;
   opacity: 0.62;
+}
+
+/*
+ * The text of the page. `pre-wrap` because the line breaks came off the
+ * document — a text file's are its own, and a PDF's are where `linesOfRuns`
+ * worked out the baselines moved — and collapsing them would be this side
+ * inventing a paragraph structure the file never stated.
+ *
+ * It scrolls nowhere. A page holds a page: whatever does not fit is the
+ * pagination being wrong rather than something to be scrolled to, which is why
+ * the grid above is asserted rather than trusted.
+ */
+.leaf-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  margin-top: 0.9em;
+  white-space: pre-wrap;
+  overflow: hidden;
+  /* A word longer than the measure is a URL or a hash, and letting one push the
+     measure out would take the whole page with it. */
+  overflow-wrap: break-word;
+}
+
+/*
+ * A scan, lifted and laid on our own sheet — Q-199.
+ *
+ * `contain` and not `cover`: a page of evidence may not be cropped to fit a box,
+ * which is the one thing this element must never do. What is left over is our
+ * paper, which is the point — the scan is *on* the sheet rather than being the
+ * sheet, so the stock, the edge and the ageing are all still the board's.
+ *
+ * Its own small shadow, because a sheet laid on another sheet has one. Not a
+ * frame: a border round it would be the viewer chrome D-46 section 4 refuses.
+ */
+.leaf-scan {
+  flex: 1 1 auto;
+  min-height: 0;
+  margin-top: 0.9em;
+  width: 100%;
+  object-fit: contain;
+  object-position: center top;
+  display: none;
+  filter: drop-shadow(0 0.35% 0.7% rgb(60 42 24 / 26%));
+}
+
+.folder-leaf[data-page="image"] .leaf-scan {
+  display: block;
+}
+
+/*
+ * A page that yields neither text nor an image, and one this build cannot read
+ * — AC-682, and the whole reason `PageContent` has five arms instead of two.
+ *
+ * Set apart from the body deliberately: it is the *board* speaking about the
+ * document rather than the document speaking. Italic, quiet, and never in the
+ * middle of the sheet where a reader would take it for the page's own first
+ * line.
+ */
+.leaf-note {
+  flex: none;
+  margin-top: 1.4em;
+  font-style: italic;
+  opacity: 0.55;
+}
+
+.leaf-note:empty {
+  display: none;
+}
+
+/*
+ * A page with no text on it gives the body no room at all.
+ *
+ * Without this a scanned page's `.leaf-body` is still a flex child with
+ * `flex: 1 1 auto`, so it claimed 133 units above the scan and pushed the image
+ * a third of the way down a sheet it was meant to fill. Driven, and it was in
+ * the readings before it was in the picture.
+ *
+ * Keyed on `data-page` and **not** on `:empty`, which was the first attempt and
+ * did not take: what is on the sheet is a fact the view already states on the
+ * leaf, and asking the DOM to re-derive it from whether a node has children is
+ * a second answer to a settled question.
+ */
+.folder-leaf:not([data-page="plain"]):not([data-page="text"]) .leaf-body {
+  display: none;
 }
 
 /* --- the two cassettes ---------------------------------------------------- */

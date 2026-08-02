@@ -25,6 +25,7 @@ import {
   sealBoard,
   snapshot,
 } from "@/crdt/doc";
+import { PageReader } from "@/app/pages";
 import * as ops from "@/crdt/ops";
 import { readAsset, SCHEMA_VERSION } from "@/crdt/schema";
 import {
@@ -491,6 +492,23 @@ async function boot(): Promise<void> {
    * `onInput` is wired to the document in T-180; for now the field is a
    * scratchpad, and closing it throws the text away.
    */
+  /**
+   * The pages of whatever case file is open (T-320).
+   *
+   * Here rather than inside the layer for the reason `assetUrl` is here: it
+   * needs the shell, and the layer is a renderer. What it hands back is what is
+   * known *now* plus a phase, because a view cannot await — the same shape every
+   * asynchronous thing this renderer draws already takes.
+   */
+  const reader = new PageReader(native, (sha256) => {
+    // Whatever is wearing this file, redrawn. Narrow enough that a page landing
+    // costs one item: a document is open on one folder at a time, and a board
+    // holding the same file twice is a case nobody has ever produced.
+    for (const id of scene.itemIds()) {
+      if (scene.cold(id)?.assetId === sha256) dirty.item(id);
+    }
+  });
+
   const items = new DomItemLayer(world.layers.world, assetUrl, assetFacts, {
     /**
      * Straight to the document, not queued to phase 9 like a tool's writes.
@@ -515,7 +533,12 @@ async function boot(): Promise<void> {
       // clicking away mid-rise does not snap.
       if (flatten.itemId === id) flatten.close();
     },
-  });
+  },
+  // The page open on a case file (T-320). A hash and not an item id, because a
+  // page is a fact about the file: two folders of one document are one set of
+  // pages. Which page the reader is on is T-321's, so this answers for
+  // whichever that is.
+  (sha256) => reader.page(sha256, 1));
 
   /**
    * How old the board thinks its items are — DESIGN section 4.7, and Q-105,
@@ -1272,6 +1295,11 @@ async function boot(): Promise<void> {
     // folder, which is a state no single `Escape` could get out of.
     crt.close();
     opening.open(itemId);
+    // Say which file is being read, so the shell holds that one open and lets
+    // go of whatever it was holding. Not the *page* — asking for one is what
+    // fetches it, and the layer does that when it draws.
+    const reading = scene.cold(itemId)?.assetId ?? null;
+    if (reading !== null) reader.open(reading);
     const box = scene.boundsOf(itemId, 0, foundBox);
     if (box !== null) flight.toBox(camera, box, undefined, READING_ZOOM);
     return true;
@@ -1295,6 +1323,11 @@ async function boot(): Promise<void> {
     // is no reading of it under which one press should leave the other up.
     const wasWatching = crt.close();
     if (opening.itemId === null) return wasWatching;
+    // Let the file go. On a 51 MB scan that is 51 MB of working set the shell
+    // was holding open, and it is held until somebody says — Rust cannot infer
+    // that a folder has been shut.
+    const wasReading = scene.cold(opening.itemId)?.assetId ?? null;
+    if (wasReading !== null) reader.close(wasReading);
     opening.close();
     return true;
   };
