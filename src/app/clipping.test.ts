@@ -10,11 +10,16 @@ import {
   Clipper,
   clipScale,
   landing,
+  readingCorners,
+  screenQuad,
+  toWordBounds,
   type ShownPage,
 } from "@/app/clipping";
 import type { PageContent } from "@/platform/types";
 import type { RasterCamera, RasterReport } from "@/render/items/raster";
 import type { Bounds } from "@/state/camera";
+import { OPEN_PAGE_TURN } from "@/lib/objects";
+import { Camera } from "@/state/camera";
 import { Scene } from "@/state/scene";
 
 const SHA = "d0c5".padEnd(64, "0");
@@ -40,6 +45,8 @@ let page: ShownPage | null;
 let drawn: number;
 /** What the encoder answers. Null is an encoder that refused. */
 let encoded: { bytes: Uint8Array; mime: string } | null;
+/** What the caret hit test finds under the rectangle on a typed page. */
+let passage: string;
 
 /**
  * A case file lying open, in the scene *and* in the document.
@@ -96,6 +103,7 @@ function clipper(): Clipper {
       return Promise.resolve({ sha256: CLIP_SHA, w: 480, h: 300, size: bytes.length });
     },
     stored: (sha256) => held.push(sha256),
+    passage: () => passage,
     say: (message) => said.push(message),
   });
 }
@@ -128,6 +136,7 @@ beforeEach(() => {
   canvases = [];
   drawn = 1;
   encoded = { bytes: new Uint8Array([1, 2, 3, 4]), mime: "image/webp" };
+  passage = "the third invoice has no counter-signature";
   page = { sha256: SHA, index: 4, content: SCAN, origName: "scan.pdf" };
   registerAsset(
     board,
@@ -152,17 +161,85 @@ describe("what a rectangle yields, by what is on the page", () => {
     expect(readItem(made, board.items.get(made)!)!.assetId).toBe(CLIP_SHA);
   });
 
-  it("cuts nothing off a typed page, and says why", async () => {
-    // Q-284's other half is the text under the rectangle, which is not built
-    // yet. What must never happen meanwhile is a picture of our own hand being
-    // stored as though it were the document.
+  it("takes the words off a typed page rather than a picture of our own hand", async () => {
+    // Q-284. Q-198 chose re-typesetting over facsimile, so the pixels of a
+    // typed page are our hand on our paper — lifting them would photograph the
+    // reading surface and call it the document.
     const id = folder();
     page = { sha256: SHA, index: 4, content: TYPED, origName: "scan.pdf" };
     clipper().cut(id, rect(-100, -80, 60, 70));
     await settled();
 
     expect(ingested).toEqual([]);
+    const made = card(id)!;
+    expect(readItem(made, board.items.get(made)!)!.type).toBe("note");
+    expect(readItem(made, board.items.get(made)!)!.assetId).toBeNull();
+  });
+
+  it("reads a page of plain text, which is what a text file gives", async () => {
+    // `plain` and `text` are different arms of PageContent and a .txt file
+    // produces the first — D-60's 66-by-46 grid, with no runs at all. Testing
+    // only `text` left the commonest typed page falling through to the picture
+    // arm, which a mutation caught and this stops.
+    const id = folder();
+    page = { sha256: SHA, index: 2, content: { kind: "plain", text: "..." }, origName: "notes.txt" };
+    clipper().cut(id, rect(-100, -80, 60, 70));
+    await settled();
+
+    expect(ingested).toEqual([]);
+    const made = card(id)!;
+    expect(readItem(made, board.items.get(made)!)!.type).toBe("note");
+    expect(itemText(board, made)?.toString()).toContain("notes.txt p. 2");
+  });
+
+  it("writes the passage with its citation under it, on index stock", async () => {
+    const id = folder();
+    page = { sha256: SHA, index: 4, content: TYPED, origName: "scan.pdf" };
+    clipper().cut(id, rect(-100, -80, 60, 70));
+    await settled();
+
+    const made = card(id)!;
+    expect(itemText(board, made)?.toString()).toBe(
+      `the third invoice has no counter-signature
+
+— scan.pdf p. 4`,
+    );
+    expect(readItem(made, board.items.get(made)!)!.style.paperStock).toBe("index");
+  });
+
+  it("threads a written card exactly as it threads a picture", async () => {
+    const id = folder();
+    page = { sha256: SHA, index: 4, content: TYPED, origName: "scan.pdf" };
+    clipper().cut(id, rect(-100, -80, 60, 70));
+    await settled();
+
+    expect(board.strings.size).toBe(1);
+    expect(board.pins.size).toBe(2);
+    expect(checkInvariants(board)).toEqual([]);
+  });
+
+  it("cuts nothing from a rectangle over the blank half of a page", async () => {
+    // AC-855, and the same answer the picture arm gives when nothing could be
+    // drawn: no card, no pin, no string.
+    const id = folder();
+    page = { sha256: SHA, index: 4, content: TYPED, origName: "scan.pdf" };
+    passage = "   ";
+    clipper().cut(id, rect(-100, -80, 60, 70));
+    await settled();
+
     expect(card(id)).toBeNull();
+    expect(board.pins.size).toBe(0);
+    expect(said).toHaveLength(1);
+  });
+
+  it("says so on a page that is blank or unreadable", async () => {
+    const id = folder();
+    page = { sha256: SHA, index: 4, content: { kind: "empty" }, origName: "scan.pdf" };
+    clipper().cut(id, rect(-100, -80, 60, 70));
+    await settled();
+
+    expect(card(id)).toBeNull();
+    expect(ingested).toEqual([]);
     expect(said).toHaveLength(1);
   });
 
@@ -368,5 +445,118 @@ describe("where the card lands", () => {
 
   it("has nowhere to put a card for an item that has gone", () => {
     expect(landing(scene, "nobody", rect(0, 0, 10, 10), 200)).toBeNull();
+  });
+});
+
+describe("which two points a passage runs between", () => {
+  it("reads from the highest corner to the lowest", () => {
+    const ends = readingCorners([
+      { x: 10, y: 100 },
+      { x: 90, y: 100 },
+      { x: 90, y: 20 },
+      { x: 10, y: 20 },
+    ])!;
+    expect(ends[0]).toEqual({ x: 10, y: 20 });
+    expect(ends[1]).toEqual({ x: 90, y: 100 });
+  });
+
+  it("breaks a level tie leftmost first and rightmost last", () => {
+    const ends = readingCorners([
+      { x: 10, y: 0 },
+      { x: 90, y: 0 },
+      { x: 90, y: 50 },
+      { x: 10, y: 50 },
+    ])!;
+    expect(ends[0]!.x).toBe(10);
+    expect(ends[1]!.x).toBe(90);
+  });
+
+  it("is not the rectangle's own first corner once the page is turned", () => {
+    // The whole reason this function exists. The page lies a quarter turn
+    // inside the folder, so the corner with the smallest local coordinates is
+    // the BOTTOM LEFT of what somebody is looking at — start a range there and
+    // the passage runs backwards from the end of the page.
+    const camera = new Camera();
+    camera.resize(1000, 800);
+    // An open folder is drawn turned by exactly this — `Scene.setOpen`'s +90°
+    // against the stylesheet's -90°.
+    const id = folder(0, 0, -OPEN_PAGE_TURN);
+    const quad = screenQuad(scene, camera, id, rect(-100, -80, 60, 70))!;
+
+    // The rectangle's own first corner is (minX, minY), the first of the four.
+    // On a turned page that is not where the text starts.
+    const ends = readingCorners(quad)!;
+    expect(ends[0]).not.toEqual(quad[0]);
+    // It is the corner the rectangle calls (minX, maxY) — its bottom left.
+    expect(ends[0]).toEqual(quad[3]);
+  });
+
+  it("has no answer for anything but four corners", () => {
+    expect(readingCorners([])).toBeNull();
+    expect(readingCorners([{ x: 0, y: 0 }, { x: 1, y: 1 }])).toBeNull();
+  });
+});
+
+describe("the rectangle in screen space", () => {
+  it("comes back out through the pose the item is drawn at", () => {
+    const camera = new Camera();
+    camera.resize(1000, 800);
+    const id = folder(0, 0, 0);
+    const quad = screenQuad(scene, camera, id, rect(-100, -80, 60, 70))!;
+    expect(quad).toHaveLength(4);
+    // Un-rotated: the four corners are the four corners, in board order.
+    const a = camera.boardToScreen(-100, -80);
+    expect(quad[0]!.x).toBeCloseTo(a.x, 6);
+    expect(quad[0]!.y).toBeCloseTo(a.y, 6);
+  });
+
+  it("has nothing to convert for an item that has gone", () => {
+    const camera = new Camera();
+    camera.resize(1000, 800);
+    expect(screenQuad(scene, camera, "nobody", rect(0, 0, 10, 10))).toBeNull();
+  });
+});
+
+describe("a quotation rather than a substring", () => {
+  it("widens to whole words at both ends", () => {
+    // Driven, and this is the string the card actually carried: a caret hit
+    // test lands between two characters, so a rectangle over a line of a
+    // filing came back as "ed the vehicle parked outside the premises."
+    const line = "and he had watched the vehicle parked outside the premises.";
+    const [a, b] = toWordBounds(line, line.indexOf("ed the"), line.length - 4);
+    expect(line.slice(a, b)).toBe("watched the vehicle parked outside the premises.");
+  });
+
+  it("pushes out rather than in, so a tight rectangle still catches its word", () => {
+    // The other obvious rule is to pull the ends inward, and it is worse in
+    // the one case that matters: a rectangle drawn tightly around one word
+    // would come back empty.
+    const line = "the third invoice";
+    const [a, b] = toWordBounds(line, 5, 8);
+    expect(line.slice(a, b)).toBe("third");
+  });
+
+  it("keeps the punctuation attached to the word it is attached to", () => {
+    const line = "no counter-signature. The invoice";
+    const [a, b] = toWordBounds(line, 3, 20);
+    expect(line.slice(a, b)).toBe("counter-signature.");
+  });
+
+  it("treats a line break as a word gap", () => {
+    const line = "IN THE MATTER OF HARTLEY\nand in the matter of";
+    const [a, b] = toWordBounds(line, 22, 28);
+    expect(line.slice(a, b)).toBe("HARTLEY\nand");
+  });
+
+  it("survives offsets that arrive backwards or off the end", () => {
+    // The two carets come from two corners and nothing upstream promises an
+    // order, so this must not depend on one.
+    const line = "the third invoice";
+    expect(toWordBounds(line, 8, 5)).toEqual(toWordBounds(line, 5, 8));
+    expect(toWordBounds(line, 0, 500)).toEqual([0, line.length]);
+  });
+
+  it("has nothing to widen in an empty page", () => {
+    expect(toWordBounds("", 0, 0)).toEqual([0, 0]);
   });
 });

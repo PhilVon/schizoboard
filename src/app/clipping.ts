@@ -46,12 +46,13 @@
 import { createQuoteCard } from "@/crdt/ops/quote";
 import type { BoardDoc } from "@/crdt/doc";
 import type { AssetInput } from "@/crdt/ops/items";
+import { noteSizeFor } from "@/app/ingest";
 import { OPEN_PAGE_TURN, pageReference } from "@/lib/objects";
 import { polaroidFor } from "@/lib/polaroid";
 import { rotateOut } from "@/lib/rotate";
 import type { PageContent } from "@/platform/types";
 import type { RasterCamera, RasterReport } from "@/render/items/raster";
-import type { Bounds } from "@/state/camera";
+import type { Bounds, Camera, Vec2 } from "@/state/camera";
 import type { Scene } from "@/state/scene";
 import { settleOnPin } from "@/state/tools/frame";
 
@@ -130,6 +131,19 @@ export interface ClipperOptions {
   /** These bytes went into this store a moment ago, so this machine holds them. */
   stored(sha256: string): void;
   /**
+   * The words under the rectangle on a typed page — Q-284's other half.
+   *
+   * Injected because it is a DOM question and this module has no business
+   * asking one: the page is a single text node and the only way to a character
+   * from a point is the document's own caret hit test. What is decided *here*
+   * rather than at the wiring is which two points to ask about, which is
+   * {@link screenQuad} and {@link readingCorners} below.
+   *
+   * `""` when the rectangle caught nothing, which is a real answer: a rectangle
+   * dragged over the blank half of a page has no passage in it.
+   */
+  passage(itemId: string, rect: Bounds): string;
+  /**
    * Say a sentence to whoever is at the board — `Flash.say`, the same channel
    * a refused paste uses (Q-235).
    *
@@ -202,10 +216,17 @@ export class Clipper {
     // the gesture asking a question, not a person being refused.
     if (page === null) return;
 
+    // What comes out is what was actually there (Q-284). A scan has pixels and
+    // no text to select; a typed page has words, and lifting pixels off one
+    // would photograph our own hand rather than the document.
+    if (page.content.kind === "text" || page.content.kind === "plain") {
+      this.words(itemId, rect, page);
+      return;
+    }
     if (page.content.kind !== "image") {
-      // The written arm — the text under the rectangle, as an index card.
-      // Q-284's other half, and not yet built.
-      this.options.say?.("A rectangle cuts a picture out of a scan. This page is typed.");
+      // Blank, or a page this build cannot read. The sheet already says so in
+      // its own words; there is nothing to cut out of it.
+      this.options.say?.("There is nothing on that page to cut out.");
       return;
     }
 
@@ -213,6 +234,47 @@ export class Clipper {
     void this.lift(itemId, rect, page).finally(() => {
       this.inFlight -= 1;
     });
+  }
+
+  /**
+   * The written arm: the words under the rectangle, on an index card.
+   *
+   * Synchronous, and the asymmetry with {@link lift} is the whole difference
+   * between the two. A picture has to be rasterised, encoded and written to
+   * disk before there is a hash to put in the document; a passage is already in
+   * the page somebody is reading. So this lands in the same frame as the
+   * release, and the card is the one `createQuoteCard` has built since T-281 —
+   * no asset, no polaroid, no bytes.
+   */
+  private words(itemId: string, rect: Bounds, page: ShownPage): void {
+    const said = this.options.passage(itemId, rect).trim();
+    // A rectangle over the blank half of a page. Nothing is written, so there
+    // is no card, no pin and no string — AC-855, and the same answer the
+    // picture arm gives when nothing could be drawn.
+    if (said === "") {
+      this.options.say?.("There is nothing written there.");
+      return;
+    }
+    const { scene, board } = this.options;
+    // Sized the way a pasted note is sized, off its own words. A quote card is
+    // a note on index stock and there is no second rule for how big one is.
+    const size = noteSizeFor(said);
+    const where = landing(scene, itemId, rect, size.w);
+    if (where === null) return;
+
+    createQuoteCard(
+      board,
+      {
+        quote: said,
+        reference: pageReference(page.origName, page.sha256, page.index),
+        x: where.x,
+        y: where.y,
+        w: size.w,
+        h: size.h,
+        source: { itemId, lx: (rect.minX + rect.maxX) / 2, ly: (rect.minY + rect.maxY) / 2 },
+      },
+      settleOnPin(scene, [itemId]),
+    );
   }
 
   /**
@@ -412,4 +474,105 @@ export function landing(
   const middle = (box.minX + box.maxX) / 2;
   const x = at.x >= middle ? box.maxX + gap : box.minX - gap;
   return { x, y: at.y };
+}
+
+/**
+ * The rectangle's four corners in **screen** space, or null.
+ *
+ * The same conversion `SelectTool.quadFrom` makes for the outline, and here for
+ * the same reason one level on: the rectangle is square in the item's frame and
+ * the page it is over is not square to anything. A caret hit test takes client
+ * coordinates, so the corners have to come back out through the pose the item
+ * is *drawn* at — swing, drift, open turn and all — or the two points asked
+ * about are two points on a page that is no longer there.
+ *
+ * Clockwise from the rectangle's own origin, like the tool's own quad.
+ */
+export function screenQuad(
+  scene: Scene,
+  camera: Camera,
+  itemId: string,
+  rect: Bounds,
+): readonly Vec2[] | null {
+  const slot = scene.slotOf(itemId);
+  if (slot === undefined) return null;
+  const angle = scene.renderRot(slot);
+  const cx = scene.renderX(slot);
+  const cy = scene.renderY(slot);
+  const cos = Math.cos(angle);
+  const sin = Math.sin(angle);
+  const corners: Vec2[] = [];
+  for (const [lx, ly] of [
+    [rect.minX, rect.minY],
+    [rect.maxX, rect.minY],
+    [rect.maxX, rect.maxY],
+    [rect.minX, rect.maxY],
+  ] as const) {
+    const board = rotateOut(lx, ly, cx, cy, cos, sin);
+    const at = camera.boardToScreen(board.x, board.y);
+    corners.push({ x: at.x, y: at.y });
+  }
+  return corners;
+}
+
+/**
+ * Which two of the four corners a passage runs *between* — reading order, not
+ * rectangle order.
+ *
+ * **The rectangle's own `minX`/`minY` corner is the wrong answer and it is
+ * wrong by exactly a quarter turn.** The page lies at {@link OPEN_PAGE_TURN}
+ * inside the folder, so the corner with the smallest local coordinates is not
+ * the corner the text starts at — on an open folder it is the *bottom left* of
+ * what somebody is looking at. Reading order is a fact about the screen, so it
+ * is decided on the screen: the first corner is the highest one, and the last
+ * is the lowest, with leftmost and rightmost breaking a tie.
+ *
+ * Doing it this way means nothing here knows about the folder's turn, the
+ * item's scatter or the camera. A page at any angle reads from its own top
+ * corner, which is what a person means by "from here to there".
+ */
+export function readingCorners(corners: readonly Vec2[]): readonly [Vec2, Vec2] | null {
+  if (corners.length !== 4) return null;
+  let first = corners[0]!;
+  let last = corners[0]!;
+  for (const at of corners) {
+    if (at.y < first.y || (at.y === first.y && at.x < first.x)) first = at;
+    if (at.y > last.y || (at.y === last.y && at.x > last.x)) last = at;
+  }
+  return [first, last];
+}
+
+/**
+ * Widen `[start, end)` to whole words — the difference between a quotation and
+ * a substring.
+ *
+ * A caret hit test lands between two characters, so a rectangle dragged over a
+ * line of a filing came back as *"ed the vehicle parked outside the premises."*
+ * — driven on the real app, and read off the card. That is not a passage from
+ * the document; it is a fragment of one with the front bitten off, and it goes
+ * on a wall as evidence.
+ *
+ * So the ends are pushed out rather than in: a rectangle that catches any part
+ * of a word has caught the word. Pulling them *in* would be the other obvious
+ * rule and it is worse in the one case that matters — a rectangle drawn tightly
+ * around a single word would come back empty.
+ *
+ * Whitespace is the only boundary. Punctuation stays attached to the word it is
+ * attached to, because a quotation that drops its own full stop reads as an
+ * unfinished sentence, and the citation goes underneath rather than after it.
+ */
+export function toWordBounds(text: string, start: number, end: number): readonly [number, number] {
+  const from = Math.max(0, Math.min(start, end, text.length));
+  const to = Math.max(0, Math.max(start, end), 0);
+  let a = Math.min(from, text.length);
+  let b = Math.min(to, text.length);
+  while (a > 0 && !isSpace(text[a - 1]!)) a -= 1;
+  while (b < text.length && !isSpace(text[b]!)) b += 1;
+  return [a, b];
+}
+
+/** A newline is a boundary as much as a space is: a quote that runs off the end
+ *  of one line and onto the next has crossed a word gap, not a word. */
+function isSpace(ch: string): boolean {
+  return /\s/.test(ch);
 }

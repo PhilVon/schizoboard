@@ -136,7 +136,14 @@ import type { BoardStatus } from "@/ui/toolhint";
 import { ToolInfo } from "@/ui/toolinfo";
 import { Flash } from "@/ui/flash";
 import { Notice } from "@/ui/notice";
-import { CLIP_MIME, CLIP_QUALITY, Clipper } from "@/app/clipping";
+import {
+  CLIP_MIME,
+  CLIP_QUALITY,
+  Clipper,
+  readingCorners,
+  screenQuad,
+  toWordBounds,
+} from "@/app/clipping";
 import { SearchField, type Unsearched } from "@/ui/search";
 import { TuningPanel } from "@/ui/tuning";
 import { ContextMenu, type MenuEntry } from "@/ui/menu";
@@ -2831,6 +2838,58 @@ async function boot(): Promise<void> {
       return { bytes: new Uint8Array(await blob.arrayBuffer()), mime: blob.type || CLIP_MIME };
     },
     ingest: (bytes, mime) => native.assetIngestBytes(bytes, mime),
+    /**
+     * The words under the rectangle, off the document's own caret hit test.
+     *
+     * The two decisions this could have got wrong are both next door in
+     * `clipping.ts` and neither is here: which four points the rectangle is
+     * (`screenQuad`, through the pose the item is drawn at) and which two of
+     * them a passage runs between (`readingCorners`, which is reading order and
+     * not rectangle order — the page lies a quarter turn inside the folder, so
+     * the rectangle's own first corner is the bottom left of what you can see).
+     * What is left here is the one call that needs a document.
+     *
+     * `caretRangeFromPoint` rather than `caretPositionFromPoint`: both exist in
+     * this webview, the first hands back a `Range` already, and the page is a
+     * single text node — `writeHand` sets it with `plain` (Q-269), so there are
+     * no per-glyph spans to walk and nothing finer than an offset to ask for.
+     */
+    passage: (itemId, rect) => {
+      const quad = screenQuad(scene, camera, itemId, rect);
+      const ends = quad === null ? null : readingCorners(quad);
+      if (ends === null) return "";
+      const from = document.caretRangeFromPoint(ends[0].x, ends[0].y);
+      const to = document.caretRangeFromPoint(ends[1].x, ends[1].y);
+      if (from === null || to === null) return "";
+      const span = document.createRange();
+      try {
+        // Whole words, or the card carries a fragment with its front bitten
+        // off — driven, and the card read "ed the vehicle parked outside the
+        // premises". Only when both carets landed in the same node, which for
+        // a page is always: `writeHand` sets it plain, so `.leaf-body` holds
+        // one text node and nothing finer.
+        if (
+          from.startContainer === to.startContainer &&
+          typeof from.startContainer.textContent === "string"
+        ) {
+          const [a, b] = toWordBounds(
+            from.startContainer.textContent,
+            from.startOffset,
+            to.startOffset,
+          );
+          span.setStart(from.startContainer, a);
+          span.setEnd(from.startContainer, b);
+          return span.toString();
+        }
+        span.setStart(from.startContainer, from.startOffset);
+        span.setEnd(to.startContainer, to.startOffset);
+      } catch {
+        // The two carets landed in nodes with no common order — a rectangle
+        // that started on the page and ended off it. Nothing was selected.
+        return "";
+      }
+      return span.toString();
+    },
     stored: (sha256) => {
       // Written into this store a moment ago, so this machine is a holder —
       // `PosterGrabber` says the same thing for the same reason, and without it
