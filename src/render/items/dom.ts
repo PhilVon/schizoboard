@@ -2422,7 +2422,9 @@ class CaseView implements View {
       scan.removeAttribute("src");
       setNote("");
     } else if (content.kind === "text") {
-      writePage(body, content.runs, content.figures, view.figureUrls, seed);
+      // `page` is non-null wherever `content` is — they come off the same view
+      // — but the narrowing does not survive the walk down to `content.kind`.
+      writePage(body, content.runs, content.figures, view.figureUrls, seed, page?.width ?? 0);
       scan.removeAttribute("src");
       setNote("");
     } else if (content.kind === "image") {
@@ -2777,6 +2779,7 @@ function writePage(
   figures: readonly PageFigure[],
   urls: readonly (string | null)[],
   seed: number,
+  pageWidth: number,
 ): void {
   if (figures.length === 0) {
     if (body.firstElementChild !== null) clearHand(body);
@@ -2785,7 +2788,7 @@ function writePage(
   }
 
   clearHand(body);
-  const measure = measureOf(runs);
+  const measure = measureOf(runs, pageWidth);
   for (const block of pageBlocks(runs, figures)) {
     if (block.kind === "text") {
       const lines = document.createElement("div");
@@ -2794,7 +2797,7 @@ function writePage(
       body.append(lines);
       continue;
     }
-    body.append(figureNode(block.figure, urls[block.at] ?? null, measure));
+    body.append(...figureNodes(block.figure, urls[block.at] ?? null, measure));
   }
 }
 
@@ -2817,8 +2820,16 @@ function writePage(
  * reports a figure it could not lift rather than dropping it, and dropping it
  * *here* instead would be the same silence one module further along. A blank
  * space where an exhibit was is the failure this whole union exists to stop.
+ *
+ * **The sentence is a sibling of the box and not inside it**, which is why this
+ * hands back a list. Inside was the first version and it does not keep the
+ * promise: a figure only has to cover 2% of the page to be lifted, so a tall
+ * narrow one — a portrait photograph, a column chart — is a box some 45 px wide
+ * on the sheet, and a sentence of sixty characters in it is either cut off or
+ * forty lines long. As a sibling it is set at the measure, under the box, which
+ * is where a caption goes anyway.
  */
-function figureNode(figure: PageFigure, url: string | null, measure: number): HTMLElement {
+function figureNodes(figure: PageFigure, url: string | null, measure: number): HTMLElement[] {
   const el = document.createElement("div");
   el.className = "leaf-figure";
   el.style.width = `${(measure > 0 ? Math.min(1, figure.width / measure) * 100 : 100).toFixed(2)}%`;
@@ -2833,7 +2844,7 @@ function figureNode(figure: PageFigure, url: string | null, measure: number): HT
     image.alt = "";
     image.src = url;
     el.append(image);
-    return el;
+    return [el];
   }
 
   el.dataset["figure"] = figure.content.kind === "unsupported" ? "unsupported" : "unreadable";
@@ -2847,19 +2858,30 @@ function figureNode(figure: PageFigure, url: string | null, measure: number): HT
     figure.content.kind === "unsupported"
       ? figure.content.reason
       : "this figure could not be read";
-  el.append(note);
-  return el;
+  return [el, note];
 }
 
 /**
  * The width of the type area on the page these runs came off, in points.
+ *
+ * **Not simply the widest line that happens to be on it**, which was the first
+ * version and is wrong on any page whose text is short. Driven against a page
+ * carrying one line of caption in Courier, the widest run reached 350 pt of a
+ * 451 pt type area — so every figure on it came out 29% wider than it was, and
+ * a tall one at that width ran off the foot of the sheet.
+ *
+ * So the margin is what is measured, and the type area is derived from it: a
+ * page's margins are symmetric by the convention every producer follows, so
+ * `page - 2 x left` is the width the text *could* have used. The observed right
+ * edge still wins where it is wider, which covers the page that breaks the
+ * convention by running long into a narrow right margin.
  *
  * Zero for runs that carry no boxes at all, which is a caller's cue to fall
  * back rather than divide by it. Runs of zero width are skipped: a run with no
  * box contributes no edge, and one at x=0 would otherwise drag the left margin
  * to the corner of the page.
  */
-function measureOf(runs: readonly TextRun[]): number {
+function measureOf(runs: readonly TextRun[], pageWidth: number): number {
   let left = Infinity;
   let right = -Infinity;
   for (const run of runs) {
@@ -2867,7 +2889,8 @@ function measureOf(runs: readonly TextRun[]): number {
     left = Math.min(left, run.x);
     right = Math.max(right, run.x + run.width);
   }
-  return right > left ? right - left : 0;
+  if (!(right > left)) return 0;
+  return Math.max(right - left, pageWidth - 2 * left);
 }
 
 

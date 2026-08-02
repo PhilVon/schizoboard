@@ -14,7 +14,7 @@
  * an *oracle* rather than a fixture — a run can hash both ends and compare,
  * where a re-encoded scan could only be eyeballed.
  *
- * **`filing.pdf`** — four pages, one for each thing a page can turn out to be,
+ * **`filing.pdf`** — five pages, one for each thing a page can turn out to be,
  * in one document. That shape is the fixture rather than a convenience: D-46
  * section 4 says the decision is per *page* and not per document, "because a
  * filing is routinely typed pages with scanned exhibits behind them", and four
@@ -24,6 +24,7 @@
  *   2  a scan — the same JPEG, lifted
  *   3  empty  — a page with no `/Contents` at all
  *   4  unreadable — a JPEG 2000 image, which this build names and refuses
+ *   5  typed, with pictures ON it — a liftable figure and one that is not
  *
  * so a single open exercises `PageContent`'s five arms bar one, and the fifth
  * (`Plain`) is what a `.txt` gives.
@@ -165,6 +166,54 @@ const typed = Buffer.from(
  *  carries a sentence instead of being a boolean. */
 const jpxBytes = Buffer.from("\x00\x00\x00\x0cjP  \r\n\x87\n", "latin1");
 
+/**
+ * Page 5 — a typed page with pictures ON it, which is a different thing from a
+ * page that *is* a picture and was the one arm nothing exercised (T-329).
+ *
+ * Two figures rather than one, because the interesting assertion is the
+ * *order*: the chart sits between the paragraph above it and its own caption,
+ * and the JPEG 2000 below that holds its place and says why it could not be
+ * lifted. A single liftable figure would have shown a picture on a page and
+ * left both of those untested by eye.
+ *
+ * Both clear `FIGURE_COVERAGE` — 240x180 is 8.6% of the MediaBox and 90x260 is
+ * 4.7%, against a 2% floor — so neither is filtered out as a letterhead logo.
+ * The second is deliberately **tall and narrow**: a figure that shape is a box
+ * some 45 px wide on the sheet, which is what settled that a figure's "could
+ * not be lifted" sentence goes under its box rather than inside it (T-329).
+ */
+const figurePage = {
+  objects: [
+    [`<< /Type /Font /Subtype /Type1 /BaseFont /Courier >>`, null],
+    [
+      `<< /Type /XObject /Subtype /Image /Width ${w} /Height ${h} /ColorSpace /DeviceRGB ` +
+        `/BitsPerComponent 8 /Filter /DCTDecode /Length ${jpeg.length} >>`,
+      jpeg,
+    ],
+    [
+      `<< /Type /XObject /Subtype /Image /Width 675 /Height 1950 /ColorSpace /DeviceRGB ` +
+        `/BitsPerComponent 8 /Filter /JPXDecode /Length ${jpxBytes.length} >>`,
+      jpxBytes,
+    ],
+  ],
+  resources: (ids) =>
+    `<< /Font << /F1 ${ids[0]} 0 R >> /XObject << /Im0 ${ids[1]} 0 R /Im1 ${ids[2]} 0 R >> >>`,
+  content: Buffer.from(
+    [
+      "BT /F1 12 Tf 72 760 Td (EXHIBIT 4 - THE SITE AS PHOTOGRAPHED) Tj ET",
+      "BT /F1 11 Tf 72 730 Td (The premises as they stood on the evening in question:) Tj ET",
+      // The chart, mid-page, with its caption under it.
+      "q 240 0 0 180 72 430 cm /Im0 Do Q",
+      "BT /F1 10 Tf 72 400 Td (Figure 1 - the frontage, looking north.) Tj ET",
+      // And one this build refuses, so the leaf has to hold its place.
+      "q 90 0 0 260 72 120 cm /Im1 Do Q",
+      "BT /F1 10 Tf 72 90 Td (Figure 2 - the same frontage at night.) Tj ET",
+      "",
+    ].join("\n"),
+    "latin1",
+  ),
+};
+
 const filing = pdf([
   {
     objects: [
@@ -187,12 +236,13 @@ const filing = pdf([
     resources: (ids) => `<< /XObject << /Im0 ${ids[0]} 0 R >> >>`,
     content: fullPageImage,
   },
+  figurePage,
 ]);
 await writeFile(join(spike, "filing.pdf"), filing);
 
 console.log(
   JSON.stringify({
     "scan.pdf": { bytes: scan.length, jpeg: jpeg.length, w, h },
-    "filing.pdf": { bytes: filing.length, pages: 4 },
+    "filing.pdf": { bytes: filing.length, pages: 5 },
   }),
 );

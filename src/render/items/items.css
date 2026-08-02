@@ -2360,32 +2360,33 @@ textarea.item-field::-webkit-scrollbar {
 /*
  * A figure this build could not lift, holding its place and saying so.
  *
+ * Dashed rather than solid, and only here: the empty box is the statement, and
+ * a solid rule around it would read as a frame somebody chose to put on it.
+ */
+.leaf-figure:not([data-figure="image"]) {
+  border: 0.1em dashed rgb(53 48 42 / 22%);
+  box-sizing: border-box;
+}
+
+/*
+ * And the sentence, under the box at the measure rather than inside it.
+ *
  * The board speaking about the document rather than the document speaking, so
  * it takes `.leaf-note`'s voice — quiet, italic — and not the page's hand. What
  * it must never be is nothing: a blank space where an exhibit was is the exact
  * failure Rust reporting an unliftable figure exists to stop, and swallowing it
  * here would be that silence one module further along.
  *
- * Dashed rather than solid, and only here: the empty box is the statement, and
- * a solid rule around it would read as a frame somebody chose to put on it.
+ * Under and not in, because a figure clears `FIGURE_COVERAGE` at 2% of the page
+ * and may be any shape at all. A tall narrow one is a box some 45 px wide on
+ * the sheet, and a sentence of sixty characters set in it is cut off or forty
+ * lines deep — either way the promise is not kept. At the measure it is always
+ * legible, and it is where a caption goes anyway.
  */
-.leaf-figure:not([data-figure="image"]) {
-  border: 0.1em dashed rgb(53 48 42 / 22%);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  padding: 0.6em;
-  box-sizing: border-box;
-}
-
 .leaf-figure-note {
+  margin-top: 0.4em;
   font-style: italic;
   opacity: 0.55;
-  text-align: center;
-  /* The reason is a sentence from the shell and can be a long one; a figure's
-     box is whatever shape it is. Better to lose the tail of it than to have it
-     push the box out of the measure. */
-  overflow: hidden;
 }
 
 /*

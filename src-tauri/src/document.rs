@@ -951,7 +951,7 @@ fn decide(
                         "the figure is written inline in the page's content stream, which this build does not lift"
                             .into(),
                     ),
-                    Source::XObject(stream) => match lift(doc, stream) {
+                    Source::XObject(stream) => match lift(doc, stream, "the figure") {
                         Ok(image) => FigureContent::Image(image),
                         Err(why) => FigureContent::Unsupported(why),
                     },
@@ -995,7 +995,7 @@ fn decide(
             "the page is an image written inline in its content stream, which this build does not lift"
                 .into(),
         ),
-        Source::XObject(stream) => match lift(doc, stream) {
+        Source::XObject(stream) => match lift(doc, stream, "the page") {
             Ok(image) => PageContent::Image(image),
             Err(why) => PageContent::Unsupported(why),
         },
@@ -1898,11 +1898,18 @@ fn matrix(doc: &Document, operands: &[Object]) -> Option<Matrix> {
 // Lifting a scanned page
 // ---------------------------------------------------------------------------
 
-/// Turn a page-sized image XObject into bytes something can display.
+/// Turn an image XObject into bytes something can display.
 ///
 /// The error is a sentence rather than a code because it ends up in front of a
 /// person looking at a page they can see is not blank.
-fn lift(doc: &Document, stream: &Stream) -> std::result::Result<PageImage, String> {
+///
+/// `subject` is what that sentence calls the thing it could not read — "the
+/// page" for a scan, "the figure" for a picture on a typed page. Threaded
+/// rather than fixed because the two are not the same statement to whoever is
+/// reading: "the page is a JPEG 2000 image" printed in a box halfway down a
+/// page of perfectly legible text is a sentence that contradicts what is
+/// around it, and it is the one this build shipped until T-329 looked at it.
+fn lift(doc: &Document, stream: &Stream, subject: &str) -> std::result::Result<PageImage, String> {
     let dict = &stream.dict;
     let width = dict
         .get_deref(b"Width", doc)
@@ -1941,7 +1948,7 @@ fn lift(doc: &Document, stream: &Stream) -> std::result::Result<PageImage, Strin
     }
 
     for filter in &filters {
-        if let Some(why) = unreadable(filter) {
+        if let Some(why) = unreadable(filter, subject) {
             return Err(why);
         }
     }
@@ -1966,6 +1973,7 @@ fn lift(doc: &Document, stream: &Stream) -> std::result::Result<PageImage, Strin
         height,
         bits,
         if mask { Space::Gray } else { space },
+        subject,
     )
 }
 
@@ -1974,7 +1982,7 @@ fn lift(doc: &Document, stream: &Stream) -> std::result::Result<PageImage, Strin
 /// Fax is not an exotic case for this audience — it is what a court scanner
 /// emits — and the point of naming it is that a page it is on reports
 /// `Unsupported` rather than blank.
-fn unreadable(filter: &[u8]) -> Option<String> {
+fn unreadable(filter: &[u8], subject: &str) -> Option<String> {
     let what = match filter {
         b"CCITTFaxDecode" => "a fax-encoded bilevel scan",
         b"JBIG2Decode" => "a JBIG2 bilevel scan",
@@ -1982,7 +1990,7 @@ fn unreadable(filter: &[u8]) -> Option<String> {
         _ => return None,
     };
     Some(format!(
-        "the page is {what}, which this build cannot decode"
+        "{subject} is {what}, which this build cannot decode"
     ))
 }
 
@@ -2041,6 +2049,7 @@ fn encode(
     height: u32,
     bits: i64,
     space: Space,
+    subject: &str,
 ) -> std::result::Result<PageImage, String> {
     use image::{GrayImage, ImageFormat, RgbImage};
 
@@ -2098,7 +2107,7 @@ fn encode(
                 Space::Other => "an indexed or CMYK colour space",
             };
             return Err(format!(
-                "the page is a scan in {what} at {bits} bits per component, which this build cannot decode"
+                "{subject} is a scan in {what} at {bits} bits per component, which this build cannot decode"
             ));
         }
     }
@@ -3051,7 +3060,15 @@ mod tests {
         near(figures[0].width, 300.0);
         match &figures[0].content {
             FigureContent::Unsupported(why) => {
-                assert!(why.contains("JBIG2"), "the reason should name it: {why}")
+                assert!(why.contains("JBIG2"), "the reason should name it: {why}");
+                // And it calls itself the figure. The reading surface prints
+                // this sentence in a box halfway down a page of legible text
+                // (T-329), so "the page is a JBIG2 bilevel scan" would be a
+                // statement contradicted by everything around it.
+                assert!(
+                    why.starts_with("the figure is"),
+                    "a figure's sentence must not claim to be the page's: {why}"
+                );
             }
             other => panic!("this one cannot lift: {other:?}"),
         }

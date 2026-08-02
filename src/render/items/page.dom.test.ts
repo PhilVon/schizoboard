@@ -263,14 +263,44 @@ describe("a picture on a typed page", () => {
   });
 
   it("is as wide a share of the measure as it was on the page it came off", () => {
-    // The measure and not the page width: the runs above span 72..262, so a
-    // 400pt figure is wider than the type area and clamps to it. Mapping
-    // through the page's 595pt instead would draw a full-measure chart at
-    // three quarters of the text it sits between.
-    const leaf = leafOf(arrived(typed([{ ...CHART, width: 95 }]), null, 1, ["blob:chart"]));
+    // The measure and not the page width: mapping a full-measure chart through
+    // the page's 595 pt would draw it at three quarters of the text it sits
+    // between. The runs start at x=72, so the type area is 595 - 144 = 451 and
+    // a 225.5 pt figure is half of it.
+    const leaf = leafOf(arrived(typed([{ ...CHART, width: 225.5 }]), null, 1, ["blob:chart"]));
     const box = leaf.querySelector<HTMLElement>(".leaf-figure")!;
     expect(box.style.width).toBe("50.00%");
-    expect(box.style.aspectRatio).toBe("95 / 300");
+    expect(box.style.aspectRatio).toBe("225.5 / 300");
+  });
+
+  it("takes the measure off the margin rather than off the longest line", () => {
+    // Driven, and it was a real page: one line of caption in Courier reached
+    // 350 pt of a 451 pt type area, so every figure on it came out 29% too wide
+    // and a tall one ran off the foot of the sheet. A page's margins are
+    // symmetric by convention, so the left one is what says how wide the text
+    // could have been.
+    const leaf = leafOf(arrived(typed([{ ...CHART, width: 451 }]), null, 1, ["blob:chart"]));
+    expect(leaf.querySelector<HTMLElement>(".leaf-figure")!.style.width).toBe("100.00%");
+  });
+
+  it("still believes a line that runs past the margin it implies", () => {
+    // The page that breaks the convention: a long line into a narrow right
+    // margin. What was observed wins wherever it is wider than what was
+    // derived, so the text is never narrower than the page says it is.
+    const leaf = leafOf(
+      arrived(
+        {
+          kind: "text",
+          runs: [{ text: "wide", x: 72, y: 96, width: 500, height: 12, size: 11 }],
+          figures: [{ ...CHART, width: 250 }],
+        },
+        null,
+        1,
+        ["blob:chart"],
+      ),
+    );
+    // Half of the observed 500, not 55% of the 451 the margin would imply.
+    expect(leaf.querySelector<HTMLElement>(".leaf-figure")!.style.width).toBe("50.00%");
   });
 
   it("holds its place and says why when the shell could not lift it", () => {
@@ -290,14 +320,19 @@ describe("a picture on a typed page", () => {
     );
     const box = leaf.querySelector<HTMLElement>(".leaf-figure")!;
     expect(box.dataset["figure"]).toBe("unsupported");
-    expect(box.querySelector(".leaf-figure-note")!.textContent).toBe("the figure is a JPX image");
+    // The sentence is a *sibling* of the box, at the measure. Inside it, a
+    // figure only 45px wide on the sheet — which 2% coverage permits — either
+    // cuts the sentence off or runs it forty lines deep.
+    expect(box.nextElementSibling!.className).toBe("leaf-figure-note");
+    expect(box.nextElementSibling!.textContent).toBe("the figure is a JPX image");
+    expect(box.textContent).toBe("");
   });
 
   it("says so when a figure it could read brought back no bytes", () => {
     const leaf = leafOf(arrived(typed([CHART]), null, 1, [null]));
     const box = leaf.querySelector<HTMLElement>(".leaf-figure")!;
     expect(box.dataset["figure"]).toBe("unreadable");
-    expect(box.querySelector(".leaf-figure-note")!.textContent).toMatch(/could not be read/);
+    expect(box.nextElementSibling!.textContent).toMatch(/could not be read/);
     expect(box.querySelector("img")).toBeNull();
   });
 
