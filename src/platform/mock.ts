@@ -310,20 +310,20 @@ export class MockPlatform implements Platform {
    * a path the reading surface has to draw anyway. Developing the surface itself
    * wants `npm run tauri dev`.
    */
-  documentPageCount(): Promise<number> {
+  documentPageCount(_sha256: string): Promise<number> {
     return unavailable("Counting the pages of a document");
   }
 
-  documentPage(): Promise<DocumentPage | null> {
+  documentPage(_sha256: string, _index: number): Promise<DocumentPage | null> {
     return unavailable("Reading a page of a document");
   }
 
-  documentPageImage(): Promise<Uint8Array> {
+  documentPageImage(_sha256: string, _index: number, _figure?: number): Promise<Uint8Array> {
     return unavailable("Lifting the image off a scanned page");
   }
 
   /** Nothing is held open, so there is nothing to let go of. */
-  async documentClose(): Promise<void> {}
+  async documentClose(_sha256: string): Promise<void> {}
 
   async docAppendUpdate(bytes: Uint8Array): Promise<void> {
     this.updates.push(bytes);

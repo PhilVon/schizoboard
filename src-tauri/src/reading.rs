@@ -257,7 +257,11 @@ pub async fn document_page_count(app: AppHandle, sha256: String) -> Result<u32, 
 /// reaching one costs one page — and both of those are claims about these
 /// functions, asserted in the tests below against a real store on a real
 /// tempdir rather than against a double of my own making.
-fn count_pages(store: &AssetStore, pages: &PageStore, sha256: &str) -> crate::document::Result<u32> {
+fn count_pages(
+    store: &AssetStore,
+    pages: &PageStore,
+    sha256: &str,
+) -> crate::document::Result<u32> {
     let count = pages.page_count(sha256, &store.original_path(sha256))?;
     Ok(u32::try_from(count).unwrap_or(u32::MAX))
 }
@@ -530,7 +534,10 @@ mod tests {
         });
         assert!(image_of(&illustrated, None).is_none());
         assert!(image_of(&illustrated, Some(0)).is_none());
-        assert_eq!(image_of(&illustrated, Some(1)).map(|i| i.bytes.len()), Some(2));
+        assert_eq!(
+            image_of(&illustrated, Some(1)).map(|i| i.bytes.len()),
+            Some(2)
+        );
         assert!(image_of(&illustrated, Some(2)).is_none());
     }
 
@@ -561,8 +568,10 @@ mod tests {
     fn filing() -> Vec<u8> {
         let mut text = String::new();
         for line in 0..200 {
-            text.push_str(&format!("line {line} of the witness statement
-"));
+            text.push_str(&format!(
+                "line {line} of the witness statement
+"
+            ));
         }
         text.into_bytes()
     }
@@ -609,7 +618,10 @@ mod tests {
         let meta = store.ingest_bytes(&filing(), None).expect("ingest");
 
         let count = count_pages(&store, &pages, &meta.sha256).expect("count");
-        assert!(count > 2, "the fixture is meant to be several pages, got {count}");
+        assert!(
+            count > 2,
+            "the fixture is meant to be several pages, got {count}"
+        );
         // Counting comes off the structure and must not have read anything.
         assert_eq!(pages.pages_produced(), 0);
 
@@ -709,5 +721,95 @@ mod tests {
             count_pages(&store, &pages, &meta.sha256).expect("count") as usize,
             crate::text::page_count(&text)
         );
+    }
+
+    /// A one-page PDF, written with lopdf's own writer rather than checked in
+    /// as bytes — document.rs's fixtures make the argument and it holds here:
+    /// a checked-in PDF is a fixture nobody can read the diff of.
+    fn one_page_pdf() -> Vec<u8> {
+        use lopdf::content::{Content, Operation};
+        use lopdf::{dictionary, Document, Object, Stream};
+
+        let mut doc = Document::with_version("1.5");
+        let pages_id = doc.new_object_id();
+        let font_id = doc.add_object(dictionary! {
+            "Type" => "Font",
+            "Subtype" => "Type1",
+            "BaseFont" => "Courier",
+        });
+        let resources = doc.add_object(dictionary! {
+            "Font" => dictionary! { "F1" => font_id },
+        });
+        let content = Content {
+            operations: vec![
+                Operation::new("BT", vec![]),
+                Operation::new("Tf", vec!["F1".into(), 12.into()]),
+                Operation::new("Td", vec![72.into(), 720.into()]),
+                Operation::new("Tj", vec![Object::string_literal("EXHIBIT A")]),
+                Operation::new("ET", vec![]),
+            ],
+        };
+        let content_id = doc.add_object(Stream::new(
+            dictionary! {},
+            content.encode().expect("encode the content stream"),
+        ));
+        let page_id = doc.add_object(dictionary! {
+            "Type" => "Page",
+            "Parent" => pages_id,
+            "Contents" => content_id,
+            "Resources" => resources,
+            "MediaBox" => vec![0.into(), 0.into(), 595.into(), 842.into()],
+        });
+        doc.objects.insert(
+            pages_id,
+            Object::Dictionary(dictionary! {
+                "Type" => "Pages",
+                "Kids" => vec![page_id.into()],
+                "Count" => 1,
+            }),
+        );
+        let catalog_id = doc.add_object(dictionary! {
+            "Type" => "Catalog",
+            "Pages" => pages_id,
+        });
+        doc.trailer.set("Root", catalog_id);
+
+        let mut out = Vec::new();
+        doc.save_to(&mut out).expect("write the fixture");
+        out
+    }
+
+    /// The other half of AC-792. Both kinds of document go in as bytes and come
+    /// back as a page through the same call — which is the whole reason the
+    /// frontend gets a tagged union rather than two commands: what a document is
+    /// made of is a fact about the bytes, and the reading surface finds out by
+    /// being told rather than by asking first.
+    #[test]
+    fn a_pdf_page_comes_back_through_the_same_call_a_text_page_does() {
+        let (_dir, store, pages) = stores_on_disk();
+        let meta = store.ingest_bytes(&one_page_pdf(), None).expect("ingest");
+        assert_eq!(meta.mime, "application/pdf");
+
+        assert_eq!(count_pages(&store, &pages, &meta.sha256).expect("count"), 1);
+
+        let page = read_page(&store, &pages, &meta.sha256, 1)
+            .expect("read")
+            .expect("a first page");
+
+        // The page states its own shape, where a text file states none.
+        assert_eq!((page.width, page.height), (595.0, 842.0));
+        match page.content {
+            WireContent::Text { runs, .. } => {
+                assert_eq!(runs.len(), 1);
+                assert_eq!(runs[0].text, "EXHIBIT A");
+                // Points from the TOP left, y downwards: the run was set at
+                // y=720 from the bottom of an 842-point page, and 842 - 720 is
+                // the baseline, less the ascent of 12-point Courier.
+                assert_eq!(runs[0].x, 72.0);
+                assert!(runs[0].y > 100.0 && runs[0].y < 125.0, "{}", runs[0].y);
+                assert_eq!(runs[0].size, 12.0);
+            }
+            other => panic!("a typed page is text, not {other:?}"),
+        }
     }
 }

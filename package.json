@@ -15,7 +15,8 @@
     "check": "npm run lint && npm run typecheck && npm run test",
     "test": "vitest run",
     "test:watch": "vitest",
-    "tauri": "tauri"
+    "tauri": "tauri",
+    "spike:scan": "node scripts/make-scan-pdf.mjs"
   },
   "dependencies": {
     "@tauri-apps/api": "^2",

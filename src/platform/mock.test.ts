@@ -115,6 +115,30 @@ describe("MockPlatform", () => {
     );
   });
 
+  /**
+   * A text file's pagination is a *rule* rather than a parse (T-298), so unlike
+   * everything else in the test above it could genuinely be answered here — and
+   * that is exactly why it must not be. Two implementations in two languages and
+   * a stored page reference would depend on which of them read the file. One
+   * writer, in `text.rs`, and this is the assertion that keeps it one.
+   */
+  it("refuses to read a page rather than inventing a second pagination", async () => {
+    const platform = new MockPlatform();
+    const text = new TextEncoder().encode("the fourth witness statement\n".repeat(400));
+    const meta = await platform.assetIngestBytes(text, "text/plain");
+
+    expect(meta.pages).toBeNull();
+    await expect(platform.documentPageCount(meta.sha256)).rejects.toThrow(/native shell/);
+    await expect(platform.documentPage(meta.sha256, 1)).rejects.toThrow(/native shell/);
+    await expect(platform.documentPageImage(meta.sha256, 1)).rejects.toThrow(/native shell/);
+
+    // The exception, and it is deliberate: nothing is held open here, so there
+    // is nothing to let go of. A caller that had to ask which platform it was on
+    // before it could say it had finished reading is a worse boundary than one
+    // that can always say so.
+    await expect(platform.documentClose(meta.sha256)).resolves.toBeUndefined();
+  });
+
   it("delivers Rust-side events to listeners and stops on unlisten", async () => {
     const platform = new MockPlatform();
     const seen: string[] = [];
