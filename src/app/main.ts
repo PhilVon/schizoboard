@@ -74,7 +74,7 @@ import { formatInvite, inviteSearch, openingPlan, parseInvite } from "@/app/invi
 import * as prefs from "@/app/prefs";
 import { dialAddress, freshBoardId, identityFor } from "@/app/sync";
 import { DEFAULT_ERASER_SIZE, type InkSurface, type WetStroke } from "@/lib/ink";
-import { canBeOpened, carriesItsOwnName } from "@/lib/objects";
+import { canBeOpened, carriesItsOwnName, type AssetKind } from "@/lib/objects";
 import { initPlatform } from "@/platform";
 import { variantFor } from "@/platform/types";
 import { Cork } from "@/render/cork";
@@ -1111,6 +1111,20 @@ async function boot(): Promise<void> {
    * a peer sends a file. What a half-arrived document does when you open it is
    * the reading surface's answer to give (T-275), not this predicate's.
    */
+  /**
+   * What an item is wearing, or `unknown` for one wearing nothing.
+   *
+   * `unknown` covers a note, a bare polaroid and a record that has not arrived,
+   * and all three want the same answer from the menu: a note is not a case
+   * object and has no file behind it to name.
+   */
+  const kindOfItem = (itemId: string): AssetKind => {
+    const sha256 = scene.cold(itemId)?.assetId ?? null;
+    if (sha256 === null) return "unknown";
+    const map = board.assets.get(sha256);
+    return (map ? readAsset(sha256, map)?.kind : undefined) ?? "unknown";
+  };
+
   const openable = (itemId: string): boolean => {
     const sha256 = scene.cold(itemId)?.assetId ?? null;
     if (sha256 === null) return false;
@@ -2165,6 +2179,10 @@ async function boot(): Promise<void> {
           // this board rather than through a file dialog, so a plain browser
           // can do it exactly as well as the app can.
           { can: openable, run: openItem },
+          // What it is, for the rows that name it rather than merely act on it
+          // (T-317). The same three hops `openable` makes, and the same reason
+          // the menu cannot make them itself: a kind comes off an asset record.
+          kindOfItem,
         ),
         held ? undefined : () => selection.replace([itemId]),
       );
