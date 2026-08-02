@@ -1372,7 +1372,10 @@ async function boot(): Promise<void> {
       const record = board.assets.get(reading);
       reader.open(reading, (record ? readAsset(reading, record)?.pages : null) ?? null);
     }
-    const box = scene.boundsOf(itemId, 0, foundBox);
+    // Where the folder is going, not where it is. The turn has only just been
+    // started and takes 300 ms; aiming at the closed box lands the camera on
+    // the spot a *pinned* folder is about to turn out of (T-323).
+    const box = scene.openBoundsOf(itemId, 0, foundBox);
     if (box !== null) flight.toBox(camera, box, undefined, pageReadingZoom(itemId));
   };
 
