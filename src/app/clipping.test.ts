@@ -82,7 +82,13 @@ function clipper(): Clipper {
       canvases.push({ w, h });
       // happy-dom has no 2D context, and what is worth checking here is the
       // arithmetic either side of the drawing rather than the drawing.
-      return { width: w, height: h, getContext: () => ({}) } as unknown as HTMLCanvasElement;
+      return {
+        width: w,
+        height: h,
+        // Enough of a context for the turn: what is worth checking here is
+        // which way the axes came out, not the drawing.
+        getContext: () => ({ translate: () => {}, rotate: () => {}, drawImage: () => {} }),
+      } as unknown as HTMLCanvasElement;
     },
     encode: () => Promise.resolve(encoded),
     ingest: (bytes, mime) => {
@@ -236,20 +242,35 @@ describe("what a rectangle yields, by what is on the page", () => {
     expect(said).toHaveLength(1);
   });
 
-  it("refuses a second cut while the first is still in flight", async () => {
-    // Not a correctness problem — each cut is its own transaction and its own
-    // asset — but a rasterise plus an encode plus a disk write is long enough
-    // for somebody to drag a second rectangle, and two cards arriving out of
-    // order onto the same spot is a mess nobody asked for.
+  it("cuts a second rectangle while the first is still in flight", async () => {
+    // The refusal this used to assert was found by driving: a cut is about two
+    // hundred milliseconds, which is well inside the time it takes to drag
+    // another rectangle, so the second and third cuts off one page produced
+    // nothing at all and looked exactly like a board that had ignored them.
+    // A deliberate gesture that lands nowhere and says nothing is the failure
+    // DESIGN section 1.3 is about.
     const id = folder();
     const cut = clipper();
     cut.cut(id, rect(-100, -80, 60, 70));
     expect(cut.cutting).toBe(true);
     cut.cut(id, rect(0, 0, 40, 40));
+    expect(cut.inFlightCount).toBe(2);
     await settled();
 
-    expect(ingested).toHaveLength(1);
+    expect(ingested).toHaveLength(2);
     expect(cut.cutting).toBe(false);
+  });
+
+  it("gives each overlapping cut its own card", async () => {
+    const id = folder();
+    const cut = clipper();
+    cut.cut(id, rect(-100, -80, 60, 70));
+    cut.cut(id, rect(0, 0, 40, 40));
+    await settled();
+    // Two cards, two source pins, two strings — nothing shared and nothing lost.
+    expect(board.items.size).toBe(3);
+    expect(board.strings.size).toBe(2);
+    expect(checkInvariants(board)).toEqual([]);
   });
 
   it("sizes the canvas to the rectangle and aims the camera at its corner", async () => {
@@ -263,6 +284,19 @@ describe("what a rectangle yields, by what is on the page", () => {
     // 160 by 150 board units, at three device pixels to the unit.
     expect(canvases[0]).toEqual({ w: 480, h: 450 });
     expect(rasterCalls[0]!.camera).toEqual({ x: -100, y: -80, zoom: CLIP_SCALE });
+  });
+
+  it("turns the clipping back the quarter the page is turned in the folder", async () => {
+    // Found by driving, not by reading. The rectangle is square in the item's
+    // own frame and must be lifted there, but the page lies on its side in that
+    // frame — so a landscape rectangle came back 289 by 578 until this.
+    const id = folder();
+    clipper().cut(id, rect(-100, -80, 60, 70));
+    await settled();
+
+    expect(canvases).toHaveLength(2);
+    // The second canvas is the first with its axes swapped.
+    expect(canvases[1]).toEqual({ w: canvases[0]!.h, h: canvases[0]!.w });
   });
 
   it("names the clipping after the document it came out of", async () => {

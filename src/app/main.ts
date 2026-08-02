@@ -4232,6 +4232,15 @@ async function boot(): Promise<void> {
        */
       reader,
       /**
+       * Cutting a clipping (T-282).
+       *
+       * `cutting` is the readout that matters: a cut is fire-and-forget from a
+       * gesture that is already over, so the one state a run cannot otherwise
+       * see is whether the last one is still in flight — and a stuck `true`
+       * makes every later rectangle do nothing at all, silently.
+       */
+      clipper,
+      /**
        * Everybody else, as this board has them — the store the overlay draws
        * from, cursors and hold-chrome and claimed segments alike.
        *

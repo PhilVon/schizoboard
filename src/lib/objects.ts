@@ -268,6 +268,25 @@ export function objectSizeFor(kind: AssetKind): ObjectSize | null {
  * keeps that true of a folder somebody has resized: both axes are a proportion
  * of the item, which is what a CSS percentage is.
  */
+/**
+ * How far the sheet is turned inside the folder — a quarter, anticlockwise.
+ *
+ * The angle behind [`openSheetOf`]'s swap, named because two things now need it
+ * as a *number* rather than as a swap. `Scene.setOpen` turns the item by +90°
+ * and this is the -90° that cancels it, which is what leaves the page upright on
+ * screen and `text.rs`'s 66-by-46 grid the right way round.
+ *
+ * The second thing is cutting a clipping (T-282). A clipping is rasterised in
+ * the item's own frame — that is the only frame the rectangle is square in — and
+ * in that frame the page lies on its side. Turning the lifted canvas back by
+ * this is what makes the clipping the right way up, and doing it with the same
+ * constant the sheet's box comes from is what stops the two drifting apart.
+ *
+ * `folder-open-css.test.ts` holds this against the stylesheet's own
+ * `rotate(-90deg)`.
+ */
+export const OPEN_PAGE_TURN = -Math.PI / 2;
+
 export function openSheetOf(w: number, h: number): ObjectSize {
   const folder = units(FOLDER_MM);
   return { w: (h * A4_UNITS.h) / folder.h, h: (w * A4_UNITS.w) / folder.w };

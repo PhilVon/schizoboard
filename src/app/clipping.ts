@@ -46,7 +46,7 @@
 import { createQuoteCard } from "@/crdt/ops/quote";
 import type { BoardDoc } from "@/crdt/doc";
 import type { AssetInput } from "@/crdt/ops/items";
-import { pageReference } from "@/lib/objects";
+import { OPEN_PAGE_TURN, pageReference } from "@/lib/objects";
 import { polaroidFor } from "@/lib/polaroid";
 import { rotateOut } from "@/lib/rotate";
 import type { PageContent } from "@/platform/types";
@@ -142,25 +142,51 @@ export interface ClipperOptions {
 /**
  * One gesture's worth of cutting.
  *
- * A class rather than a function for `PosterGrabber`'s reason — it holds the
- * one piece of state a cut needs, which is whether another one is still in
- * flight. Two overlapping cuts are not a correctness problem (each is its own
- * transaction and its own asset) but they are a *legibility* one: a rasterise
- * plus an encode plus a disk write is long enough for somebody to drag a second
- * rectangle, and two cards arriving out of order onto the same spot is a mess
- * nobody asked for.
+ * ## Cuts overlap, and that was not the first answer
+ *
+ * This began with a queue of one — refuse a cut while another is in flight, on
+ * `PosterGrabber`'s argument that two cards arriving out of order onto the same
+ * spot is a mess nobody asked for. **Driving it proved that wrong, and the way
+ * it proved it is the point.** A rasterise plus an encode plus a disk write is
+ * around two hundred milliseconds, which is well inside the time it takes to
+ * drag a second rectangle — so in a run that cut three bands off one page, the
+ * second and third produced *nothing at all*, silently, and looked exactly like
+ * a gesture the board had ignored.
+ *
+ * That is the failure DESIGN section 1.3 is about. A deliberate gesture that
+ * lands nowhere and says nothing is indistinguishable from a broken board, and
+ * `Paste.sayWhatWasRefused` already wrote that argument down for files.
+ *
+ * The refusal could have been made to say a sentence instead. It is not worth
+ * one: "wait for the last clipping" is an implementation detail leaking into a
+ * corkboard, and the mess it was protecting against is not a harm — each cut is
+ * its own transaction, its own asset and its own card, and two rectangles cut a
+ * moment apart land level with the two rectangles rather than on each other.
+ *
+ * A class rather than a function because the count in flight is worth having:
+ * it is what a run reads to know whether the last gesture has landed yet.
  */
 export class Clipper {
   private readonly options: ClipperOptions;
-  private busy = false;
+  private inFlight = 0;
 
   constructor(options: ClipperOptions) {
     this.options = options;
   }
 
-  /** True while a cut is in flight. Read by the dev HUD and by tests. */
+  /**
+   * True while any cut is still in flight — the dev handle's readout.
+   *
+   * The one piece of state a run cannot otherwise see: a cut is fire and forget
+   * from a gesture that is already over, so "has it landed" has no other answer.
+   */
   get cutting(): boolean {
-    return this.busy;
+    return this.inFlight > 0;
+  }
+
+  /** How many cuts are in flight. Zero almost always. */
+  get inFlightCount(): number {
+    return this.inFlight;
   }
 
   /**
@@ -171,7 +197,6 @@ export class Clipper {
    * throwing, because there is nobody left holding the mouse to catch one.
    */
   cut(itemId: string, rect: Bounds): void {
-    if (this.busy) return;
     const page = this.options.shownPage(itemId);
     // Not a case file, or shut between the release and here. Silent: this is
     // the gesture asking a question, not a person being refused.
@@ -184,9 +209,9 @@ export class Clipper {
       return;
     }
 
-    this.busy = true;
+    this.inFlight += 1;
     void this.lift(itemId, rect, page).finally(() => {
-      this.busy = false;
+      this.inFlight -= 1;
     });
   }
 
@@ -215,8 +240,8 @@ export class Clipper {
     const px = Math.max(1, Math.round(width * scale));
     const py = Math.max(1, Math.round(height * scale));
 
-    const canvas = this.options.canvas(px, py);
-    const ctx = canvas.getContext("2d");
+    const flat = this.options.canvas(px, py);
+    const ctx = flat.getContext("2d");
     if (ctx === null) return;
 
     const report = await this.options.rasterise(itemId, ctx, {
@@ -233,7 +258,10 @@ export class Clipper {
       return;
     }
 
-    const encoded = await this.options.encode(canvas);
+    const upright = this.upright(flat, px, py);
+    if (upright === null) return;
+
+    const encoded = await this.options.encode(upright);
     if (encoded === null) {
       this.options.say?.("That clipping could not be saved.");
       return;
@@ -257,6 +285,36 @@ export class Clipper {
     };
 
     this.write(itemId, rect, page, meta.sha256, asset, meta.w, meta.h);
+  }
+
+  /**
+   * Turn the lifted canvas back the quarter the page is turned inside the
+   * folder — the difference between what was cut and what was seen.
+   *
+   * **This is the one place the two frames are not the same, and it was found
+   * by driving rather than by reading.** The rectangle is square in the item's
+   * own frame and has to be lifted in that frame, because that is the only
+   * frame it *is* a rectangle in. But the page does not lie square in the
+   * folder: `items.css` turns `.folder-page` by {@link OPEN_PAGE_TURN} so it
+   * lies the way paper actually lies in a folder, and `Scene.setOpen` turns the
+   * whole item by the opposite quarter when it opens, which is what leaves the
+   * page upright on screen. Lift in the item's frame and you get the right
+   * pixels lying on their side — a landscape rectangle came back 289 by 578.
+   *
+   * So the clipping is turned by the page's own turn, undone. Not by the item's
+   * rendered angle, which would be wrong in the other direction: a folder's
+   * seeded scatter belongs to the folder, and a clipping is a new object that
+   * gets a scatter of its own.
+   */
+  private upright(flat: HTMLCanvasElement, px: number, py: number): HTMLCanvasElement | null {
+    // The turn swaps the axes, exactly as `openSheetOf` does.
+    const turned = this.options.canvas(py, px);
+    const ctx = turned.getContext("2d");
+    if (ctx === null) return null;
+    ctx.translate(py / 2, px / 2);
+    ctx.rotate(-OPEN_PAGE_TURN);
+    ctx.drawImage(flat, -px / 2, -py / 2);
+    return turned;
   }
 
   /** The card, the two pins and the string — one transaction (AC-851). */
