@@ -104,6 +104,15 @@ export interface ShownPage {
   readonly origName: string | null;
 }
 
+/**
+ * What a rectangle found under it on a typed page — T-331, Q-290.
+ *
+ * `drawn` is a figure with pixels on the sheet, and is the only one there is
+ * anything to cut out of. `unliftable` is the box `document.rs` reports for a
+ * figure it could not lift, holding the place where one was.
+ */
+export type FigureUnder = "drawn" | "unliftable";
+
 export interface ClipperOptions {
   readonly board: BoardDoc;
   readonly scene: Scene;
@@ -142,6 +151,24 @@ export interface ClipperOptions {
    * dragged over the blank half of a page has no passage in it.
    */
   passage(itemId: string, rect: Bounds): string;
+  /**
+   * Whether the rectangle crossed a picture that is actually drawn on the page
+   * — T-331, Q-290.
+   *
+   * Injected for the reason {@link passage} is, and it is the same question
+   * asked of the other half of the page: where the words are is a DOM fact and
+   * so is where the figures are. What is decided here rather than at the wiring
+   * is {@link screenQuad} and {@link crosses} — which four points the rectangle
+   * is, and what "crossed" means.
+   *
+   * **Which** figure it crossed matters, so this is not a boolean. One this
+   * build could not lift is a box holding its place and a sentence saying why —
+   * there is nothing to photograph, and telling somebody "there is nothing
+   * written there" over a box that is at that moment explaining itself is a
+   * sentence that argues with the page it is about. `null` is a rectangle that
+   * crossed no figure at all.
+   */
+  figureUnder(itemId: string, rect: Bounds): FigureUnder | null;
   /**
    * Say a sentence to whoever is at the board — `Flash.say`, the same channel
    * a refused paste uses (Q-235).
@@ -218,6 +245,36 @@ export class Clipper {
     // What comes out is what was actually there (Q-284). A scan has pixels and
     // no text to select; a typed page has words, and lifting pixels off one
     // would photograph our own hand rather than the document.
+    // **Q-290: a rectangle that crossed a picture wanted the picture.** This
+    // arm did not exist while a typed page could not carry one — Q-284's fork
+    // is "pixels on a scan, and the text under the rectangle on a typed page",
+    // and the reason it gives is entirely about the re-set *words*: a table on
+    // a typed page is soup before the rectangle arrives, so lifting pixels off
+    // one would photograph our own hand. None of that is true of a figure. A
+    // figure is the original image laid on our paper, which is exactly the
+    // standing Q-199 gives a scan and the reason a scan is cut as pixels.
+    //
+    // So it is a third arm rather than a different answer, and it goes *first*:
+    // selecting a passage already has its own way in, and a rectangle dragged
+    // across a chart as well as the sentence under it has caught the one thing
+    // no other gesture reaches.
+    if (page.content.kind === "text") {
+      const crossed = this.options.figureUnder(itemId, rect);
+      if (crossed === "drawn") {
+        this.inFlight += 1;
+        void this.lift(itemId, rect, page).finally(() => {
+          this.inFlight -= 1;
+        });
+        return;
+      }
+      if (crossed === "unliftable") {
+        // Still the words if it caught any — Q-290 gives the picture the
+        // rectangle, and here there is no picture to give. What changes is only
+        // what is said when it caught nothing either.
+        this.words(itemId, rect, page, "That picture could not be lifted off the page.");
+        return;
+      }
+    }
     if (page.content.kind === "text" || page.content.kind === "plain") {
       this.words(itemId, rect, page);
       return;
@@ -245,13 +302,18 @@ export class Clipper {
    * release, and the card is the one `createQuoteCard` has built since T-281 —
    * no asset, no polaroid, no bytes.
    */
-  private words(itemId: string, rect: Bounds, page: ShownPage): void {
+  private words(
+    itemId: string,
+    rect: Bounds,
+    page: ShownPage,
+    whenEmpty = "There is nothing written there.",
+  ): void {
     const said = this.options.passage(itemId, rect).trim();
     // A rectangle over the blank half of a page. Nothing is written, so there
     // is no card, no pin and no string — AC-855, and the same answer the
     // picture arm gives when nothing could be drawn.
     if (said === "") {
-      this.options.say?.("There is nothing written there.");
+      this.options.say?.(whenEmpty);
       return;
     }
     const { scene, board } = this.options;
@@ -687,4 +749,76 @@ function quotationIn(span: Range): string {
     .map((node) => node.textContent ?? "")
     .filter((part) => part !== "")
     .join("\n");
+}
+
+/** A box on the screen, in the coordinates `getBoundingClientRect` speaks. */
+export interface ScreenBox {
+  readonly left: number;
+  readonly top: number;
+  readonly right: number;
+  readonly bottom: number;
+}
+
+/**
+ * Whether a rectangle **crossed** a box on the screen — T-331, Q-290.
+ *
+ * Crossing and not containing, and not "mostly over" either: the answer to
+ * Q-290 is the sentence "a rectangle that crossed a picture wanted the
+ * picture", and intersection is what that sentence means. Anything stricter
+ * would need a threshold nobody can see while they are dragging, and the board
+ * would do different things for the same gesture depending on a ratio that is
+ * not drawn anywhere.
+ *
+ * The rectangle arrives as four screen points because the page it was dragged
+ * on is turned — a quarter turn inside the folder, plus the folder's own
+ * scatter — so it is a quad rather than a box. Its bounding box is what is
+ * tested against, which is generous by up to the item's angle and generous in
+ * the right direction: a folder somebody is reading is turned upright, the
+ * angle left over is a degree or two of scatter, and a near miss reading as a
+ * hit is a better failure than a rectangle drawn over a chart coming back as
+ * the caption underneath it.
+ *
+ * Strict inequalities, so a rectangle whose edge merely lands on a figure's has
+ * not crossed it.
+ */
+export function crosses(quad: readonly Vec2[], box: ScreenBox): boolean {
+  if (quad.length === 0) return false;
+  let left = Infinity;
+  let top = Infinity;
+  let right = -Infinity;
+  let bottom = -Infinity;
+  for (const at of quad) {
+    left = Math.min(left, at.x);
+    top = Math.min(top, at.y);
+    right = Math.max(right, at.x);
+    bottom = Math.max(bottom, at.y);
+  }
+  return left < box.right && right > box.left && top < box.bottom && bottom > box.top;
+}
+
+/**
+ * Which figure a rectangle crossed, out of the ones on the page — T-331.
+ *
+ * The decision rather than the query: the caller hands over every figure with
+ * its box and whether it has pixels, and this says what the rectangle found.
+ * Split that way for the reason `toWordBounds` and `passageBetween` are here —
+ * the wiring module has no tests, so a rule left in it is a rule nothing
+ * checks, and "which of two figures wins" is a rule.
+ *
+ * **A drawn figure wins over an unliftable one wherever they both were.** They
+ * are different sentences to whoever dragged the rectangle, and a drag across
+ * both has caught a picture; making it depend on which came first down the page
+ * would be a coin toss nobody can see.
+ */
+export function figureCrossed(
+  quad: readonly Vec2[],
+  figures: readonly { readonly drawn: boolean; readonly box: ScreenBox }[],
+): FigureUnder | null {
+  let found: FigureUnder | null = null;
+  for (const figure of figures) {
+    if (!crosses(quad, figure.box)) continue;
+    if (figure.drawn) return "drawn";
+    found = "unliftable";
+  }
+  return found;
 }

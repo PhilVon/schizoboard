@@ -9,6 +9,9 @@ import {
   CLIP_SCALE,
   Clipper,
   clipScale,
+  crosses,
+  figureCrossed,
+  type FigureUnder,
   landing,
   readingCorners,
   screenQuad,
@@ -47,6 +50,8 @@ let drawn: number;
 let encoded: { bytes: Uint8Array; mime: string } | null;
 /** What the caret hit test finds under the rectangle on a typed page. */
 let passage: string;
+/** What the rectangle crossed on a typed page — T-331, Q-290. */
+let overFigure: FigureUnder | null;
 
 /**
  * A case file lying open, in the scene *and* in the document.
@@ -74,6 +79,7 @@ function clipper(): Clipper {
     board,
     scene,
     shownPage: () => page,
+    figureUnder: () => overFigure,
     rasterise: (itemId, _ctx, camera) => {
       rasterCalls.push({ itemId, camera: { ...camera } });
       return Promise.resolve({
@@ -137,6 +143,7 @@ beforeEach(() => {
   drawn = 1;
   encoded = { bytes: new Uint8Array([1, 2, 3, 4]), mime: "image/webp" };
   passage = "the third invoice has no counter-signature";
+  overFigure = null;
   page = { sha256: SHA, index: 4, content: SCAN, origName: "scan.pdf" };
   registerAsset(
     board,
@@ -216,6 +223,95 @@ describe("what a rectangle yields, by what is on the page", () => {
     expect(board.strings.size).toBe(1);
     expect(board.pins.size).toBe(2);
     expect(checkInvariants(board)).toEqual([]);
+  });
+
+  it("lifts the picture when the rectangle crossed a figure on a typed page", async () => {
+    // T-331, and the arm that did not exist while a typed page could not carry
+    // a picture. Q-284's "our own hand" reasoning is about the re-set *words*;
+    // a figure is the original image laid on our paper, which is exactly the
+    // standing Q-199 gives a scan.
+    const id = folder();
+    page = { sha256: SHA, index: 5, content: TYPED, origName: "filing.pdf" };
+    overFigure = "drawn";
+    clipper().cut(id, rect(-100, -80, 60, 70));
+    await settled();
+
+    expect(ingested).toHaveLength(1);
+    const made = card(id)!;
+    expect(readItem(made, board.items.get(made)!)!.type).toBe("polaroid");
+    expect(readItem(made, board.items.get(made)!)!.assetId).toBe(CLIP_SHA);
+  });
+
+  it("takes the picture over the words when the rectangle caught both", async () => {
+    // Q-290. Selecting a passage already has its own way in; a rectangle
+    // dragged across a chart as well as the sentence under it has caught the
+    // one thing no other gesture on this board reaches. So the picture wins
+    // outright rather than by a ratio nobody can see while they are dragging.
+    const id = folder();
+    page = { sha256: SHA, index: 5, content: TYPED, origName: "filing.pdf" };
+    overFigure = "drawn";
+    passage = "The premises as they stood on the evening in question:";
+    clipper().cut(id, rect(-100, -80, 60, 70));
+    await settled();
+
+    const made = card(id)!;
+    expect(readItem(made, board.items.get(made)!)!.type).toBe("polaroid");
+    expect(itemText(board, made)?.toString()).not.toContain("the premises");
+  });
+
+  it("is still the words on a page whose figure the rectangle missed", async () => {
+    const id = folder();
+    page = { sha256: SHA, index: 5, content: TYPED, origName: "filing.pdf" };
+    overFigure = null;
+    clipper().cut(id, rect(-100, -80, 60, 70));
+    await settled();
+
+    expect(ingested).toEqual([]);
+    expect(readItem(card(id)!, board.items.get(card(id)!)!)!.type).toBe("note");
+  });
+
+  it("names the figure rather than calling the page blank", async () => {
+    // A rectangle inside the box `document.rs` reports for a figure it could
+    // not lift. "There is nothing written there" is true and useless: the box
+    // under the cursor is at that moment explaining itself, and a board that
+    // argues with its own page is worse than one that says nothing.
+    const id = folder();
+    page = { sha256: SHA, index: 5, content: TYPED, origName: "filing.pdf" };
+    overFigure = "unliftable";
+    passage = "";
+    clipper().cut(id, rect(-100, -80, 60, 70));
+    await settled();
+
+    expect(card(id)).toBeNull();
+    expect(ingested).toEqual([]);
+    expect(said).toEqual(["That picture could not be lifted off the page."]);
+  });
+
+  it("still takes the words beside a figure it could not lift", async () => {
+    // Q-290 gives the picture the rectangle, and here there is no picture to
+    // give — so the words are the only thing that was ever there.
+    const id = folder();
+    page = { sha256: SHA, index: 5, content: TYPED, origName: "filing.pdf" };
+    overFigure = "unliftable";
+    clipper().cut(id, rect(-100, -80, 60, 70));
+    await settled();
+
+    expect(ingested).toEqual([]);
+    expect(readItem(card(id)!, board.items.get(card(id)!)!)!.type).toBe("note");
+  });
+
+  it("never lifts a picture off a page of plain text", async () => {
+    // A .txt file has no figures to cross, so `overFigure` cannot be true for
+    // one in the running app. Asserted anyway because the guard is a `kind`
+    // check a refactor could widen without anything noticing.
+    const id = folder();
+    page = { sha256: SHA, index: 2, content: { kind: "plain", text: "..." }, origName: "notes.txt" };
+    overFigure = "drawn";
+    clipper().cut(id, rect(-100, -80, 60, 70));
+    await settled();
+
+    expect(ingested).toEqual([]);
+    expect(readItem(card(id)!, board.items.get(card(id)!)!)!.type).toBe("note");
   });
 
   it("cuts nothing from a rectangle over the blank half of a page", async () => {
@@ -621,5 +717,110 @@ describe("a quotation rather than a substring", () => {
 
   it("has nothing to widen in an empty page", () => {
     expect(toWordBounds("", 0, 0)).toEqual([0, 0]);
+  });
+});
+
+/**
+ * What "crossed a picture" means — T-331, Q-290.
+ *
+ * The answer Phil gave is a sentence rather than a rule with a number in it:
+ * "a rectangle that crossed a picture wanted the picture". Intersection is what
+ * that sentence means, and anything stricter would need a threshold nobody can
+ * see while they are dragging.
+ */
+describe("whether a rectangle crossed a picture", () => {
+  const BOX = { left: 100, top: 100, right: 200, bottom: 200 };
+  const quad = (minX: number, minY: number, maxX: number, maxY: number) => [
+    { x: minX, y: minY },
+    { x: maxX, y: minY },
+    { x: maxX, y: maxY },
+    { x: minX, y: maxY },
+  ];
+
+  it("crosses one it overlaps a corner of", () => {
+    expect(crosses(quad(150, 150, 300, 300), BOX)).toBe(true);
+  });
+
+  it("crosses one it encloses entirely", () => {
+    // The case a corner hit test would miss, and the ordinary way somebody
+    // takes a whole chart: a rectangle drawn round it touches none of it.
+    expect(crosses(quad(50, 50, 300, 300), BOX)).toBe(true);
+  });
+
+  it("crosses one that encloses it", () => {
+    expect(crosses(quad(120, 120, 140, 140), BOX)).toBe(true);
+  });
+
+  it("does not cross one it only sits beside", () => {
+    expect(crosses(quad(210, 100, 300, 200), BOX)).toBe(false);
+    expect(crosses(quad(100, 210, 200, 300), BOX)).toBe(false);
+  });
+
+  it("does not cross one its edge merely lands on", () => {
+    // Strict, so a rectangle dragged up to the top of a figure takes the words
+    // above it rather than the picture it stopped at.
+    expect(crosses(quad(200, 100, 300, 200), BOX)).toBe(false);
+  });
+
+  it("answers no for a rectangle that is not on the page at all", () => {
+    // `screenQuad` returns null for an item with no slot and the caller stops
+    // there; an empty quad is the belt to that brace.
+    expect(crosses([], BOX)).toBe(false);
+  });
+
+  it("uses the whole quad, because the page it was dragged on is turned", () => {
+    // A quarter turn inside the folder plus the folder's own scatter, so the
+    // four points are not axis-aligned. A test against only the first two would
+    // miss a rectangle whose reach is in the other two.
+    const turned = [
+      { x: 90, y: 90 },
+      { x: 95, y: 95 },
+      { x: 250, y: 250 },
+      { x: 95, y: 250 },
+    ];
+    expect(crosses(turned, BOX)).toBe(true);
+  });
+});
+
+/** Which of the figures on a page a rectangle found — T-331. */
+describe("which figure a rectangle crossed", () => {
+  const at = (left: number): { left: number; top: number; right: number; bottom: number } => ({
+    left,
+    top: 100,
+    right: left + 100,
+    bottom: 200,
+  });
+  const over = (minX: number, maxX: number) => [
+    { x: minX, y: 100 },
+    { x: maxX, y: 100 },
+    { x: maxX, y: 200 },
+    { x: minX, y: 200 },
+  ];
+
+  it("answers nothing for a rectangle that crossed none of them", () => {
+    expect(figureCrossed(over(500, 600), [{ drawn: true, box: at(100) }])).toBeNull();
+  });
+
+  it("names a drawn one", () => {
+    expect(figureCrossed(over(120, 160), [{ drawn: true, box: at(100) }])).toBe("drawn");
+  });
+
+  it("names an unliftable one, which is a different sentence and not the same as none", () => {
+    expect(figureCrossed(over(120, 160), [{ drawn: false, box: at(100) }])).toBe("unliftable");
+  });
+
+  it("prefers the drawn one wherever the two sit on the page", () => {
+    // Both orders, because "whichever came first" would pass one of them and is
+    // a coin toss nobody dragging a rectangle can see.
+    const both = [
+      { drawn: false, box: at(100) },
+      { drawn: true, box: at(200) },
+    ];
+    expect(figureCrossed(over(120, 260), both)).toBe("drawn");
+    expect(figureCrossed(over(120, 260), [...both].reverse())).toBe("drawn");
+  });
+
+  it("answers nothing for a page with no figures at all", () => {
+    expect(figureCrossed(over(120, 160), [])).toBeNull();
   });
 });

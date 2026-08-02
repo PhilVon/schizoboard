@@ -142,6 +142,7 @@ import {
   Clipper,
   readingCorners,
   screenQuad,
+  figureCrossed,
   passageBetween,
 } from "@/app/clipping";
 import { SearchField, type Unsearched } from "@/ui/search";
@@ -2867,6 +2868,30 @@ async function boot(): Promise<void> {
       const to = document.caretRangeFromPoint(ends[1].x, ends[1].y);
       if (from === null || to === null) return "";
       return passageBetween(from, to);
+    },
+    /**
+     * Whether the rectangle crossed a picture on the page — T-331, Q-290.
+     *
+     * A document-level query and not a walk down from the item, because only
+     * one case file is open at a time and `shownPage` has already said this is
+     * the one. The same reasoning `passage` runs on: the decision about what
+     * "crossed" means is next door in `crosses`; what is here is the one call
+     * that needs a document.
+     *
+     * A figure with pixels wins over one without, whatever order they are in
+     * the page: the two answers are different sentences to whoever dragged the
+     * rectangle, and a drag across both has caught a picture.
+     */
+    figureUnder: (itemId, rect) => {
+      const quad = screenQuad(scene, camera, itemId, rect);
+      if (quad === null) return null;
+      return figureCrossed(
+        quad,
+        [...document.querySelectorAll(".leaf-figure")].map((figure) => ({
+          drawn: figure.getAttribute("data-figure") === "image",
+          box: figure.getBoundingClientRect(),
+        })),
+      );
     },
     stored: (sha256) => {
       // Written into this store a moment ago, so this machine is a holder —
