@@ -84,6 +84,7 @@ pins: {
     parent,      // itemId | null
     lx, ly,      // item-local un-rotated coords if parented; board coords if free
     kind, color,
+    page,        // absent unless it is stuck to a page of the parent's document
     createdBy, createdAt
   }
 }
@@ -95,10 +96,50 @@ pins: {
 | `lx`, `ly` | plain number | Interpretation depends entirely on `parent`. When parented, these are item-local and **un-rotated**, which is why rotating an item transports its pins with no work. |
 | `kind` | plain string | `'pushpin' \| 'thumbtack' \| 'nail' \| 'tape'`. The first three are pushed into the board and hold the item up; **`tape` is stuck to the paper only** and holds a string to it without holding it to the wall, so it does not count toward the item's physics (§2.2). A build that has never heard of a kind falls back to `pushpin`, so it draws the wrong object rather than losing the anchor. |
 | `color` | plain string | |
+| `page` | plain number | Which page of the parent's document the pin is stuck to, one-based. **Absent** for a pin in the object itself, which is every pin on a photograph, on a sheet of paper, on the cover of a shut case file, and in bare cork. Never present on a free pin. See §4.1. |
 
 **Re-parenting is a two-field write inside one transaction:** set `parent`, convert `lx/ly` into the new frame. That is the entire drag-a-pin-onto-a-note feature at the data layer.
 
 **Do not add an `item.pinIds` array.** Denormalising ownership means a concurrent item-delete and pin-add can leave the two views disagreeing. `pin.parent` is authoritative; the reverse index `Map<itemId, Set<pinId>>` is **derived locally** and rebuilt from observers.
+
+### 4.1 The page a pin is stuck to
+
+A case file has two faces and everything else has one, so it is the only object
+for which "where is this pin" needs a second answer — the same argument §6.3
+makes about a mark, arriving at the same field for the same reason (T-330).
+
+In practice it is a **tape's** field, because tape is the only thing this board
+sticks to a page (§4's `kind` row, Q-286). It is declared on the pin rather than
+on the kind for the reason `page` is declared on the stroke rather than on the
+tool: it says *where the pin is*, and where a pin is has never depended on what
+sort of pin it is.
+
+Two rules follow, and between them they are the whole feature:
+
+- **A pin is drawn, exported and grabbable only while its face is the face on
+  show.** A shut folder shows no page, so a tape inside one is put away by the
+  same sentence that puts it away while you read page twelve — there is no third
+  case for "shut".
+- **The gap of a run that *ends* at a put-away tape is drawn on the `under`
+  layer**, whatever §5's `layer` says about the rest of its string. That is the
+  first thing on this board that is true of one gap rather than of a whole
+  string, and it is what makes this physical rather than a visibility toggle:
+  the thread still has to get out of the folder and across to the card, and what
+  it does is go under the sheet you are looking at. Q-291 settled the shut case
+  the same way — the thread runs under the folder and disappears into it, rather
+  than not being drawn, so a card is still visibly threaded to its source.
+
+The same three things §6.3 says a mark's page is not are true here. It is not
+the reader's position, which is local and never on the wire. It is **not written
+unless it is a page**, so a board of ordinary pins produces byte-identical
+records to the build before this one. And a page on a *free* pin is refused at
+the writer and dropped at the reader, because the cork belongs to no item and
+has no document to have a page of — the same clause that keeps a stroke on board
+ink from carrying one.
+
+Nothing about it reaches the simulation. A tape holds a thread and does not hold
+paper up (§2.2), and which canvas a rope is drawn on has never been the solver's
+business (DESIGN §5.6).
 
 ---
 
@@ -464,3 +505,4 @@ The fuzz harness (Risk 3 in `DESIGN.md`) runs two documents through randomised c
 8. Cascades leave no orphaned strokes.
 9. Every `z` key is a valid fractional index and the total order is identical on both documents.
 10. A stroke's `page`, when it has one, is a positive integer — and a stroke on board ink never has one.
+11. A pin's `page`, when it has one, is a positive integer — and a pin free in the cork never has one.

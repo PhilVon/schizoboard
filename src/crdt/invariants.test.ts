@@ -192,6 +192,59 @@ describe("checkInvariants", () => {
   });
 });
 
+/**
+ * 10 and 11 — a page that is one, on something that has pages.
+ *
+ * Both are read off the raw map rather than through `readStroke`/`readPin`,
+ * which is the whole point of checking them here at all: both readers answer
+ * `null` for a nonsense value, so a check made through either would assert that
+ * the reader works and never see the record that made it necessary.
+ */
+describe("checkInvariants, the two page clauses", () => {
+  it("10 — fires on a stroke whose page is not a page", () => {
+    const { item } = furnish();
+    commitStroke(board, {
+      item,
+      tool: "marker",
+      color: "#1f1b17",
+      size: 4,
+      page: 2,
+      samples: [
+        { x: 0, y: 0, pressure: 0.5 },
+        { x: 10, y: 10, pressure: 0.5 },
+      ],
+    });
+    expect(fired()).toEqual([]);
+    const strokes = board.items.get(item)!.get("strokes") as Y.Map<YMap>;
+    [...strokes.values()][0]!.set("page", 0);
+    expect(fired()).toEqual([10]);
+  });
+
+  /** Bare cork belongs to no item and has no document to have a page of. */
+  it("10 — fires on board ink that carries a page at all", () => {
+    furnish();
+    const tile = [...board.boardInk.values()][0]!;
+    [...tile.values()][0]!.set("page", 1);
+    expect(fired()).toEqual([10]);
+  });
+
+  it("11 — fires on a pin whose page is not a page", () => {
+    const { item } = furnish();
+    const taped = createPin(board, { parent: item, lx: 0, ly: 0, kind: "tape", page: 3 });
+    expect(fired()).toEqual([]);
+    board.pins.get(taped)!.set("page", 1.5);
+    expect(fired()).toEqual([11]);
+  });
+
+  /** The cork is not a document, and a pin standing in it has no page either. */
+  it("11 — fires on a page that has ended up on a free pin", () => {
+    const { item } = furnish();
+    const taped = createPin(board, { parent: item, lx: 0, ly: 0, kind: "tape", page: 3 });
+    board.pins.get(taped)!.set("parent", null);
+    expect(fired()).toEqual([11]);
+  });
+});
+
 describe("checkConverged", () => {
   function twin(): BoardDoc {
     const other = openBoardDoc();

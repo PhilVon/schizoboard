@@ -362,6 +362,12 @@ Zoom range is **15% to 400%**. The board is unbounded in every direction.
 
 **A picture on a typed page comes with it** (T-329, Q-203, Q-289). A report's chart is not chrome and dropping it left the reader the caption and a blank space, so a figure is lifted with the page and drawn on the sheet. It is **re-flowed with the text rather than pinned to its box on the original page**: the lines have been re-set (D-46 §4), so a figure holding the PDF's geometry would be the one thing on that sheet still claiming it, and it would come down on top of lines that have moved out from under it. So it goes where it was in the *reading* — after the last line above it, before the first below — which keeps a caption with its figure and never hides a word. It is as wide a share of the sheet's measure as it was of the page's, and it keeps its own proportions. A figure this build cannot lift **holds its place and says why**, the same rule a page that cannot be read already follows, and for the same reason: a blank space where an exhibit was is the failure the whole arrangement exists to stop.
 
+**And the tape a quote hangs from belongs to the page, not to the folder** (T-330, Q-291). A quote card's thread is *taped* to the sheet it came out of rather than pinned through it (§2.2), and tape on page four of a filing is inside the folder when it shuts and under the sheet on show when you have turned past it. The same second answer a mark needed, asked of a pin, and it produces two rules and not three states: a **tape** is drawn, exported and grabbable only while its page is the page on show — a shut folder shows no page, so no page it holds is on show, and "shut" needs no case of its own — and the **gap of a thread that ends at a put-away tape** is drawn on the `under` layer whatever §6.2 says about the rest of its string.
+
+That second rule is the whole of the request and the cheap reading is wrong. Not drawing the tape's thread would leave a card on the cork joined to nothing; what actually happens to a thread taped inside a folder is that it *goes under the folder*, so the card is still visibly threaded to where it came from and the string disappears into the thing it came out of. And it is the **gap** rather than the string, because a thread with a pin pulled out of the middle of it (§3.4) has a half that never went near the folder — tucking that too would hide it behind every note between the folder and the card. It is the first thing on this board that is true of one gap of a run rather than of a whole one.
+
+The three ways the answer changes — the folder opens, the folder shuts, the reader turns — are **none of them document edits**, so the two layers that draw off it have to be woken by something other than a write. That is the same argument the redaction above already makes about its bitmap, one layer down the stack.
+
 **Marker on an open page is redaction** (T-278). Nothing new is held: ink already
 belongs to whatever it is over, in that thing's local space, so a black bar over
 a name travels with the document, survives shutting the folder, and comes back
@@ -440,6 +446,8 @@ Case files      Enter opens the selected document, tape or cassette · item menu
                 Esc or Enter again shuts it · clicking away does not (T-273)
                 Left/Right turn a page in an open one, in any tool (T-321, T-278)
                 marker on an open page is redaction — it stays on that page (T-278)
+                a quote's tape stays on its page too; its thread goes under the
+                sheet on show, and under the folder when it is shut (T-330)
 The set         a tape takes the screen, and only a tape (T-276)
                 Space play/pause · Left/Right 5s · Shift+Left/Right 30s · Home to the start
 ```

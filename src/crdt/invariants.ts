@@ -1,5 +1,5 @@
 /**
- * The nine invariants of DATA-MODEL section 13, as a function.
+ * The eleven invariants of DATA-MODEL section 13, as a function.
  *
  * > The fuzz harness (Risk 3 in `DESIGN.md`) runs two documents through
  * > randomised concurrent operation sequences and asserts all of these after
@@ -38,6 +38,7 @@ import * as Y from "yjs";
 
 import { pinWorldPosition } from "@/crdt/ops/cascade";
 import {
+  isPageNumber,
   isRenderableString,
   readItem,
   readString,
@@ -56,7 +57,7 @@ import type { BoardDoc } from "@/crdt/doc";
  * somebody who has to locate the record before they can think about it.
  */
 export interface Violation {
-  /** Which of section 13's nine. */
+  /** Which of section 13's eleven. */
   readonly invariant: number;
   readonly path: string;
   readonly detail: string;
@@ -70,7 +71,7 @@ export function describe(violations: readonly Violation[]): string {
 }
 
 /**
- * Invariants 1 to 9's single-document half, against one board.
+ * Invariants 1 to 11's single-document half, against one board.
  *
  * The order-agrees half of 9 needs two documents and is [`checkConverged`].
  */
@@ -391,6 +392,41 @@ function checkPins(board: BoardDoc, out: Violation[]): void {
         detail: `resolves to (${at.x}, ${at.y})`,
       });
     }
+    checkPage(board.pins.get(id)!, `pins/${id}`, board.pins.get(id)!.get("parent") === null, 11, out);
+  }
+}
+
+/**
+ * 10 and 11 — a `page`, when there is one, is a page.
+ *
+ * Read off the **raw map** rather than through `readStroke`/`readPin`, which is
+ * the whole point: both readers answer `null` for a nonsense value, so a check
+ * made through either of them would assert that the reader works and never see
+ * the record that made it necessary. What is being checked is what a peer
+ * actually wrote.
+ *
+ * `surfaceless` is the second clause of both invariants, worded once: bare cork
+ * has no document to have a page of, and neither does a pin standing in it.
+ */
+function checkPage(
+  map: YMap,
+  path: string,
+  surfaceless: boolean,
+  invariant: number,
+  out: Violation[],
+): void {
+  if (!map.has("page")) return;
+  const page = map.get("page");
+  if (surfaceless) {
+    out.push({
+      invariant,
+      path: `${path}.page`,
+      detail: `is ${String(page)} on something with no document to have a page of`,
+    });
+    return;
+  }
+  if (!isPageNumber(page)) {
+    out.push({ invariant, path: `${path}.page`, detail: `is ${String(page)}, which is not a page` });
   }
 }
 
@@ -420,16 +456,24 @@ function checkStrokes(board: BoardDoc, out: Violation[]): void {
       });
       continue;
     }
-    checkStrokeMap(tile, `boardInk/${key}`, out);
+    checkStrokeMap(tile, `boardInk/${key}`, out, true);
   }
 }
 
-function checkStrokeMap(map: Y.Map<YMap>, path: string, out: Violation[]): void {
+function checkStrokeMap(
+  map: Y.Map<YMap>,
+  path: string,
+  out: Violation[],
+  /** Board ink, which is on the cork and has no document — invariant 10's
+   *  second clause. */
+  onCork = false,
+): void {
   for (const [id, stroke] of map.entries()) {
     if (!(stroke instanceof Y.Map)) {
       out.push({ invariant: 8, path: `${path}/${id}`, detail: "is not a Y.Map" });
       continue;
     }
+    checkPage(stroke as YMap, `${path}/${id}`, onCork, 10, out);
     const read = readStroke(id, stroke as YMap);
     // A stroke the reader refuses is one nothing will ever draw, which is the
     // orphan invariant 8 is about even though it still has a key.
