@@ -45,6 +45,7 @@ import {
 import {
   caseNumber,
   fitLabel,
+  PAGE_TEXT_SIZE,
   folderBulk,
   pagesLabel,
   runtimeLabel,
@@ -1753,6 +1754,12 @@ class CaseView implements View {
   /** What `setPage` last drew, so a page that has not changed is not rewritten
    *  on every frame the folder is open. A page turn changes it; a pan does not. */
   private drawnPage = "";
+  /** The page count as the tab says it — "142 pp." — kept because the header
+   *  borrows that slot to say which page is open and has to give it back. */
+  private shutMeta = "";
+  /** How many pages the asset record says there are. `0` for a document nobody
+   *  has counted, which the header then reads off the page being drawn. */
+  private pages = 0;
 
   private boundCold: ItemCold | null = null;
   /**
@@ -2024,7 +2031,11 @@ class CaseView implements View {
     // reading of the facts (Q-267). `textContent` and not a copy taken later:
     // these are the same strings, so there is one place to be wrong about them.
     if (this.pageNumber) this.pageNumber.textContent = this.number.textContent;
-    if (this.pageMeta) this.pageMeta.textContent = this.meta.textContent;
+    // The shut label — "142 pp." — kept so that closing a folder puts it back.
+    // While it is open the same slot says which page you are on instead, which
+    // is a different fact and the one a citation names (T-321).
+    this.shutMeta = this.meta.textContent ?? "";
+    if (this.pageMeta) this.pageMeta.textContent = this.shutMeta;
     // And which face the page is set in — AC-678's "clean face available per
     // document, for something that has to be read rather than admired".
     //
@@ -2055,6 +2066,11 @@ class CaseView implements View {
       // an item whose box moved when that landed would be a document write
       // nobody made — and would move the pins, the ink and the strings with it.
       this.el.style.setProperty("--bulk", folderBulk(facts.pages).toFixed(3));
+      // And how many there are, for the open page's header. `Math.max` against
+      // the page being read guards the one case the record cannot cover: a
+      // document counted by a machine that could not count it reads `null`, and
+      // "3 of 1" would be a worse answer than "3 of 3".
+      this.pages = facts.pages ?? 0;
     }
     // The name has just changed, and the size it is written at is a function of
     // it — see `sizeLabels`. `sizedFor` is the width and has not moved.
@@ -2097,7 +2113,7 @@ class CaseView implements View {
     // deliberately too small to read at board scale, and the floor that fixes
     // that is a camera problem rather than a type one (T-321). Set on the leaf
     // and inherited, so everything on the page is one number.
-    if (this.leaf) this.leaf.style.fontSize = `${Math.max(3, w * LEAF_TEXT_SIZE).toFixed(2)}px`;
+    if (this.leaf) this.leaf.style.fontSize = `${Math.max(3, w * PAGE_TEXT_SIZE).toFixed(2)}px`;
   }
 
   /**
@@ -2310,6 +2326,23 @@ class CaseView implements View {
     const setNote = (say: string): void => {
       note.textContent = say;
     };
+
+    /**
+     * Which page this is, in the slot the shut folder uses for its page count.
+     *
+     * **"3 of 51" and not "3"**, because a page reference means nothing without
+     * the document's length beside it — and because the two numbers together are
+     * exactly what a citation carries (D-60: the reference is `(sha256, page)`,
+     * and the count is what makes a page number a *place*).
+     *
+     * Falls back to the shut label whenever there is no page: a folder that has
+     * been closed, or one whose document will not open, says how thick it is
+     * rather than saying nothing.
+     */
+    if (this.pageMeta) {
+      this.pageMeta.textContent =
+        page === null ? this.shutMeta : `${page.index} of ${Math.max(page.index, this.pages)}`;
+    }
 
     if (view === null || view.phase === "reading") {
       // The paper is there and nothing is on it yet. Deliberately not a message:
@@ -2524,39 +2557,7 @@ export function linesOfRuns(runs: readonly TextRun[]): string {
   return text;
 }
 
-/**
- * The open page's **body** type, as a fraction of the folder's width. The header
- * is a multiple of it in `items.css`, so there is one size on a page.
- *
- * 0.01746 of 481 units is 8.4, and it was **measured rather than derived** —
- * two attempts to derive it were both wrong, in opposite directions, and the
- * board comment on T-320 records why.
- *
- * The thing that cannot be reasoned about is how many characters of this hand
- * fit a line. `text.rs` charges a page 66 columns; the sheet's 277.8-unit
- * measure actually holds about 85 of them at this size, because an average
- * glyph in Patrick Hand advances 0.377 em rather than the ~0.5 a printed text
- * face does. So the grid and the layout do not agree line for line and were
- * never going to — D-60 is explicit that pagination is defined in bytes and is
- * blind to the typeface — and what has to be true is only that a page's worth
- * of text *fits the sheet and roughly fills it*.
- *
- * At 8.4 a 66-by-46 page of real prose draws in 34 lines of the 37 that fit:
- * full, with three lines of headroom for prose with longer words in it. At 8.7
- * it is exactly 35 of 35, which is the crossover and no margin at all, and at
- * 9.0 it overflows. At the 6.8 this task first shipped, a page drew in 28 lines
- * of 46 and left the bottom two fifths of every sheet blank — which is what the
- * first screenshot showed and what sent this back to be measured.
- *
- * So `text.rs`'s 66 by 46 survives its one look (D-60), and nothing stored
- * moves. What moved is the type it is set in.
- *
- * A label is sized to be read off a shelf and a page is sized to be read at a
- * desk, so this is deliberately about a fifth of the gummed label's size and
- * deliberately too small to read at board scale. The floor that fixes that is a
- * camera problem (T-321) rather than a type one.
- */
-const LEAF_TEXT_SIZE = 0.01746;
+
 /** How much of a folder's width the gummed label may take, inside its own
  *  padding — the number `items.css` writes, here as well because `fitLabel`
  *  needs the box the name has to fit in. */

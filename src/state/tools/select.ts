@@ -322,6 +322,10 @@ export class SelectTool implements Tool {
       // too, because clicking away deliberately does *not* do it (T-273) — so
       // without this line an open folder is a state with no visible way out.
       { keys: "Enter", does: "open a case file, and Esc shuts it" },
+      // Beside it rather than anywhere else, because it is only meaningful
+      // while the line above has been used — and because the arrows are the
+      // one binding on this board that nobody would think to try on cork.
+      { keys: "arrows", does: "turn a page in an open case file" },
       { keys: "wheel", does: "sag one gap, selected string" },
       { keys: "Alt+wheel", does: "sag every gap at once", holds: ["Alt"] },
       { keys: "1-9", does: "slack presets, taut to slack" },
@@ -1496,6 +1500,33 @@ export class SelectTool implements Tool {
         if (this.gesturing) this.cancel(ctx);
         else if (!ctx.open(null)) ctx.selection.clear();
         return;
+
+      case "ArrowLeft":
+      case "ArrowRight": {
+        /**
+         * Turning a page in an open case file — T-321.
+         *
+         * The arrows were the only unbound keys left on this board and they are
+         * also the right ones: every reader anybody has used turns a page with
+         * them, so this is a binding nobody has to be taught. DESIGN section 3.9
+         * carries it, which is the rule that decides whether a shortcut may
+         * exist at all — "a binding that is not in the table is a binding nobody
+         * can find".
+         *
+         * Left is back and right is forward, which is the direction the folder
+         * itself argues for: opening turns its fold to the left and the paper
+         * edge to the right, so forward is the way the sheets go.
+         *
+         * It falls through when nothing is open and when there is no page that
+         * way, so an arrow at the last page is not silently eaten. Modifiers are
+         * refused rather than ignored: `Shift`+arrow is the shape a selection
+         * nudge would take if this board ever grows one, and claiming it now
+         * would be spending a binding on nothing.
+         */
+        if (this.gesturing || input.shift || input.ctrl || input.alt) return;
+        ctx.turnPage(input.code === "ArrowLeft" ? -1 : 1);
+        return;
+      }
 
       case "Delete":
       case "Backspace": {

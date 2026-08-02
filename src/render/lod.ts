@@ -142,7 +142,28 @@ const READABLE_PX = 10.5;
  * directly would be a number that silently stopped being true the next time the
  * body size moved.
  */
-export const READING_ZOOM = READABLE_PX / BODY_UNITS;
+export const READING_ZOOM = readingZoomFor(BODY_UNITS);
+
+/**
+ * The zoom at which type of a given size is legible — the same one opinion,
+ * asked about something other than the board's own hand (T-321).
+ *
+ * The floor above is the board writing on the board's paper, and for everything
+ * search flies to that is the right question. A **document** is not set in the
+ * board's hand: a page is typed at about 8 units where a note is written at 19,
+ * so arriving at `READING_ZOOM` over an open case file lands you at type less
+ * than half the size the number was measured on — legible board, unreadable
+ * page.
+ *
+ * So the floor is derived from the type the thing is actually set in, which is
+ * one expression rather than a new idea, and `READABLE_PX` stays the single
+ * opinion about legibility. It is held in screen pixels of text because that is
+ * the unit legibility is about; a second constant for documents would be a
+ * second opinion, and the two would drift the first time either moved.
+ */
+export function readingZoomFor(units: number): number {
+  return READABLE_PX / units;
+}
 
 
 /**

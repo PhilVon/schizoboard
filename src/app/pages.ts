@@ -70,6 +70,24 @@ export class PageReader {
   /** The document currently being read, so shutting one can let go of exactly
    *  its pages and the shell can be told which file to release. */
   private reading: string | null = null;
+  /**
+   * The page it is open at, one-based, and how many there are (T-321).
+   *
+   * **Local, and never on the wire.** Same rule D-46 section 4 gives a playhead
+   * and for the same reason: where somebody has got to in a document is a fact
+   * about the person reading it rather than about the board, and a field every
+   * peer had to agree about would be one more thing the document carries
+   * forever. Two people can read the same filing at different pages, which is
+   * what happens with a paper one.
+   *
+   * It goes back to page one when a different document is opened, deliberately.
+   * A folder shut and opened again is a folder somebody put down and picked up,
+   * and remembering the page would be a piece of state with nowhere honest to
+   * live: not the document, and not per machine either, since it is about one
+   * reading rather than about this installation.
+   */
+  private at = 1;
+  private count = 1;
 
   /**
    * @param arrived Called when a page lands, with the hash it belongs to. The
@@ -89,7 +107,7 @@ export class PageReader {
    * the same reason: the layer that already decided to draw this page is a
    * better answer to "is it wanted" than a second opinion about the viewport.
    */
-  page(sha256: string, index: number): PageView {
+  page(sha256: string, index: number = this.at): PageView {
     const key = `${sha256}:${index}`;
     const held = this.held.get(key);
     if (held !== undefined) return held.view;
@@ -99,12 +117,52 @@ export class PageReader {
     return READING;
   }
 
-  /** Which document is being read. Idempotent, and shutting the last one first
-   *  is what keeps the shell holding one file rather than two. */
-  open(sha256: string): void {
+  /**
+   * Which document is being read, and how many pages it has.
+   *
+   * `pages` comes off the asset record, which knows it without touching the
+   * disk — it crossed the wire ahead of the bytes so that a peer could draw the
+   * folder's thickness (DATA-MODEL section 10). `null` is a document nobody
+   * has counted, and one page is the honest floor: there is always a page, and
+   * turning is what finds out there is not a second one.
+   *
+   * Idempotent, and shutting the last one first is what keeps the shell holding
+   * one file rather than two.
+   */
+  open(sha256: string, pages: number | null): void {
+    this.count = Math.max(1, pages ?? 1);
     if (this.reading === sha256) return;
     if (this.reading !== null) this.close(this.reading);
     this.reading = sha256;
+    this.at = 1;
+  }
+
+  /** The page being read, one-based. */
+  get pageAt(): number {
+    return this.at;
+  }
+
+  /** How many there are, as the asset record said. */
+  get pageCount(): number {
+    return this.count;
+  }
+
+  /**
+   * Turn `by` pages, and answer whether anything moved.
+   *
+   * Clamped rather than wrapped: a document has a first page and a last one, and
+   * running off either end into the other is a thing no physical file does. The
+   * answer is what lets the caller decide whether the keystroke was used — the
+   * same shape `closeOpen` takes, so a press at the last page can fall through
+   * to whatever else wants it rather than being silently swallowed.
+   */
+  turn(by: number): boolean {
+    if (this.reading === null) return false;
+    const to = Math.min(this.count, Math.max(1, this.at + by));
+    if (to === this.at) return false;
+    this.at = to;
+    this.arrived(this.reading);
+    return true;
   }
 
   /**

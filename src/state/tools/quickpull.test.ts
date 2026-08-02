@@ -106,6 +106,7 @@ beforeEach(() => {
     hitString: () => null,
     edit: () => undefined,
     open: () => false,
+    turnPage: () => false,
     held: new Set<string>(),
     write: {
       setPoses: () => {},

@@ -1,6 +1,14 @@
 import { describe, expect, it, vi } from "vitest";
 
-import { CARD_ZOOM, Lod, READING_ZOOM, TIER_BAND, tierAt, type Tier } from "@/render/lod";
+import {
+  CARD_ZOOM,
+  Lod,
+  readingZoomFor,
+  READING_ZOOM,
+  TIER_BAND,
+  tierAt,
+  type Tier,
+} from "@/render/lod";
 import { MAX_ZOOM, MIN_ZOOM } from "@/state/camera";
 
 /** Where a tier is left, going back up. */
@@ -292,3 +300,36 @@ describe("READING_ZOOM", () => {
     expect(19 * READING_ZOOM).toBeCloseTo(10.5, 6);
   });
 });
+
+describe("readingZoomFor", () => {
+  /**
+   * T-321. `READING_ZOOM` is the board's own hand at 19 units and is the right
+   * floor for everything search flies to. A document is not set in it — a page
+   * is typed at about 8 — so arriving at 55 per cent over an open case file put
+   * the reader in front of type less than half the size the number was measured
+   * on. The fix is one expression rather than a second constant.
+   */
+  it("is the same opinion about legibility, asked about other type", () => {
+    expect(readingZoomFor(BODY_UNITS_HERE)).toBe(READING_ZOOM);
+  });
+
+  it("asks for more zoom the smaller the type is", () => {
+    expect(readingZoomFor(8.4)).toBeGreaterThan(READING_ZOOM);
+    // A page at 8.4 units wants about 125 per cent where the board's hand wants
+    // 55 — which is the whole of why the floor had to be derived rather than
+    // reused.
+    expect(readingZoomFor(8.4)).toBeCloseTo(1.25, 2);
+  });
+
+  it("holds the opinion in screen pixels of text, whatever the type", () => {
+    // The property that makes it one opinion: whatever size goes in, what comes
+    // out draws that size at the same number of pixels.
+    for (const units of [6, 8.4, 19, 40]) {
+      expect(units * readingZoomFor(units)).toBeCloseTo(19 * READING_ZOOM, 6);
+    }
+  });
+});
+
+/** `BODY_UNITS` is private to the module, and its value is what `READING_ZOOM`
+ *  is built from — so it is recovered rather than duplicated. */
+const BODY_UNITS_HERE = 19;

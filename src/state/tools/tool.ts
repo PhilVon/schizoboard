@@ -576,6 +576,17 @@ export interface ToolContext {
    * done, so this reports rather than swallowing and the tool decides.
    */
   open(itemId: string | null): boolean;
+
+  /**
+   * Turn `by` pages in whatever case file is open, and answer whether it moved
+   * (T-321).
+   *
+   * The same shape as `open` above and for the same reason: the tool knows a
+   * keystroke happened and nothing about documents, and the boolean is what
+   * lets a press at the last page fall through rather than be swallowed. With
+   * nothing open it does nothing and says so.
+   */
+  turnPage(by: number): boolean;
 }
 
 /**

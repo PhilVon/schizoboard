@@ -81,9 +81,13 @@ function leafOf(view: PageView | null, cold: Partial<ItemCold> = {}): HTMLElemen
   return host.querySelector(".folder-leaf") as HTMLElement;
 }
 
-const arrived = (content: PageContent, imageUrl: string | null = null): PageView => ({
+const arrived = (
+  content: PageContent,
+  imageUrl: string | null = null,
+  index = 1,
+): PageView => ({
   phase: "ready",
-  page: { index: 1, width: 595, height: 842, content },
+  page: { index, width: 595, height: 842, content },
   reason: null,
   imageUrl,
 });
@@ -256,5 +260,50 @@ describe("the face a page is set in", () => {
       style: { fontFamily: "clean" },
     });
     expect(leaf.dataset["face"]).toBe("clean");
+  });
+});
+
+describe("the header, while a page is open", () => {
+  it("says which page you are on, out of how many — T-321", () => {
+    // "3 of 51" and not "3": a page reference means nothing without the
+    // document's length beside it, and the two together are what a citation
+    // carries (D-60 — the reference is `(sha256, page)`).
+    const layer = layerFor(() => arrived({ kind: "plain", text: "x" }, null, 3));
+    put();
+    scene.setOpen("a", 1);
+    layer.sync(scene, dirty, null);
+    expect(host.querySelector(".leaf-meta")!.textContent).toBe("3 of 4");
+  });
+
+  it("gives the slot back to the page count when the folder is shut", () => {
+    let open = true;
+    const layer = layerFor(() => (open ? arrived({ kind: "plain", text: "x" }, null, 2) : null));
+    put();
+    scene.setOpen("a", 1);
+    layer.sync(scene, dirty, null);
+    expect(host.querySelector(".leaf-meta")!.textContent).toBe("2 of 4");
+
+    open = false;
+    scene.setOpen(null, 0);
+    dirty.item("a");
+    layer.sync(scene, dirty, null);
+    // A shut folder says how thick it is, which is the fact its tab carries.
+    expect(host.querySelector(".leaf-meta")!.textContent).toBe("4 pp.");
+  });
+
+  it("never claims fewer pages than the one being read", () => {
+    // A document counted by a machine that could not count it reads `null`, and
+    // "3 of 1" would be a worse answer than "3 of 3".
+    const layer = new DomItemLayer(
+      host,
+      asset,
+      () => ({ ...NO_FACTS, kind: "document", pages: null }),
+      undefined,
+      () => arrived({ kind: "plain", text: "x" }, null, 3),
+    );
+    put();
+    scene.setOpen("a", 1);
+    layer.sync(scene, dirty, null);
+    expect(host.querySelector(".leaf-meta")!.textContent).toBe("3 of 3");
   });
 });

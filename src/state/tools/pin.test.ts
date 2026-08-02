@@ -77,6 +77,7 @@ beforeEach(() => {
     // Nothing to put a caret in, in a harness with no presentation (T-179).
     edit: () => undefined,
     open: () => false,
+    turnPage: () => false,
     held: new Set<string>(),
     write: {
       setPoses: () => {},

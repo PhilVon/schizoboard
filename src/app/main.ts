@@ -79,6 +79,7 @@ import {
   canBeOpened,
   carriesItsOwnName,
   caseNumber,
+  PAGE_TEXT_SIZE,
   titleWorthWriting,
   type AssetKind,
 } from "@/lib/objects";
@@ -89,7 +90,7 @@ import { Culler } from "@/render/cull";
 import { BoardInkLayer } from "@/render/ink/board";
 import { DomItemLayer, NO_FACTS, type AssetFacts, type AssetView } from "@/render/items/dom";
 import { NO_AGEING, WALL_CLOCK } from "@/render/items/wear";
-import { Lod, READING_ZOOM } from "@/render/lod";
+import { Lod, readingZoomFor, READING_ZOOM } from "@/render/lod";
 import { FrameLoop } from "@/render/loop";
 import { Overlay, type PendingRun } from "@/render/overlay";
 import { Janitor } from "@/crdt/janitor";
@@ -538,7 +539,7 @@ async function boot(): Promise<void> {
   // page is a fact about the file: two folders of one document are one set of
   // pages. Which page the reader is on is T-321's, so this answers for
   // whichever that is.
-  (sha256) => reader.page(sha256, 1));
+  (sha256) => reader.page(sha256));
 
   /**
    * How old the board thinks its items are — DESIGN section 4.7, and Q-105,
@@ -1299,10 +1300,39 @@ async function boot(): Promise<void> {
     // go of whatever it was holding. Not the *page* — asking for one is what
     // fetches it, and the layer does that when it draws.
     const reading = scene.cold(itemId)?.assetId ?? null;
-    if (reading !== null) reader.open(reading);
+    if (reading !== null) {
+      const record = board.assets.get(reading);
+      reader.open(reading, (record ? readAsset(reading, record)?.pages : null) ?? null);
+    }
     const box = scene.boundsOf(itemId, 0, foundBox);
-    if (box !== null) flight.toBox(camera, box, undefined, READING_ZOOM);
+    if (box !== null) flight.toBox(camera, box, undefined, pageReadingZoom(itemId));
     return true;
+  };
+
+  /**
+   * The zoom floor for arriving at an open case file — T-321.
+   *
+   * **Not `READING_ZOOM`**, which is what this used until now and is the wrong
+   * question by about a factor of two. That floor is the board's own hand at 19
+   * units; a page is typed at `PAGE_TEXT_SIZE` of the folder's width, which is
+   * 8.4 — so arriving at 55 per cent over a document put you in front of type
+   * less than half the size the number was measured on. A legible board and an
+   * unreadable page.
+   *
+   * One expression rather than a new idea: the same `READABLE_PX`, asked about
+   * the type the thing is actually set in. It comes out around 125 per cent,
+   * where the board's-hand floor gives 55.
+   *
+   * A floor and not a target, like every other use of it. Opening a document you
+   * are already reading at 300 per cent changes no zoom at all.
+   */
+  const pageReadingZoom = (itemId: string): number => {
+    const slot = scene.slotOf(itemId);
+    const w = slot === undefined ? 0 : (scene.w[slot] ?? 0);
+    // A folder with no width yet is a folder whose record has not arrived. The
+    // board's own floor is the honest answer there rather than a division by
+    // zero, and the flight is a floor so being conservative costs nothing.
+    return w > 0 ? readingZoomFor(w * PAGE_TEXT_SIZE) : READING_ZOOM;
   };
 
   /**
@@ -1582,6 +1612,10 @@ async function boot(): Promise<void> {
     edit: startEditing,
     /** `Enter` on a selection of exactly one opens it (T-274, Q-257). */
     open: openItem,
+    // Turning a page in whatever is open (T-321). The tool knows a keystroke
+    // happened and nothing about documents; the reader knows which document is
+    // open and how many pages it has, and answers whether anything moved.
+    turnPage: (by) => reader.turn(by),
     // Space+drag and middle-drag belong to the camera, not to the board.
     suppressed: () => navigation.panReady,
     readOnly: () => readOnly,

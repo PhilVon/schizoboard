@@ -126,7 +126,7 @@ describe("every tool declares what it does", () => {
 
   /** Select is where everything that is not a pen lives, so it is the one tool
    *  whose readout is worth anything at all if it is thin. */
-  it("gives select the ten gestures it alone implements", () => {
+  it("gives select every gesture it alone implements", () => {
     const select = new SelectTool();
     expect(select.hint.rows.map((r) => r.keys)).toEqual([
       "Shift+click",
@@ -135,6 +135,9 @@ describe("every tool declares what it does", () => {
       "Ctrl+drag a pin",
       "double-click a pin",
       "Enter",
+      // Beside `Enter` rather than at the end, because it is only meaningful
+      // once that has been used and the readout is read in order (T-321).
+      "arrows",
       "wheel",
       "Alt+wheel",
       "1-9",
