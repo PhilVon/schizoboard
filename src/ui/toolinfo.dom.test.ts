@@ -91,6 +91,8 @@ describe("the tool info bar", () => {
       "double-click a pin",
       "Enter",
       "arrows",
+      // Held behind no modifier, because it is a bare drag on a page (T-282).
+      "drag a page",
       "wheel",
       "1-9",
     ]);
@@ -196,6 +198,7 @@ describe("the tool info bar", () => {
         "double-click a pin",
         "Enter",
         "arrows",
+        "drag a page",
         "wheel",
         "1-9",
       ]);

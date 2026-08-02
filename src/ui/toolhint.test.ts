@@ -101,6 +101,9 @@ describe("the resting split", () => {
       // and at rest because it is behind no modifier — the arrows are the one
       // binding on this board nobody would think to try on cork (T-321).
       "arrows",
+      // And at rest for the same reason: a bare drag on a page, behind no
+      // modifier at all (T-282).
+      "drag a page",
       "wheel",
       "1-9",
     ]);

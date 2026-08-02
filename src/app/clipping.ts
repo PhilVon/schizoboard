@@ -54,7 +54,6 @@ import type { PageContent } from "@/platform/types";
 import type { RasterCamera, RasterReport } from "@/render/items/raster";
 import type { Bounds, Camera, Vec2 } from "@/state/camera";
 import type { Scene } from "@/state/scene";
-import { settleOnPin } from "@/state/tools/frame";
 
 /**
  * Device pixels per board unit in a lifted clipping.
@@ -273,7 +272,6 @@ export class Clipper {
         h: size.h,
         source: { itemId, lx: (rect.minX + rect.maxX) / 2, ly: (rect.minY + rect.maxY) / 2 },
       },
-      settleOnPin(scene, [itemId]),
     );
   }
 
@@ -410,12 +408,17 @@ export class Clipper {
         source: { itemId, lx: (rect.minX + rect.maxX) / 2, ly: (rect.minY + rect.maxY) / 2 },
         clipping: { sha256, asset },
       },
-      // A folder hanging on one pin stops hanging the moment this gesture puts
-      // a second one in it, and the pose it was drawn at belongs in the same
-      // transaction or the paper jumps on the frame the card arrives. Computed
-      // here, after every await, because the folder has been swinging
-      // throughout.
-      settleOnPin(scene, [itemId]),
+      // **No settle, and that is a consequence of the tape** (Q-286).
+      //
+      // `settleOnPin` writes an item's drawn pose when a new pin is about to
+      // stop it hanging — one pin to two is rigid, and baking the pose is what
+      // stops the paper jumping on that frame. A tape changes nothing about
+      // how the page hangs, so there is nothing to bake, and passing it anyway
+      // is not merely redundant: it writes the *momentary swing* into the
+      // stored rotation. Driven, before this line was removed, three clippings
+      // off one folder walked its `settledRot` 0 → 0.028 → -0.022 → 0.008 — a
+      // document write, on every peer, nudging the paper a degree or so each
+      // time somebody quoted it.
     );
   }
 }

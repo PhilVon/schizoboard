@@ -376,6 +376,69 @@ describe("what a rectangle yields, by what is on the page", () => {
     expect(canvases[1]).toEqual({ w: canvases[0]!.h, h: canvases[0]!.w });
   });
 
+  it("does not touch the page's own pose", async () => {
+    // A tape changes nothing about how the page hangs, so there is nothing to
+    // settle — and settling anyway writes the momentary SWING into the stored
+    // rotation. Driven before this was fixed: three clippings off one folder
+    // walked its settledRot 0 -> 0.028 -> -0.022 -> 0.008, on every peer.
+    const id = folder(0, 0, 0.2);
+    // Mid-swing, which is the only state in which this can go wrong: a settle
+    // writes the DRAWN pose, and drawn differs from stored by exactly the
+    // transients. A page sitting perfectly still would be written back
+    // identical and the bug would be invisible.
+    // And hanging from exactly one pin, because that is the state a settle
+    // acts on at all — `settleOnPin` skips an item held by none or by two.
+    scene.putPin({
+      id: "hangs",
+      parent: id,
+      lx: 0,
+      ly: -140,
+      kind: "pushpin",
+      color: "#c8352f",
+      wx: 0,
+      wy: -140,
+    });
+    const slot = scene.slotOf(id)!;
+    scene.swing[slot] = 0.028;
+    scene.driftX[slot] = 7;
+    scene.driftY[slot] = -4;
+    const before = { ...readItem(id, board.items.get(id)!)! };
+    clipper().cut(id, rect(-100, -80, 60, 70));
+    await settled();
+
+    const after = readItem(id, board.items.get(id)!)!;
+    expect(after.rot).toBe(before.rot);
+    expect(after.x).toBe(before.x);
+    expect(after.y).toBe(before.y);
+  });
+
+  it("does not touch the page's own pose on the written arm either", async () => {
+    // The same guarantee, and a separate test because it is a separate call:
+    // patching one arm's settle back in left the other's test entirely green.
+    const id = folder(0, 0, 0.2);
+    scene.putPin({
+      id: "hangs",
+      parent: id,
+      lx: 0,
+      ly: -140,
+      kind: "pushpin",
+      color: "#c8352f",
+      wx: 0,
+      wy: -140,
+    });
+    const slot = scene.slotOf(id)!;
+    scene.swing[slot] = 0.028;
+    scene.driftX[slot] = 7;
+    page = { sha256: SHA, index: 4, content: TYPED, origName: "scan.pdf" };
+    const before = { ...readItem(id, board.items.get(id)!)! };
+    clipper().cut(id, rect(-100, -80, 60, 70));
+    await settled();
+
+    const after = readItem(id, board.items.get(id)!)!;
+    expect(after.rot).toBe(before.rot);
+    expect(after.x).toBe(before.x);
+  });
+
   it("names the clipping after the document it came out of", async () => {
     const id = folder();
     clipper().cut(id, rect(-100, -80, 60, 70));

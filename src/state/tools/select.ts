@@ -335,6 +335,14 @@ export class SelectTool implements Tool {
       // while the line above has been used — and because the arrows are the
       // one binding on this board that nobody would think to try on cork.
       { keys: "arrows", does: "turn a page in an open case file" },
+      // AC-856. The one row here that describes a gesture you would otherwise
+      // discover by accident, and the accident is the reason it is written
+      // down: a drag on an open page *looks* exactly like a drag on any other
+      // item, and the folder is still draggable by the kraft either side of the
+      // page. Naming both halves is what stops the page feeling stuck — and
+      // "cut" rather than "select" because the two rectangles in this tool land
+      // within a few pixels of each other (T-282).
+      { keys: "drag a page", does: "cut a clipping out of it, on a string" },
       { keys: "wheel", does: "sag one gap, selected string" },
       { keys: "Alt+wheel", does: "sag every gap at once", holds: ["Alt"] },
       { keys: "1-9", does: "slack presets, taut to slack" },
