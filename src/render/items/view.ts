@@ -59,6 +59,31 @@ export interface ItemLayer {
   readonly editing: string | null;
 
   /**
+   * Press play on a cassette, or press it again to stop — T-277, D-46 section
+   * 4. Answers whether it is now playing.
+   *
+   * On this side of the seam for the reason `edit` is, and more so: the sound
+   * comes out of an element that has to live *inside the item*, because the
+   * position readout is the object itself — the tape wound between the two
+   * reels (T-268) — and D-50 rejected the app-owned player that would have kept
+   * the element out here. A Pixi implementation has the same problem and the
+   * same answer: it would overlay a media element of its own, since WebGL
+   * cannot make a sound either.
+   *
+   * `url` is the recording's bytes as this machine can reach them, or `""` for
+   * a file that has not arrived — the caller resolves it, because asking to
+   * hear something is a claim on an asset and the renderer does not make those.
+   */
+  hear(itemId: string, url: string): boolean;
+
+  /** Stop, and let the recording go. Safe when nothing is playing. */
+  hush(): void;
+
+  /** The item making a sound, or null — including null for one paused half way
+   *  through, which is what the culler's exemption asks about (D-50). */
+  readonly playing: string | null;
+
+  /**
    * The scale board content is drawn at, `devicePixelRatio * zoom`, so the layer
    * can ask for a stored variant that suits the size rather than the source. The
    * one value here that cannot come through the scene: the scene knows board

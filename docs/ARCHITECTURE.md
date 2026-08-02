@@ -71,6 +71,10 @@ src/
     cull.ts           viewport culling — uniform spatial grid, hysteresis band
     lod.ts            the tier the camera is at, and the one place that decides
     items/            one view per archetype, node pooling — behind an interface
+                      editor.ts and deck.ts are the two things that live *in* a
+                      view and belong to an item: the caret, and the one audio
+                      element. Both are re-parked every DOM phase, because a
+                      pooled node inherits whatever was left in it
     ink/              stroke geometry, per-item canvas, wet overlay, re-raster policy
     ropes/            paint.ts — one screen-space painter, instantiated per canvas
     pins/             pin DOM nodes — a DOM layer, and an export painter (T-214)
