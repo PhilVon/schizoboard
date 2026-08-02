@@ -2121,6 +2121,140 @@ textarea.item-field::-webkit-scrollbar {
   background: var(--paper-yellowing), linear-gradient(to bottom, #f6f1e2 0%, #ebe4d0 100%);
 }
 
+/* --- the folder, opened (T-319) ------------------------------------------- */
+
+/*
+ * **The cover folds back on its fold, and that is the only way a folder opens
+ * without doubling its footprint.** A real one laid flat is twice as wide, and
+ * T-273 refused that: nine separate places read `scene.w`/`scene.h` raw and each
+ * would have needed the same factor, which `lib/carry.ts` already carries the
+ * warning about. What a person actually does with a folder they are reading from
+ * on a desk is fold the cover right back behind it — same silhouette, and the
+ * contents in the same place they were.
+ *
+ * **The fold is the foot.** `.folder-front`'s kraft darkens toward the bottom
+ * "because the bottom of it is the fold", which has been in this file since the
+ * folder was built. So the hinge is the item's bottom edge and the free edge is
+ * the head at 11%, where `.folder-sheets` draws. After the positive quarter turn
+ * the foot is on the LEFT and the head on the RIGHT — a book cover opening the
+ * way a book cover opens, and the direction Phil asked for on T-273.
+ *
+ * **And it needs no 3D.** A panel rotating about its foot away from the viewer
+ * projects to exactly a `scaleY` about that edge: the free edge moves toward the
+ * fold and the panel foreshortens. Past ninety degrees the cover is face-down
+ * behind the back panel and there is nothing to draw. So the whole fold is one
+ * 2D transform — no `preserve-3d`, no `perspective`, and nothing that rasterises
+ * a stacking context, which this file has been bitten by more than once.
+ *
+ * The printing on the cover foreshortens with it, and that is correct rather
+ * than tolerated: it is printed *on* the panel. Q-267 is what makes that
+ * affordable — the case number is re-typed at the head of the open page as a
+ * document header, so nothing has to be rescued from a folding surface.
+ */
+.item-case[data-kind="folder"] .folder-front {
+  transform-origin: 50% 100%;
+  transform: scaleY(calc(1 - var(--open, 0)));
+}
+
+/*
+ * The sheet inside — A4, and the arithmetic is the point.
+ *
+ * The folder is 480 by 344 board units, cut around **A4 lying horizontal**
+ * (`objects.ts`: 310 by 222 mm, which is A4 landscape plus a margin). A4 at this
+ * scale is 326 by 460. So the sheet is 326 wide and 460 tall *in its own upright
+ * frame*, turned a quarter anticlockwise to lie in the folder the way the paper
+ * actually lies in it — and when `Scene.setOpen` turns the folder a quarter the
+ * other way to be read, the two cancel and the page is portrait on screen.
+ *
+ * That is what makes `text.rs`'s 66 by 46 grid the right way round without a
+ * single number moving, and it is D-60's inversion arriving: **the sheet is
+ * sized to the grid rather than the grid measured off the sheet.**
+ *
+ * The `inset` is the unrotated box centred in the item — (481-326)/2 = 77.5
+ * units at the sides, and (344-460)/2 = -58 top and bottom, which overflows on
+ * purpose. The rotation brings it back: 460 by 326, centred, nine units inside
+ * the folder at the sides and nine at the head. Written as an inset rather than
+ * as `translate(-50%, -50%)` because a percentage translate resolves against the
+ * element's own box and would have to be re-derived every time either number
+ * moved.
+ *
+ * Both percentages are `A4_UNITS` against `objectSizeFor("document")` and
+ * neither was chosen. `lib/objects.ts` holds the two sizes and this holds the
+ * copy a stylesheet can express; `folder-open-css.test.ts` asserts they agree,
+ * which is the arrangement `--bulk` and `folderBulk` already have.
+ */
+.folder-page {
+  position: absolute;
+  inset: -16.8605% 16.1123%;
+  transform: rotate(-90deg);
+  /*
+   * **Opaque almost immediately, because the cover is what reveals this and a
+   * fade is not.** Driven at a fifth of the way through the fold the first
+   * version of this was at 0.59, and what that looked like was the gummed label
+   * showing *through* the page — a cross-dissolve between two things that are
+   * both physically there, which is the one reading a fold must not have. Now it
+   * is solid by a fifth of the turn, before the cover has uncovered any of it,
+   * and everything visible after that is the cover moving.
+   *
+   * It is not simply `1`, for the reason the ramp existed at all: a shut folder
+   * shows a strip of head above the cover's cut edge at 11%, where
+   * `.folder-sheets` draws the pile, and an always-on page would put its own top
+   * edge there permanently. At `--open: 0` the property is absent and the
+   * fallback is zero, so a folder nobody has opened is provably unchanged —
+   * which `folder-open-css.test.ts` asserts rather than assumes.
+   */
+  opacity: clamp(0, calc(var(--open, 0) * 5), 1);
+  /* A sheet in a folder is not lit from the folder's side. The counter-turn is
+     the same one every kraft gradient above takes (T-313). */
+  background:
+    linear-gradient(calc(170deg + var(--turn, 0deg)), #fdfbf4 0%, #f7f3e8 60%, #efe9da 100%);
+  border-radius: 1px;
+  /* It is *in* the folder, so it sits on the back panel rather than above the
+     board — a contact shadow and nothing that reads as a float. */
+  box-shadow: 0 0.4% 1.2% rgb(60 42 24 / 22%);
+}
+
+/* The page's own frame, upright because its parent carries the quarter turn.
+   Everything written on a page is sized off this one font-size. */
+.folder-leaf {
+  position: absolute;
+  inset: 0;
+  padding: 4.2% 7.4%;
+  overflow: hidden;
+  font-family: "Source Sans 3", ui-sans-serif, system-ui, sans-serif;
+  color: #35302a;
+}
+
+/*
+ * The header — the case number and the page count, typed at the head of the page
+ * (Q-267). A filing convention rather than a piece of chrome, which is why it is
+ * set in the same typed face the tab is and separated from the body by a rule
+ * rather than by a gap: that is what a case file's header actually looks like.
+ */
+.leaf-header {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 1em;
+  padding-bottom: 0.5em;
+  border-bottom: 0.06em solid rgb(53 48 42 / 28%);
+}
+
+.leaf-number {
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* The page count, quieter than the number: it is a fact about the file and the
+   number is what the file is called. */
+.leaf-meta {
+  flex: none;
+  opacity: 0.62;
+}
+
 /* --- the two cassettes ---------------------------------------------------- */
 
 /*
