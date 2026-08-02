@@ -370,8 +370,11 @@ describe("Overlay, strings", () => {
   const pool = new Float64Array([0, 0, 100, 40, 200, 0]);
   const ropes = {
     positions: pool,
-    visit: (id: string, fn: (at: number, count: number) => void): void => {
-      if (id === "s") fn(0, 3);
+    visit: (
+      id: string,
+      fn: (at: number, count: number, asleep: boolean, slack: number, a: string, b: string) => void,
+    ): void => {
+      if (id === "s") fn(0, 3, false, 0.1, "p0", "p1");
     },
     segment: (id: string, a: string, b: string, fn: (at: number, count: number) => void): void => {
       if (id === "s" && a === "p0" && b === "p1") fn(0, 3);
@@ -607,9 +610,12 @@ describe("Overlay, hovering a pin lights its threads", () => {
   const pool = new Float64Array([0, 0, 100, 40, 200, 0, 200, 0, 300, 40, 400, 0]);
   const ropes = {
     positions: pool,
-    visit: (id: string, fn: (at: number, count: number) => void): void => {
-      if (id === "s0") fn(0, 3);
-      if (id === "s1") fn(6, 3);
+    visit: (
+      id: string,
+      fn: (at: number, count: number, asleep: boolean, slack: number, a: string, b: string) => void,
+    ): void => {
+      if (id === "s0") fn(0, 3, false, 0.1, "p0", "p1");
+      if (id === "s1") fn(6, 3, false, 0.1, "p2", "p3");
     },
     segment: (id: string, a: string, b: string, fn: (at: number, count: number) => void): void => {
       if (id === "s0" && a === "p0" && b === "p1") fn(0, 3);
@@ -999,8 +1005,11 @@ describe("Overlay, the undo flash", () => {
   const pool = new Float64Array([0, 0, 100, 40, 200, 0]);
   const ropes = {
     positions: pool,
-    visit: (id: string, fn: (at: number, count: number) => void): void => {
-      if (id === "s") fn(0, 3);
+    visit: (
+      id: string,
+      fn: (at: number, count: number, asleep: boolean, slack: number, a: string, b: string) => void,
+    ): void => {
+      if (id === "s") fn(0, 3, false, 0.1, "p0", "p1");
     },
     segment: (id: string, a: string, b: string, fn: (at: number, count: number) => void): void => {
       if (id === "s" && a === "p0" && b === "p1") fn(0, 3);

@@ -27,6 +27,7 @@
 import { carryScale } from "@/lib/carry";
 import type { WetStroke } from "@/lib/ink";
 import { rotateOut } from "@/lib/rotate";
+import { tuckedGap } from "@/render/facing";
 import { type ItemFrame, WetInk } from "@/render/ink/wet";
 
 /**
@@ -293,7 +294,12 @@ export interface PendingRun {
  */
 export interface RopeGeometry {
   readonly positions: Float64Array;
-  visit(id: string, fn: (at: number, count: number) => void): void;
+  /** The two pin ids come last, and the chrome reads them: a gap that ends at a
+   *  tape on a page nobody is looking at wears none — see [`pathRun`]. */
+  visit(
+    id: string,
+    fn: (at: number, count: number, asleep: boolean, slack: number, a: string, b: string) => void,
+  ): void;
   /**
    * One segment, named by the two pins at its ends — for a peer's advisory lock
    * (DATA-MODEL section 5.4). `visit` cannot answer it: it skips the segments
@@ -974,10 +980,6 @@ export class Overlay {
     selection: Selection,
     ropes: RopeGeometry,
   ): boolean {
-    const pool = ropes.positions;
-    const zoom = camera.zoom;
-    const camX = camera.x;
-    const camY = camera.y;
     let drew = false;
 
     for (const id of selection.strings) {
@@ -986,17 +988,7 @@ export class Overlay {
       // `Selection.prune` clears that up, but not before this frame draws.
       if (style === undefined) continue;
 
-      let any = false;
-      ctx.beginPath();
-      ropes.visit(id, (at, count) => {
-        ctx.moveTo((pool[at]! - camX) * zoom, (pool[at + 1]! - camY) * zoom);
-        for (let i = 1; i < count; i++) {
-          const j = at + i * 2;
-          ctx.lineTo((pool[j]! - camX) * zoom, (pool[j + 1]! - camY) * zoom);
-        }
-        any = true;
-      });
-      if (!any) continue;
+      if (!this.pathRun(ctx, camera, scene, ropes, id)) continue;
 
       this.clear(ctx);
       ctx.save();
@@ -1023,6 +1015,48 @@ export class Overlay {
   }
 
   /**
+   * One string's run as a path on `ctx`, in screen space — and whether there
+   * was any of it to draw.
+   *
+   * The two pieces of chrome a string wears, the selection halo and the hover
+   * light, walk the same points and differ only in what they stroke them with;
+   * they were the same eleven lines twice until a *third* thing became true of
+   * those points and had to be added to both (T-330).
+   *
+   * **A gap that has gone behind the paper is not in it.** This canvas is above
+   * the items, so chrome along a thread taped inside a shut folder would be the
+   * outline of a string drawn across a folder with no string on it — the
+   * strongest possible way of saying the thing is there when the whole point of
+   * the last hour is that it is not. What is left of the run still gets its
+   * chrome: what is selected is the string, and the part of it you can see says
+   * so.
+   */
+  private pathRun(
+    ctx: CanvasRenderingContext2D,
+    camera: Camera,
+    scene: Scene,
+    ropes: RopeGeometry,
+    id: string,
+  ): boolean {
+    const pool = ropes.positions;
+    const zoom = camera.zoom;
+    const camX = camera.x;
+    const camY = camera.y;
+    let any = false;
+    ctx.beginPath();
+    ropes.visit(id, (at, count, _asleep, _slack, a, b) => {
+      if (tuckedGap(scene, this.shownPageOf, a, b)) return;
+      ctx.moveTo((pool[at]! - camX) * zoom, (pool[at + 1]! - camY) * zoom);
+      for (let i = 1; i < count; i++) {
+        const j = at + i * 2;
+        ctx.lineTo((pool[j]! - camX) * zoom, (pool[j + 1]! - camY) * zoom);
+      }
+      any = true;
+    });
+    return any;
+  }
+
+  /**
    * Every string through the hovered pin, lit — DESIGN section 3.3.
    *
    * The whole reason this is cheap enough to do on a hover is
@@ -1045,27 +1079,13 @@ export class Overlay {
     const through = scene.stringsThrough(pinId);
     if (through.size === 0) return false;
 
-    const pool = ropes.positions;
-    const zoom = camera.zoom;
-    const camX = camera.x;
-    const camY = camera.y;
     let drew = false;
 
     for (const id of through) {
       const style = scene.strings.get(id);
       if (style === undefined) continue;
 
-      let any = false;
-      ctx.beginPath();
-      ropes.visit(id, (at, count) => {
-        ctx.moveTo((pool[at]! - camX) * zoom, (pool[at + 1]! - camY) * zoom);
-        for (let i = 1; i < count; i++) {
-          const j = at + i * 2;
-          ctx.lineTo((pool[j]! - camX) * zoom, (pool[j + 1]! - camY) * zoom);
-        }
-        any = true;
-      });
-      if (!any) continue;
+      if (!this.pathRun(ctx, camera, scene, ropes, id)) continue;
 
       if (!drew) {
         this.clear(ctx);

@@ -56,7 +56,7 @@
 
 import { fibre } from "@/lib/material";
 import { presetSlack } from "@/lib/slack";
-import { tucked, type ShownPage } from "@/render/facing";
+import { tucked, tuckedGap, type ShownPage } from "@/render/facing";
 import { LIGHT_DX, LIGHT_DY, SHADOW_RGB } from "@/render/items/shadow";
 import type { RopeSet } from "@/sim/ropes";
 import type { Camera } from "@/state/camera";
@@ -386,16 +386,15 @@ export class RopeLayer {
   /** See [`setShownPage`]. */
   private shownPage: ShownPage | null = null;
   /**
-   * The tapes that are not on show, and the strings that end at one — rebuilt
-   * at the top of each draw, and empty on every board that has never quoted a
-   * case file.
+   * The strings with a put-away tape somewhere on them — rebuilt at the top of
+   * each draw, and empty on every board that has never quoted a case file.
    *
-   * Two sets rather than one because they answer different questions in
-   * different places: the strings decide whether a run is worth splitting at
-   * all, in the hot loop over everything visible, and the pins decide which of
-   * its gaps go behind the paper, one level down in `pathsFor`.
+   * It exists for the hot loop and for nothing else: without it, "is this string
+   * one that has to be split" would be a walk of its nodes for every string in
+   * the viewport on every frame. Which of its *gaps* go behind the paper is
+   * `tuckedGap`'s question, asked one level down where there is a gap to ask
+   * about.
    */
-  private readonly tuckedPins = new Set<string>();
   private readonly tuckedStrings = new Set<string>();
 
   constructor(canvas: HTMLCanvasElement, layer: "over" | "under") {
@@ -433,13 +432,11 @@ export class RopeLayer {
    * returns. `scene.pagedPins` is empty until somebody quotes a case file.
    */
   private findTucked(scene: Scene): void {
-    this.tuckedPins.clear();
     this.tuckedStrings.clear();
     if (scene.pagedPins.size === 0) return;
     for (const id of scene.pagedPins) {
       const pin = scene.pins.get(id);
       if (pin === undefined || !tucked(pin, this.shownPage)) continue;
-      this.tuckedPins.add(id);
       for (const sid of scene.stringsThrough(id)) this.tuckedStrings.add(sid);
     }
   }
@@ -487,7 +484,7 @@ export class RopeLayer {
       // being read — so this stays the single comparison it always was, plus a
       // `has` on a set that is usually empty.
       if (style.layer !== this.layer && !this.tuckedStrings.has(id)) continue;
-      const parts = this.pathsFor(id, ropes, camera, style.layer);
+      const parts = this.pathsFor(id, ropes, camera, scene, style.layer);
       if (parts === null) continue;
       for (const part of parts) {
         if (part.layer !== this.layer) continue;
@@ -549,7 +546,7 @@ export class RopeLayer {
       const style = scene.strings.get(id);
       if (style === undefined) continue;
       if (style.layer !== this.layer && !this.tuckedStrings.has(id)) continue;
-      const parts = this.pathsFor(id, ropes, camera, style.layer);
+      const parts = this.pathsFor(id, ropes, camera, scene, style.layer);
       if (parts === null) continue;
       for (const part of parts) {
         if (part.layer !== this.layer) continue;
@@ -725,6 +722,7 @@ export class RopeLayer {
     id: string,
     ropes: RopeSet,
     camera: Camera,
+    scene: Scene,
     layer: string,
   ): RungPath[] | null {
     const cached = this.paths.get(id);
@@ -738,15 +736,11 @@ export class RopeLayer {
 
     ropes.visit(id, (at, count, _asleep, slack, a, b) => {
       const rung = slackRung(slack);
-      // Under, whatever the string says, when either end of this gap is a tape
-      // that has been put away. Both ends rather than the far one: a thread can
-      // be taped to a page at each end — two quotations off one filing, joined
-      // — and either tape being under the sheet puts the gap between them
-      // under it too.
-      const on =
-        this.tuckedPins.size > 0 && (this.tuckedPins.has(a) || this.tuckedPins.has(b))
-          ? "under"
-          : layer;
+      // Under, whatever the string says, when this gap reaches a tape that has
+      // been put away — see `tuckedGap`, which is also what the overlay asks
+      // before it lights a thread it would otherwise light across a shut
+      // folder.
+      const on = tuckedGap(scene, this.shownPage, a, b) ? "under" : layer;
       let part = parts.find((p) => p.rung === rung && p.layer === on);
       if (part === undefined) {
         part = { rung, layer: on, path: new Path2D() };

@@ -263,8 +263,11 @@ describe("PeerPainter chrome", () => {
 describe("PeerPainter strings", () => {
   const ropes = {
     positions: new Float64Array([0, 0, 50, 10, 100, 0]),
-    visit(id: string, fn: (at: number, count: number) => void): void {
-      if (id === "s1") fn(0, 3);
+    visit(
+      id: string,
+      fn: (at: number, count: number, asleep: boolean, slack: number, a: string, b: string) => void,
+    ): void {
+      if (id === "s1") fn(0, 3, false, 0.1, "p0", "p1");
     },
     /** One gap, `p0` to `p1`, on the one string this fixture has. */
     segment(id: string, a: string, b: string, fn: (at: number, count: number) => void): void {
@@ -315,8 +318,11 @@ describe("PeerPainter strings", () => {
 describe("PeerPainter locks", () => {
   const ropes = {
     positions: new Float64Array([0, 0, 50, 10, 100, 0]),
-    visit(id: string, fn: (at: number, count: number) => void): void {
-      if (id === "s1") fn(0, 3);
+    visit(
+      id: string,
+      fn: (at: number, count: number, asleep: boolean, slack: number, a: string, b: string) => void,
+    ): void {
+      if (id === "s1") fn(0, 3, false, 0.1, "p0", "p1");
     },
     segment(id: string, a: string, b: string, fn: (at: number, count: number) => void): void {
       if (id === "s1" && a === "p0" && b === "p1") fn(0, 3);

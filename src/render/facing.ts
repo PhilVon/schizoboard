@@ -14,7 +14,7 @@
  * is four chances to disagree about what a shut folder shows.
  */
 
-import type { PinNode } from "@/state/scene";
+import type { PinNode, Scene } from "@/state/scene";
 
 /**
  * Which page of an item's document is the face on show, or null for the object
@@ -63,4 +63,34 @@ export function tucked(pin: PinNode, shown: ShownPage | null): boolean {
   // a board booted read-only. Nothing is open there, so nothing it holds is on
   // show — the same answer `() => null` gives, reached without calling it.
   return shown === null || shown(pin.parent) !== pin.page;
+}
+
+/**
+ * Does this gap of a run go behind the paper? — T-330.
+ *
+ * **Either end, not the far one.** A thread can be taped to a page at each end —
+ * two quotations off one filing, joined to each other — and a tape under the
+ * sheet on show puts the gap that reaches it under the sheet too, whichever end
+ * of that gap it is.
+ *
+ * The gap and not the string, because `layer` has always been a fact about a
+ * whole string and this one is not. Pull a pin out of the middle of a quote
+ * card's thread (T-46) and the half that never went near the folder must go on
+ * drawing where it always did — tucking all of it would hide the thread behind
+ * every note between the folder and the card.
+ *
+ * Free on a board with no tape stuck to a page, which is every board that has
+ * never quoted a case file.
+ */
+export function tuckedGap(
+  scene: Scene,
+  shown: ShownPage | null,
+  a: string,
+  b: string,
+): boolean {
+  if (scene.pagedPins.size === 0) return false;
+  const first = scene.pins.get(a);
+  if (first !== undefined && tucked(first, shown)) return true;
+  const second = scene.pins.get(b);
+  return second !== undefined && tucked(second, shown);
 }
