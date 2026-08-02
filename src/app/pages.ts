@@ -18,13 +18,42 @@
  * them and tells the shell to let the file go, which on a 51 MB scan is 51 MB of
  * working set. Nothing here survives that: a page is derived from
  * content-addressed bytes (Q-206), so losing every one of them costs time and
- * nothing else — which is the property that lets this be a plain `Map` rather
- * than anything with a policy.
+ * nothing else.
+ *
+ * **And of that document, only a window — the page being read and the one
+ * either side of it (T-279).** This started out as a plain `Map` with no policy
+ * on the argument that losing a page costs time and nothing else. The argument
+ * is sound and the conclusion did not follow: a `Map` with no policy grows one
+ * entry per page *visited*, and reading a 200-page scan end to end left 199
+ * pages held, with 199 blob URLs and 77 MiB of JPEG among them, to draw one
+ * page. A thousand-page filing — which D-46 section 4 says is a court record
+ * rather than an edge case — is 388 MiB.
+ *
+ * So the culling rule the board already runs, one level down. `render/cull.ts`
+ * keeps what is near the camera and drops what is not; this keeps what is near
+ * the page somebody is on. The unit of nearness is a page rather than a board
+ * unit, and there is no hysteresis, because there is no boundary to thrash
+ * across: a page is asked for once and either inside the window or gone.
  *
  * **The blob URLs are the one thing that leaks if this is wrong.** A lifted scan
  * is half a megabyte the browser holds until the URL is revoked, and a page turn
- * would mint one a turn. So every URL this creates is revoked in exactly one
- * place — `forget` — and every path that drops a page goes through it.
+ * mints one a turn. So every URL this creates is revoked in exactly one place —
+ * `forget` — and every path that drops a page goes through it.
+ *
+ * ## Why the neighbours are fetched rather than merely kept
+ *
+ * Q-276. Not for the latency: a cold page is 6.4 ms typed and 10.8 ms scanned,
+ * measured on the running app over a hundred turns into pages nobody had asked
+ * for, and both are under a frame. What a turn actually costs is **one frame in
+ * which the sheet is blank and its header says "200 pp."** — the shut label,
+ * where the page number should be — because for that one frame the phase is
+ * `reading` and `setPage` has no page to name. Holding the next one means a
+ * turn never passes through that phase at all.
+ *
+ * It is worth being plain that this is the reader forming its own opinion about
+ * what is wanted, which the note on `page` below says it would not. The opinion
+ * is a narrow one — *the page next to the one being read* — and it is the same
+ * opinion the board already holds about what is next to the camera.
  */
 
 import type { DocumentPage, Platform } from "@/platform/types";
@@ -57,6 +86,21 @@ export interface PageView {
 }
 
 const READING: PageView = { phase: "reading", page: null, reason: null, imageUrl: null };
+
+/**
+ * How many pages either side of the one being read are held, and fetched ahead.
+ *
+ * One, and the reason it is not more is that a wider window buys nothing at a
+ * steady pace. At page N holding N-1, N and N+1, turning forward finds N+1
+ * already here and asks for N+2 — so the *next* turn is instant whatever this
+ * number is, and all a larger one changes is how much is held while the reader
+ * sits still. On a scan that is 0.39 MiB a page: three pages is a megabyte and
+ * a half, and eleven would be four and a half for no turn made faster.
+ *
+ * There is no auto-repeat on the arrows to outrun, either — `machine.ts` drops
+ * a repeat, deliberately, because a page is an IPC round trip and a re-typeset.
+ */
+const NEIGHBOURS = 1;
 
 /** One page, and whatever we have made of it. */
 interface Held {
@@ -131,10 +175,14 @@ export class PageReader {
    */
   open(sha256: string, pages: number | null): void {
     this.count = Math.max(1, pages ?? 1);
-    if (this.reading === sha256) return;
-    if (this.reading !== null) this.close(this.reading);
-    this.reading = sha256;
-    this.at = 1;
+    if (this.reading !== sha256) {
+      if (this.reading !== null) this.close(this.reading);
+      this.reading = sha256;
+      this.at = 1;
+    }
+    // Even on the folder already being read: `pages` may have arrived since,
+    // and a window cut against a count of one is a window of one page.
+    this.window();
   }
 
   /** The page being read, one-based. */
@@ -145,6 +193,20 @@ export class PageReader {
   /** How many there are, as the asset record said. */
   get pageCount(): number {
     return this.count;
+  }
+
+  /**
+   * How many pages are held, and how many of those are holding a blob URL.
+   *
+   * A readout rather than a feature: one page is on the sheet and everything
+   * else this class does is memory, so there is no pixel anywhere that says
+   * what a long read has accumulated. `window.schizo.reader` is where a driven
+   * session reads it.
+   */
+  get heldPages(): { pages: number; urls: number } {
+    let urls = 0;
+    for (const held of this.held.values()) if (held.url) urls++;
+    return { pages: this.held.size, urls };
   }
 
   /**
@@ -161,6 +223,7 @@ export class PageReader {
     const to = Math.min(this.count, Math.max(1, this.at + by));
     if (to === this.at) return false;
     this.at = to;
+    this.window();
     this.arrived(this.reading);
     return true;
   }
@@ -185,8 +248,42 @@ export class PageReader {
     const to = Math.min(this.count, Math.max(1, Math.trunc(page)));
     if (to === this.at) return false;
     this.at = to;
+    this.window();
     this.arrived(this.reading);
     return true;
+  }
+
+  /**
+   * Hold the page being read and its neighbours, and let go of the rest.
+   *
+   * Run wherever the page moves, and *before* `arrived` in both callers: the
+   * layer redraws off that callback and asks for the page it is on, so cutting
+   * the window first is what makes a turn find its page already here rather
+   * than starting the fetch it was supposed to have got ahead of.
+   *
+   * The forget pass walks every key rather than the window's own, because what
+   * has to go is defined by what is *outside* it — and a page fetched for a
+   * document that has since been shut is outside it by the widest possible
+   * margin.
+   */
+  private window(): void {
+    const sha = this.reading;
+    if (sha === null) return;
+    const first = Math.max(1, this.at - NEIGHBOURS);
+    const last = Math.min(this.count, this.at + NEIGHBOURS);
+
+    const prefix = `${sha}:`;
+    for (const key of [...this.held.keys()]) {
+      if (!key.startsWith(prefix)) {
+        this.forget(key);
+        continue;
+      }
+      const index = Number(key.slice(prefix.length));
+      if (index < first || index > last) this.forget(key);
+    }
+
+    // Asking is fetching, so the window is filled by reading it.
+    for (let index = first; index <= last; index++) this.page(sha, index);
   }
 
   /**
@@ -227,7 +324,7 @@ export class PageReader {
       const page = await this.native.documentPage(sha256, index);
       if (!this.held.has(key)) return; // shut while it was in flight
       if (page === null) {
-        this.land(key, sha256, {
+        this.land(key, sha256, index, {
           phase: "unreadable",
           page: null,
           reason: "there is no page here",
@@ -249,14 +346,14 @@ export class PageReader {
         }
       }
 
-      this.land(key, sha256, { phase: "ready", page, reason: null, imageUrl: url }, url);
+      this.land(key, sha256, index, { phase: "ready", page, reason: null, imageUrl: url }, url);
     } catch (error) {
       if (!this.held.has(key)) return;
       // The shell's own sentence, which `document.rs` writes to be read: "the
       // document is password protected", "could not read the document: …". It is
       // the one thing a person can act on, so it is carried rather than replaced
       // with a generic failure.
-      this.land(key, sha256, {
+      this.land(key, sha256, index, {
         phase: "unreadable",
         page: null,
         reason: sentenceOf(error),
@@ -265,9 +362,24 @@ export class PageReader {
     }
   }
 
-  private land(key: string, sha256: string, view: PageView, url: string | null = null): void {
+  private land(
+    key: string,
+    sha256: string,
+    index: number,
+    view: PageView,
+    url: string | null = null,
+  ): void {
+    // Through `forget`, so this stays the one place a blob URL is revoked. It
+    // matters now that the window lets a page go: a scan let go of and asked
+    // for again has two fetches in flight against one key, and whichever loses
+    // would otherwise leave half a megabyte behind with nothing pointing at it.
+    this.forget(key);
     this.held.set(key, { view, url });
-    this.arrived(sha256);
+    // Only the page on the sheet is worth a redraw. A neighbour arriving
+    // changes nothing anybody is looking at, and `arrived` is a whole item
+    // rebind — so an unconditional call here would make fetching ahead cost a
+    // rebind per page rather than nothing (T-279).
+    if (sha256 === this.reading && index === this.at) this.arrived(sha256);
   }
 }
 

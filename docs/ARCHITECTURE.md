@@ -238,7 +238,10 @@ asset_title(sha256)        → string|null  // what the file says it is called
 // from the file - none of it reaches the store or the document (Q-206, D-46
 // section 2), so nothing can reference it, collect it or WANT it.
 document_page_count(sha)   → n            // off the page tree; reads no page
-document_page(sha, i)      → page | null  // one page, and one page's cost
+document_page(sha, i)      → page | null  // one page, and one page's cost. The
+                                          // frontend asks for a window of three
+                                          // - the page being read and one either
+                                          // side - so a turn is one call (T-279)
 document_page_image(sha, i, figure?) → bytes  // raw: a lifted scan, not JSON
 document_text(sha)         → pageText[]   // every page's characters, one call,
                                           // never a lift - the search index

@@ -4051,6 +4051,16 @@ async function boot(): Promise<void> {
        */
       textIndex,
       /**
+       * The pages of the case file somebody has open, and what is held of them.
+       *
+       * Here for the reason `textIndex` is: what a reader holds is by design
+       * not drawn. One page is on the sheet and the rest are memory, so
+       * `reader.pageAt` is the only readout for where a turn landed and
+       * `reader.heldPages` the only one for what a long read has accumulated —
+       * neither of which a screenshot of a single sheet could ever show.
+       */
+      reader,
+      /**
        * Everybody else, as this board has them — the store the overlay draws
        * from, cursors and hold-chrome and claimed segments alike.
        *

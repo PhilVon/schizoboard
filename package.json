@@ -16,7 +16,8 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "tauri": "tauri",
-    "spike:scan": "node scripts/make-scan-pdf.mjs"
+    "spike:scan": "node scripts/make-scan-pdf.mjs",
+    "spike:long": "node scripts/make-long-pdf.mjs"
   },
   "dependencies": {
     "@tauri-apps/api": "^2",
