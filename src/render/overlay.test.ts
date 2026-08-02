@@ -494,21 +494,33 @@ describe("Overlay, strings", () => {
     let page: number | null = 4;
     overlay.setShownPage(() => page);
 
-    // Open at the page it came off: the halo is drawn, and the canvas cleared
-    // for it.
+    // Counted off the context, like the test above: a halo is two strokes, the
+    // colour and the middle taken back out. `clearRect` cannot answer this —
+    // the frame is cleared whether or not anything is put back on it, which is
+    // exactly how a chrome test goes vacuous.
+    const ctx = (overlay as unknown as { ctx: { stroke: () => void } }).ctx;
+    const stroke = ctx.stroke;
+    let strokes = 0;
+    ctx.stroke = (): void => {
+      strokes += 1;
+      stroke();
+    };
+
+    // Open at the page it came off: the halo is drawn.
     draw();
-    expect(calls.clearRect).toBe(1);
+    expect(strokes).toBe(2);
 
     // Shut. `dirtyFacing` is what marks the string on the frame a folder shuts,
     // because shutting one writes nothing to the document — this canvas skips a
     // frame on the same test the rope painter does, and the string it is handed
     // is what wakes both.
+    strokes = 0;
     page = null;
     dirty.string("s");
     draw();
-    // Cleared once more, and nothing put back: what is left is a card on the
-    // cork with no outline running to a folder that has no string on it.
-    expect(calls.clearRect).toBe(2);
+    // Nothing put back: what is left is a card on the cork with no outline
+    // running to a folder that has no string on it.
+    expect(strokes).toBe(0);
   });
 
   it("restrokes a selected string that is still moving, and nothing else", () => {
