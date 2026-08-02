@@ -7,6 +7,7 @@ import { describe, expect, it } from "vitest";
 
 import { Torsion } from "@/sim/torsion";
 import { DirtySets } from "@/state/dirty";
+import { shortest as shortestAngle } from "@/lib/angle";
 import { drawnPose } from "@/state/tools/frame";
 import {
   Scene,
@@ -33,6 +34,104 @@ function cold(id: string, over: Partial<ItemColdInput> = {}): ItemColdInput {
 function pose(over: Partial<ItemPose> = {}): ItemPose {
   return { x: 0, y: 0, rot: 0, w: 100, h: 100, ...over };
 }
+
+describe("turning a case file up to read it", () => {
+  /** T-273. The turn is the whole of the in-place open, so these are about the
+   *  angle and about what must not see it. */
+  const open = (rot: number, t: number) => {
+    const scene = new Scene();
+    scene.putItem(cold("f"), pose({ w: 480, h: 344, rot }));
+    scene.setOpen("f", t);
+    return { scene, slot: scene.slotOf("f")! };
+  };
+
+  it("ends square on its side, which is what stands the sheets up", () => {
+    const { scene, slot } = open(0.1, 1);
+    expect(scene.renderRot(slot)).toBeCloseTo(Math.PI / 2);
+  });
+
+  it("always arrives at the same place, by the shortest route to it", () => {
+    // Every folder on a board opens the same way round. The first version of
+    // this picked whichever quarter was nearer, and a wall of folders with a
+    // seeded jitter either side of square then opened in two directions at
+    // random - and half of them upside down, since only one quarter puts the
+    // page the right way up.
+    for (let rot = -Math.PI; rot <= Math.PI; rot += 0.25) {
+      const { scene, slot } = open(rot, 1);
+      const landed = scene.renderRot(slot);
+      expect(Math.abs(shortestAngle(landed - Math.PI / 2))).toBeCloseTo(0);
+      // And never the long way round to get there.
+      expect(Math.abs(shortestAngle(landed - rot))).toBeLessThanOrEqual(Math.PI + 1e-9);
+    }
+
+    // The case the old rule got wrong, kept as its own assertion because it is
+    // two folders a person would see side by side on one board.
+    expect(open(-0.08, 1).scene.renderRot(open(-0.08, 1).slot)).toBeCloseTo(Math.PI / 2);
+    expect(open(0.08, 1).scene.renderRot(open(0.08, 1).slot)).toBeCloseTo(Math.PI / 2);
+  });
+
+  it("is a continuous turn rather than a flag", () => {
+    // The frame loop owns all motion, so there is no CSS transition to soften
+    // this and the halfway point has to be a real angle.
+    const half = open(0, 0.5);
+    expect(half.scene.renderRot(half.slot)).toBeCloseTo(Math.PI / 4);
+  });
+
+  it("is never baked, because it is a lie taken back on Escape", () => {
+    // The rule `settledRot` exists for. Bake it and a folder somebody read
+    // would be left lying on its side in the document for every peer.
+    const { scene, slot } = open(0.1, 1);
+    expect(scene.settledRot(slot)).toBeCloseTo(0.1);
+    expect(scene.openOf(slot)).toBe(1);
+    expect(drawnPose(scene, "f")?.rot).toBeCloseTo(0.1);
+  });
+
+  it("lets go when the item does", () => {
+    // Slots are reused. Left behind, the next item into this one would be born
+    // with a quarter turn nobody asked for.
+    const { scene, slot } = open(0, 1);
+    scene.removeItem("f");
+    scene.putItem(cold("g"), pose({ w: 100, h: 100 }));
+    expect(scene.slotOf("g")).toBe(slot);
+    expect(scene.renderRot(slot)).toBeCloseTo(0);
+    expect(scene.openOf(slot)).toBe(0);
+  });
+
+  it("leaves every other item bit-identical", () => {
+    // The comparison in `renderRot` is what keeps a board nobody is reading
+    // paying nothing for this.
+    const scene = new Scene();
+    scene.putItem(cold("f"), pose({ rot: 0.1 }));
+    scene.putItem(cold("other"), pose({ x: 900, rot: 0.2 }));
+    const slot = scene.slotOf("other")!;
+    const before = scene.renderRot(slot);
+    scene.setOpen("f", 1);
+    expect(scene.renderRot(slot)).toBe(before);
+  });
+
+  it("says nothing changed when nothing did", () => {
+    const scene = new Scene();
+    scene.putItem(cold("f"), pose({ rot: 0.1 }));
+    expect(scene.setOpen("f", 1)).toBe(true);
+    expect(scene.setOpen("f", 1)).toBe(false);
+    expect(scene.setOpen(null, 0)).toBe(true);
+    expect(scene.setOpen(null, 0)).toBe(false);
+    // An item that is not there is not an open one either.
+    expect(scene.setOpen("gone", 1)).toBe(false);
+  });
+
+  it("does not fight the lay-flat over one board", () => {
+    // Both are at most one item and they are not exclusive of each other: a
+    // folder can be open while a note is being written on somewhere else.
+    const scene = new Scene();
+    scene.putItem(cold("f"), pose({ rot: 0.1 }));
+    scene.putItem(cold("n"), pose({ x: 900, rot: 0.2 }));
+    scene.setOpen("f", 1);
+    scene.setFlatten("n", 1);
+    expect(scene.renderRot(scene.slotOf("f")!)).toBeCloseTo(Math.PI / 2);
+    expect(scene.renderRot(scene.slotOf("n")!)).toBeCloseTo(0);
+  });
+});
 
 describe("Scene slots", () => {
   it("hands out dense slots and reuses them after deletion", () => {
@@ -396,6 +495,28 @@ describe("which items a pin is pushed through", () => {
      * and `setFlatten` reads `solePin` - so the flatten would have produced no
      * offset at all and the test would have proved nothing.
      */
+    it("is not moved by the turn that opens a case file", () => {
+      // T-273, and the same hazard as the flatten below: a folder that picked
+      // up pins from the cork while it was open would be that whole problem in
+      // one gesture. Written separately rather than parameterised because the
+      // target angle is the thing under test.
+      const scene = new Scene();
+      scene.putItem(cold("f"), pose({ x: 0, y: 0, w: 480, h: 344, rot: 0.1 }));
+      scene.putPin(pin("p", "f", -200, -150));
+      scene.layoutPins();
+
+      expect(scene.setOpen("f", 1)).toBe(true);
+      const slot = scene.slotOf("f")!;
+      expect(scene.renderRot(slot)).toBeCloseTo(Math.PI / 2);
+      const drawnX = scene.renderX(slot);
+      const drawnY = scene.renderY(slot);
+      expect(Math.hypot(drawnX, drawnY)).toBeGreaterThan(100);
+
+      scene.putPin(pin("swept", null, drawnX, drawnY));
+      expect(scene.pinCount("f")).toBe(1);
+      expect(scene.topOver("swept")).toBeNull();
+    });
+
     it("is not moved by the un-rotate that opens a text editor", () => {
       const scene = new Scene();
       // Off-centre pin and a real angle: a note pinned through its middle hangs

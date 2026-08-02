@@ -1,5 +1,10 @@
 /**
- * Laying a note flat to be written on, and letting it back down.
+ * Turning paper to be worked on, and letting it back down.
+ *
+ * Two things do it and they are one motion with two target angles: a note lays
+ * **flat** to be written on, and a case file turns **up on its side** to be read
+ * (T-273). What differs between them is the angle and the duration, so those
+ * are the two things this file makes into configuration and nothing else is.
  *
  * > Click into a note or a polaroid's caption area to edit. Type. Click away.
  * >
@@ -28,18 +33,53 @@
  * so a note double-clicked and immediately clicked away does not jump.
  */
 
+import { FLIGHT_MS } from "@/state/flight";
 import type { DirtySets } from "@/state/dirty";
 import type { Scene } from "@/state/scene";
 
 /** DESIGN section 3.6: "animated over about 120 ms". */
 export const FLATTEN_MS = 120;
 
+/**
+ * How long a case file takes to turn up to be read.
+ *
+ * `FLIGHT_MS` deliberately, not `FLATTEN_MS`: opening starts the camera moving
+ * as well (T-274), and the two finishing together is what makes it one act
+ * rather than a turn and then a journey. A quarter turn also wants longer than
+ * a note's few degrees — at 120 ms it reads as a snap rather than as picking
+ * something up.
+ */
+export const OPEN_MS = FLIGHT_MS;
+
+/** What a turn is: how long it takes, and where it writes itself. */
+export interface Turning {
+  readonly ms: number;
+  apply(scene: Scene, itemId: string | null, t: number): boolean;
+}
+
+/** A note, un-rotated to 0 to be written on — DESIGN section 3.6. */
+export const LAY_FLAT: Turning = {
+  ms: FLATTEN_MS,
+  apply: (scene, itemId, t) => scene.setFlatten(itemId, t),
+};
+
+/** A case file, turned up on its side to be read — T-273, and `Scene.setOpen`
+ *  for why a turn and not a resize. */
+export const TURN_UP: Turning = {
+  ms: OPEN_MS,
+  apply: (scene, itemId, t) => scene.setOpen(itemId, t),
+};
+
 /** Zero velocity at both ends, which is what stops it reading as a snap. */
 function ease(t: number): number {
   return t * t * (3 - 2 * t);
 }
 
-export class Flatten {
+export class PaperTurn {
+  /** Defaults to the lay-flat, which is the one DESIGN section 3.6 describes
+   *  and the one every caller before T-273 wanted. */
+  constructor(private readonly how: Turning = LAY_FLAT) {}
+
   /** The item the paper motion applies to: still set while it eases back. */
   private subject: string | null = null;
   /** The item being written on, or null while it is being let down. */
@@ -93,11 +133,11 @@ export class Flatten {
     if (id === null) return;
 
     const rising = this.target === id;
-    const step = dtMs / FLATTEN_MS;
+    const step = dtMs / this.how.ms;
     this.t = rising ? Math.min(1, this.t + step) : Math.max(0, this.t - step);
 
     if (!rising && this.t === 0) {
-      if (scene.setFlatten(null, 0)) dirty.item(id);
+      if (this.how.apply(scene, null, 0)) dirty.item(id);
       this.subject = null;
       return;
     }
@@ -106,13 +146,13 @@ export class Flatten {
     // leaves nothing to lay flat. `Scene.removeItem` has already cleared its
     // side; this is the clock catching up.
     if (!scene.has(id)) {
-      scene.setFlatten(null, 0);
+      this.how.apply(scene, null, 0);
       this.subject = null;
       this.target = null;
       this.t = 0;
       return;
     }
 
-    if (scene.setFlatten(id, ease(this.t))) dirty.item(id);
+    if (this.how.apply(scene, id, ease(this.t))) dirty.item(id);
   }
 }

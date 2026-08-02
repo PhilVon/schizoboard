@@ -349,6 +349,7 @@ Undo: text edits are character-level and merge into sensible entries by typing p
 | Next / previous match | `Enter` / `Shift+Enter` while the field is open |
 | Close the search | `Escape` |
 | Open a case file | `Enter` on a selection of exactly one, or the item menu's *Open* — flies the camera the way search does |
+| Shut it | `Escape`, or `Enter` again. **Selecting something else does not** — an open document is worked *against*, so a click on the board must not shut it |
 
 Zoom range is **15% to 400%**. The board is unbounded in every direction.
 
@@ -393,6 +394,7 @@ Strings         1–9 slack presets · Alt+wheel whole-string slack · Enter/Esc
                 Ctrl+Alt+click a string cuts it, in any tool — the scissors; the pointer says so
 Search          Ctrl+F find · Enter next match · Shift+Enter previous · Esc close
 Case files      Enter opens the selected document, tape or cassette · item menu → Open
+                Esc or Enter again shuts it · clicking away does not (T-273)
 ```
 
 ### 3.10 The tool drawer and the tool info bar

@@ -53,6 +53,45 @@ const overPoint: Point = { x: 0, y: 0 };
  *  flatten runs inside a call that has already lent `scratch` out. */
 const flatPivot: Point = { x: 0, y: 0 };
 
+/** The translation `aboutPivot` hands back. Read out into the caller's fields
+ *  before anything else can ask, which is the only reason one is enough. */
+const turnDrift: Point = { x: 0, y: 0 };
+
+/**
+ * A quarter turn, and which way a case file goes to be read.
+ *
+ * **One target and not two.** The first version of this picked whichever
+ * quarter was nearer, and it was wrong twice over. A folder rests within a few
+ * degrees of square with a seeded jitter either side of it, so a wall of them
+ * would have opened in two different directions at random — which is exactly
+ * the scattered reading the turn is meant to avoid. And the two are not
+ * equivalent anyway: only one of them puts the page the right way up, so the
+ * other is not a second answer, it is upside down.
+ *
+ * So every case file turns to the same place, by the shortest route to it. The
+ * worst case is a folder somebody has stood on its side the wrong way, which
+ * turns a half circle to be read — correct rather than unfortunate, because
+ * that is genuinely how far its text is from level.
+ *
+ * The *sign* is the taste in here and it is a look-at-it decision rather than a
+ * derivation: a folder's fold is along its foot, so a positive turn puts the
+ * fold on the left, where a reader expects a spine. It wants a ladder against a
+ * real open folder before anybody calls it settled.
+ */
+export const OPEN_TURN = Math.PI / 2;
+
+/**
+ * The angle a case file is drawn at, `t` of the way from where it hangs to
+ * {@link OPEN_TURN}.
+ *
+ * Interpolating the *shortest difference* rather than the raw one, so the turn
+ * never goes the long way round to arrive in the same place: a folder at three
+ * radians turns a little over one to get there, not four and a half back.
+ */
+function openAngle(from: number, t: number): number {
+  return from + shortest(OPEN_TURN - from) * t;
+}
+
 /** Handed back by `pinsOf` and `stringsThrough` when the index has no entry, so
  *  a caller never has to distinguish "none" from "not indexed". */
 const EMPTY_IDS: ReadonlySet<string> = new Set<string>();
@@ -336,6 +375,21 @@ export class Scene {
   private flatDX = 0;
   private flatDY = 0;
 
+  /**
+   * The open case file, for `setOpen`: the same four fields as the lay-flat
+   * above and for the same reasons, because it is the same motion with a
+   * different target angle (T-273).
+   *
+   * Its own slot rather than sharing the flatten's, because the two are not
+   * exclusive: a folder can be open on one side of the board while a note is
+   * being written on somewhere else. They are exclusive *of each other on one
+   * item*, and nothing has to enforce that — a case file has no text to edit.
+   */
+  private openSlot = -1;
+  private openT = 0;
+  private openDX = 0;
+  private openDY = 0;
+
   private capacity = INITIAL_CAPACITY;
   private readonly slots = new Map<string, number>();
   private readonly ids: (string | null)[] = new Array<string | null>(INITIAL_CAPACITY).fill(null);
@@ -607,11 +661,21 @@ export class Scene {
    * write down does not.
    */
   renderX(slot: number): number {
-    return this.x[slot]! + this.driftX[slot]! + (slot === this.flatSlot ? this.flatDX : 0);
+    return (
+      this.x[slot]! +
+      this.driftX[slot]! +
+      (slot === this.flatSlot ? this.flatDX : 0) +
+      (slot === this.openSlot ? this.openDX : 0)
+    );
   }
 
   renderY(slot: number): number {
-    return this.y[slot]! + this.driftY[slot]! + (slot === this.flatSlot ? this.flatDY : 0);
+    return (
+      this.y[slot]! +
+      this.driftY[slot]! +
+      (slot === this.flatSlot ? this.flatDY : 0) +
+      (slot === this.openSlot ? this.openDY : 0)
+    );
   }
 
   /**
@@ -630,10 +694,11 @@ export class Scene {
    */
   renderRot(slot: number): number {
     const angle = this.rot[slot]! + this.swing[slot]!;
-    // Bit-identical to `settledRot` when nothing is being written on, which is
-    // every frame on a board nobody is typing into.
-    if (slot !== this.flatSlot) return angle;
-    return shortest(angle) * (1 - this.flatT);
+    // Bit-identical to `settledRot` when nothing is being written on and
+    // nothing is open, which is every frame on a board nobody is reading.
+    if (slot === this.flatSlot) return shortest(angle) * (1 - this.flatT);
+    if (slot === this.openSlot) return openAngle(shortest(angle), this.openT);
+    return angle;
   }
 
   /**
@@ -696,46 +761,131 @@ export class Scene {
       return true;
     }
 
-    // The translation depends on the *settled* angle, and a note being written
-    // on may still be swinging into place under it. So this is recomputed on
-    // every frame the paper is up, and the answer is compared rather than
-    // assumed changed — a note nobody is typing into, hanging still, must not
-    // dirty itself sixty times a second.
-    let dx = 0;
-    let dy = 0;
-    // Two pins hold the paper rigid and none leaves it lying on the cork; in
-    // neither case is there a point it obviously turns about, so it turns
-    // about its centre and there is nothing to translate. The same rule the
-    // rotation gesture uses, from the same place (T-105).
-    const pin = this.solePin(itemId!);
-    // `pinPivot`, not `pin.lx`/`pin.ly` — the pin holding this note need not be
-    // one it parents (T-188), and un-rotating a note to write on it about a point
-    // in the wrong frame takes the note off the screen instead of laying it flat.
-    const at = pin === null ? null : this.pinPivot(pin.id, slot, flatPivot);
-    if (at) {
-      const settled = this.settledRot(slot);
-      const drawn = shortest(settled) * (1 - t);
-      const c0 = Math.cos(settled);
-      const s0 = Math.sin(settled);
-      const c1 = Math.cos(drawn);
-      const s1 = Math.sin(drawn);
-      dx = at.x * (c0 - c1) - at.y * (s0 - s1);
-      dy = at.x * (s0 - s1) + at.y * (c0 - c1);
-    }
+    const settled = this.settledRot(slot);
+    const at = this.turnPivot(itemId!, slot);
+    const to = this.aboutPivot(at, settled, shortest(settled) * (1 - t));
 
-    if (this.flatSlot === slot && this.flatT === t && this.flatDX === dx && this.flatDY === dy) {
+    if (
+      this.flatSlot === slot &&
+      this.flatT === t &&
+      this.flatDX === to.x &&
+      this.flatDY === to.y
+    ) {
       return false;
     }
     this.flatSlot = slot;
     this.flatT = t;
-    this.flatDX = dx;
-    this.flatDY = dy;
+    this.flatDX = to.x;
+    this.flatDY = to.y;
     return true;
+  }
+
+  /**
+   * Turn a case file up to be read, or lay it back down — T-273, Q-197.
+   *
+   * > A folder opens where it lies, at board scale, and the camera flies to it
+   * > the way search already flies to a match. — D-46 section 4
+   *
+   * The same motion as {@link setFlatten} with a different target angle, and
+   * that is the whole of why this task did not need a resize. **Everything
+   * that has an opinion about where an item is already goes through
+   * `renderRot`** — the hit test, `boundsAt`, a parented pin's drawn world
+   * position, the torsion — so a turn is a transform the codebase already
+   * understands. Drawing an open folder *bigger* instead would have meant
+   * teaching the same factor to nine separate readers of `w` and `h`, which is
+   * the trap `lib/carry.ts` documents for a scale of two per cent.
+   *
+   * It is also true to the object rather than a convenience. `lib/objects.ts`
+   * sizes a folder to hold **A4 lying horizontal**, so the sheets are filed in
+   * it sideways and their long edge is the one showing at its head. Turn the
+   * folder ninety degrees and that edge stands up: the page is portrait, which
+   * is the shape `text.ts`'s 66 by 46 grid paginates to. Neither number had to
+   * be re-cut; what was missing between them was the turn.
+   */
+  setOpen(itemId: string | null, t: number): boolean {
+    const slot = itemId === null ? -1 : (this.slots.get(itemId) ?? -1);
+    if (slot === -1 || t === 0) {
+      if (this.openSlot === -1) return false;
+      this.openSlot = -1;
+      this.openT = 0;
+      this.openDX = 0;
+      this.openDY = 0;
+      return true;
+    }
+
+    const settled = this.settledRot(slot);
+    const at = this.turnPivot(itemId!, slot);
+    const to = this.aboutPivot(at, settled, openAngle(shortest(settled), t));
+
+    if (
+      this.openSlot === slot &&
+      this.openT === t &&
+      this.openDX === to.x &&
+      this.openDY === to.y
+    ) {
+      return false;
+    }
+    this.openSlot = slot;
+    this.openT = t;
+    this.openDX = to.x;
+    this.openDY = to.y;
+    return true;
+  }
+
+  /**
+   * The point an item turns about when it is laid flat or opened, or null.
+   *
+   * Two pins hold the paper rigid and none leaves it lying on the cork; in
+   * neither case is there a point it obviously turns about, so it turns about
+   * its centre and there is nothing to translate. The same rule the rotation
+   * gesture uses, from the same place (T-105).
+   *
+   * `pinPivot`, not `pin.lx`/`pin.ly` — the pin holding this note need not be
+   * one it parents (T-188), and turning about a point in the wrong frame takes
+   * the paper off the screen instead of standing it up.
+   */
+  private turnPivot(itemId: string, slot: number): Point | null {
+    const pin = this.solePin(itemId);
+    return pin === null ? null : this.pinPivot(pin.id, slot, flatPivot);
+  }
+
+  /**
+   * The translation that holds `at` still while the paper turns from `settled`
+   * to `drawn` — the same "put the pivot back where it was" as the swing's
+   * `drift`, and for the same reason: a pin is stuck in the cork and does not
+   * move, so paper hanging on one turns about the pin rather than about its
+   * own centre. Without it, opening a folder slides the pin out of the kraft
+   * and tugs every string through it.
+   *
+   * The answer depends on the *settled* angle, and paper being turned may
+   * still be swinging into place under it. So both callers recompute this on
+   * every frame the motion is live and compare rather than assume — a board
+   * nobody is reading must not dirty itself sixty times a second.
+   */
+  private aboutPivot(at: Point | null, settled: number, drawn: number): Point {
+    if (at === null) {
+      turnDrift.x = 0;
+      turnDrift.y = 0;
+      return turnDrift;
+    }
+    const c0 = Math.cos(settled);
+    const s0 = Math.sin(settled);
+    const c1 = Math.cos(drawn);
+    const s1 = Math.sin(drawn);
+    turnDrift.x = at.x * (c0 - c1) - at.y * (s0 - s1);
+    turnDrift.y = at.x * (s0 - s1) + at.y * (c0 - c1);
+    return turnDrift;
   }
 
   /** How far the item in `slot` has been laid flat: 0 unless it is the one. */
   flattenOf(slot: number): number {
     return slot === this.flatSlot ? this.flatT : 0;
+  }
+
+  /** How far the item in `slot` has been turned up to read: 0 unless it is
+   *  the one. */
+  openOf(slot: number): number {
+    return slot === this.openSlot ? this.openT : 0;
   }
 
   get size(): number {
@@ -871,6 +1021,9 @@ export class Scene {
     // holds one across frames. Left behind, the next item into this slot would
     // be born laid flat by an editor that closed on a note a peer deleted.
     if (slot === this.flatSlot) this.setFlatten(null, 0);
+    // The same hazard, and the same one line: a slot left marked open would
+    // hand the next item into it a folder's quarter turn it never asked for.
+    if (slot === this.openSlot) this.setOpen(null, 0);
     this.freeSlots.push(slot);
     return true;
   }

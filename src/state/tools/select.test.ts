@@ -62,6 +62,9 @@ let held: Set<string>;
 /** Items the tool asked to put a caret in — `ToolContext.edit` (T-179). */
 let edits: string[];
 let opens: string[];
+let closes: (string | null)[];
+/** What the app would answer: whether there was anything open to shut. */
+let wasOpen: boolean;
 let ctx: ToolContext;
 
 /** Insertion order is paint order, as it is in the real layer for equal z. */
@@ -248,6 +251,8 @@ beforeEach(() => {
   held = new Set<string>();
   edits = [];
   opens = [];
+  closes = [];
+  wasOpen = false;
   ctx = {
     scene,
     dirty,
@@ -258,7 +263,11 @@ beforeEach(() => {
     hitPin,
     hitString,
     edit: (itemId) => edits.push(itemId),
-    open: (itemId) => opens.push(itemId),
+    open: (itemId) => {
+      if (itemId === null) return closes.push(null) > 0 && wasOpen;
+      opens.push(itemId);
+      return true;
+    },
     held,
     write: {
       setPoses: (poses, phase) => writes.push({ kind: "poses", phase, poses: new Map(poses) }),
@@ -457,6 +466,24 @@ describe("selecting", () => {
     // And it comes back the moment the hand is off.
     key("Enter");
     expect(opens).toEqual(["folder"]);
+  });
+
+  it("shuts an open case file on Escape before it drops the selection", () => {
+    // The order Escape has everywhere: it undoes the most recent thing you put
+    // on the screen, and an open folder is more recent than a selection you
+    // must already have had in order to open it.
+    put("folder", 100, 100);
+    selection.replace(["folder"]);
+    wasOpen = true;
+    key("Escape");
+    expect(closes).toEqual([null]);
+    expect(selection.toArray()).toEqual(["folder"]);
+
+    // And with nothing open it falls through to what it has always done.
+    wasOpen = false;
+    key("Escape");
+    expect(closes).toEqual([null, null]);
+    expect(selection.isEmpty).toBe(true);
   });
 
   it("asks the caller what is openable rather than deciding for itself", () => {

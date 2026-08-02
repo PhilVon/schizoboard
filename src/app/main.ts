@@ -99,7 +99,7 @@ import { MissingAssets } from "@/state/missing";
 import { Camera, type Bounds } from "@/state/camera";
 import { DirtySets } from "@/state/dirty";
 import { Flashes } from "@/state/flash";
-import { Flatten } from "@/state/flatten";
+import { PaperTurn, TURN_UP } from "@/state/turn";
 import { Flight } from "@/state/flight";
 import { chromeFrame, emptyFrame, handleAt, handleCursor } from "@/state/handles";
 import { isChromeTarget, isTextTarget } from "@/state/input";
@@ -466,7 +466,16 @@ async function boot(): Promise<void> {
     };
   };
   /** Phase 3, after the torsion: the note being written on, laid flat (T-178). */
-  const flatten = new Flatten();
+  const flatten = new PaperTurn();
+  /**
+   * And the case file being read, turned up on its side (T-273).
+   *
+   * Its own clock rather than a second target on the one above, because the two
+   * are not exclusive: a folder can be open on one side of the board while a
+   * note is being written on somewhere else. They are exclusive on a single
+   * item, and nothing has to enforce that — a case file has no text to edit.
+   */
+  const opening = new PaperTurn(TURN_UP);
   /**
    * The caret, when there is one (DESIGN section 3.6).
    *
@@ -1134,15 +1143,21 @@ async function boot(): Promise<void> {
   };
 
   /**
-   * Open an item — for now, take the camera to it.
+   * Open an item: turn it up to be read, and take the camera to it.
    *
-   * **This is half the verb and the half that exists.** The in-place open
-   * (T-273), the reading surface (T-275) and the CRT overlay (T-276) are what
-   * turn arriving into reading; until they land, opening a case file carries
-   * you to it and stops. That is a real thing rather than a stub — it is D-46
-   * section 4's "the camera flies to it the way search already flies to a
-   * match" — and it is what makes the gesture something a person can press and
-   * a test can watch.
+   * > The folder opens where it lies, at board scale, with the camera flying to
+   * > it the way search already flies to a match. Everything else on the board
+   * > stays visible and live behind it. — D-46 section 4, Q-197
+   *
+   * **A turn, not a resize** (T-273). The folder ends up square on its side,
+   * which is what stands the sheets filed in it upright — see `Scene.setOpen`
+   * for why that is true to the object as well as cheap. Nothing about the item
+   * changes: not its width, not its height, and nothing in the document. It is
+   * the same lie the editor's lay-flat tells, told at a different angle and
+   * taken back the same way.
+   *
+   * Pressing it on the folder already open closes it, which is the behaviour
+   * every disclosure on every board has and costs one comparison.
    *
    * The flight rather than `F`'s frame, and the difference is not decoration.
    * `F` jumps and *fits*, which fills the viewport with whatever you had
@@ -1155,11 +1170,33 @@ async function boot(): Promise<void> {
    * asked for among the others*; there is nothing to disambiguate here, and the
    * thing that will say "it is open" is the folder opening.
    */
-  const openItem = (itemId: string): void => {
-    if (!openable(itemId)) return;
+  const openItem = (itemId: string | null): boolean => {
+    if (itemId === null) return closeOpen();
+    if (!openable(itemId)) return false;
+    if (opening.itemId === itemId) return closeOpen();
+    opening.open(itemId);
     const box = scene.boundsOf(itemId, 0, foundBox);
-    if (box === null) return;
-    flight.toBox(camera, box, undefined, READING_ZOOM);
+    if (box !== null) flight.toBox(camera, box, undefined, READING_ZOOM);
+    return true;
+  };
+
+  /**
+   * Shut whatever is open, and answer whether there was anything to shut.
+   *
+   * The answer is what lets `Escape` fall through: a board with nothing open
+   * must still have `Escape` drop the selection, which is what it has always
+   * done — so this reports rather than swallowing, and the caller decides.
+   *
+   * **The camera stays where it is.** AC-672 asks that closing be one
+   * undo-irrelevant camera act rather than a document change, and flying back
+   * would be a second act taking away the one thing the open bought you: you
+   * are looking at the folder because you asked to be, and shutting it does not
+   * mean you have stopped looking.
+   */
+  const closeOpen = (): boolean => {
+    if (opening.itemId === null) return false;
+    opening.close();
+    return true;
   };
 
   const searchField = new SearchField(world.layers.ui, {
@@ -2178,7 +2215,9 @@ async function boot(): Promise<void> {
           // Not gated on the shell, unlike the row above it: opening happens on
           // this board rather than through a file dialog, so a plain browser
           // can do it exactly as well as the app can.
-          { can: openable, run: openItem },
+          // The wrapper is T-273's: `openItem` answers whether it did anything,
+          // so that Escape can fall through, and a menu row has no use for that.
+          { can: openable, run: (id: string) => void openItem(id) },
           // What it is, for the rows that name it rather than merely act on it
           // (T-317). The same three hops `openable` makes, and the same reason
           // the menu cannot make them itself: a kind comes off an asset record.
@@ -2916,6 +2955,9 @@ async function boot(): Promise<void> {
     // typing into, which is by construction the one item on the board you are
     // certainly looking at.
     flatten.step(scene, dirty, frame.dt);
+    // Beside it and for the same reasons: after the torsion, because the
+    // translation that holds the pin still is computed from the settled angle.
+    opening.step(scene, dirty, frame.dt);
     ropes.step(scene, dirty, frame.dt, simView);
   });
 

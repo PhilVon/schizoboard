@@ -120,7 +120,7 @@ beforeEach(() => {
     hitPin,
     hitString,
     edit: () => undefined,
-    open: () => undefined,
+    open: () => false,
     held: new Set<string>(),
     write: {
       deleteStrings: (ids) => writes.push({ kind: "deleteStrings", ids: [...ids] }),
