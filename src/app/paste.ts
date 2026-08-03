@@ -171,6 +171,15 @@ export class Paste {
    * next one starts.
    */
   private refused: { what: string; why: string; holdsNowhere: boolean }[] = [];
+  /**
+   * And what this run would not even attempt, because there was too much of it
+   * — `capped`, and one slot rather than a list (T-295).
+   *
+   * One, because a run that hits the ceiling on two of its routes at once is not
+   * a thing that happens: a drop is files, a paste is the clipboard or the
+   * markup in it. Latest wins, which is the honest answer if it ever does.
+   */
+  private overflowed: { what: string; took: number; of: number } | null = null;
 
   /**
    * Paths this run has already handed to the store.
@@ -195,7 +204,7 @@ export class Paste {
     // Files dragged in from the OS never reach the webview: the shell
     // intercepts the drop and hands over paths, which is what lets the bytes go
     // straight into the store without ever touching JavaScript.
-    const unlisten = await this.options.native.on("files:dropped", ({ paths, x, y }) => {
+    const unlisten = await this.options.native.on("files:dropped", ({ paths, x, y, found }) => {
       // The shell has the paths and has not read them yet, so a sealed board
       // costs nothing here either — see `onPaste`.
       if (boardSealed(this.options.board)) return;
@@ -207,7 +216,7 @@ export class Paste {
       // Where it was dropped, read now rather than when the bytes finish
       // arriving — same reason as `onPaste`.
       const at = this.options.camera.screenToBoard(x, y);
-      this.enqueue(async () => this.create(await this.ingestPaths(paths), at));
+      this.enqueue(async () => this.create(await this.ingestPaths(paths, found), at));
     });
     this.disposers.push(unlisten);
   }
@@ -318,13 +327,38 @@ export class Paste {
    * Plain register on purpose, the same choice `state/missing.ts` makes for its
    * line: this is a corkboard, and "⚠ UNSUPPORTED FILE TYPE" is exactly what
    * the whole design is avoiding.
+   *
+   * **Two things can be left out and there is one line to say them in** (T-295).
+   * `flash.say` replaces rather than queues, so a second sentence would take the
+   * first one down before anybody read it. The ceiling goes first because it is
+   * the larger fact — how much of what you handed over was even looked at —
+   * and the refusals follow as a clause about what was.
    */
-  private sayWhatWasRefused(): void {
+  private sayWhatWasLeftOut(): void {
     const refused = this.refused;
+    const over = this.overflowed;
     this.refused = [];
-    if (refused.length === 0) return;
+    this.overflowed = null;
     const say = this.options.say;
     if (!say) return;
+    if (over !== null) {
+      // **A claim about what was looked at, not about what landed**, and the
+      // difference is not pedantry: the first wording said "putting down 50 of
+      // 400" and then "50 could not be held" in the same breath, which is two
+      // numbers that cannot both be true of the same fifty. The ceiling is on
+      // how many were *taken up*; whether each one then found a place on the
+      // board is the clause after it.
+      //
+      // "Stayed put" because they did: a folder is not consumed by being
+      // dropped, and the files this did not reach are still where they were.
+      const rest =
+        refused.length === 0
+          ? ""
+          : `, and ${refused.length === 1 ? "one" : String(refused.length)} of those could not be held`;
+      say(`Only the first ${over.took} of ${over.of} ${over.what} — the rest stayed put${rest}`);
+      return;
+    }
+    if (refused.length === 0) return;
     if (refused.length === 1) {
       const [only] = refused;
       // **The reason, not just the fact** (Q-235). "Nothing here can hold this"
@@ -353,7 +387,7 @@ export class Paste {
   private create(payloads: readonly Ingested[], at: BoardPoint): void {
     // Before the early return, not after it: a paste of nothing but refusals is
     // exactly the case that most needs saying out loud.
-    this.sayWhatWasRefused();
+    this.sayWhatWasLeftOut();
     if (payloads.length === 0) return;
     const inputs: CreateItemInput[] = layout(payloads, at);
     const created = createItems(this.options.board, inputs);
@@ -674,7 +708,17 @@ export class Paste {
     }
   }
 
-  private async ingestPaths(paths: readonly string[]): Promise<Ingested[]> {
+  /**
+   * `found` is what the *drop* named, which is not always what arrived — a
+   * folder past the shell's own bound is cut before it crosses (T-295). It is
+   * the number the notice quotes, so the person hears what they dropped.
+   *
+   * The dedupe below runs first and can only shrink the list, so `found` stays
+   * the drop's count and does not become the fresh one: a second drop of the
+   * same folder that puts nothing down should say nothing rather than claim a
+   * ceiling it did not reach.
+   */
+  private async ingestPaths(paths: readonly string[], found?: number): Promise<Ingested[]> {
     const out: Ingested[] = [];
     // Not what `fromFiles` already took by path. It runs first and now asks the
     // shell the same question, so without this a file it ingested and `accept`
@@ -682,7 +726,12 @@ export class Paste {
     // notice would read "Nothing here can hold 2 of those — backup.zip,
     // C:/backup.zip", one file counted twice against one paste.
     const fresh = paths.filter((path) => !this.tried.has(path));
-    for (const path of this.capped(fresh, "files")) {
+    // The shell's own bound is only worth quoting when nothing was deduped.
+    // Dropping the same folder twice leaves `fresh` short of `paths` for a
+    // reason that has nothing to do with a ceiling, and "putting down 3 of four
+    // thousand" would be arithmetic across two different questions.
+    const of = fresh.length === paths.length ? (found ?? paths.length) : fresh.length;
+    for (const path of this.capped(fresh, "files", of)) {
       try {
         this.tried.add(path);
         this.accept(out, await this.options.native.assetIngestPath(path), path, baseName(path));
@@ -962,9 +1011,41 @@ export class Paste {
     this.refused.push({ what: linkLabel(url), why: refusal.say, holdsNowhere: false });
   }
 
-  private capped<T>(values: readonly T[], what: string): readonly T[] {
-    if (values.length <= MAX_PER_PASTE) return values;
-    console.warn(`paste: taking ${MAX_PER_PASTE} of ${values.length} ${what}`);
+  /**
+   * The ceiling, and **it says so** — T-295.
+   *
+   * `MAX_PER_PASTE`'s own doc comment has always promised this: "when it does
+   * bite it says so, because a paste that silently drops half of what you gave
+   * it is worse than one that refuses". It did not. It wrote a line to a console
+   * nobody has open and dropped the rest, which is precisely the failure AC-651
+   * exists to stop — a folder of four hundred photographs put down as fifty,
+   * with the board looking as though it had done what was asked.
+   *
+   * `of` is the true count and is not always `values.length`: a dropped folder
+   * is bounded on the far side too (`DROP_FOLDER_DEPTH`, `DROP_MAX_PATHS`), so
+   * the shell says how many it found and that is the number worth hearing. A
+   * person who dropped four thousand files needs to be told four thousand, not
+   * the five hundred that survived the wire.
+   *
+   * Recorded rather than said here, on `refuse`'s argument one step further:
+   * `flash.say` *replaces*, so two sentences in one run means only the second
+   * is ever read. One run of the queue gets one notice, and `sayWhatWasLeftOut`
+   * is where it is assembled.
+   */
+  private capped<T>(values: readonly T[], what: string, of = values.length): readonly T[] {
+    // Nothing to put down is not a ceiling. A folder dropped twice arrives with
+    // every path already tried, and "putting down 0 of 400" would be a notice
+    // about a limit that did not bite.
+    if (values.length === 0) return values;
+    if (values.length <= MAX_PER_PASTE) {
+      // Still worth saying when the wire bounded it and this did not — a drop of
+      // four thousand that arrives as five hundred is a truncated drop whether
+      // or not the item cap is what truncated it.
+      if (of > values.length) this.overflowed = { what, took: values.length, of };
+      return values;
+    }
+    console.warn(`paste: taking ${MAX_PER_PASTE} of ${of} ${what}`);
+    this.overflowed = { what, took: MAX_PER_PASTE, of };
     return values.slice(0, MAX_PER_PASTE);
   }
 }

@@ -159,8 +159,10 @@ class FakeNative {
     }
     return () => {};
   }
-  drop(paths: string[], x: number, y: number): void {
-    this.handler?.({ paths, x, y });
+  /** `found` is what the drop named before the shell's own bound cut it — the
+   *  shape T-295 added to the event. Omitted means nothing was cut. */
+  drop(paths: string[], x: number, y: number, found?: number): void {
+    this.handler?.({ paths, x, y, ...(found === undefined ? {} : { found }) });
   }
   assetUrl(): string {
     return "";
@@ -1164,6 +1166,94 @@ describe("a handful at once", () => {
     await firePaste({});
     expect(itemsOnBoard()).toHaveLength(50);
     expect(warn).toHaveBeenCalledWith(expect.stringContaining("50 of 80"));
+    // To the person and not only to a console nobody has open — T-295. The
+    // comment on `MAX_PER_PASTE` promised this from the day it was written; for
+    // that whole time a paste of eighty put down fifty and looked like a paste
+    // of fifty that had worked.
+    expect(said).toEqual(["Only the first 50 of 80 files — the rest stayed put"]);
+    warn.mockRestore();
+  });
+
+  // --- T-295: a dropped folder is a fan of objects, and the gate says so ----
+
+  it("drops a folder as one object per file, in a fan", async () => {
+    // The shell walks the folder and hands over the files it holds, so this
+    // side never sees a directory — `expand` in `clipboard.rs`. What arrives is
+    // a list of paths, and what the board gets is one object each.
+    native.mimeFor.set("C:/case/b.pdf", "application/pdf");
+    native.drop(["C:/case/a.png", "C:/case/b.pdf"], 40, 60);
+    await settle();
+    const items = itemsOnBoard();
+    expect(items).toHaveLength(2);
+    // A fan and never a pile: two objects put down together are at different
+    // places, which is `layout` and is what makes it read as a handful.
+    expect(items[0]!.x).not.toBe(items[1]!.x);
+    expect(said).toEqual([]);
+  });
+
+  it("says how many of a big folder went down, and how many it found", async () => {
+    // The gate Phil asked for on Q-319. A folder of four hundred is the gesture
+    // that made him ask, and the cap on its own is only half an answer: the
+    // board would look as though it had put down what it was given.
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    native.drop(
+      Array.from({ length: 400 }, (_, i) => `C:/case/${i}.png`),
+      40,
+      60,
+    );
+    await settle();
+    expect(itemsOnBoard()).toHaveLength(50);
+    expect(said).toEqual(["Only the first 50 of 400 files — the rest stayed put"]);
+    warn.mockRestore();
+  });
+
+  it("quotes what the drop named rather than what crossed the wire", async () => {
+    // The shell bounds a folder before it serialises it (`DROP_MAX_PATHS`), so
+    // `paths` is not the count the person is owed. Four thousand files arriving
+    // as five hundred must still be told as four thousand — the alternative is
+    // a number that is true of the plumbing and false of the gesture.
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    native.drop(
+      Array.from({ length: 60 }, (_, i) => `C:/case/${i}.png`),
+      40,
+      60,
+      4000,
+    );
+    await settle();
+    expect(said).toEqual(["Only the first 50 of 4000 files — the rest stayed put"]);
+    warn.mockRestore();
+  });
+
+  it("says nothing about a ceiling when a folder is dropped a second time", async () => {
+    // Every path has been tried, so `fresh` is empty for a reason that has
+    // nothing to do with a limit. "Putting down 0 of 400" would be a notice
+    // about a gate that did not bite, on a gesture that did nothing.
+    native.drop(["C:/case/a.png"], 40, 60);
+    await settle();
+    expect(itemsOnBoard()).toHaveLength(1);
+    said.length = 0;
+
+    native.drop(["C:/case/a.png"], 40, 60);
+    await settle();
+    expect(itemsOnBoard()).toHaveLength(1);
+    expect(said).toEqual([]);
+  });
+
+  it("says the ceiling and the refusals in one sentence, because the flash replaces", async () => {
+    // `flash.say` writes over what is there rather than queueing, so two
+    // sentences in one run means only the second is ever read. The ceiling goes
+    // first because it is the larger fact about what happened.
+    const paths = Array.from({ length: 60 }, (_, i) => `C:/case/${i}.png`);
+    // The last twenty are something the board has no object for, so they are
+    // refused — and the first fifty are what the ceiling lets through, which
+    // makes ten of the refusals fall inside it.
+    for (const path of paths.slice(40)) native.mimeFor.set(path, "application/x-blender");
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    native.drop(paths, 40, 60);
+    await settle();
+    expect(said).toHaveLength(1);
+    expect(said[0]).toContain("Only the first 50 of 60 files");
+    expect(said[0]).toContain("could not be held");
     warn.mockRestore();
   });
 });

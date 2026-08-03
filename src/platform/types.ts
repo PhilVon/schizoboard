@@ -507,7 +507,16 @@ export const CHUNK_BYTES = 256 * 1024;
 export interface PlatformEvents {
   "asset:ready": { sha256: string };
   "asset:progress": { sha256: string; received: number; total: number };
-  "files:dropped": { paths: string[]; x: number; y: number };
+  /**
+   * A drop from the OS, already expanded into the files a folder holds.
+   *
+   * `found` is how many files the drop named, which is **not** `paths.length`
+   * once a folder is big enough: the shell keeps a bounded number and reports
+   * the true count so the notice can say "50 of 4000" rather than "50 of 500"
+   * (T-295). Optional, because the browser build's mock bus has no folders to
+   * walk and nothing to be truncated — absent means `paths` is all there was.
+   */
+  "files:dropped": { paths: string[]; x: number; y: number; found?: number };
   "doc:persist-error": { message: string };
   /**
    * The operating system handed us a `schizo://` link (T-163).

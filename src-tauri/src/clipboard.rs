@@ -302,6 +302,15 @@ struct FilesDropped {
     /// CSS pixels, relative to the webview.
     x: f64,
     y: f64,
+    /// How many files the drop actually named, before [`DROP_MAX_PATHS`] cut it
+    /// down — T-295.
+    ///
+    /// Sent as well as the paths because the frontend is the side that speaks to
+    /// the person, and the number worth hearing is the one they dropped rather
+    /// than the one that survived the wire. Somebody who drags in four thousand
+    /// files must be told four thousand; `paths.len()` would say five hundred
+    /// and be a smaller lie than silence but a lie all the same.
+    found: usize,
 }
 
 /// How deep a dropped folder is walked.
@@ -312,18 +321,42 @@ struct FilesDropped {
 /// depth a person can see in the window they dragged from.
 const DROP_FOLDER_DEPTH: usize = 1;
 
-/// Expand a drop into the files it actually names.
+/// Most paths one drop will carry across IPC — T-295.
+///
+/// [`DROP_FOLDER_DEPTH`] bounds how *deep* a drop is walked and nothing bounded
+/// how *wide*, so a folder of a hundred thousand files became a hundred thousand
+/// strings serialised into one event. The frontend's own ceiling is fifty items
+/// a paste and it applies after all of them have crossed, which is the wrong end
+/// to be careful at.
+///
+/// Ten times that ceiling rather than equal to it, and the gap is the point: the
+/// frontend is the side that knows what a file *is*, so it must be the side that
+/// decides which fifty go down. This is only here so that deciding does not cost
+/// a five megabyte message first. Whatever it cuts, `found` still reports the
+/// true count, so the person is told what they dropped rather than what fitted.
+const DROP_MAX_PATHS: usize = 500;
+
+/// Expand a drop into the files it actually names, and say how many there were.
 ///
 /// Tauri hands over exactly what was dragged, which for a folder is one path to
 /// a directory. Passing that straight to the store means `fs::read` on a
 /// directory, an error nobody sees, and a board that stays empty with no
 /// feedback at all — the least helpful possible answer to the most natural
 /// possible gesture.
-fn expand(paths: &[PathBuf], depth: usize) -> Vec<PathBuf> {
+///
+/// Returns the paths kept and the number found. Those differ only past
+/// [`DROP_MAX_PATHS`], and counting continues after the keeping stops — walking
+/// the rest of one directory listing is cheap and being able to say "fifty of
+/// four thousand" is what the count is for.
+fn expand(paths: &[PathBuf], depth: usize, room: usize) -> (Vec<PathBuf>, usize) {
     let mut out = Vec::new();
+    let mut found = 0usize;
     for path in paths {
         if !path.is_dir() {
-            out.push(path.clone());
+            found += 1;
+            if out.len() < room {
+                out.push(path.clone());
+            }
             continue;
         }
         if depth == 0 {
@@ -336,9 +369,13 @@ fn expand(paths: &[PathBuf], depth: usize) -> Vec<PathBuf> {
         // than in whatever order the filesystem felt like.
         let mut children: Vec<PathBuf> = entries.flatten().map(|e| e.path()).collect();
         children.sort();
-        out.extend(expand(&children, depth - 1));
+        // The room left, not the room given: two folders dropped together share
+        // one ceiling, exactly as they share one paste.
+        let (kept, count) = expand(&children, depth - 1, room.saturating_sub(out.len()));
+        out.extend(kept);
+        found += count;
     }
-    out
+    (out, found)
 }
 
 /// Forward OS drops to the frontend, which treats them exactly as a paste.
@@ -355,15 +392,17 @@ pub fn forward_drops(window: &WebviewWindow, app: &AppHandle) {
             .get_webview_window("main")
             .and_then(|w| w.scale_factor().ok())
             .unwrap_or(1.0);
+        let (kept, found) = expand(paths, DROP_FOLDER_DEPTH, DROP_MAX_PATHS);
         let _ = app.emit(
             "files:dropped",
             FilesDropped {
-                paths: expand(paths, DROP_FOLDER_DEPTH)
+                paths: kept
                     .iter()
                     .map(|p| p.to_string_lossy().into_owned())
                     .collect(),
                 x: position.x / scale,
                 y: position.y / scale,
+                found,
             },
         );
     });
@@ -469,7 +508,8 @@ mod tests {
         fs::write(photos.join("a.png"), b"a").unwrap();
         fs::write(photos.join("nested").join("deep.png"), b"d").unwrap();
 
-        let expanded = expand(std::slice::from_ref(&photos), DROP_FOLDER_DEPTH);
+        let (expanded, found) = expand(std::slice::from_ref(&photos), DROP_FOLDER_DEPTH, DROP_MAX_PATHS);
+        assert_eq!(found, 2);
         let names: Vec<_> = expanded
             .iter()
             .map(|p| p.file_name().unwrap().to_string_lossy().into_owned())
@@ -485,8 +525,8 @@ mod tests {
         let file = dir.path().join("one.png");
         fs::write(&file, b"x").unwrap();
         assert_eq!(
-            expand(std::slice::from_ref(&file), DROP_FOLDER_DEPTH),
-            vec![file]
+            expand(std::slice::from_ref(&file), DROP_FOLDER_DEPTH, DROP_MAX_PATHS),
+            (vec![file], 1)
         );
     }
 
@@ -496,7 +536,10 @@ mod tests {
         // on, fails at the ingest that tries to read it, and is reported there
         // with the reason — rather than vanishing here with none.
         let missing = PathBuf::from("D:/nothing/here.png");
-        assert_eq!(expand(std::slice::from_ref(&missing), 1), vec![missing]);
+        assert_eq!(
+            expand(std::slice::from_ref(&missing), 1, DROP_MAX_PATHS),
+            (vec![missing], 1)
+        );
     }
 
     #[test]
@@ -509,6 +552,56 @@ mod tests {
         )
         .unwrap();
         // Zero depth: a folder is not expanded at all rather than half expanded.
-        assert!(expand(&[dir.path().join("outer")], 0).is_empty());
+        assert!(expand(&[dir.path().join("outer")], 0, DROP_MAX_PATHS)
+            .0
+            .is_empty());
+    }
+
+    #[test]
+    fn keeps_a_bounded_number_of_paths_and_still_counts_them_all() {
+        // T-295. The depth bound stopped a home directory being walked; nothing
+        // stopped one *folder* of a hundred thousand files becoming a hundred
+        // thousand strings in one event. The count is what survives the cut,
+        // because the frontend has to be able to say "50 of 4000" and the number
+        // it would otherwise have is the one that fitted.
+        let dir = tempfile::tempdir().unwrap();
+        let many = dir.path().join("many");
+        fs::create_dir_all(&many).unwrap();
+        for i in 0..12 {
+            fs::write(many.join(format!("{i:03}.png")), b"x").unwrap();
+        }
+
+        let (kept, found) = expand(std::slice::from_ref(&many), DROP_FOLDER_DEPTH, 5);
+        assert_eq!(kept.len(), 5);
+        assert_eq!(found, 12);
+        // The first five in the order the window showed them, not five at
+        // random: a truncated drop is still the top of the folder.
+        let names: Vec<_> = kept
+            .iter()
+            .map(|p| p.file_name().unwrap().to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(names, vec!["000.png", "001.png", "002.png", "003.png", "004.png"]);
+    }
+
+    #[test]
+    fn shares_one_ceiling_across_two_dropped_folders() {
+        // Two folders dragged together are one paste and one undo entry, so they
+        // are one budget too. Passing the whole room to each would let a drop of
+        // two folders carry twice what a drop of one may.
+        let dir = tempfile::tempdir().unwrap();
+        for folder in ["left", "right"] {
+            fs::create_dir_all(dir.path().join(folder)).unwrap();
+            for i in 0..4 {
+                fs::write(dir.path().join(folder).join(format!("{i}.png")), b"x").unwrap();
+            }
+        }
+
+        let (kept, found) = expand(
+            &[dir.path().join("left"), dir.path().join("right")],
+            DROP_FOLDER_DEPTH,
+            6,
+        );
+        assert_eq!(kept.len(), 6);
+        assert_eq!(found, 8);
     }
 }
