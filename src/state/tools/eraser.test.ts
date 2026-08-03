@@ -128,6 +128,7 @@ beforeEach(() => {
       turned.push(by);
       return true;
     },
+    follow: () => false,
     held: new Set<string>(),
     write: {
       setPoses: () => {},

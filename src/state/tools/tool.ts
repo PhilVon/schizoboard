@@ -606,6 +606,28 @@ export interface ToolContext {
   turnPage(by: number): boolean;
 
   /**
+   * Follow a thread back to where it was quoted from: open whatever this pin is
+   * taped to, at the page it is taped to — T-285, D-46 section 3.
+   *
+   * **The tool does not decide which pin is a citation**, which is {@link open}'s
+   * rule and matters more here. A tape and a pushpin differ by a `kind` and a
+   * page number, and both of those are facts about the document; a tool that
+   * tested them would be a tool that knows what a case file is. So this is safe
+   * to call on **any** pin, and answers `false` for all the ordinary ones —
+   * every pin on every board that has never quoted anything.
+   *
+   * That falsehood is load-bearing rather than defensive. The gesture is a
+   * double-click on a string, which already means *toggle taut* (DESIGN section
+   * 3.4), and the two coexist by this report: a string with something to follow
+   * follows it, and a string without one toggles exactly as it always has. So
+   * the caller offers each of the run's pins and takes the first `true` —
+   * see `select.ts`. Refusing loudly, or opening at page one, would spend a
+   * documented gesture on every string on the board to buy the few that are
+   * citations.
+   */
+  follow(pinId: string): boolean;
+
+  /**
    * Cut a clipping out of the page on show, and hang it on the board — T-282,
    * D-46 section 3.
    *

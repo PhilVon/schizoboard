@@ -68,6 +68,10 @@ let wasOpen: boolean;
 /** Page turns the tool asked for, and what the app would answer (T-321). */
 let turns: number[];
 let turnable: boolean;
+/** Every pin the tool offered to `ToolContext.follow`, and the ones the app
+ *  would say yes to — a citation's tape and nothing else (T-285). */
+let follows: string[];
+let followable: Set<string>;
 /** Which page each item is showing, if any — the app's `shownPage` (T-278). */
 let pageOf: Map<string, number>;
 /** Every clipping the tool asked for — T-282. */
@@ -262,6 +266,10 @@ beforeEach(() => {
   wasOpen = false;
   turns = [];
   turnable = true;
+  follows = [];
+  /** Which pins are citations — empty on a board that has never quoted
+   *  anything, which is every other test in this file. */
+  followable = new Set();
   pageOf = new Map();
   clips = [];
   ctx = {
@@ -283,6 +291,13 @@ beforeEach(() => {
     turnPage: (by) => {
       turns.push(by);
       return turnable;
+    },
+    // Records every pin it was offered as well as answering, because half of
+    // T-285's contract is that the tool asks about *both* ends of a run rather
+    // than about the segment the pointer was over.
+    follow: (pinId) => {
+      follows.push(pinId);
+      return followable.has(pinId);
     },
     shownPage: (itemId) => pageOf.get(itemId) ?? null,
     held,
@@ -2818,6 +2833,68 @@ describe("slack controls", () => {
       span();
       doubleClick(600, 400);
       expect(writes).toEqual([]);
+    });
+
+    /**
+     * > Double-click the string from a quote card and the folder opens at the
+     * > page it came from. — T-285, Q-296
+     *
+     * The specialisation the answer to Q-296 bought, and the reason all four
+     * tests below are in *this* describe rather than one of their own: what is
+     * under test is not really following a thread — the app does that and
+     * `follow` is one call — it is that the toggle three rows up still happens
+     * on every string that has nowhere to go.
+     */
+    describe("when the string is a citation", () => {
+      it("opens the source instead of toggling taut", () => {
+        span();
+        followable.add("p0");
+        doubleClick(100, 0);
+
+        expect(follows).toContain("p0");
+        expect(writes.every((w) => w.kind !== "nodeSlack")).toBe(true);
+      });
+
+      /**
+       * Both ends, because a citation run's tape is on one of them and the
+       * pointer was over a segment rather than over either. Asking only about
+       * the node the hit named would make the gesture work at one end of the
+       * thread and toggle taut at the other, which is the same double-click
+       * meaning two things depending on where in it you pressed.
+       */
+      it("offers the pin at the far end of the segment too", () => {
+        span();
+        followable.add("p1");
+        doubleClick(100, 0);
+
+        expect(writes.every((w) => w.kind !== "nodeSlack")).toBe(true);
+      });
+
+      /**
+       * The `false` in `ToolContext.follow` doing its job. Every string on every
+       * board that has never quoted anything comes through here, so a refusal
+       * that swallowed the gesture would cost DESIGN 3.4's toggle everywhere to
+       * buy T-285's open on almost nothing.
+       */
+      it("toggles as it always has when nothing can be followed", () => {
+        span();
+        doubleClick(100, 0);
+
+        expect(follows).toEqual(["p0", "p1"]);
+        expect(lastWrite()).toMatchObject({ kind: "nodeSlack", nodeId: "n0" });
+      });
+
+      /** A single click is still a selection and nothing else — the open is the
+       *  double, exactly as the toggle it replaces was. */
+      it("does not open on a single click", () => {
+        span();
+        followable.add("p0");
+        down(100, 0);
+        up(100, 0);
+
+        expect(follows).toEqual([]);
+        expect([...selection.strings]).toEqual(["s"]);
+      });
     });
   });
 });

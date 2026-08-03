@@ -1425,6 +1425,34 @@ async function boot(): Promise<void> {
   };
 
   /**
+   * Follow a thread back to where it was quoted from — T-285, and the other half
+   * of the two-way link `createQuoteCard` wrote when it taped the card on.
+   *
+   * There is no citation record to look this up in and there was never going to
+   * be one: the tape *is* the citation. `crdt/ops/quote.ts` stuck it to the page
+   * the rectangle was drawn on, with the page number on the pin (T-330), and
+   * this reads back the same two facts — which item, which page — and hands them
+   * to the open that the search already uses. So a quote card knows its source
+   * because it is tied to it, which is D-1's claim about pins doing the work
+   * once more, and nothing about following a thread has to survive a migration.
+   *
+   * **False for every ordinary pin**, which is the contract `ToolContext.follow`
+   * depends on rather than a guard bolted on: a pushpin is not a citation, and a
+   * tape with no page is stuck to the object rather than to a leaf of it. Both
+   * answer no, and the double-click that asked goes back to meaning taut.
+   *
+   * A pin whose parent is gone answers no as well. It can outlive its item by a
+   * frame — a peer deleting the folder while the card still hangs here — and
+   * `readInside` would be asked to open an id the scene no longer has.
+   */
+  const followTape = (pinId: string): boolean => {
+    const pin = scene.pins.get(pinId);
+    if (pin === undefined || pin.kind !== "tape") return false;
+    if (pin.parent === null || pin.page === null) return false;
+    return readInside(pin.parent, pin.page);
+  };
+
+  /**
    * The zoom floor for arriving at an open case file — T-321.
    *
    * **Not `READING_ZOOM`**, which is what this used until now and is the wrong
@@ -1888,6 +1916,8 @@ async function boot(): Promise<void> {
     // happened and nothing about documents; the reader knows which document is
     // open and how many pages it has, and answers whether anything moved.
     turnPage: (by) => reader.turn(by),
+    /** Double-clicking a citation string opens what it was quoted from (T-285). */
+    follow: followTape,
     // A rectangle dragged over an open page (T-282). The tool measured it in
     // the page's own frame and knows nothing else about it — what it turns
     // into is `app/clipping.ts`'s, because it needs the DOM, an await and a
