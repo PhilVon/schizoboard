@@ -33,6 +33,10 @@ mod docstore;
 // asks it what a folder is called (T-267), and asks `media` the same thing about
 // a tape (T-302). The rest of it — the pages themselves — is `reading`.
 pub mod document;
+// A markdown file read as what it says (T-346, D-65). `pub` for `cues`'s
+// reason: `document` names its types in a reader's public shape, and the
+// parser itself is a pure function on a string.
+pub mod markdown;
 mod media;
 // What a page says it is (T-289, Q-304). `pub` so the fetch that feeds it and
 // the command that answers with it can both name the type; the parser itself

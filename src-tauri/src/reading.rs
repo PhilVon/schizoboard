@@ -441,7 +441,7 @@ pub async fn document_text(app: AppHandle, sha256: String) -> Result<Vec<WirePag
 
 /// [`document_text`] without the app.
 fn read_text(store: &AssetStore, sha256: &str) -> crate::document::Result<Vec<WirePageText>> {
-    let reader = Reader::open(&store.original_path(sha256))?;
+    let reader = Reader::open(&store.original_path(sha256), false)?;
     Ok(reader.read_text().iter().map(WirePageText::of).collect())
 }
 
@@ -500,6 +500,7 @@ mod tests {
     fn page(content: PageContent) -> Page {
         Page {
             index: 1,
+            roles: Vec::new(),
             width: 595.0,
             height: 842.0,
             content,
@@ -576,6 +577,7 @@ mod tests {
     fn a_page_of_a_text_file_carries_its_text_and_no_box() {
         let page = Page {
             index: 3,
+            roles: Vec::new(),
             width: 0.0,
             height: 0.0,
             content: PageContent::Plain("the fourth witness\n".into()),

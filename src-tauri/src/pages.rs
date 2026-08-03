@@ -206,7 +206,7 @@ impl Inner {
         // passes everything below. It is written down here because that makes
         // it a decision rather than a line somebody tidies away.
         self.open = None;
-        self.open = Some((hash.to_string(), Reader::open(path)?));
+        self.open = Some((hash.to_string(), Reader::open(path, false)?));
         Ok(())
     }
 

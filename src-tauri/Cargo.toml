@@ -123,6 +123,33 @@ ureq = "3"
 # `rayon` for a parallel load we do not want on the ingest thread.
 lopdf = { version = "0.44", default-features = false }
 
+# --- reading markdown (T-346) -----------------------------------------------
+# The one dependency in this file that is here instead of hand-written code,
+# and the reason is the shape of the format rather than its size. `text.rs` and
+# `cues.rs` are both hand-rolled because their grammars fit on a page — a fixed
+# character grid, and a cue that is a number, a timestamp pair and some lines.
+# CommonMark is not that: setext headings, lazy continuation, reference links,
+# nested emphasis with flanking rules, fenced and indented code, and HTML
+# blocks. A subset of it is not a smaller version of markdown, it is a parser
+# that reads *some* files wrong and quietly throws the rest of a line away,
+# which is the one failure `cues.rs` was written to avoid.
+#
+# `pulldown-cmark` and not `comrak`, which was the real fork (T-337): comrak
+# renders markdown *to HTML*, so choosing it would mean shipping an HTML parser
+# as well to get back out of a representation this board never draws. This one
+# is a pull parser — an event stream of starts, ends and text, with byte offsets
+# into the source — and an event stream is exactly the shape D-65 needs, since
+# what comes out of here is a flat string plus role spans over it.
+#
+# `default-features = false` for `zip` and `lopdf`'s reason, and here it is
+# pointed rather than tidy. The defaults are `getopts` and `html` — the first is
+# argument parsing for the crate's own bundled binary, and the second pulls
+# `pulldown-cmark-escape` to render events *back into HTML*. That is the exact
+# thing choosing this crate over comrak was meant to avoid, shipped by default,
+# so switching it off is part of the decision rather than a build-size tidy-up.
+# What is left is three small crates: `bitflags`, `memchr` and `unicase`.
+pulldown-cmark = { version = "0.13", default-features = false }
+
 # --- the embedded relay (T-69) ----------------------------------------------
 # The relay holds a real document, because a y-websocket server has to answer a
 # state vector with the difference — and because ARCHITECTURE section 5.1 wants

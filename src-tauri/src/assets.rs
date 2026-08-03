@@ -1821,7 +1821,11 @@ impl AssetStore {
         // structure load, no page read, and `commit_received` comes through here
         // too so a folder that arrived over the wire counts its pages by the
         // same code as one that was pasted.
-        let pages = document::probe(bytes, &mime).map(|d| d.pages);
+        // `false` until T-347: this is the count written on the record, and it has
+        // to be taken over the same text the reader paginates. `ingest_bytes` has
+        // no name to decide by - `commit_received` comes through here too, from a
+        // machine that never saw one - so the answer is the caller's to supply.
+        let pages = document::probe(bytes, &mime, false).map(|d| d.pages);
 
         self.restore_from_trash(&sha256);
         let target = self.original_path(&sha256);
@@ -2601,7 +2605,7 @@ mod tests {
         tailed.push(0);
         assert_eq!(sniff_mime(&tailed), Some("text/plain"));
         assert_eq!(crate::text::decode(&tailed), None);
-        assert_eq!(crate::document::probe(&tailed, "text/plain"), None);
+        assert_eq!(crate::document::probe(&tailed, "text/plain", false), None);
     }
 
     #[test]

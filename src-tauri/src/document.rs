@@ -181,6 +181,14 @@ pub struct Page {
     /// crossed, and an offset into something the far side never received is not
     /// a fact it can use.
     pub cues: Vec<crate::cues::Mark>,
+    /// What each stretch of this page's text is, for a page of markdown —
+    /// T-346. Empty for every other page, which is nearly all of them.
+    ///
+    /// Beside the content for `cues`' reason, and in this page's own offsets
+    /// for the same one. Spans are **clipped** to the page: a heading or a
+    /// block quote can straddle a page boundary, and half of one drawn as
+    /// ordinary prose is worse than either whole answer.
+    pub roles: Vec<crate::markdown::Span>,
 }
 
 /// What a page turned out to be. See the module header for why `Unsupported` is
@@ -385,6 +393,14 @@ enum Inner {
         /// to be a transcript (T-287). Offsets are into `text`, which for a
         /// transcript is the *speech* and not the file: see [`Reader::of_text`].
         marks: Vec<crate::cues::Mark>,
+        /// What each stretch of the read text *is*, for a markdown file — T-346,
+        /// D-65. Empty for every other text file, which is nearly all of them.
+        ///
+        /// Beside the text rather than in it, on `Page::cues`' argument exactly:
+        /// on paper a markdown file is plain text cut the same way on the same
+        /// grid, and a variant of its own would have every reader of a page
+        /// asking a question none of them has a use for.
+        roles: Vec<crate::markdown::Span>,
     },
 }
 
@@ -397,12 +413,12 @@ impl Reader {
     /// [`crate::assets::sniff_path`] rather than by an extension: there is no
     /// extension to read, and the store's answer is the one the ingest gate and
     /// the asset record already agree on.
-    pub fn open(path: &Path) -> Result<Reader> {
+    pub fn open(path: &Path, markdown: bool) -> Result<Reader> {
         if crate::assets::sniff_path(path).is_some_and(|mime| mime.starts_with("text/")) {
             let bytes = std::fs::read(path).map_err(|e| Error::Malformed(e.to_string()))?;
             let text = crate::text::decode(&bytes)
                 .ok_or_else(|| Error::Malformed("the file is not text after all".into()))?;
-            return Reader::of_text(text);
+            return Reader::of_text(text, markdown);
         }
         let options = LoadOptions::with_max_decompressed_size(MAX_STRUCTURE_BYTES);
         let doc = Document::load_with_options(path, options)
@@ -425,11 +441,11 @@ impl Reader {
     }
 
     /// Open text already decoded. The in-memory door for the other kind.
-    pub fn open_text(text: String) -> Result<Reader> {
-        Reader::of_text(text)
+    pub fn open_text(text: String, markdown: bool) -> Result<Reader> {
+        Reader::of_text(text, markdown)
     }
 
-    fn of_text(text: String) -> Result<Reader> {
+    fn of_text(text: String, markdown: bool) -> Result<Reader> {
         // **A transcript is read as what was said, and never as the file** —
         // T-287, Q-301. A `.srt` beside a recording is stored as an ordinary
         // text asset, so without this the reading surface sets cue numbers and
@@ -445,6 +461,27 @@ impl Reader {
             Some(speech) => (speech.text, speech.marks),
             None => (text, Vec::new()),
         };
+        // **And the second substitution, on the same line of reasoning and in
+        // the same place** — T-346, D-65. A markdown file is read as its words
+        // with the marks taken off, and what they were comes back as spans over
+        // the result. Same bargain: everything below is defined over the text
+        // these two lines chose, and none of it knows either format exists.
+        //
+        // `markdown` and not a question asked of the content, because there is
+        // no honest question to ask — every text file is valid markdown, so the
+        // recognition was settled at ingest from the name (Q-324, T-345) and
+        // arrives here as a fact.
+        //
+        // After the cues rather than before, and the order is not arbitrary: a
+        // `.srt` is not markdown and a `.md` is not a transcript, so at most one
+        // of these ever fires. Cues first keeps the total test — which can say
+        // "this is not a transcript" — ahead of the one that cannot refuse.
+        let (text, roles) = if markdown {
+            let read = crate::markdown::read(&text);
+            (read.text, read.roles)
+        } else {
+            (text, Vec::new())
+        };
         let pages = crate::text::paginate(&text);
         // The same bound as a PDF's, for the same reason and in the same words:
         // a page tree — or a log file — claiming to be endless is refused
@@ -456,7 +493,7 @@ impl Reader {
             )));
         }
         Ok(Reader {
-            inner: Inner::Plain { text, pages, marks },
+            inner: Inner::Plain { text, pages, marks, roles },
             read: std::sync::atomic::AtomicUsize::new(0),
         })
     }
@@ -539,9 +576,9 @@ impl Reader {
                 let (index, page_id) = ids.iter().copied().find(|(n, _)| *n == index)?;
                 Some(self.produce(doc, index, page_id))
             }
-            Inner::Plain { text, pages, marks } => {
+            Inner::Plain { text, pages, marks, roles } => {
                 let at = usize::try_from(index).ok()?.checked_sub(1)?;
-                Some(self.cut(text, marks, pages.get(at)?.clone(), index))
+                Some(self.cut(text, marks, roles, pages.get(at)?.clone(), index))
             }
         }
     }
@@ -554,10 +591,10 @@ impl Reader {
                 .iter()
                 .map(|&(index, page_id)| self.produce(doc, index, page_id))
                 .collect(),
-            Inner::Plain { text, pages, marks } => pages
+            Inner::Plain { text, pages, marks, roles } => pages
                 .iter()
                 .enumerate()
-                .map(|(at, range)| self.cut(text, marks, range.clone(), at as u32 + 1))
+                .map(|(at, range)| self.cut(text, marks, roles, range.clone(), at as u32 + 1))
                 .collect(),
         };
         Reading { pages }
@@ -617,6 +654,7 @@ impl Reader {
         &self,
         text: &str,
         marks: &[crate::cues::Mark],
+        roles: &[crate::markdown::Span],
         range: std::ops::Range<usize>,
         index: u32,
     ) -> Page {
@@ -642,19 +680,45 @@ impl Reader {
                 at: mark.at,
             })
             .collect();
+        // And the roles, rebased the same way and for the same two reasons —
+        // the page is what crosses, and the only thing that ever compares one of
+        // these against a position is a DOM caret counting UTF-16 code units.
+        //
+        // **Clipped to the page rather than dropped at its edge**, which is the
+        // one place this differs from a cue. A cue is a *point* and belongs to
+        // whichever page it opens on; a role is a *stretch*, and a heading or a
+        // quoted block can be cut in half by a page boundary. Dropping it would
+        // leave the second half of a block quote drawn as ordinary prose, so
+        // what crosses is the part of the span that is on this page.
+        let roles = roles
+            .iter()
+            .filter(|span| span.start < range.end && span.end > range.start)
+            .map(|span| {
+                let start = span.start.max(range.start) - range.start;
+                let end = span.end.min(range.end) - range.start;
+                crate::markdown::Span {
+                    start: shown[..start].encode_utf16().count(),
+                    end: shown[..end].encode_utf16().count(),
+                    role: span.role,
+                }
+            })
+            .collect();
         Page {
             index,
             width: 0.0,
             height: 0.0,
             content: PageContent::Plain(text[range].to_owned()),
             cues,
+            roles,
         }
     }
 }
 
 /// Read every page of a PDF off the disk.
 pub fn read_pdf(path: &Path) -> Result<Reading> {
-    Ok(Reader::open(path)?.read_all())
+    // `false` until T-347 threads the record's answer down here. This door is
+    // the export and the bundle, which read a PDF.
+    Ok(Reader::open(path, false)?.read_all())
 }
 
 /// Read every page of a PDF already in memory.
@@ -698,7 +762,7 @@ pub struct Probe {
 /// caller is a paste and nothing about this is worth refusing bytes over: a PDF
 /// this build cannot parse is still a PDF, and it becomes a folder with nothing
 /// written under its filename.
-pub fn probe(bytes: &[u8], mime: &str) -> Option<Probe> {
+pub fn probe(bytes: &[u8], mime: &str, markdown: bool) -> Option<Probe> {
     match mime {
         "application/pdf" => Some(of(&Reader::open_bytes(bytes).ok()?)),
         // The other kind of document, and it comes through the same door on
@@ -719,7 +783,14 @@ pub fn probe(bytes: &[u8], mime: &str) -> Option<Probe> {
             // from, so a count taken over the markup would put "1 of 5" at the
             // head of a two page transcript.
             let spoken = crate::cues::speech(&text);
-            let pages = crate::text::page_count(spoken.as_ref().map_or(&text, |s| &s.text));
+            let read = spoken.as_ref().map_or(&text, |s| &s.text);
+            // And over the *read* markdown when it is markdown, which is this
+            // count's whole job: `Reader::of_text` paginates the words with the
+            // marks taken off, so counting the source here would put "1 of 5" at
+            // the head of a three page file and draw a folder too thick for what
+            // is in it. One substitution, applied in both places or in neither.
+            let stripped = markdown.then(|| crate::markdown::read(read).text);
+            let pages = crate::text::page_count(stripped.as_deref().unwrap_or(read));
             // Refused rather than trimmed, and by the same bound for the same
             // reason: a folder claiming more pages than this build will read is
             // a folder nobody can open, and one with no thickness is honest
@@ -743,7 +814,9 @@ pub fn probe(bytes: &[u8], mime: &str) -> Option<Probe> {
 /// committed, a board reopened tomorrow and a bundle somebody sent — none of
 /// which are ingests, and three of which would otherwise need their own answer.
 pub fn probe_path(path: &Path) -> Option<Probe> {
-    Some(of(&Reader::open(path).ok()?))
+    // Likewise T-347's. A title is a PDF's information dictionary and a text
+    // file has none either way, so the page count is all that moves.
+    Some(of(&Reader::open(path, false).ok()?))
 }
 
 fn of(reader: &Reader) -> Probe {
@@ -865,6 +938,10 @@ fn read_page(doc: &Document, index: u32, page_id: ObjectId) -> Page {
         // a scan of a numbered transcript — and the empty vec is what says this
         // page was asked and had none, rather than that nobody asked.
         cues: Vec::new(),
+        // And no roles, for a reason that will not change: a PDF states its own
+        // layout, so what a run *is* has always been readable off its size and
+        // its box. These exist because a text file states nothing at all.
+        roles: Vec::new(),
     }
 }
 
@@ -3386,7 +3463,7 @@ mod tests {
         assert_eq!(reader.page_count(), 7);
         assert_eq!(reader.pages_read(), 0, "a page count is not a page read");
 
-        let probe = probe(&bytes, "application/pdf").expect("a PDF probes");
+        let probe = probe(&bytes, "application/pdf", false).expect("a PDF probes");
         assert_eq!(probe.pages, 7);
     }
 
@@ -3398,9 +3475,9 @@ mod tests {
         // three now — the middle one being that there is more than one sort of
         // document, and they are counted differently and labelled the same.
         let bytes = titled(1, None);
-        assert_eq!(probe(&bytes, "video/mp4"), None);
-        assert_eq!(probe(&bytes, "application/pdf").map(|p| p.pages), Some(1));
-        assert_eq!(probe(b"a memo\n", "text/plain").map(|p| p.pages), Some(1));
+        assert_eq!(probe(&bytes, "video/mp4", false), None);
+        assert_eq!(probe(&bytes, "application/pdf", false).map(|p| p.pages), Some(1));
+        assert_eq!(probe(b"a memo\n", "text/plain", false).map(|p| p.pages), Some(1));
     }
 
     #[test]
@@ -3408,7 +3485,7 @@ mod tests {
         // 6% of the files D-47 swept. A paste is not refused over it — the
         // folder simply has no page count on it.
         assert_eq!(
-            probe(b"%PDF-1.7 and then nonsense", "application/pdf"),
+            probe(b"%PDF-1.7 and then nonsense", "application/pdf", false),
             None
         );
     }
@@ -3417,7 +3494,7 @@ mod tests {
     fn a_title_is_read_in_each_of_the_three_encodings_a_pdf_may_write_it_in() {
         let latin = titled(1, Some(b"Findings"));
         assert_eq!(
-            probe(&latin, "application/pdf")
+            probe(&latin, "application/pdf", false)
                 .and_then(|p| p.title)
                 .as_deref(),
             Some("Findings")
@@ -3431,7 +3508,7 @@ mod tests {
             utf16.extend_from_slice(&unit.to_be_bytes());
         }
         assert_eq!(
-            probe(&titled(1, Some(&utf16)), "application/pdf")
+            probe(&titled(1, Some(&utf16)), "application/pdf", false)
                 .and_then(|p| p.title)
                 .as_deref(),
             Some("Rapport financier")
@@ -3446,6 +3523,7 @@ mod tests {
         let quoted = probe(
             &titled(1, Some(b"O\x90Brien \x84 statement")),
             "application/pdf",
+            false,
         )
         .and_then(|p| p.title);
         assert_eq!(quoted.as_deref(), Some("O\u{2019}Brien \u{2014} statement"));
@@ -3456,11 +3534,11 @@ mod tests {
         // Three ways to be absent, and a tab cannot tell them apart: no `/Info`
         // dictionary, an `/Info` with no `/Title`, and a `/Title` of whitespace.
         assert_eq!(
-            probe(&titled(1, None), "application/pdf").and_then(|p| p.title),
+            probe(&titled(1, None), "application/pdf", false).and_then(|p| p.title),
             None
         );
         assert_eq!(
-            probe(&titled(1, Some(b"   \r\n\t ")), "application/pdf").and_then(|p| p.title),
+            probe(&titled(1, Some(b"   \r\n\t ")), "application/pdf", false).and_then(|p| p.title),
             None
         );
     }
@@ -3469,14 +3547,14 @@ mod tests {
     fn a_title_is_collapsed_and_capped_because_it_is_going_on_a_label() {
         let ragged = titled(1, Some(b"  Interim\n\treport   2019  "));
         assert_eq!(
-            probe(&ragged, "application/pdf")
+            probe(&ragged, "application/pdf", false)
                 .and_then(|p| p.title)
                 .as_deref(),
             Some("Interim report 2019")
         );
 
         let long = "x".repeat(400);
-        let capped = probe(&titled(1, Some(long.as_bytes())), "application/pdf")
+        let capped = probe(&titled(1, Some(long.as_bytes())), "application/pdf", false)
             .and_then(|p| p.title)
             .expect("a long title is still a title");
         assert_eq!(capped.chars().count(), MAX_TITLE_CHARS);
@@ -3491,7 +3569,7 @@ mod tests {
         for unit in long.encode_utf16() {
             utf16.extend_from_slice(&unit.to_be_bytes());
         }
-        let capped = probe(&titled(1, Some(&utf16)), "application/pdf")
+        let capped = probe(&titled(1, Some(&utf16)), "application/pdf", false)
             .and_then(|p| p.title)
             .expect("emoji are a title too");
         assert_eq!(capped.chars().count(), MAX_TITLE_CHARS);
@@ -3512,25 +3590,25 @@ mod tests {
     #[test]
     fn a_text_file_is_probed_for_pages_and_never_for_a_title() {
         let text = statement();
-        let probe = probe(text.as_bytes(), "text/plain").expect("text is a document");
+        let probe = probe(text.as_bytes(), "text/plain", false).expect("text is a document");
         assert_eq!(probe.pages, 3);
         // Permanently. A text file has no dictionary to state a name in, and
         // taking its first line instead would be a reading of the evidence.
         assert_eq!(probe.title, None);
         // And the record agrees with the reader, which is the whole point of
         // one door: the thickness a peer draws is the page a reader turns to.
-        let reader = Reader::open_text(text).expect("open");
+        let reader = Reader::open_text(text, false).expect("open");
         assert_eq!(reader.page_count(), 3);
         assert_eq!(reader.title(), None);
     }
 
     #[test]
     fn a_probe_still_refuses_anything_that_is_not_a_document() {
-        assert_eq!(probe(b"hello", "image/png"), None);
-        assert_eq!(probe(b"hello", "audio/mpeg"), None);
+        assert_eq!(probe(b"hello", "image/png", false), None);
+        assert_eq!(probe(b"hello", "audio/mpeg", false), None);
         // Called with a mime the bytes contradict, which is the one way this
         // can be reached: the caller passes the record's mime, not a guess.
-        assert_eq!(probe(&[0xff, 0xd8, 0xff], "text/plain"), None);
+        assert_eq!(probe(&[0xff, 0xd8, 0xff], "text/plain", false), None);
     }
 
     #[test]
@@ -3539,7 +3617,7 @@ mod tests {
         // in order reproduces the document exactly, so a page is a place in the
         // file rather than a place in a rendering of it.
         let text = statement();
-        let reading = Reader::open_text(text.clone()).expect("open").read_all();
+        let reading = Reader::open_text(text.clone(), false).expect("open").read_all();
         assert_eq!(reading.pages.len(), 3);
         let rebuilt: String = reading
             .pages
@@ -3558,9 +3636,112 @@ mod tests {
         );
     }
 
+    // --- T-346: a markdown file read as what it says -------------------------
+
+    /// The reader's own view of a markdown file, since `markdown.rs` tests the
+    /// parser and this tests the substitution being *in the pipeline*.
+    #[test]
+    fn reads_markdown_as_its_words_and_says_which_were_a_heading() {
+        let source = "## The statement\n\nHe came on the **Tuesday** train.\n";
+        let plain = Reader::open_text(source.into(), false).expect("open");
+        let read = Reader::open_text(source.into(), true).expect("open");
+
+        // The same file, read two ways, and the flag is the only difference.
+        let PageContent::Plain(as_written) = plain.page(1).unwrap().content else {
+            panic!("a text file is a plain page");
+        };
+        assert!(as_written.contains("##"), "unflagged, the marks stay");
+
+        let page = read.page(1).unwrap();
+        let PageContent::Plain(as_read) = &page.content else {
+            panic!("a markdown file is still a plain page — D-65");
+        };
+        assert!(!as_read.contains('#') && !as_read.contains('*'));
+        assert_eq!(page.roles.first().map(|s| s.role), Some(crate::markdown::Role::Heading(2)));
+    }
+
+    #[test]
+    fn counts_a_markdown_files_pages_over_the_words_it_will_show() {
+        // The record's count and the reader's pagination are the same number,
+        // and this is where they could come apart: `probe` runs at ingest over
+        // the bytes and the reader runs later over the read text. A file whose
+        // marks alone push it past a page boundary would otherwise draw a
+        // folder a page too thick and print "1 of 3" on a two page document.
+        let mut source = String::new();
+        for i in 0..crate::text::ROWS {
+            // Every line marked up, so the marks are a real share of the bytes.
+            source.push_str(&format!("- **item {i}** see [a page](https://example.com/a/very/long/address)\n"));
+        }
+        let bytes = source.as_bytes();
+
+        let as_written = probe(bytes, "text/plain", false).expect("probes").pages;
+        let as_read = probe(bytes, "text/plain", true).expect("probes").pages;
+        assert!(as_read < as_written, "taking the marks off must shorten it");
+
+        let reader = Reader::open_text(source.clone(), true).expect("open");
+        assert_eq!(reader.page_count() as u32, as_read, "the record and the reader disagree");
+    }
+
+    #[test]
+    fn a_markdown_files_pages_still_tile_the_text_they_were_cut_from() {
+        // `text.rs`'s invariant, which every page reference on this board rests
+        // on: concatenating the pages reproduces the document. Markdown does not
+        // get to be the exception — it substitutes the text *before* the tiling,
+        // exactly as a transcript does, rather than cutting differently.
+        let mut source = String::new();
+        for i in 0..crate::text::ROWS * 2 {
+            source.push_str(&format!("## Heading {i}\n\nSome *words* here.\n\n"));
+        }
+        let reader = Reader::open_text(source, true).expect("open");
+        let mut whole = String::new();
+        for index in 1..=reader.page_count() as u32 {
+            let PageContent::Plain(text) = reader.page(index).unwrap().content else {
+                panic!("plain");
+            };
+            whole.push_str(&text);
+        }
+        let Inner::Plain { text, .. } = &reader.inner else {
+            panic!("plain");
+        };
+        assert_eq!(&whole, text, "the pages do not tile the read text");
+    }
+
+    #[test]
+    fn clips_a_role_that_straddles_a_page_rather_than_dropping_it() {
+        // A cue is a point and belongs to the page it opens on. A role is a
+        // stretch, and a block quote long enough to cross a page boundary would
+        // otherwise have its second half drawn as ordinary prose — the reader
+        // silently losing the one thing this feature is for.
+        //
+        // Blank quoted lines between them, and that is the fixture doing what
+        // the module says rather than a flourish: consecutive `>` lines are one
+        // *paragraph* and reflow onto one line, so the first version of this
+        // fixture was fifty-one lines that came back as a single page.
+        let mut source = String::new();
+        for i in 0..crate::text::ROWS + 5 {
+            source.push_str(&format!("> quoted line {i}\n>\n"));
+        }
+        let reader = Reader::open_text(source, true).expect("open");
+        assert!(reader.page_count() > 1, "the fixture must cross a page");
+        for index in 1..=reader.page_count() as u32 {
+            let page = reader.page(index).unwrap();
+            let PageContent::Plain(text) = &page.content else {
+                panic!("plain");
+            };
+            let quoted = page
+                .roles
+                .iter()
+                .find(|s| s.role == crate::markdown::Role::Quote)
+                .unwrap_or_else(|| panic!("page {index} lost the quote"));
+            // In this page's own offsets, and inside it — the same rebasing
+            // `cues` gets, in UTF-16 for the same DOM caret.
+            assert!(quoted.end <= text.encode_utf16().count());
+        }
+    }
+
     #[test]
     fn a_plain_page_declares_no_shape_because_the_sheet_is_the_boards() {
-        let page = Reader::open_text("a memo\n".into())
+        let page = Reader::open_text("a memo\n".into(), false)
             .expect("open")
             .page(1)
             .expect("page one");
@@ -3569,7 +3750,7 @@ mod tests {
 
     #[test]
     fn a_text_page_is_asked_for_by_number_and_only_the_ones_that_exist_answer() {
-        let reader = Reader::open_text(statement()).expect("open");
+        let reader = Reader::open_text(statement(), false).expect("open");
         assert_eq!(reader.page(0), None, "there is no page zero");
         assert!(reader.page(1).is_some());
         assert!(reader.page(3).is_some());
@@ -3585,7 +3766,7 @@ mod tests {
         // evidence: the store holds originals under their hash.
         let text_path = dir.path().join("aa");
         std::fs::write(&text_path, statement()).expect("write");
-        let reader = Reader::open(&text_path).expect("text opens");
+        let reader = Reader::open(&text_path, false).expect("text opens");
         assert_eq!(reader.page_count(), 3);
         assert!(matches!(
             reader.page(1).map(|p| p.content),
@@ -3594,7 +3775,7 @@ mod tests {
 
         let pdf_path = dir.path().join("bb");
         std::fs::write(&pdf_path, titled(2, None)).expect("write");
-        let reader = Reader::open(&pdf_path).expect("a pdf still opens");
+        let reader = Reader::open(&pdf_path, false).expect("a pdf still opens");
         assert_eq!(reader.page_count(), 2);
         assert!(!matches!(
             reader.page(1).map(|p| p.content),
@@ -3604,7 +3785,7 @@ mod tests {
         // And bytes that are neither are an error rather than an empty document.
         let junk = dir.path().join("cc");
         std::fs::write(&junk, [0xff, 0xd8, 0xff, 0x00]).expect("write");
-        assert!(Reader::open(&junk).is_err());
+        assert!(Reader::open(&junk, false).is_err());
     }
 
     #[test]
@@ -3614,10 +3795,10 @@ mod tests {
         // thickness written on it at all.
         let huge = "\n".repeat(crate::text::ROWS * (MAX_PAGES + 1));
         assert!(matches!(
-            Reader::open_text(huge.clone()),
+            Reader::open_text(huge.clone(), false),
             Err(Error::TooLarge(_))
         ));
-        assert_eq!(probe(huge.as_bytes(), "text/plain"), None);
+        assert_eq!(probe(huge.as_bytes(), "text/plain", false), None);
     }
 
     // -- T-280: the text a search is matched against -----------------------
@@ -3734,7 +3915,7 @@ He came up from Wexford.
 00:00:03,200 --> 00:00:07,400
 I asked him twice.
 ";
-        let reader = Reader::open_text(srt.to_owned()).expect("a transcript should read");
+        let reader = Reader::open_text(srt.to_owned(), false).expect("a transcript should read");
 
         let page = reader.page(1).expect("page one");
         let PageContent::Plain(shown) = &page.content else {
@@ -3769,7 +3950,7 @@ I asked him twice.".into())
         // UTF-8 and one code unit each in a JavaScript string.
         let srt = "1\n00:00:01,000 --> 00:00:02,000\nr\u{e9}pondit-il tr\u{e8}s t\u{f4}t \u{e0}\n\n\
                    2\n00:00:05,000 --> 00:00:06,000\nand then in English\n";
-        let reader = Reader::open_text(srt.to_owned()).expect("a transcript should read");
+        let reader = Reader::open_text(srt.to_owned(), false).expect("a transcript should read");
         let page = reader.page(1).expect("page one");
         let PageContent::Plain(shown) = &page.content else {
             panic!("a transcript is plain text on paper");
@@ -3794,7 +3975,7 @@ I asked him twice.".into())
         let notes = "the flow is A --> B
 and back again
 ";
-        let reader = Reader::open_text(notes.to_owned()).expect("a text file should read");
+        let reader = Reader::open_text(notes.to_owned(), false).expect("a text file should read");
         let page = reader.page(1).expect("page one");
         let PageContent::Plain(shown) = &page.content else {
             panic!("a text file is plain text");
@@ -3842,7 +4023,7 @@ and back again
             .map(|n| format!("line {n} of the statement"))
             .collect::<Vec<_>>()
             .join("\n");
-        let reader = Reader::open_text(text).expect("text should read");
+        let reader = Reader::open_text(text, false).expect("text should read");
         let drawn = reader.read_all();
         let said = reader.read_text();
         assert!(drawn.pages.len() > 1, "the fixture should run to two pages");
