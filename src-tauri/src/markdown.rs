@@ -44,7 +44,7 @@
 //! markdown", as against "is this markdown".
 
 use pulldown_cmark::{Event, HeadingLevel, Options, Parser, Tag, TagEnd};
-use crate::prose::{Out, Reading, Role, Span};
+use crate::prose::{Out, Reading, Role};
 
 /// Read markdown as its words.
 ///
@@ -159,6 +159,7 @@ fn level_of(level: HeadingLevel) -> u8 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::prose::Span;
 
     fn roles(text: &str) -> Vec<(Role, String)> {
         let read = read(text);
