@@ -578,20 +578,26 @@ where
         .map_err(|e| e.to_string())
 }
 
-/// [`blocking`], for the three commands whose failure is a sentence somebody
-/// reads rather than a line in a log.
+/// [`blocking`], for the commands whose failure is a sentence somebody reads
+/// rather than a line in a log.
 ///
 /// It keeps the refusal as data across the boundary. The frontend has to decide
 /// whether to tell the person the board cannot hold their file — which is true
 /// of a four-hundred-megapixel scan and false of a clipboard entry that went
 /// stale — and the only thing it had to decide that on was the prose of the
 /// message, which is not a contract (T-309).
-async fn blocking_ingest<F>(job: F) -> Result<AssetMeta, assets::Refusal>
+///
+/// Generic in the value since T-343, and the three ingests are no longer alone
+/// in it: a pasted link that will not load has exactly the same problem, and
+/// [`page_card`] returning a bare string was what made the frontend drop the one
+/// sentence Rust had already written.
+async fn blocking_said<T, F>(job: F) -> Result<T, assets::Refusal>
 where
-    F: FnOnce() -> assets::Result<AssetMeta> + Send + 'static,
+    F: FnOnce() -> assets::Result<T> + Send + 'static,
+    T: Send + 'static,
 {
     match tauri::async_runtime::spawn_blocking(job).await {
-        Ok(Ok(meta)) => Ok(meta),
+        Ok(Ok(value)) => Ok(value),
         Ok(Err(error)) => Err(error.into()),
         Err(join) => Err(assets::Refusal::failed(join.to_string())),
     }
@@ -632,7 +638,7 @@ async fn asset_ingest_bytes(
         .map(str::to_string);
 
     let handle = app.clone();
-    let meta = blocking_ingest(move || {
+    let meta = blocking_said(move || {
         store_of(&handle)
             .map_err(assets::Error::Unavailable)?
             .ingest_ipc_bytes(&bytes, mime.as_deref())
@@ -646,7 +652,7 @@ async fn asset_ingest_bytes(
 #[tauri::command]
 async fn asset_ingest_path(app: AppHandle, path: String) -> Result<AssetMeta, assets::Refusal> {
     let handle = app.clone();
-    let meta = blocking_ingest(move || {
+    let meta = blocking_said(move || {
         store_of(&handle)
             .map_err(assets::Error::Unavailable)?
             .ingest_path(&PathBuf::from(path))
@@ -659,7 +665,7 @@ async fn asset_ingest_path(app: AppHandle, path: String) -> Result<AssetMeta, as
 #[tauri::command]
 async fn asset_ingest_url(app: AppHandle, url: String) -> Result<AssetMeta, assets::Refusal> {
     let handle = app.clone();
-    let meta = blocking_ingest(move || {
+    let meta = blocking_said(move || {
         store_of(&handle)
             .map_err(assets::Error::Unavailable)?
             .ingest_url(&url)
@@ -682,12 +688,21 @@ async fn asset_ingest_url(app: AppHandle, url: String) -> Result<AssetMeta, asse
 /// picture, so the store still sniffs every byte that becomes an object and no
 /// page's claim about itself is ever believed about a file.
 ///
-/// Errors are strings rather than `Refusal`s: a page that will not load is not
-/// a paste being refused, it is a paste falling back to the note it was always
-/// going to be if this failed.
+/// **Errors are `Refusal`s and were strings until T-343**, and the reasoning
+/// that made them strings was right about the object and wrong about the person.
+/// A page that will not load is still not a paste being refused — the note lands
+/// either way, and nothing here says the board cannot hold it. But three quite
+/// different things end in that same scrap of paper: the address is dead, the
+/// address would not answer, and the address is not a page at all. Rust is the
+/// side that knows which, it had already written the sentence, and a bare string
+/// is a thing the frontend can only log.
+///
+/// What stays true is the volume: the *ordinary* answer here is a page that
+/// loaded and had nothing worth a card, and that is an `Ok` with an empty title.
+/// It says nothing, as it should.
 #[tauri::command]
-async fn page_card(url: String) -> Result<opengraph::Card, String> {
-    blocking(move || {
+async fn page_card(url: String) -> Result<opengraph::Card, assets::Refusal> {
+    blocking_said(move || {
         assets::fetch_page(&url).map(|page| match page.kind {
             assets::PageKind::Markup => opengraph::card(&page.text),
             // A feed is a list rather than a page about a thing, so it is read

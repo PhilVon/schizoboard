@@ -563,6 +563,22 @@ pub enum Error {
     },
     Undecodable(String),
     Fetch(String),
+    /// The address answered, and what it answered with was a 4xx or a 5xx.
+    ///
+    /// Its own variant rather than a [`Error::Fetch`] holding ureq's "http
+    /// status: 404", because this is the one fetch failure that has a *sentence*
+    /// in it: a link that 404s is not there, which is a different thing to say
+    /// than a link that would not load, and both are said out loud (T-343).
+    Status(u16),
+    /// The address answered with something that is not a web page — a JSON
+    /// endpoint, a plain text file, an octet stream nobody named.
+    ///
+    /// Reachable only from [`fetch_page`], and separate from [`Error::Status`]
+    /// for the same reason that one is separate from [`Error::Fetch`]: nothing
+    /// failed here. There is simply no page to read, so the paste falls back to
+    /// the note it was always going to be, and the sentence says which of the
+    /// two happened.
+    NotAPage(String),
     /// The store itself is not there — the app data directory could not be
     /// created at startup.
     Unavailable(String),
@@ -585,6 +601,14 @@ impl std::fmt::Display for Error {
             ),
             Error::Undecodable(why) => write!(f, "could not decode: {why}"),
             Error::Fetch(why) => write!(f, "could not fetch: {why}"),
+            Error::Status(code) => write!(f, "the address answered {code}"),
+            // A server that declares nothing at all is commoner than it should
+            // be, and "is not a page" with a blank in front of it reads as a
+            // bug in this line rather than as a fact about the address.
+            Error::NotAPage(declared) if declared.is_empty() => {
+                write!(f, "the address did not say what it is")
+            }
+            Error::NotAPage(declared) => write!(f, "{declared} is not a page"),
             Error::Unavailable(why) => write!(f, "{why}"),
         }
     }
@@ -627,9 +651,26 @@ impl Error {
             Error::TooLarge(_) => "is bigger than this board will take".into(),
             Error::SizeMismatch => "is not the size it said it was".into(),
             Error::Undecodable(_) => "says it is a picture and will not open as one".into(),
-            // A path that went stale, a fetch that failed, a store that never
-            // opened. The person is told the attempt failed and nothing about
-            // the board, because nothing about the board has been established.
+            // The three sentences a *link* gets, and they are three because the
+            // person is holding three different next moves (T-343). A dead link
+            // is checked or thrown away; a link that would not load is tried
+            // again; an address that is not a page was never going to be one and
+            // the note with it on is the whole answer.
+            //
+            // 410 says the same thing as 404 with more certainty, and nobody
+            // reading a corkboard wants the difference explained to them.
+            Error::Status(code @ (404 | 410)) => {
+                format!("is not there — the address answered {code}")
+            }
+            Error::Status(code) => format!("would not load — the address answered {code}"),
+            Error::NotAPage(_) => "is not a web page".into(),
+            // Never reached, never resolved, refused before a socket was opened.
+            // The reason is in the log; what a person can act on is that the
+            // address was tried and did not answer.
+            Error::Fetch(_) => "would not load".into(),
+            // A path that went stale, a store that never opened. The person is
+            // told the attempt failed and nothing about the board, because
+            // nothing about the board has been established.
             _ => "could not be read".into(),
         }
     }
@@ -811,6 +852,11 @@ fn fetch_error(e: ureq::Error) -> Error {
         ureq::Error::Io(source) if source.kind() == io::ErrorKind::PermissionDenied => {
             Error::Fetch(source.to_string())
         }
+        // Kept as a number rather than flattened into "http status: 404", which
+        // is a line for a log and not something to write on a corkboard. It is
+        // the only fetch failure the address itself answered, and the only one
+        // that can say *why* — see [`Error::Status`].
+        ureq::Error::StatusCode(code) => Error::Status(*code),
         _ => Error::Fetch(e.to_string()),
     }
 }
@@ -941,7 +987,11 @@ pub const MAX_PAGE_BYTES: u64 = 1024 * 1024;
 /// says it is not sending a page is answering that question.
 pub fn fetch_page(url: &str) -> Result<Page> {
     let got = fetch(url, MAX_PAGE_BYTES, OverCap::Truncate)?;
-    let declared = got.content_type.as_deref().unwrap_or("").to_ascii_lowercase();
+    let declared = got
+        .content_type
+        .as_deref()
+        .unwrap_or("")
+        .to_ascii_lowercase();
     let kind = match declared.as_str() {
         "text/html" | "application/xhtml+xml" => PageKind::Markup,
         // A podcast feed — T-289's fourth source. Servers spell it every one of
@@ -951,7 +1001,7 @@ pub fn fetch_page(url: &str) -> Result<Page> {
         "application/rss+xml" | "application/atom+xml" | "application/xml" | "text/xml" => {
             PageKind::Feed
         }
-        other => return Err(Error::Fetch(format!("{other} is not a page"))),
+        other => return Err(Error::NotAPage(other.to_string())),
     };
     // Lossy, because a page's encoding is declared in the page and a mis-set
     // charset must not lose the whole card — a replacement character in a title
@@ -3963,6 +4013,57 @@ mod tests {
         };
         assert_ne!(picture.sentence(), picture.to_string());
         assert!(picture.to_string().starts_with("16000 × 16000"));
+    }
+
+    #[test]
+    fn a_link_that_gave_no_page_says_which_of_the_three_it_was() {
+        // T-343. Three addresses end in the same note, and the note is right
+        // every time — so the only thing distinguishing them is the sentence.
+        // They are distinct because the next move is: check the link, try again,
+        // or accept that there was never a page there.
+        let dead = Refusal::from(Error::Status(404));
+        assert!(dead.say.starts_with("is not there"), "{}", dead.say);
+        assert!(dead.say.contains("404"), "{}", dead.say);
+        // 410 is 404 with more certainty, and a corkboard does not explain the
+        // difference to anybody.
+        assert!(Refusal::from(Error::Status(410))
+            .say
+            .starts_with("is not there"));
+        // Anything else the server answered is not a claim that the page is
+        // gone — a 503 is a page to come back to.
+        let broke = Refusal::from(Error::Status(503));
+        assert!(broke.say.starts_with("would not load"), "{}", broke.say);
+        assert!(broke.say.contains("503"), "{}", broke.say);
+
+        // Never reached at all: no status to report, and nothing to say beyond
+        // the attempt. This is the timeout, the name that resolves to nothing,
+        // and the address refused before a socket was opened.
+        assert_eq!(
+            Refusal::from(Error::Fetch("timed out".into())).say,
+            "would not load"
+        );
+
+        // And the address that answered perfectly well with something that was
+        // never a page. Nothing failed, which is why it does not say anything
+        // failed.
+        let other = Refusal::from(Error::NotAPage("application/json".into()));
+        assert_eq!(other.say, "is not a web page");
+        // None of the three is a claim about the board: every one of them still
+        // leaves a note with the address on it.
+        for refusal in [dead, broke, other] {
+            assert!(!refusal.holds_nowhere, "{}", refusal.say);
+        }
+
+        // The log's sentence is the other one, and keeps the detail a person
+        // reading a flash has no use for.
+        assert_eq!(
+            Error::NotAPage("application/json".into()).to_string(),
+            "application/json is not a page"
+        );
+        assert_eq!(
+            Error::NotAPage(String::new()).to_string(),
+            "the address did not say what it is"
+        );
     }
 
     #[test]

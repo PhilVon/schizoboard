@@ -52,7 +52,7 @@ import {
   type Ingested,
 } from "@/app/ingest";
 import { assetKind, type SourceAbout } from "@/lib/objects";
-import type { AssetMeta, PageCard, Platform } from "@/platform/types";
+import type { AssetMeta, PageCard, Platform, Refusal } from "@/platform/types";
 import { refusalOf } from "@/platform/types";
 import type { Camera } from "@/state/camera";
 import { isTextTarget } from "@/state/input";
@@ -740,12 +740,18 @@ export class Paste {
     // file dragged in from the OS.
     if (looksLikeFileUrl(text)) {
       const out: Ingested[] = [];
-      await this.fetchFile(out, text);
+      const refusal = await this.fetchFile(out, text);
       if (out.length > 0) return out;
       // The fetch failed, or what came back was refused. The URL is still what
       // the user copied, so it falls through and becomes a note — which is the
       // other half of the same row, and is what a link to a web page has always
       // been.
+      //
+      // Said out loud since T-343, and only here: this is the one call to
+      // `fetchFile` whose address is the thing the person actually pasted. The
+      // refusal is null when what came back was merely refused by the gate,
+      // because `accept` has already written that line.
+      this.sayWhyNotFetched(text, refusal);
     } else if (isHttpUrl(text)) {
       // An address that names no file. Most of what anybody pastes is one of
       // these, and until T-289 every one of them was a note — including the
@@ -784,10 +790,16 @@ export class Paste {
     try {
       card = await this.options.native.pageCard(url);
     } catch (error) {
-      // Not said out loud. Every URL anybody pastes comes through here, and a
-      // sentence about Open Graph on each one would be the board explaining its
-      // own plumbing for the ordinary case of pasting a link.
       console.warn(`could not read ${url} as a page:`, error);
+      // Said out loud since T-343, and the argument that kept it quiet still
+      // holds for the case it was written about: every URL anybody pastes comes
+      // through here, and a sentence about Open Graph on each one would be the
+      // board explaining its own plumbing. But that ordinary case — a page that
+      // loaded and had nothing worth a card — does not come through here at all.
+      // It is a card with no title, one return below, and it is still silent.
+      // What reaches this line is an address that did not give us a page, and
+      // `page_card` has already written which of the three that was.
+      this.sayWhyNotFetched(url, refusalOf(error));
       return [];
     }
 
@@ -846,15 +858,15 @@ export class Paste {
     caption?: string,
     from?: string,
     about?: SourceAbout,
-  ): Promise<void> {
+  ): Promise<Refusal | null> {
     const { native } = this.options;
     try {
       const decoded = decodeDataUrl(source);
       if (decoded) {
         this.accept(out, await native.assetIngestBytes(decoded.bytes, decoded.mime), "a data URL");
-        return;
+        return null;
       }
-      if (!isHttpUrl(source)) return;
+      if (!isHttpUrl(source)) return null;
       this.accept(
         out,
         await native.assetIngestUrl(source),
@@ -864,11 +876,47 @@ export class Paste {
         from,
         about,
       );
+      return null;
     } catch (error) {
       // Not fatal, and not silent. A photograph that would not come is a note
       // with its address on it, which is more use than nothing.
       console.warn(`could not fetch ${source}:`, error);
+      // **Handed back rather than said here** (T-343). Three of the four callers
+      // are fetching something the person did not paste and did not ask about —
+      // an `<img>` inside copied markup, a page's `og:image`, the film a watch
+      // page declared — and each of those already lands a *weaker object* rather
+      // than nothing. Only the caller holding the pasted address knows the
+      // failure is the whole story, so only it gets to say so.
+      return refusalOf(error);
     }
+  }
+
+  /**
+   * Why a pasted address became a note — T-343.
+   *
+   * A note that says nothing is the same note whether the page 404ed, would not
+   * answer, was not a page at all, or loaded perfectly well and had nothing on
+   * it worth a card. The last of those is most of the web and stays silent; the
+   * others are one line, because they are the ones where somebody would
+   * otherwise go looking for a fault on this side.
+   *
+   * **Only a sentence the shell wrote speaks.** `null` here is the browser
+   * build, whose `pageCard` rejects with "needs the native shell" on every URL
+   * anybody pastes — a real answer to a different question, and the one thing
+   * that would turn this into the board narrating its own plumbing. The console
+   * keeps it either way.
+   *
+   * `holdsNowhere` is false whatever the shell said, and not passed through:
+   * nothing here is a claim about the board. A link the board could not read is
+   * a link, and the note with it on is the object it was always going to be.
+   */
+  private sayWhyNotFetched(url: string, refusal: Refusal | null): void {
+    if (refusal === null) return;
+    // Onto the queue directly rather than through `refuse`, for the one thing
+    // `refuse` does besides queueing: it logs "nothing to put on the board",
+    // and there is something to put on the board — the note is about to be
+    // made. Both callers have already logged the address and the error.
+    this.refused.push({ what: linkLabel(url), why: refusal.say, holdsNowhere: false });
   }
 
   private capped<T>(values: readonly T[], what: string): readonly T[] {
@@ -940,6 +988,22 @@ function withoutExtension(path: string): string | null {
   const dot = name.lastIndexOf(".");
   if (dot <= 0) return null;
   return path.slice(0, path.length - (name.length - dot));
+}
+
+/**
+ * An address, short enough for a line that fades — T-343.
+ *
+ * The scheme goes because `https://` is on the front of everything and
+ * identifies nothing, and a trailing slash goes for the same reason. What is
+ * left is cut in the *middle* if it has to be cut: the front of a URL says which
+ * site and the back says which thing on it, and dropping either end loses the
+ * half somebody is checking. The flash is 46 characters wide and the sentence
+ * that follows this takes about forty of them.
+ */
+function linkLabel(url: string): string {
+  const bare = url.replace(/^https?:\/\//i, "").replace(/\/+$/, "");
+  if (bare.length <= 38) return bare;
+  return `${bare.slice(0, 22)}…${bare.slice(-14)}`;
 }
 
 /** The last path or URL segment, kept as the asset's `origName` — the one piece

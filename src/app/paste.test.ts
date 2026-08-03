@@ -40,6 +40,11 @@ class FakeNative {
    * Distinct from `refuse` above, which throws whatever a broken read throws.
    * The whole of T-309 is that these two are not the same thing on this side
    * either: one is a claim about the board and the other is not.
+   *
+   * Keyed by whatever was handed over, so one map covers a path, a URL and an
+   * address read as a page: the three roads are mutually exclusive for any one
+   * string — a `.jpg` URL is never asked for as a page, and a page is never
+   * ingested — so there is nothing for two maps to disagree about.
    */
   readonly refusal = new Map<string, Refusal>();
   /** What the bytes behind a path turn out to be. */
@@ -99,15 +104,27 @@ class FakeNative {
   readonly cardFor = new Map<string, Omit<PageCard, "aboutMedia"> & { aboutMedia?: boolean }>();
   async pageCard(url: string): Promise<PageCard> {
     this.calls.push({ method: "card", arg: url });
+    // The shell's own sentence for an address that gave it no page — a 404, a
+    // timeout, something that is not a page at all (T-343). Before `refusal`,
+    // and it is the difference between the flash saying something and not.
+    const refusal = this.refusal.get(url);
+    if (refusal) throw refusal;
     const card = this.cardFor.get(url);
     // A page nobody described is one that would not load, which is the
     // ordinary answer for most of the web and the one that makes a note.
+    //
+    // A plain `Error` on purpose, and it models the *browser* build rather than
+    // the shell: `mock.ts` rejects every `pageCard` with "needs the native
+    // shell". Nothing is said out loud for one of these, which is why the
+    // fixtures above this line have not all had to grow a sentence.
     if (!card) throw new Error("not a page");
     return { aboutMedia: false, ...card };
   }
 
   async assetIngestUrl(url: string): Promise<AssetMeta> {
     this.calls.push({ method: "url", arg: url });
+    const refusal = this.refusal.get(url);
+    if (refusal) throw refusal;
     if (this.refuse.has(url)) throw new Error("could not fetch");
     // Through `mimeFor` like the path route, so a test can say what an address
     // actually serves — without it every URL is a PNG and T-289's whole
@@ -683,6 +700,113 @@ describe("what wins", () => {
     expect(made.assetId).toBeNull();
     expect(made.text).toBe("A page whose banner is gone");
     expect(made.source).toBe("https://e.com/broken");
+  });
+
+  /**
+   * T-343 — four addresses, one scrap of paper, and only some of them worth a
+   * word.
+   *
+   * The note is right in every case here and none of these change it. What
+   * changes is whether the person is told *why* they got a note, because "the
+   * page is not there" and "the page had nothing to say" are the same silence
+   * and different next moves.
+   */
+  describe("a link that would not load", () => {
+    it("says a dead address is dead, in the shell's own words", async () => {
+      native.refusal.set("https://github.com/PhilVon/Transiter", {
+        holdsNowhere: false,
+        say: "is not there — the address answered 404",
+      });
+      await firePaste({ text: "https://github.com/PhilVon/Transiter" });
+
+      // The object is unchanged: the link somebody copied, on a note.
+      const made = itemsOnBoard()[0]!;
+      expect(made.type).toBe("note");
+      expect(made.text).toBe("https://github.com/PhilVon/Transiter");
+      // Never "nothing here can hold it" — that is a claim about the board, and
+      // the board is holding the note in front of them.
+      expect(said).toEqual(["github.com/PhilVon/Transiter is not there — the address answered 404"]);
+    });
+
+    it("says nothing about a page that loaded and had nothing to say", async () => {
+      // The ordinary answer for most of the web, and the whole reason this is
+      // not simply "say something whenever a link becomes a note": a line on
+      // every pasted URL is the board narrating its own plumbing.
+      native.cardFor.set("https://e.com/silent", {
+        title: null,
+        siteName: null,
+        image: null,
+        media: null,
+      });
+      await firePaste({ text: "https://e.com/silent" });
+
+      expect(itemsOnBoard()[0]!.type).toBe("note");
+      expect(said).toEqual([]);
+    });
+
+    it("says nothing when the rejection is not a sentence the shell wrote", async () => {
+      const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+      // The browser build, where `pageCard` rejects with "needs the native
+      // shell" for every address anybody pastes. A real answer to a different
+      // question, and reading it out would put it on screen a hundred times a
+      // session — which is what refusing to match on prose buys here.
+      await firePaste({ text: "https://e.com/undescribed" });
+
+      expect(itemsOnBoard()[0]!.type).toBe("note");
+      expect(said).toEqual([]);
+      expect(warn).toHaveBeenCalled();
+      warn.mockRestore();
+    });
+
+    it("says why a media address gave nothing, the same as a page's", async () => {
+      // The other half of the same paste. A `.mp3` URL goes to the store rather
+      // than to the page reader, and its failure was just as silent — one road
+      // in and the same scrap of paper out.
+      native.refusal.set("https://e.com/talk.mp3", {
+        holdsNowhere: false,
+        say: "would not load",
+      });
+      await firePaste({ text: "https://e.com/talk.mp3" });
+
+      expect(itemsOnBoard()[0]!.type).toBe("note");
+      expect(said).toEqual(["e.com/talk.mp3 would not load"]);
+    });
+
+    it("stays quiet about a picture a page declared, because a card still lands", async () => {
+      // Three of the four fetches in this file are for something the person did
+      // not paste and did not ask about, and each already falls back to a weaker
+      // *object* rather than to nothing. A sentence about an `og:image` next to
+      // the card it failed to put a banner on is noise.
+      native.cardFor.set("https://e.com/essay", {
+        title: "An essay",
+        siteName: null,
+        image: "https://e.com/banner.jpg",
+        media: null,
+      });
+      native.refusal.set("https://e.com/banner.jpg", {
+        holdsNowhere: false,
+        say: "is not there — the address answered 404",
+      });
+      await firePaste({ text: "https://e.com/essay" });
+
+      expect(itemsOnBoard()[0]!.text).toBe("An essay");
+      expect(said).toEqual([]);
+    });
+
+    it("cuts a long address in the middle, where a line that fades can hold it", async () => {
+      // The front says which site and the back says which thing on it. Cutting
+      // either end loses the half somebody is checking, and the flash is 46
+      // characters wide with a forty-character sentence already in it.
+      const long =
+        "https://archive.example.org/collections/1978/interviews/transcripts/wexford-tuesday-train.html";
+      native.refusal.set(long, { holdsNowhere: false, say: "would not load" });
+      await firePaste({ text: long });
+
+      expect(said).toEqual(["archive.example.org/co…day-train.html would not load"]);
+      // And the note still has the whole address on it — this is a shortening
+      // for one line that fades, not for the thing that stays on the board.
+      expect(itemsOnBoard()[0]!.text).toBe(long);
+    });
   });
 
   it("leaves a URL that is not a picture as a note", async () => {
