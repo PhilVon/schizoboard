@@ -158,6 +158,34 @@ export interface DocumentPage {
   readonly width: number;
   readonly height: number;
   readonly content: PageContent;
+  /**
+   * When each cue on this page was said — T-287, Q-301. Empty for every page
+   * that is not a page of a transcript, which is most of them.
+   *
+   * Beside the content rather than inside it, because on paper a transcript
+   * *is* plain text: same hand, same measure, same grid, quoted by the same
+   * gesture. What is not plain about it is where it came from, and that is
+   * already the kind of fact that lives out here beside `index`.
+   */
+  readonly cues: readonly PageCue[];
+}
+
+/**
+ * One cue's place on a page, and the moment it names in the recording.
+ *
+ * `offset` is into the page's own text, in the units a `Range` counts in —
+ * **UTF-16 code units, not bytes**. The conversion happens in Rust where the
+ * page text is in hand (`document.rs`), because the only thing that ever
+ * compares one of these against a position is a DOM caret: the two agree while
+ * a transcript is ASCII and part company at the first accent.
+ *
+ * `at` is seconds from the start of the recording. Two numbers rather than a
+ * formatted string, because how a citation *reads* is `lib/objects.ts`'s to
+ * decide and it already decides it for a page and for a frame.
+ */
+export interface PageCue {
+  readonly offset: number;
+  readonly at: number;
 }
 
 /**

@@ -47,10 +47,10 @@ import { createQuoteCard, quoteCardText } from "@/crdt/ops/quote";
 import type { BoardDoc } from "@/crdt/doc";
 import type { AssetInput } from "@/crdt/ops/items";
 import { noteSizeFor } from "@/app/ingest";
-import { OPEN_PAGE_TURN, pageReference } from "@/lib/objects";
+import { OPEN_PAGE_TURN, pageReference, timeReference } from "@/lib/objects";
 import { polaroidFor } from "@/lib/polaroid";
 import { rotateOut } from "@/lib/rotate";
-import type { PageContent } from "@/platform/types";
+import type { PageContent, PageCue } from "@/platform/types";
 import type { RasterCamera, RasterReport } from "@/render/items/raster";
 import type { Bounds, Camera, ScreenBox, Vec2 } from "@/state/camera";
 import type { Scene } from "@/state/scene";
@@ -102,6 +102,70 @@ export interface ShownPage {
   readonly content: PageContent;
   /** What the file was called, for the citation. Null for a file nobody named. */
   readonly origName: string | null;
+  /** When each line on this page was said, for a transcript — see `PageCue`. */
+  readonly cues: readonly PageCue[];
+  /**
+   * The recording this page is a transcript *of*, or null for a case file —
+   * T-287, Q-301.
+   *
+   * **A quote off a transcript is cited to the tape and never to the sidecar.**
+   * The fields above describe the document being read, which for a recording is
+   * a `.srt` nobody put on the wall and nobody thinks of as having pages: a card
+   * reading `interview.srt p. 1` names the wrong file and gives a number that
+   * cannot be followed back to a moment. What somebody wants to find again is
+   * the recording, at the point the words were said.
+   */
+  readonly of: TranscriptOf | null;
+}
+
+/** The recording behind a transcript — what its citation names. */
+export interface TranscriptOf {
+  readonly sha256: string;
+  readonly origName: string | null;
+}
+
+/** What the rectangle caught, and where on the page it started. */
+export interface Passage {
+  readonly text: string;
+  /** Into the page's own text, in the units a `Range` counts in — see `PageCue`. */
+  readonly at: number;
+}
+
+/**
+ * What the card says it came from — `scan.pdf p. 4`, or `interview.mp3 12:04`.
+ *
+ * One function, called by both arms, for the reason `quoteCardText` is one
+ * function: the three kinds reference themselves in three different units and
+ * the card only ever says one of them out loud (`crdt/ops/quote.ts`). Two call
+ * sites each choosing would be two ways for a clipping and a quotation off the
+ * same page to disagree about where they came from.
+ *
+ * `at` is where the passage started, in the page's own text. It decides
+ * *which* cue is cited and nothing else — a page reference has no use for it,
+ * and a transcript with no cue before that point cites the recording and stops,
+ * which is the same weaker-but-honest form `pageReference` takes for a document
+ * with no pages of its own.
+ */
+export function citationFor(page: ShownPage, at: number): string {
+  const source = page.of;
+  if (source === null) return pageReference(page.origName, page.sha256, page.index);
+  return timeReference(source.origName, source.sha256, spokenAt(page.cues, at));
+}
+
+/**
+ * When the cue containing this offset was said, or null before the first one.
+ *
+ * The last cue at or before the offset — a quote is cited from where it
+ * *starts*, the way a page reference is. The cues arrive in order, so this
+ * walks rather than searching; a page holds a few dozen of them.
+ */
+export function spokenAt(cues: readonly PageCue[], at: number): number | null {
+  let said: number | null = null;
+  for (const cue of cues) {
+    if (cue.offset > at) break;
+    said = cue.at;
+  }
+  return said;
 }
 
 /**
@@ -149,8 +213,17 @@ export interface ClipperOptions {
    *
    * `""` when the rectangle caught nothing, which is a real answer: a rectangle
    * dragged over the blank half of a page has no passage in it.
+   *
+   * **`at` comes back with the words** — where the passage started, in the
+   * page's own text — because a transcript is cited by *when* rather than by
+   * page (T-287) and only the caret hit test knows where in the page somebody
+   * began. Finding the words again in the page text afterwards was the
+   * alternative and it is wrong on the ordinary case: a transcript repeats
+   * itself, and `indexOf` on "I asked him twice" would cite the first time it
+   * was said rather than the time that was quoted. Zero for a page whose
+   * offsets mean nothing, which is every page that carries no cues.
    */
-  passage(itemId: string, rect: Bounds): string;
+  passage(itemId: string, rect: Bounds): Passage;
   /**
    * Whether the rectangle crossed a picture that is actually drawn on the page
    * — T-331, Q-290.
@@ -322,7 +395,8 @@ export class Clipper {
     page: ShownPage,
     whenEmpty = "There is nothing written there.",
   ): void {
-    const said = this.options.passage(itemId, rect).trim();
+    const caught = this.options.passage(itemId, rect);
+    const said = caught.text.trim();
     // A rectangle over the blank half of a page. Nothing is written, so there
     // is no card, no pin and no string — AC-855, and the same answer the
     // picture arm gives when nothing could be drawn.
@@ -331,7 +405,10 @@ export class Clipper {
       return;
     }
     const { scene, board } = this.options;
-    const reference = pageReference(page.origName, page.sha256, page.index);
+    // Where the passage *started* and not where the reader is: a transcript is
+    // cited by the moment its words were said (T-287), and a page reference
+    // ignores the offset entirely.
+    const reference = citationFor(page, caught.at);
     // Sized the way a pasted note is sized, off its own words — and off *all*
     // of them. A quote card is a note on index stock and there is no second
     // rule for how big one is, but the words on it are not the quote: they are
@@ -496,7 +573,12 @@ export class Clipper {
       {
         // The picture is the passage, so the caption is the citation alone.
         quote: "",
-        reference: pageReference(page.origName, page.sha256, page.index),
+        // Through the same function the written arm uses. A clipping is only
+        // ever cut off a scan or a typed page, so in practice this is always
+        // the page reference — but a lifted rectangle and a quotation off one
+        // document must not be able to name it differently, and the offset a
+        // picture has no use for is the one this hands over as zero.
+        reference: citationFor(page, 0),
         x: where.x,
         y: where.y,
         w: size.w,

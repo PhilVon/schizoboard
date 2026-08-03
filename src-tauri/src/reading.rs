@@ -66,6 +66,22 @@ pub struct WirePage {
     width: f32,
     height: f32,
     content: WireContent,
+    /// When each cue on this page was said — see [`Page::cues`]. Empty for
+    /// every page that is not a page of a transcript, which is most of them.
+    cues: Vec<WireCue>,
+}
+
+/// One cue's place on a page, and the moment it names in the recording.
+///
+/// `offset` is a byte offset into the page's own text and `at` is seconds. Two
+/// numbers rather than a formatted string, because what a citation *reads* like
+/// is `lib/objects.ts`'s to decide and it already decides it for the other two
+/// kinds — this side states the fact and never the sentence.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WireCue {
+    offset: usize,
+    at: f32,
 }
 
 /// What is on a page — the same five answers `PageContent` gives, tagged so the
@@ -196,6 +212,14 @@ impl WirePage {
             width: page.width,
             height: page.height,
             content: WireContent::of(&page.content),
+            cues: page
+                .cues
+                .iter()
+                .map(|mark| WireCue {
+                    offset: mark.offset,
+                    at: mark.at,
+                })
+                .collect(),
         }
     }
 }
@@ -479,6 +503,7 @@ mod tests {
             width: 595.0,
             height: 842.0,
             content,
+            cues: Vec::new(),
         }
     }
 
@@ -554,6 +579,7 @@ mod tests {
             width: 0.0,
             height: 0.0,
             content: PageContent::Plain("the fourth witness\n".into()),
+            cues: Vec::new(),
         };
 
         let json = serde_json::to_value(WirePage::of(&page)).expect("serialise");

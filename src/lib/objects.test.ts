@@ -344,6 +344,14 @@ describe("the reference a card cites its source by", () => {
     expect(timeReference("tape.mp4", hash, 724).startsWith("tape.mp4 ")).toBe(true);
   });
 
+  it("never cites a moment after the words were said", () => {
+    // A runtime is a length and is fairly rounded; a citation is a place to go
+    // and listen. Rounding a line said at 15.6 seconds to 0:16 sends somebody
+    // to a point where it has already been said.
+    expect(timeReference("interview.mp3", hash, 15.6)).toBe("interview.mp3 0:15");
+    expect(timeReference("interview.mp3", hash, 59.9)).toBe("interview.mp3 0:59");
+  });
+
   it("cites an unmeasured recording by name alone", () => {
     expect(timeReference("interview.mp4", hash, null)).toBe("interview.mp4");
   });

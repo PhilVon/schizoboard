@@ -23,6 +23,11 @@ mod assets;
 mod board;
 mod bundle;
 mod clipboard;
+// The one question asked of a text file before it is paginated: is it made of
+// cues? (T-287, Q-301). `pub` for `text`'s reason — ingest counts pages through
+// it and the reading surface reads through it, so both must ask it the same
+// question and get the same answer.
+pub mod cues;
 mod docstore;
 // `pub` for the same reason `sync` is, and now a command as well: `asset_title`
 // asks it what a folder is called (T-267), and asks `media` the same thing about
