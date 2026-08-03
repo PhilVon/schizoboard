@@ -145,6 +145,21 @@ export class PageReader {
    *  its pages and the shell can be told which file to release. */
   private reading: string | null = null;
   /**
+   * How the document being read is to be read — the asset record's `markdown`,
+   * handed in by `open` (T-347).
+   *
+   * Held here rather than passed down from every caller because it is a fact
+   * about the *document*, not about the page: the page resolver the renderer
+   * holds asks for a page by hash alone, and threading a reading through it
+   * would put a question about a file into a call about a frame. One field, set
+   * where the folder is opened, and every fetch below reads it.
+   *
+   * It has to reach the shell at all because Rust never sees a filename, and
+   * `PageStore` is keyed on it — two callers disagreeing open the same file
+   * twice and evict each other's reading.
+   */
+  private markdown = false;
+  /**
    * The page it is open at, one-based, and how many there are (T-321).
    *
    * **Local, and never on the wire.** Same rule D-46 section 4 gives a playhead
@@ -203,8 +218,9 @@ export class PageReader {
    * Idempotent, and shutting the last one first is what keeps the shell holding
    * one file rather than two.
    */
-  open(sha256: string, pages: number | null): void {
+  open(sha256: string, pages: number | null, markdown = false): void {
     this.count = Math.max(1, pages ?? 1);
+    this.markdown = markdown;
     if (this.reading !== sha256) {
       if (this.reading !== null) this.close(this.reading);
       this.reading = sha256;
@@ -351,7 +367,7 @@ export class PageReader {
 
   private async fetch(key: string, sha256: string, index: number): Promise<void> {
     try {
-      const page = await this.native.documentPage(sha256, index);
+      const page = await this.native.documentPage(sha256, index, this.markdown);
       if (!this.held.has(key)) return; // shut while it was in flight
       if (page === null) {
         this.land(key, sha256, index, {
@@ -368,7 +384,7 @@ export class PageReader {
       // half a megabyte of JPEG has no business inside a JSON value.
       let url: string | null = null;
       if (page.content.kind === "image") {
-        const bytes = await this.native.documentPageImage(sha256, index);
+        const bytes = await this.native.documentPageImage(sha256, index, undefined, this.markdown);
         if (!this.held.has(key)) return;
         url = blobUrl(bytes, page.content.image.mime);
       }
@@ -387,7 +403,7 @@ export class PageReader {
             // answer is the empty one.
             if (figure.content.kind !== "image") return null;
             try {
-              return await this.native.documentPageImage(sha256, index, at);
+              return await this.native.documentPageImage(sha256, index, at, this.markdown);
             } catch {
               // Caught per figure and not left to take the page down with it.
               // A page whose words are here and whose chart would not read is

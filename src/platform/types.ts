@@ -573,7 +573,7 @@ export interface Platform {
   // These three reject with a `Refusal` (below) rather than with a string, and
   // they are the only commands that do.
   assetIngestBytes(bytes: Uint8Array, mime?: string): Promise<AssetMeta>;
-  assetIngestPath(path: string): Promise<AssetMeta>;
+  assetIngestPath(path: string, markdown?: boolean): Promise<AssetMeta>;
   assetIngestUrl(url: string): Promise<AssetMeta>;
   /**
    * What a page says it is — {@link PageCard}, T-289.
@@ -679,7 +679,7 @@ export interface Platform {
    * Costs a structure load and no page read: 3 to 53 ms on the corpus D-47
    * swept, 221 ms on the largest file that machine held.
    */
-  documentPageCount(sha256: string): Promise<number>;
+  documentPageCount(sha256: string, markdown?: boolean): Promise<number>;
 
   /**
    * One page, by the number printed on it, one-based.
@@ -694,7 +694,7 @@ export interface Platform {
    * open between calls, which is what makes turning a page affordable and what
    * `documentClose` exists to give back.
    */
-  documentPage(sha256: string, index: number): Promise<DocumentPage | null>;
+  documentPage(sha256: string, index: number, markdown?: boolean): Promise<DocumentPage | null>;
 
   /**
    * The bytes of a lifted image — the page's own scan when `figure` is absent,
@@ -705,7 +705,12 @@ export interface Platform {
    * than a second decode. An empty result means the pair names no image, which
    * covers all four ways that can be true and is one thing to a caller.
    */
-  documentPageImage(sha256: string, index: number, figure?: number): Promise<Uint8Array>;
+  documentPageImage(
+    sha256: string,
+    index: number,
+    figure?: number,
+    markdown?: boolean,
+  ): Promise<Uint8Array>;
 
   /**
    * Every page's characters, in one answer, index-aligned so element `n` is
@@ -727,7 +732,7 @@ export interface Platform {
    * and their boxes would be an order of magnitude more, all of it discarded by
    * the caller on arrival.
    */
-  documentText(sha256: string): Promise<readonly PageText[]>;
+  documentText(sha256: string, markdown?: boolean): Promise<readonly PageText[]>;
 
   /**
    * The folder has been shut. Let the file go.

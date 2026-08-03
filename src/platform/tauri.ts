@@ -125,8 +125,8 @@ export class TauriPlatform implements Platform {
     );
   }
 
-  assetIngestPath(path: string): Promise<AssetMeta> {
-    return invoke<AssetMeta>("asset_ingest_path", { path });
+  assetIngestPath(path: string, markdown = false): Promise<AssetMeta> {
+    return invoke<AssetMeta>("asset_ingest_path", { path, markdown });
   }
 
   assetIngestUrl(url: string): Promise<AssetMeta> {
@@ -181,28 +181,37 @@ export class TauriPlatform implements Platform {
     return invoke<string | null>("asset_title", { sha256 });
   }
 
-  documentPageCount(sha256: string): Promise<number> {
-    return invoke<number>("document_page_count", { sha256 });
+  documentPageCount(sha256: string, markdown = false): Promise<number> {
+    return invoke<number>("document_page_count", { sha256, markdown });
   }
 
-  documentPage(sha256: string, index: number): Promise<DocumentPage | null> {
-    return invoke<DocumentPage | null>("document_page", { sha256, index });
+  documentPage(sha256: string, index: number, markdown = false): Promise<DocumentPage | null> {
+    return invoke<DocumentPage | null>("document_page", { sha256, index, markdown });
   }
 
   // Raw response, for the reason `assetChunk` is one: a scanned page is around
   // half a megabyte, and base64 in a JSON string is a third bigger again for
   // bytes nothing in JavaScript is going to read.
-  async documentPageImage(sha256: string, index: number, figure?: number): Promise<Uint8Array> {
+  async documentPageImage(
+    sha256: string,
+    index: number,
+    figure?: number,
+    markdown = false,
+  ): Promise<Uint8Array> {
     const bytes = await invoke<ArrayBuffer | Uint8Array>("document_page_image", {
       sha256,
       index,
       figure: figure ?? null,
+      // Carried even though a markdown page has no image to lift, because
+      // `PageStore` is keyed on the reading: asking without it opens the
+      // document a second way and evicts the one the sheet is using.
+      markdown,
     });
     return bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes);
   }
 
-  documentText(sha256: string): Promise<readonly PageText[]> {
-    return invoke<PageText[]>("document_text", { sha256 });
+  documentText(sha256: string, markdown = false): Promise<readonly PageText[]> {
+    return invoke<PageText[]>("document_text", { sha256, markdown });
   }
 
   documentClose(sha256: string): Promise<void> {

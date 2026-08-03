@@ -514,7 +514,9 @@ async function boot(): Promise<void> {
     // rather than becoming complete a few seconds into the first search. The
     // bytes are the one thing it cannot work around, and a document whose
     // transfer has not committed becomes ready later and is asked then.
-    if (record.kind === "document" && assets.isReady(sha256)) textIndex.wants(sha256);
+    if (record.kind === "document" && assets.isReady(sha256)) {
+      textIndex.wants(sha256, record.markdown);
+    }
     // And what a *recording* says, which is the same question asked of a
     // different hash — T-287. The transcript is a text asset in its own right,
     // so what goes into the index is the sidecar rather than the tape, and the
@@ -1509,7 +1511,11 @@ async function boot(): Promise<void> {
     const reading = readableHash(itemId);
     if (reading !== null) {
       const record = board.assets.get(reading);
-      reader.open(reading, (record ? readAsset(reading, record)?.pages : null) ?? null);
+      // Both facts off the same read: how thick the folder is, and how its text
+      // is to be read (T-347). The second is the record's because Rust never
+      // sees a filename and a peer that was sent these bytes never had one.
+      const asset = record ? readAsset(reading, record) : null;
+      reader.open(reading, asset?.pages ?? null, asset?.markdown ?? false);
     }
     // Where the folder is going, not where it is. The turn has only just been
     // started and takes 300 ms; aiming at the closed box lands the camera on

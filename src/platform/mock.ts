@@ -328,15 +328,20 @@ export class MockPlatform implements Platform {
    * a path the reading surface has to draw anyway. Developing the surface itself
    * wants `npm run tauri dev`.
    */
-  documentPageCount(_sha256: string): Promise<number> {
+  documentPageCount(_sha256: string, _markdown?: boolean): Promise<number> {
     return unavailable("Counting the pages of a document");
   }
 
-  documentPage(_sha256: string, _index: number): Promise<DocumentPage | null> {
+  documentPage(_sha256: string, _index: number, _markdown?: boolean): Promise<DocumentPage | null> {
     return unavailable("Reading a page of a document");
   }
 
-  documentPageImage(_sha256: string, _index: number, _figure?: number): Promise<Uint8Array> {
+  documentPageImage(
+    _sha256: string,
+    _index: number,
+    _figure?: number,
+    _markdown?: boolean,
+  ): Promise<Uint8Array> {
     return unavailable("Lifting the image off a scanned page");
   }
 
@@ -346,7 +351,7 @@ export class MockPlatform implements Platform {
    * text `document::joined` produced or two boards would find different things
    * in the same file.
    */
-  documentText(_sha256: string): Promise<readonly PageText[]> {
+  documentText(_sha256: string, _markdown?: boolean): Promise<readonly PageText[]> {
     return unavailable("Reading the text of a document");
   }
 

@@ -296,10 +296,14 @@ fn image_of(page: &Page, figure: Option<u32>) -> Option<&PageImage> {
 /// document counted by a machine that could not count it — an older build, or
 /// one that had never held the bytes.
 #[tauri::command]
-pub async fn document_page_count(app: AppHandle, sha256: String) -> Result<u32, String> {
+pub async fn document_page_count(
+    app: AppHandle,
+    sha256: String,
+    markdown: bool,
+) -> Result<u32, String> {
     crate::blocking(move || {
         let (store, pages) = stores(&app)?;
-        count_pages(&store, &pages, &sha256)
+        count_pages(&store, &pages, &sha256, markdown)
     })
     .await
 }
@@ -317,8 +321,9 @@ fn count_pages(
     store: &AssetStore,
     pages: &PageStore,
     sha256: &str,
+    markdown: bool,
 ) -> crate::document::Result<u32> {
-    let count = pages.page_count(sha256, &store.original_path(sha256))?;
+    let count = pages.page_count(sha256, &store.original_path(sha256), markdown)?;
     Ok(u32::try_from(count).unwrap_or(u32::MAX))
 }
 
@@ -338,10 +343,11 @@ pub async fn document_page(
     app: AppHandle,
     sha256: String,
     index: u32,
+    markdown: bool,
 ) -> Result<Option<WirePage>, String> {
     crate::blocking(move || {
         let (store, pages) = stores(&app)?;
-        read_page(&store, &pages, &sha256, index)
+        read_page(&store, &pages, &sha256, index, markdown)
     })
     .await
 }
@@ -352,9 +358,10 @@ fn read_page(
     pages: &PageStore,
     sha256: &str,
     index: u32,
+    markdown: bool,
 ) -> crate::document::Result<Option<WirePage>> {
     Ok(pages
-        .page(sha256, &store.original_path(sha256), index)?
+        .page(sha256, &store.original_path(sha256), index, markdown)?
         .map(|page| WirePage::of(&page)))
 }
 
@@ -375,10 +382,11 @@ pub async fn document_page_image(
     sha256: String,
     index: u32,
     figure: Option<u32>,
+    markdown: bool,
 ) -> Result<tauri::ipc::Response, String> {
     let bytes = crate::blocking(move || {
         let (store, pages) = stores(&app)?;
-        read_page_image(&store, &pages, &sha256, index, figure)
+        read_page_image(&store, &pages, &sha256, index, figure, markdown)
     })
     .await?;
     Ok(tauri::ipc::Response::new(bytes))
@@ -391,8 +399,13 @@ fn read_page_image(
     sha256: &str,
     index: u32,
     figure: Option<u32>,
+    markdown: bool,
 ) -> crate::document::Result<Vec<u8>> {
-    let Some(page) = pages.page(sha256, &store.original_path(sha256), index)? else {
+    // The reading comes through even though a markdown page has no images to
+    // lift, and that is not defensive: `PageStore` is keyed on it, so asking
+    // here without it would open the document a second way and evict the
+    // reading the sheet is using.
+    let Some(page) = pages.page(sha256, &store.original_path(sha256), index, markdown)? else {
         return Ok(Vec::new());
     };
     Ok(image_of(&page, figure)
@@ -429,19 +442,29 @@ fn read_page_image(
 /// over for as long as the walk runs, and is the honest price of not
 /// interrupting somebody mid-page.
 #[tauri::command]
-pub async fn document_text(app: AppHandle, sha256: String) -> Result<Vec<WirePageText>, String> {
+pub async fn document_text(
+    app: AppHandle,
+    sha256: String,
+    markdown: bool,
+) -> Result<Vec<WirePageText>, String> {
     crate::blocking(move || {
         let store = app.try_state::<AssetStore>().ok_or_else(|| {
             crate::document::Error::Malformed("the asset store failed to open".into())
         })?;
-        read_text(&store, &sha256)
+        read_text(&store, &sha256, markdown)
     })
     .await
 }
 
 /// [`document_text`] without the app.
-fn read_text(store: &AssetStore, sha256: &str) -> crate::document::Result<Vec<WirePageText>> {
-    let reader = Reader::open(&store.original_path(sha256), false)?;
+fn read_text(
+    store: &AssetStore,
+    sha256: &str,
+    markdown: bool,
+) -> crate::document::Result<Vec<WirePageText>> {
+    // The search index reads the same words the sheet shows, which is what
+    // stops `Ctrl+F` matching on an asterisk nobody can see (T-347).
+    let reader = Reader::open(&store.original_path(sha256), markdown)?;
     Ok(reader.read_text().iter().map(WirePageText::of).collect())
 }
 
@@ -702,7 +725,7 @@ mod tests {
         let (_dir, store, pages) = stores_on_disk();
         let meta = store.ingest_bytes(&filing(), None).expect("ingest");
 
-        let page = read_page(&store, &pages, &meta.sha256, 1)
+        let page = read_page(&store, &pages, &meta.sha256, 1, false)
             .expect("read")
             .expect("a first page");
 
@@ -722,7 +745,7 @@ mod tests {
         let (_dir, store, pages) = stores_on_disk();
         let meta = store.ingest_bytes(&filing(), None).expect("ingest");
 
-        let count = count_pages(&store, &pages, &meta.sha256).expect("count");
+        let count = count_pages(&store, &pages, &meta.sha256, false).expect("count");
         assert!(
             count > 2,
             "the fixture is meant to be several pages, got {count}"
@@ -730,14 +753,14 @@ mod tests {
         // Counting comes off the structure and must not have read anything.
         assert_eq!(pages.pages_produced(), 0);
 
-        read_page(&store, &pages, &meta.sha256, 1).expect("read");
+        read_page(&store, &pages, &meta.sha256, 1, false).expect("read");
         assert_eq!(pages.pages_produced(), 1);
 
-        read_page(&store, &pages, &meta.sha256, 2).expect("read");
+        read_page(&store, &pages, &meta.sha256, 2, false).expect("read");
         assert_eq!(pages.pages_produced(), 2);
 
         // And a page already produced is not produced again.
-        read_page(&store, &pages, &meta.sha256, 1).expect("read");
+        read_page(&store, &pages, &meta.sha256, 1, false).expect("read");
         assert_eq!(pages.pages_produced(), 2);
     }
 
@@ -752,9 +775,9 @@ mod tests {
         let root = dir.path().join("assets");
         let before = files_under(&root);
 
-        let count = count_pages(&store, &pages, &meta.sha256).expect("count");
+        let count = count_pages(&store, &pages, &meta.sha256, false).expect("count");
         for index in 1..=count {
-            read_page(&store, &pages, &meta.sha256, index).expect("read");
+            read_page(&store, &pages, &meta.sha256, index, false).expect("read");
         }
 
         assert_eq!(files_under(&root), before);
@@ -767,7 +790,7 @@ mod tests {
     fn shutting_a_case_file_lets_the_file_go_and_keeps_the_pages() {
         let (_dir, store, pages) = stores_on_disk();
         let meta = store.ingest_bytes(&filing(), None).expect("ingest");
-        read_page(&store, &pages, &meta.sha256, 1).expect("read");
+        read_page(&store, &pages, &meta.sha256, 1, false).expect("read");
 
         let cached = pages.cached_bytes();
         assert!(cached > 0);
@@ -777,7 +800,7 @@ mod tests {
         assert_eq!(pages.cached_bytes(), cached, "the pages are still here");
 
         // And the page comes back without re-opening the document.
-        read_page(&store, &pages, &meta.sha256, 1).expect("read");
+        read_page(&store, &pages, &meta.sha256, 1, false).expect("read");
         assert_eq!(pages.pages_produced(), 0, "a cache hit reopens nothing");
     }
 
@@ -788,7 +811,7 @@ mod tests {
         let (_dir, store, _pages) = stores_on_disk();
         let meta = store.ingest_bytes(&filing(), None).expect("ingest");
 
-        let text = read_text(&store, &meta.sha256).expect("text");
+        let text = read_text(&store, &meta.sha256, false).expect("text");
         assert!(text.len() > 2, "the fixture is several pages");
 
         // Index-aligned, and the alignment is the whole of what a citation
@@ -836,14 +859,14 @@ mod tests {
         let (_dir, store, pages) = stores_on_disk();
         let meta = store.ingest_bytes(&filing(), None).expect("ingest");
 
-        read_page(&store, &pages, &meta.sha256, 1).expect("read");
+        read_page(&store, &pages, &meta.sha256, 1, false).expect("read");
         assert_eq!(pages.pages_produced(), 1);
 
-        read_text(&store, &meta.sha256).expect("text");
+        read_text(&store, &meta.sha256, false).expect("text");
 
         // Still open, still holding its page, and the next turn is a cache hit.
         assert_eq!(pages.pages_produced(), 1, "the index went nowhere near it");
-        read_page(&store, &pages, &meta.sha256, 1).expect("read");
+        read_page(&store, &pages, &meta.sha256, 1, false).expect("read");
         assert_eq!(pages.pages_produced(), 1);
     }
 
@@ -857,7 +880,7 @@ mod tests {
         let root = dir.path().join("assets");
         let before = files_under(&root);
 
-        read_text(&store, &meta.sha256).expect("text");
+        read_text(&store, &meta.sha256, false).expect("text");
 
         assert_eq!(files_under(&root), before);
     }
@@ -867,7 +890,7 @@ mod tests {
         let (_dir, store, _pages) = stores_on_disk();
         // Silence would read as a case file that says nothing, which is a
         // sentence about the document. This is a sentence about the machine.
-        assert!(read_text(&store, &"f".repeat(64)).is_err());
+        assert!(read_text(&store, &"f".repeat(64), false).is_err());
     }
 
     #[test]
@@ -875,12 +898,12 @@ mod tests {
         let (_dir, store, pages) = stores_on_disk();
         let meta = store.ingest_bytes(&filing(), None).expect("ingest");
 
-        assert!(read_page(&store, &pages, &meta.sha256, 9_999)
+        assert!(read_page(&store, &pages, &meta.sha256, 9_999, false)
             .expect("read")
             .is_none());
         // Nor is a page zero: the reference is one-based, and off-by-one here
         // would be off-by-one in every citation.
-        assert!(read_page(&store, &pages, &meta.sha256, 0)
+        assert!(read_page(&store, &pages, &meta.sha256, 0, false)
             .expect("read")
             .is_none());
     }
@@ -890,13 +913,13 @@ mod tests {
         let (_dir, store, pages) = stores_on_disk();
         let meta = store.ingest_bytes(&filing(), None).expect("ingest");
 
-        assert!(read_page_image(&store, &pages, &meta.sha256, 1, None)
+        assert!(read_page_image(&store, &pages, &meta.sha256, 1, None, false)
             .expect("image")
             .is_empty());
-        assert!(read_page_image(&store, &pages, &meta.sha256, 1, Some(0))
+        assert!(read_page_image(&store, &pages, &meta.sha256, 1, Some(0), false)
             .expect("image")
             .is_empty());
-        assert!(read_page_image(&store, &pages, &meta.sha256, 9_999, None)
+        assert!(read_page_image(&store, &pages, &meta.sha256, 9_999, None, false)
             .expect("image")
             .is_empty());
     }
@@ -912,7 +935,7 @@ mod tests {
 
         let text = crate::text::decode(&bytes).expect("decodes");
         assert_eq!(
-            count_pages(&store, &pages, &meta.sha256).expect("count") as usize,
+            count_pages(&store, &pages, &meta.sha256, false).expect("count") as usize,
             crate::text::page_count(&text)
         );
     }
@@ -984,9 +1007,9 @@ mod tests {
         let meta = store.ingest_bytes(&one_page_pdf(), None).expect("ingest");
         assert_eq!(meta.mime, "application/pdf");
 
-        assert_eq!(count_pages(&store, &pages, &meta.sha256).expect("count"), 1);
+        assert_eq!(count_pages(&store, &pages, &meta.sha256, false).expect("count"), 1);
 
-        let page = read_page(&store, &pages, &meta.sha256, 1)
+        let page = read_page(&store, &pages, &meta.sha256, 1, false)
             .expect("read")
             .expect("a first page");
 

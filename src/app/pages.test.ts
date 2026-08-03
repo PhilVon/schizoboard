@@ -27,19 +27,23 @@ function pageAt(index: number): DocumentPage {
 
 function shell(over: Partial<Platform> = {}) {
   const closed: string[] = [];
-  const asked: Array<{ sha256: string; index: number }> = [];
+  const asked: Array<{ sha256: string; index: number; markdown?: boolean }> = [];
+  const imaged: Array<{ index: number; figure?: number; markdown?: boolean }> = [];
   const native = {
-    documentPage: async (sha256: string, index: number) => {
-      asked.push({ sha256, index });
+    documentPage: async (sha256: string, index: number, markdown?: boolean) => {
+      asked.push({ sha256, index, markdown });
       return pageAt(index);
     },
-    documentPageImage: async () => new Uint8Array(),
+    documentPageImage: async (_sha: string, index: number, figure?: number, markdown?: boolean) => {
+      imaged.push({ index, figure, markdown });
+      return new Uint8Array();
+    },
     documentClose: async (sha256: string) => {
       closed.push(sha256);
     },
     ...over,
   } as unknown as Platform;
-  return { native, closed, asked };
+  return { native, closed, asked, imaged };
 }
 
 /** Let the fetch settle — one page is one `await` on this side, and a scan two. */
@@ -126,10 +130,10 @@ describe("what is asked of the shell", () => {
     // layer asked for "the page", and the window either side of it is this
     // module's own doing.
     expect(asked).toEqual([
-      { sha256: HASH, index: 1 },
-      { sha256: HASH, index: 2 },
-      { sha256: HASH, index: 3 },
-      { sha256: HASH, index: 4 },
+      { sha256: HASH, index: 1, markdown: false },
+      { sha256: HASH, index: 2, markdown: false },
+      { sha256: HASH, index: 3, markdown: false },
+      { sha256: HASH, index: 4, markdown: false },
     ]);
   });
 
@@ -573,5 +577,74 @@ describe("opening at a page", () => {
     // A different one is a different reading, and starts at the front.
     reader.open(OTHER, 50);
     expect(reader.pageAt).toBe(1);
+  });
+});
+
+/**
+ * How a document is to be read, carried down to the shell — T-347.
+ *
+ * `PageStore` on the far side is keyed on this, so it is not a hint: two
+ * callers disagreeing about one document open the same file twice and evict
+ * each other's reading, and the sheet and the search then disagree about what
+ * the file says.
+ */
+describe("the reading a document is opened with", () => {
+  it("goes down with every page it asks for", async () => {
+    const { native, asked } = shell();
+    const reader = new PageReader(native, () => {});
+    reader.open(HASH, 3, true);
+    reader.page(HASH, 1);
+    await settle();
+    expect(asked.every((call) => call.markdown === true)).toBe(true);
+    expect(asked.length).toBeGreaterThan(0);
+  });
+
+  it("is false for a document nobody said anything about", async () => {
+    // The ordinary case, and it has to be the default: every text file that is
+    // not markdown is read as itself, which is every text file until T-345
+    // wrote a flag onto one.
+    const { native, asked } = shell();
+    const reader = new PageReader(native, () => {});
+    reader.open(HASH, 3);
+    reader.page(HASH, 1);
+    await settle();
+    expect(asked.every((call) => call.markdown === false)).toBe(true);
+  });
+
+  it("goes down with a lifted image too, which has nothing to do with markdown", async () => {
+    // A markdown page has no scan to lift, so this looks like a pointless
+    // argument — and it is not. The page has to be *fetched* before an image
+    // can come off it, and fetching it the other way opens the document twice.
+    const { native, imaged } = shell({
+      documentPage: async (_sha: string, index: number) => ({
+        index,
+        width: 0,
+        height: 0,
+        content: { kind: "image" as const, image: { mime: "image/jpeg", width: 8, height: 8, bytes: 4 } },
+        cues: [],
+      }),
+    });
+    const reader = new PageReader(native, () => {});
+    reader.open(HASH, 1, true);
+    reader.page(HASH, 1);
+    await settle();
+    await settle();
+    expect(imaged.length).toBeGreaterThan(0);
+    expect(imaged.every((call) => call.markdown === true)).toBe(true);
+  });
+
+  it("changes when the document being read changes", async () => {
+    // Two folders open in one session, one markdown and one not. The field is
+    // the document's and has to move with it.
+    const { native, asked } = shell();
+    const reader = new PageReader(native, () => {});
+    reader.open(HASH, 1, true);
+    reader.page(HASH, 1);
+    await settle();
+    reader.open(OTHER, 1, false);
+    reader.page(OTHER, 1);
+    await settle();
+    expect(asked.find((c) => c.sha256 === HASH)?.markdown).toBe(true);
+    expect(asked.find((c) => c.sha256 === OTHER)?.markdown).toBe(false);
   });
 });

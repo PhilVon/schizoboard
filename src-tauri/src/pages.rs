@@ -65,9 +65,15 @@ pub struct PageStore {
 }
 
 struct Inner {
-    /// The hash of the file currently open, and the reader over it. One, for
-    /// the memory reason in the module header.
-    open: Option<(String, Reader)>,
+    /// The hash of the file currently open, **how it was read**, and the reader
+    /// over it. One, for the memory reason in the module header.
+    ///
+    /// The reading is in here beside the hash and not because two documents can
+    /// be open — one can. It is because the same document can be asked for two
+    /// ways, and `ensure_open` short-circuits on the hash: without it, a file
+    /// opened as plain text and then asked for as markdown would be served the
+    /// reading it already had, silently and for the rest of the session (T-347).
+    open: Option<(String, bool, Reader)>,
     /// Pages produced so far, oldest use first. A `VecDeque` rather than a map
     /// plus a list because the whole structure is a hundred entries at its
     /// ceiling — a linear scan of that is cheaper than the bookkeeping that
@@ -76,7 +82,10 @@ struct Inner {
     bytes: usize,
 }
 
-type Key = (String, u32);
+/// A page is identified by its document, its number **and how it was read** —
+/// the same argument `Inner::open` carries. A markdown page and a plain one of
+/// the same file are different pages with the same number.
+type Key = (String, u32, bool);
 
 impl Default for PageStore {
     fn default() -> Self {
@@ -101,13 +110,13 @@ impl PageStore {
     /// It comes out of the page tree, which is part of the structure load — so
     /// this is the 3-to-53 ms half of the cost and none of the per-page half.
     /// The reading surface needs it to say "1 of 200" before it has read any.
-    pub fn page_count(&self, hash: &str, path: &Path) -> Result<usize> {
+    pub fn page_count(&self, hash: &str, path: &Path, markdown: bool) -> Result<usize> {
         let mut inner = self.inner.lock().expect("page store");
-        inner.ensure_open(hash, path)?;
+        inner.ensure_open(hash, path, markdown)?;
         Ok(inner
             .open
             .as_ref()
-            .map(|(_, reader)| reader.page_count())
+            .map(|(_, _, reader)| reader.page_count())
             .unwrap_or(0))
     }
 
@@ -115,19 +124,25 @@ impl PageStore {
     ///
     /// `None` is "there is no such page", which is not the same answer as a page
     /// that turned out to be [`PageContent::Empty`].
-    pub fn page(&self, hash: &str, path: &Path, index: u32) -> Result<Option<Arc<Page>>> {
-        let key = (hash.to_string(), index);
+    pub fn page(
+        &self,
+        hash: &str,
+        path: &Path,
+        index: u32,
+        markdown: bool,
+    ) -> Result<Option<Arc<Page>>> {
+        let key = (hash.to_string(), index, markdown);
         let mut inner = self.inner.lock().expect("page store");
         if let Some(hit) = inner.take_cached(&key) {
             inner.cached.push_back((key, Arc::clone(&hit)));
             return Ok(Some(hit));
         }
 
-        inner.ensure_open(hash, path)?;
+        inner.ensure_open(hash, path, markdown)?;
         let Some(page) = inner
             .open
             .as_ref()
-            .and_then(|(_, reader)| reader.page(index))
+            .and_then(|(_, _, reader)| reader.page(index))
         else {
             return Ok(None);
         };
@@ -146,7 +161,7 @@ impl PageStore {
     /// document-sized allocation that had to be given back.
     pub fn close(&self, hash: &str) {
         let mut inner = self.inner.lock().expect("page store");
-        if inner.open.as_ref().is_some_and(|(open, _)| open == hash) {
+        if inner.open.as_ref().is_some_and(|(open, _, _)| open == hash) {
             inner.open = None;
         }
     }
@@ -154,7 +169,7 @@ impl PageStore {
     /// The file itself is gone. Nothing derived from it is worth keeping.
     pub fn forget(&self, hash: &str) {
         let mut inner = self.inner.lock().expect("page store");
-        if inner.open.as_ref().is_some_and(|(open, _)| open == hash) {
+        if inner.open.as_ref().is_some_and(|(open, _, _)| open == hash) {
             inner.open = None;
         }
         let mut kept = VecDeque::with_capacity(inner.cached.len());
@@ -183,14 +198,22 @@ impl PageStore {
             .expect("page store")
             .open
             .as_ref()
-            .map(|(_, reader)| reader.pages_read())
+            .map(|(_, _, reader)| reader.pages_read())
             .unwrap_or(0)
     }
 }
 
 impl Inner {
-    fn ensure_open(&mut self, hash: &str, path: &Path) -> Result<()> {
-        if self.open.as_ref().is_some_and(|(open, _)| open == hash) {
+    fn ensure_open(&mut self, hash: &str, path: &Path, markdown: bool) -> Result<()> {
+        // **Both, and the reading is the half that is easy to leave out.** A
+        // hash names a file; it does not name how that file is being read, and
+        // the same document is asked for both ways whenever a peer's record
+        // learns it is markdown while this machine already has it open.
+        if self
+            .open
+            .as_ref()
+            .is_some_and(|(open, was, _)| open == hash && *was == markdown)
+        {
             return Ok(());
         }
         // These two lines are not one line, and the difference is the whole
@@ -206,7 +229,7 @@ impl Inner {
         // passes everything below. It is written down here because that makes
         // it a decision rather than a line somebody tidies away.
         self.open = None;
-        self.open = Some((hash.to_string(), Reader::open(path, false)?));
+        self.open = Some((hash.to_string(), markdown, Reader::open(path, markdown)?));
         Ok(())
     }
 
@@ -383,9 +406,9 @@ mod tests {
         // against 5,860 ms.
         let (_dir, path) = on_disk(&scan(20, 64));
         let store = PageStore::default();
-        assert_eq!(store.page_count("aa", &path).unwrap(), 20);
+        assert_eq!(store.page_count("aa", &path, false).unwrap(), 20);
 
-        let page = store.page("aa", &path, 1).unwrap().expect("page 1");
+        let page = store.page("aa", &path, 1, false).unwrap().expect("page 1");
         let one = weight(&page);
         assert!(one > 0, "the fixture pages have to weigh something");
         assert_eq!(store.cached_bytes(), one);
@@ -403,7 +426,7 @@ mod tests {
     fn the_page_count_costs_no_pages() {
         let (_dir, path) = on_disk(&scan(20, 64));
         let store = PageStore::default();
-        assert_eq!(store.page_count("aa", &path).unwrap(), 20);
+        assert_eq!(store.page_count("aa", &path, false).unwrap(), 20);
         assert_eq!(store.cached_bytes(), 0);
         assert_eq!(
             store.pages_produced(),
@@ -416,8 +439,8 @@ mod tests {
     fn a_page_asked_for_twice_is_produced_once() {
         let (_dir, path) = on_disk(&scan(4, 64));
         let store = PageStore::default();
-        let first = store.page("aa", &path, 2).unwrap().expect("page 2");
-        let second = store.page("aa", &path, 2).unwrap().expect("page 2 again");
+        let first = store.page("aa", &path, 2, false).unwrap().expect("page 2");
+        let second = store.page("aa", &path, 2, false).unwrap().expect("page 2 again");
         assert!(
             Arc::ptr_eq(&first, &second),
             "the second read should hand back the page already produced"
@@ -430,8 +453,8 @@ mod tests {
     fn there_is_no_page_zero_and_no_page_past_the_end() {
         let (_dir, path) = on_disk(&scan(3, 64));
         let store = PageStore::default();
-        assert!(store.page("aa", &path, 0).unwrap().is_none());
-        assert!(store.page("aa", &path, 4).unwrap().is_none());
+        assert!(store.page("aa", &path, 0, false).unwrap().is_none());
+        assert!(store.page("aa", &path, 4, false).unwrap().is_none());
         // No answer is not a page, so nothing was kept for one.
         assert_eq!(store.cached_bytes(), 0);
     }
@@ -441,19 +464,19 @@ mod tests {
         let (_dir, path) = on_disk(&scan(6, 64));
         let one = {
             let store = PageStore::default();
-            weight(&store.page("aa", &path, 1).unwrap().unwrap())
+            weight(&store.page("aa", &path, 1, false).unwrap().unwrap())
         };
 
         // Room for two pages and a half, then four pages read through it.
         let ceiling = one * 2 + one / 2;
         let store = PageStore::with_capacity(ceiling);
         for index in 1..=3 {
-            store.page("aa", &path, index).unwrap().unwrap();
+            store.page("aa", &path, index, false).unwrap().unwrap();
         }
         // Read page 2 again so that page 3 is now the older of the two, then
         // push a fourth in to force an eviction.
-        store.page("aa", &path, 2).unwrap().unwrap();
-        store.page("aa", &path, 4).unwrap().unwrap();
+        store.page("aa", &path, 2, false).unwrap().unwrap();
+        store.page("aa", &path, 4, false).unwrap().unwrap();
 
         assert!(
             store.cached_bytes() <= ceiling,
@@ -461,7 +484,7 @@ mod tests {
             store.cached_bytes()
         );
         let inner = store.inner.lock().unwrap();
-        let held: Vec<u32> = inner.cached.iter().map(|((_, index), _)| *index).collect();
+        let held: Vec<u32> = inner.cached.iter().map(|((_, index, _), _)| *index).collect();
         assert!(held.contains(&2), "page 2 was read most recently: {held:?}");
         assert!(held.contains(&4), "page 4 was just read: {held:?}");
         assert!(!held.contains(&1), "page 1 was the oldest: {held:?}");
@@ -474,7 +497,7 @@ mod tests {
         // the page that was just asked for.
         let (_dir, path) = on_disk(&scan(3, 64));
         let store = PageStore::with_capacity(1);
-        let page = store.page("aa", &path, 2).unwrap().expect("page 2");
+        let page = store.page("aa", &path, 2, false).unwrap().expect("page 2");
         assert!(weight(&page) > 1);
         assert_eq!(store.cached_bytes(), weight(&page));
     }
@@ -483,7 +506,7 @@ mod tests {
     fn closing_a_folder_lets_go_of_the_file_and_keeps_the_pages() {
         let (_dir, path) = on_disk(&scan(4, 64));
         let store = PageStore::default();
-        let page = store.page("aa", &path, 1).unwrap().expect("page 1");
+        let page = store.page("aa", &path, 1, false).unwrap().expect("page 1");
         store.close("aa");
         assert!(
             store.inner.lock().unwrap().open.is_none(),
@@ -492,7 +515,7 @@ mod tests {
         assert_eq!(store.cached_bytes(), weight(&page));
 
         // And the page is still the one already produced, not a re-read.
-        let again = store.page("aa", &path, 1).unwrap().expect("page 1 again");
+        let again = store.page("aa", &path, 1, false).unwrap().expect("page 1 again");
         assert!(Arc::ptr_eq(&page, &again));
     }
 
@@ -501,8 +524,8 @@ mod tests {
         let (_dir_a, a) = on_disk(&scan(3, 64));
         let (_dir_b, b) = on_disk(&scan(3, 48));
         let store = PageStore::default();
-        let from_a = weight(&store.page("aa", &a, 1).unwrap().unwrap());
-        let from_b = weight(&store.page("bb", &b, 1).unwrap().unwrap());
+        let from_a = weight(&store.page("aa", &a, 1, false).unwrap().unwrap());
+        let from_b = weight(&store.page("bb", &b, 1, false).unwrap().unwrap());
         assert_eq!(store.cached_bytes(), from_a + from_b);
 
         store.forget("aa");
@@ -513,7 +536,7 @@ mod tests {
             .unwrap()
             .cached
             .iter()
-            .map(|((hash, _), _)| hash.clone())
+            .map(|((hash, _, _), _)| hash.clone())
             .collect();
         assert_eq!(held, vec!["bb".to_string()]);
     }
@@ -531,21 +554,70 @@ mod tests {
         let (_dir_a, a) = on_disk(&scan(3, 64));
         let (_dir_b, b) = on_disk(&scan(3, 48));
         let store = PageStore::default();
-        store.page("aa", &a, 1).unwrap().unwrap();
-        store.page("bb", &b, 1).unwrap().unwrap();
+        store.page("aa", &a, 1, false).unwrap().unwrap();
+        store.page("bb", &b, 1, false).unwrap().unwrap();
         let inner = store.inner.lock().unwrap();
         assert_eq!(
-            inner.open.as_ref().map(|(hash, _)| hash.as_str()),
+            inner.open.as_ref().map(|(hash, _, _)| hash.as_str()),
             Some("bb")
         );
+    }
+
+    /// T-347, and the one part of that task that is a correctness change rather
+    /// than a signature change.
+    ///
+    /// `ensure_open` short-circuits on the hash, and a hash names a *file* — not
+    /// how it is being read. So a document opened as plain text and then asked
+    /// for as markdown was served the reading it already had, silently, for the
+    /// rest of the session. That is not hypothetical: a peer's record can learn
+    /// a file is markdown while this machine already has it open, which is
+    /// exactly the moment the sheet would stop agreeing with the search index.
+    #[test]
+    fn does_not_serve_one_reading_of_a_file_when_the_other_was_asked_for() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("notes.md");
+        std::fs::write(&path, b"# A heading\n\nAnd a word.\n").expect("write");
+        let store = PageStore::default();
+
+        let plain = store.page("aa", &path, 1, false).expect("read").expect("page");
+        let read = store.page("aa", &path, 1, true).expect("read").expect("page");
+
+        let (crate::document::PageContent::Plain(as_written), crate::document::PageContent::Plain(as_read)) =
+            (&plain.content, &read.content)
+        else {
+            panic!("a text file is a plain page");
+        };
+        assert!(as_written.contains('#'), "the plain reading keeps the marks");
+        assert!(!as_read.contains('#'), "the markdown reading is served its own");
+    }
+
+    #[test]
+    fn holds_the_two_readings_of_one_file_apart_in_the_cache() {
+        // The other half of the same bug: the key is the document, the page
+        // number *and* the reading. Two pages with the same number are two
+        // entries, and a hit on one must never answer for the other.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("notes.md");
+        std::fs::write(&path, b"# A heading\n\nAnd a word.\n").expect("write");
+        let store = PageStore::default();
+
+        store.page("aa", &path, 1, false).expect("read");
+        store.page("aa", &path, 1, true).expect("read");
+        let inner = store.inner.lock().unwrap();
+        assert_eq!(inner.cached.len(), 2, "one reading evicted the other");
+
+        // And `forget` still takes both, because it matches on the document.
+        drop(inner);
+        store.forget("aa");
+        assert_eq!(store.inner.lock().unwrap().cached.len(), 0);
     }
 
     #[test]
     fn a_file_that_is_not_there_is_an_error_rather_than_a_panic() {
         let store = PageStore::default();
-        assert!(store.page("aa", Path::new("no/such/file.pdf"), 1).is_err());
+        assert!(store.page("aa", Path::new("no/such/file.pdf"), 1, false).is_err());
         assert!(store
-            .page_count("aa", Path::new("no/such/file.pdf"))
+            .page_count("aa", Path::new("no/such/file.pdf"), false)
             .is_err());
     }
 
@@ -569,10 +641,10 @@ mod tests {
             .path;
 
         let pages = PageStore::default();
-        assert_eq!(pages.page_count(&meta.sha256, &path).unwrap(), 12);
+        assert_eq!(pages.page_count(&meta.sha256, &path, false).unwrap(), 12);
         for index in 1..=12 {
             pages
-                .page(&meta.sha256, &path, index)
+                .page(&meta.sha256, &path, index, false)
                 .unwrap()
                 .expect("page");
         }
@@ -603,10 +675,10 @@ mod tests {
 
         let first = PageStore::default();
         let second = PageStore::default();
-        assert_eq!(first.page_count("aa", &path).unwrap(), 3);
+        assert_eq!(first.page_count("aa", &path, false).unwrap(), 3);
         for index in 1..=3 {
-            let a = first.page("aa", &path, index).unwrap().expect("page");
-            let b = second.page("aa", &path, index).unwrap().expect("page");
+            let a = first.page("aa", &path, index, false).unwrap().expect("page");
+            let b = second.page("aa", &path, index, false).unwrap().expect("page");
             assert_eq!(a.as_ref(), b.as_ref(), "page {index}");
         }
 
@@ -616,8 +688,8 @@ mod tests {
         first.forget("aa");
         assert_eq!(first.cached_bytes(), 0);
         assert_eq!(
-            first.page("aa", &path, 2).unwrap().expect("page"),
-            second.page("aa", &path, 2).unwrap().expect("page")
+            first.page("aa", &path, 2, false).unwrap().expect("page"),
+            second.page("aa", &path, 2, false).unwrap().expect("page")
         );
     }
 
@@ -631,8 +703,8 @@ mod tests {
         let first = PageStore::default();
         let second = PageStore::default();
         for index in 1..=5 {
-            let a = first.page("aa", &path, index).unwrap().expect("page");
-            let b = second.page("aa", &path, index).unwrap().expect("page");
+            let a = first.page("aa", &path, index, false).unwrap().expect("page");
+            let b = second.page("aa", &path, index, false).unwrap().expect("page");
             assert_eq!(a.as_ref(), b.as_ref(), "page {index}");
         }
     }

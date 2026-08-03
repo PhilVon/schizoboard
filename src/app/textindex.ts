@@ -138,10 +138,10 @@ export class TextIndex {
    * Asked **once per hash per session**, and the mark goes down before the
    * await: a board of forty folders is forty reads and not forty a frame.
    */
-  wants(sha256: string): void {
+  wants(sha256: string, markdown = false): void {
     if (!isHash(sha256) || this.held.has(sha256)) return;
     this.held.set(sha256, READING);
-    this.queue = this.queue.then(() => this.read(sha256)).catch(() => undefined);
+    this.queue = this.queue.then(() => this.read(sha256, markdown)).catch(() => undefined);
   }
 
   /** What is known about this document now. Never null; see [`UNASKED`]. */
@@ -176,10 +176,16 @@ export class TextIndex {
     await this.queue;
   }
 
-  private async read(sha256: string): Promise<void> {
+  private async read(sha256: string, markdown: boolean): Promise<void> {
     let text: readonly PageText[];
     try {
-      text = await this.native.documentText(sha256);
+      // **The same words the sheet shows** (T-347). An index built over the
+      // source would match a search for a pair of asterisks against every bold
+      // word in the file, and would count a heading's hashes as part of the
+      // words it holds — so the search and the page would be reading two
+      // different documents. The reading is the record's answer, and both sides
+      // have to ask for the same one.
+      text = await this.native.documentText(sha256, markdown);
     } catch {
       // A malformed PDF, a password on it, a container this build cannot parse
       // — about 6% of real files (D-47) — and, in a browser, every one of them,

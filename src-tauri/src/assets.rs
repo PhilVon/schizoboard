@@ -1767,6 +1767,25 @@ impl AssetStore {
     /// transfer committing, a bundle expanding an entry. One gate, before the
     /// write, and long before the decode that would pay for it.
     pub fn ingest_bytes(&self, bytes: &[u8], mime_hint: Option<&str>) -> Result<AssetMeta> {
+        // `false`, and it is the honest default rather than a stub. This is the
+        // door for a paste of bytes, a peer transfer committing and a bundle
+        // expanding an entry — three routes with no filename anywhere, on a
+        // machine that may never have seen one. Only [`ingest_path`] has a name
+        // to have been told about, and it is the caller there that decides
+        // (T-345: the rule has one writer, and it is `paste.ts`).
+        self.ingest_bytes_as(bytes, mime_hint, false)
+    }
+
+    /// [`ingest_bytes`], plus how the text in them is to be read — T-347.
+    ///
+    /// Private, because the only thing that can answer this is a caller holding
+    /// a name, and the only such caller is [`ingest_path`].
+    fn ingest_bytes_as(
+        &self,
+        bytes: &[u8],
+        mime_hint: Option<&str>,
+        markdown: bool,
+    ) -> Result<AssetMeta> {
         let size = bytes.len() as u64;
         if size > MAX_ASSET_BYTES {
             return Err(Error::TooLarge(size));
@@ -1821,11 +1840,13 @@ impl AssetStore {
         // structure load, no page read, and `commit_received` comes through here
         // too so a folder that arrived over the wire counts its pages by the
         // same code as one that was pasted.
-        // `false` until T-347: this is the count written on the record, and it has
-        // to be taken over the same text the reader paginates. `ingest_bytes` has
-        // no name to decide by - `commit_received` comes through here too, from a
-        // machine that never saw one - so the answer is the caller's to supply.
-        let pages = document::probe(bytes, &mime, false).map(|d| d.pages);
+        // **Over the text the reader will paginate**, which for a markdown file
+        // is the words with the marks taken off (T-347). This number is what the
+        // folder's thickness is drawn from and what the open sheet's header
+        // prints, so counting the source here would put "1 of 3" at the head of a
+        // two page file — the record and the reader must agree or the object is
+        // lying about what is in it.
+        let pages = document::probe(bytes, &mime, markdown).map(|d| d.pages);
 
         self.restore_from_trash(&sha256);
         let target = self.original_path(&sha256);
@@ -1857,7 +1878,7 @@ impl AssetStore {
     /// never grow past it — a hint on its own is only a hint, and a source that
     /// hands back more than it promised would double its way up exactly as
     /// before. The ceiling is derived from the worst case, not the usual one.
-    pub fn ingest_path(&self, path: &Path) -> Result<AssetMeta> {
+    pub fn ingest_path(&self, path: &Path, markdown: bool) -> Result<AssetMeta> {
         let file = File::open(path)?;
         let size = file.metadata()?.len();
         if size > MAX_ASSET_BYTES {
@@ -1869,7 +1890,7 @@ impl AssetStore {
         // way-station in front of that is one memcpy of the whole file for
         // nothing.
         let bytes = read_promised(file, size)?;
-        self.ingest_bytes(&bytes, None)
+        self.ingest_bytes_as(&bytes, None, markdown)
     }
 
     /// Ingest a URL. This exists because the webview has a CORS wall and the
@@ -4094,7 +4115,7 @@ mod tests {
         let path = dir.path().join("interview.wav");
         fs::write(&path, &big).unwrap();
         drop(big);
-        assert_eq!(store.ingest_path(&path).unwrap().size, MAX_PASTE_BYTES + 1);
+        assert_eq!(store.ingest_path(&path, false).unwrap().size, MAX_PASTE_BYTES + 1);
     }
 
     #[test]
@@ -4109,7 +4130,7 @@ mod tests {
             .unwrap()
             .set_len(MAX_ASSET_BYTES + 1)
             .unwrap();
-        match store.ingest_path(&path) {
+        match store.ingest_path(&path, false) {
             Err(Error::TooLarge(n)) => assert_eq!(n, MAX_ASSET_BYTES + 1),
             other => panic!("the path road took a file over the ceiling: {other:?}"),
         }

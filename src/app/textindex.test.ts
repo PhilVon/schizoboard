@@ -19,9 +19,11 @@ const OTHER = "b".repeat(64);
 
 function shell(pages: Record<string, readonly PageText[] | Error>) {
   const asked: string[] = [];
+  const readAs: boolean[] = [];
   const native = {
-    documentText: async (sha256: string) => {
+    documentText: async (sha256: string, markdown?: boolean) => {
       asked.push(sha256);
+      readAs.push(markdown ?? false);
       const answer = pages[sha256];
       if (answer === undefined || answer instanceof Error) {
         throw answer ?? new Error("no such document");
@@ -29,7 +31,7 @@ function shell(pages: Record<string, readonly PageText[] | Error>) {
       return answer;
     },
   } as unknown as Platform;
-  return { native, asked };
+  return { native, asked, readAs };
 }
 
 function text(...lines: string[]): PageText[] {
@@ -212,5 +214,30 @@ describe("saying when a document has landed", () => {
     await index.idle();
     expect(arrived).toHaveBeenCalledWith(HASH);
     expect(index.of(HASH).phase).toBe("unreadable");
+  });
+});
+
+/**
+ * The index reads the same words the sheet shows — T-347.
+ *
+ * Without this the search and the page are reading two different documents: a
+ * search for a pair of asterisks would match every bold word in the file, and a
+ * heading's hashes would count as part of the words it holds.
+ */
+describe("how a document is read for the index", () => {
+  it("asks for the reading it was told about", async () => {
+    const { native, readAs } = shell({ [HASH]: text("a heading") });
+    const index = new TextIndex(native);
+    index.wants(HASH, true);
+    await index.idle();
+    expect(readAs).toEqual([true]);
+  });
+
+  it("reads an ordinary text file as itself", async () => {
+    const { native, readAs } = shell({ [HASH]: text("a line") });
+    const index = new TextIndex(native);
+    index.wants(HASH);
+    await index.idle();
+    expect(readAs).toEqual([false]);
   });
 });

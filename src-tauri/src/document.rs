@@ -716,8 +716,11 @@ impl Reader {
 
 /// Read every page of a PDF off the disk.
 pub fn read_pdf(path: &Path) -> Result<Reading> {
-    // `false` until T-347 threads the record's answer down here. This door is
-    // the export and the bundle, which read a PDF.
+    // `false`, and settled rather than deferred: this door is named for what
+    // comes through it. An export and a bundle read a PDF here, and a PDF has
+    // no marks to take off — `Reader::open` still dispatches on the sniffed
+    // mime, so a text file handed to it is read plainly, which is the reading
+    // every caller of this one wants (T-347).
     Ok(Reader::open(path, false)?.read_all())
 }
 
@@ -814,8 +817,11 @@ pub fn probe(bytes: &[u8], mime: &str, markdown: bool) -> Option<Probe> {
 /// committed, a board reopened tomorrow and a bundle somebody sent — none of
 /// which are ingests, and three of which would otherwise need their own answer.
 pub fn probe_path(path: &Path) -> Option<Probe> {
-    // Likewise T-347's. A title is a PDF's information dictionary and a text
-    // file has none either way, so the page count is all that moves.
+    // `false`, and it costs nothing: both callers take `.title` and throw the
+    // page count away — `asset_title` asks what a document calls itself, which
+    // is a PDF's information dictionary and which a text file has no answer to
+    // whichever way it is read. The count that reaches a record comes from
+    // `probe` at ingest, which *is* told (T-347).
     Some(of(&Reader::open(path, false).ok()?))
 }
 

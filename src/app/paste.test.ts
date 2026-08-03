@@ -88,8 +88,12 @@ class FakeNative {
     if (this.bytesThrow) throw new Error("too big to hand over in one piece");
     return this.meta(`b${bytes.length}`, mime, bytes.length);
   }
-  async assetIngestPath(path: string): Promise<AssetMeta> {
+  /** What each path was ingested *as* — T-347's flag, recorded separately so
+   *  the existing `calls` assertions keep their shape. */
+  readonly readAs = new Map<string, boolean>();
+  async assetIngestPath(path: string, markdown = false): Promise<AssetMeta> {
     this.calls.push({ method: "path", arg: path });
+    this.readAs.set(path, markdown);
     const refusal = this.refusal.get(path);
     if (refusal) throw refusal;
     if (this.refuse.has(path)) throw new Error("no such file");
@@ -1745,5 +1749,17 @@ describe("a markdown file", () => {
     const sha = onlyAsset();
     board.assets.get(sha)!.set("markdown", true);
     expect(markdownOf(sha)).toBe(false);
+  });
+  it("tells the shell to read it as markdown before it counts the pages", async () => {
+    // The count on the record is taken over the text the reader will paginate,
+    // so the shell has to know the reading at ingest — not afterwards. Getting
+    // this wrong draws a folder too thick and prints "1 of 3" at the head of a
+    // two page file.
+    native.mimeFor.set("C:/notes.md", "text/plain");
+    native.mimeFor.set("C:/server.log", "text/plain");
+    native.drop(["C:/notes.md", "C:/server.log"], 0, 0);
+    await settle();
+    expect(native.readAs.get("C:/notes.md")).toBe(true);
+    expect(native.readAs.get("C:/server.log")).toBe(false);
   });
 });

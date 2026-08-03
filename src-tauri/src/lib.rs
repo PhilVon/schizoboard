@@ -654,12 +654,16 @@ async fn asset_ingest_bytes(
 }
 
 #[tauri::command]
-async fn asset_ingest_path(app: AppHandle, path: String) -> Result<AssetMeta, assets::Refusal> {
+async fn asset_ingest_path(
+    app: AppHandle,
+    path: String,
+    markdown: bool,
+) -> Result<AssetMeta, assets::Refusal> {
     let handle = app.clone();
     let meta = blocking_said(move || {
         store_of(&handle)
             .map_err(assets::Error::Unavailable)?
-            .ingest_path(&PathBuf::from(path))
+            .ingest_path(&PathBuf::from(path), markdown)
     })
     .await?;
     schedule_variants(&app, meta.sha256.clone());

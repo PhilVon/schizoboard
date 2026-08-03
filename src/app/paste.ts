@@ -466,7 +466,14 @@ export class Paste {
       try {
         if (path !== undefined) {
           this.tried.add(path);
-          this.accept(out, await this.options.native.assetIngestPath(path), path, baseName(path));
+          // The name decides the reading (T-345) and the shell has to be told
+        // before it counts the pages: the record's page count is taken over the
+        // text the reader will paginate, and for a markdown file that is the
+        // words with the marks off. Decided here rather than in Rust so the rule
+        // has one writer — `isMarkdownName` — instead of two that can drift.
+        const name = baseName(path);
+        const meta = await this.options.native.assetIngestPath(path, isMarkdownName(name));
+        this.accept(out, meta, path, name);
           // Only on this arm. The fallback below is holding bytes the webview
           // gave it and has no path at all, and a transcript is found by looking
           // *beside* a file — there is no beside without one (T-287).
@@ -762,7 +769,14 @@ export class Paste {
     for (const path of this.capped(fresh, "files", of)) {
       try {
         this.tried.add(path);
-        this.accept(out, await this.options.native.assetIngestPath(path), path, baseName(path));
+        // The reading goes down with the path, for `fromFiles`' reason above:
+        // the page count on the record is taken over the text the reader will
+        // paginate, and the shell has to be told which text that is before it
+        // counts. Both roads that have a filesystem path do this, and they are
+        // the only two that could.
+        const name = baseName(path);
+        const meta = await this.options.native.assetIngestPath(path, isMarkdownName(name));
+        this.accept(out, meta, path, name);
         await this.sidecar(out, path);
       } catch (error) {
         // Said rather than swallowed, on the same argument as `fromFiles`: this
