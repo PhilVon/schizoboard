@@ -107,6 +107,7 @@ import { AssetStates } from "@/state/assets";
 import { MissingAssets } from "@/state/missing";
 import { Camera, type Bounds } from "@/state/camera";
 import { DirtySets } from "@/state/dirty";
+import { dirtyFacing } from "@/state/facing";
 import { Flashes } from "@/state/flash";
 import { PaperTurn, TURN_UP } from "@/state/turn";
 import { Flight } from "@/state/flight";
@@ -1849,6 +1850,14 @@ async function boot(): Promise<void> {
   // And which face of an item is showing, so a peer's mark on page four is not
   // drawn on the cover of a folder that is shut here (T-278).
   overlay.setShownPage(shownPage);
+  // And the three layers that draw what is *stuck to* a page (T-330): a tape on
+  // page four is inside a shut folder and behind the sheet on show while you
+  // read page twelve, and the thread it holds goes with it. One function, four
+  // layers, for the reason the item layer is handed it — what a thing is filed
+  // against and what is drawn have to be one answer.
+  pins.setShownPage(shownPage);
+  ropesUnder.setShownPage(shownPage);
+  ropesOver.setShownPage(shownPage);
   // Screen space, because a pin's grab radius is in screen pixels and has a
   // floor — see `render/pins/dom.ts`.
   const hitPin = (sx: number, sy: number): string | null => pins.hitTest(scene, camera, sx, sy);
@@ -2631,7 +2640,7 @@ async function boot(): Promise<void> {
       return;
     }
 
-    const hit = stringAt(scene, camera, hitItem, hitPin, hitString, e.clientX, e.clientY);
+    const hit = stringAt(scene, camera, hitItem, hitPin, hitString, e.clientX, e.clientY, shownPage);
     if (hit !== null) {
       const held = selection.hasString(hit.string);
       open(
@@ -3587,7 +3596,32 @@ async function boot(): Promise<void> {
   let hoveredString: { x: number; y: number } | null = null;
   let hoverAskedX = Number.NaN;
   let hoverAskedY = Number.NaN;
+
+  /**
+   * The face that was on show last frame — T-330.
+   *
+   * The memory is here and the consequence is `dirtyFacing`, because only this
+   * scope can hold the question: `opening` knows which item is turned up and
+   * `reader` knows which page it is turned to, and the pair of them is what
+   * changes. It is the same argument `shownPage` itself makes one line up, and
+   * the same reason both are functions passed down rather than methods on
+   * either half.
+   *
+   * Three ways it changes — the folder opens, the folder shuts, the reader turns
+   * — and not one of them is a document edit. See `dirtyFacing` for what that
+   * costs the two layers that draw off it.
+   */
+  let facingItem: string | null = null;
+  let facingAt = 0;
+  const facingChanged = (): void => {
+    if (opening.itemId === facingItem && reader.pageAt === facingAt) return;
+    const was = facingItem;
+    facingItem = opening.itemId;
+    facingAt = reader.pageAt;
+    dirtyFacing(scene, dirty, was, facingItem);
+  };
   loop.on("layout", () => {
+    facingChanged();
     // World pin positions for items that moved. Nothing reads the DOM.
     // `dirty.pins` gets a pass too, and with the *item* set — which for a free
     // pin dragged across bare cork is empty, and an empty set is exactly right:
@@ -3635,7 +3669,7 @@ async function boot(): Promise<void> {
         tools.current === select || isScissors(tools.modifier("Control"), tools.modifier("Alt"));
       const offer =
         asking && !select.gesturing
-          ? stringAt(scene, camera, hitItem, hitPin, hitString, cursor.x, cursor.y)
+          ? stringAt(scene, camera, hitItem, hitPin, hitString, cursor.x, cursor.y, shownPage)
           : null;
       hoveredString = offer && { x: offer.x, y: offer.y };
     }

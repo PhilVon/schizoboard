@@ -20,6 +20,7 @@
 
 import { rotateIn, type Point } from "@/lib/rotate";
 import type { Camera } from "@/state/camera";
+import { tuckedGap, type ShownPage } from "@/state/facing";
 import type { Scene } from "@/state/scene";
 import type { StringAnchor, StringHit, WritePose } from "@/state/tools/tool";
 
@@ -294,6 +295,14 @@ export function isScissors(ctrl: boolean, alt: boolean): boolean {
  * it: a pin, which is what a press on one means; and, for a string tucked
  * *behind* items (DESIGN section 6.2), the item it is passing under — what you
  * cannot see you cannot grab.
+ *
+ * **And "tucked behind" is now a question about the gap, not the string**
+ * (T-330). A thread taped to page four passes under the sheet on show and under
+ * the folder when it is shut, while its `layer` still says `over` and the rest
+ * of it still draws there. Asking the stored field alone would offer a cut, and
+ * a drag, on a piece of string that is not drawn where the cursor is — the same
+ * defect as an outline round an invisible thread, arriving through the pointer
+ * instead of through the paint.
  */
 export function stringAt(
   scene: Scene,
@@ -303,13 +312,32 @@ export function stringAt(
   hitString: (boardX: number, boardY: number, reach: number) => StringHit | null,
   screenX: number,
   screenY: number,
+  /** Which face each item is showing. Null is a board with nothing open, which
+   *  is what every caller without a reader behind it should say. */
+  shown: ShownPage | null = null,
 ): StringHit | null {
   if (hitPin(screenX, screenY) !== null) return null;
   const board = camera.screenToBoard(screenX, screenY);
   const hit = hitString(board.x, board.y, STRING_GRAB_PX / camera.zoom);
   if (hit === null) return null;
-  if (scene.strings.get(hit.string)?.layer === "under" && hitTest(board.x, board.y) !== null) {
-    return null;
-  }
+  // `behindItems` first, and the order is not style: this runs on every frame
+  // the cursor moves over a string, and `hitTest` is a walk of the items. The
+  // cheap half answers false for every string on every board that has never
+  // quoted a case file, which is what the short-circuit was already worth
+  // before there was a second way to be behind something.
+  if (behindItems(scene, hit, shown) && hitTest(board.x, board.y) !== null) return null;
   return hit;
+}
+
+/** Whether the gap this hit landed on is drawn beneath the items — either
+ *  because the whole string is, or because it reaches a put-away tape. */
+function behindItems(scene: Scene, hit: StringHit, shown: ShownPage | null): boolean {
+  const run = scene.strings.get(hit.string);
+  if (run === undefined) return false;
+  if (run.layer === "under") return true;
+  // `hit.node` is the node the gap starts at, and the gap ends at the next one
+  // — wrapping, because a closed run's last gap ends where it began.
+  const a = run.nodes[hit.node]?.pin;
+  const b = run.nodes[(hit.node + 1) % run.nodes.length]?.pin;
+  return a !== undefined && b !== undefined && tuckedGap(scene, shown, a, b);
 }

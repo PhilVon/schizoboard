@@ -49,7 +49,7 @@ function taut(): void {
     ["p0", 0],
     ["p1", 200],
   ] as const) {
-    scene.putPin({ id, parent: null, lx: wx, ly: 0, kind: "pushpin", color: "#c8352f", wx, wy: 0 });
+    scene.putPin({ id, parent: null, lx: wx, ly: 0, kind: "pushpin", color: "#c8352f", page: null, wx, wy: 0 });
   }
   scene.putString({
     id: "s",

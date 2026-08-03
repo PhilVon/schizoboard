@@ -74,6 +74,21 @@ export interface QuoteSource {
    */
   readonly lx: number;
   readonly ly: number;
+  /**
+   * Which page of the source the tape is stuck to, or null for a tape on the
+   * object itself — T-330.
+   *
+   * The caller's for `lx`/`ly`'s reason and one more. Only the gesture knows
+   * what face was on show when the rectangle was drawn, and by the time this
+   * write lands the reader may have turned: a page reference is quoted out of
+   * the page it was read on, not out of the page you happen to be on when the
+   * card arrives.
+   *
+   * Left out by a quote from anything that is not an open case file — a tape on
+   * a photograph is a tape on the photograph, and `buildPin` stores no key at
+   * all for it.
+   */
+  readonly page?: number | null;
 }
 
 export interface QuoteCardInput {
@@ -234,6 +249,11 @@ export function createQuoteCard(
       // it, so quoting a case file does not stop it hanging — and does not
       // move an open one, whose turn is measured about its sole pin (T-328).
       kind: "tape",
+      // **And it is stuck to the page rather than to the folder** — T-330. A
+      // thread taped to page four goes inside the folder when it shuts and runs
+      // under the sheet on show when you turn past it, which is what tape on
+      // paper does and what a pin through the cover could never do.
+      page: input.source.page,
     });
     board.pins.set(source.id, source.map);
 

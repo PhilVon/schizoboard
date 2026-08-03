@@ -21,7 +21,7 @@ function item(id: string, pose: Partial<ItemPose> = {}): void {
 }
 
 function pin(id: string, parent: string | null = null): void {
-  scene.putPin({ id, parent, lx: 0, ly: 0, kind: "pushpin", color: "#c8352f", wx: 0, wy: 0 });
+  scene.putPin({ id, parent, lx: 0, ly: 0, kind: "pushpin", color: "#c8352f", page: null, wx: 0, wy: 0 });
 }
 
 function string(id: string, ...pins: string[]): void {

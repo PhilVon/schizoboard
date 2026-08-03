@@ -26,7 +26,7 @@ function put(id: string, pose: Partial<ItemPose> = {}): number {
 }
 
 function pin(id: string, parent: string | null, lx: number, ly: number): void {
-  scene.putPin({ id, parent, lx, ly, kind: "pushpin", color: "#c8352f", wx: 0, wy: 0 });
+  scene.putPin({ id, parent, lx, ly, kind: "pushpin", color: "#c8352f", page: null, wx: 0, wy: 0 });
 }
 
 /** One frame at 60 fps, with the item marked as having changed. */

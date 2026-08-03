@@ -44,7 +44,7 @@ function item(id: string, pose: Partial<ItemPose> = {}): void {
 }
 
 function pin(id: string, wx: number, wy: number, parent: string | null = null): void {
-  scene.putPin({ id, parent, lx: wx, ly: wy, kind: "pushpin", color: "#c8352f", wx, wy });
+  scene.putPin({ id, parent, lx: wx, ly: wy, kind: "pushpin", color: "#c8352f", page: null, wx, wy });
   const screen = camera.boardToScreen(wx, wy);
   pinHits.push({ id, sx: screen.x, sy: screen.y });
 }
@@ -408,6 +408,7 @@ describe("stringing through items that hang", () => {
       ly: -60,
       kind: "pushpin",
       color: "#c8352f",
+      page: null,
       wx: x - 80,
       wy: -60,
     });

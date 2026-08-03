@@ -47,7 +47,7 @@ import * as Y from "yjs";
 import type { BoardDoc } from "@/crdt/doc";
 import { freshId, inkTileKey, mutate } from "@/crdt/doc";
 import { Origin } from "@/crdt/origins";
-import type { YMap } from "@/crdt/schema";
+import { isPageNumber, type YMap } from "@/crdt/schema";
 import { keyAbove } from "@/crdt/zindex";
 import type { InkSample, InkTool } from "@/lib/ink";
 import { newSeed } from "@/lib/seed";
@@ -294,10 +294,12 @@ function writable(input: CommitStrokeInput): boolean {
  * asset record could be. The whole *run* is not refused for it, unlike a bad
  * sample: the mark is a mark and the hand made it, and losing which page it was
  * on is a smaller wrong than losing the mark. It goes on the object instead.
+ *
+ * The predicate itself is `schema.ts`'s, and was this file's own until a tape
+ * learned the same field (T-330). Two writers asking the same question of the
+ * same field is exactly where a private copy starts to drift.
  */
-function isPage(page: number | null | undefined): page is number {
-  return typeof page === "number" && Number.isInteger(page) && page >= 1;
-}
+const isPage = isPageNumber;
 
 /**
  * An item's strokes map, or null when there is not one to write to.

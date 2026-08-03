@@ -664,13 +664,27 @@ export class RopeSet {
    * by pairing this callback's arrival order with the run's node array, and the
    * two disagree the moment a segment has no particles to draw. Here it is
    * simply the field beside the ones already being handed over.
+   *
+   * The two **pin ids** come along for the same reason and a stronger one
+   * (T-330). A segment that ends at a tape stuck to a page nobody is looking at
+   * is drawn on the under canvas rather than the over one, and that is a fact
+   * about *this gap* rather than about the string: pinning a thread halfway
+   * across the board must not tuck the half that never went near the folder.
+   * Counting callbacks against the run's node array is what this method already
+   * exists to stop anybody doing, so the names travel with the geometry.
+   *
+   * Nothing here reads them. `layer` is not the simulation's business and this
+   * is still the same walk it was — see `sync`, which wakes nothing for a style
+   * edit.
    */
   visit(
     id: string,
-    fn: (at: number, count: number, asleep: boolean, slack: number) => void,
+    fn: (at: number, count: number, asleep: boolean, slack: number, a: string, b: string) => void,
   ): void {
     for (const segment of this.byString.get(id) ?? []) {
-      if (segment.count > 0) fn(segment.at, segment.count, segment.asleep, segment.slack);
+      if (segment.count > 0) {
+        fn(segment.at, segment.count, segment.asleep, segment.slack, segment.a, segment.b);
+      }
     }
   }
 

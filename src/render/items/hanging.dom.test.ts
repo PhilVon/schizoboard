@@ -42,7 +42,7 @@ function put(pose: Partial<ItemPose> = {}): void {
 }
 
 function pin(lx: number, ly: number): void {
-  scene.putPin({ id: "p", parent: ID, lx, ly, kind: "pushpin", color: "#c8352f", wx: 0, wy: 0 });
+  scene.putPin({ id: "p", parent: ID, lx, ly, kind: "pushpin", color: "#c8352f", page: null, wx: 0, wy: 0 });
   dirty.pin("p");
   dirty.item(ID);
 }

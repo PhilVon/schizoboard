@@ -381,6 +381,45 @@ describe("what a rectangle yields, by what is on the page", () => {
     expect(parented.ly).toBeCloseTo(-5, 6);
   });
 
+  /**
+   * And it tapes it to the *page*, not to the folder — T-330.
+   *
+   * `page.index` rather than the reader asked a second time: the bytes go to
+   * disk and back while a cut is in flight, and the arrow keys work throughout,
+   * so a page reference is quoted out of the page it was read on and not out of
+   * whichever page you happen to be on when the card arrives.
+   */
+  it("tapes it to the page the rectangle was drawn on", async () => {
+    const id = folder();
+    page = { sha256: SHA, index: 7, content: SCAN, origName: "scan.pdf" };
+    clipper().cut(id, rect(-100, -80, 60, 70));
+    await settled();
+
+    const taped = [...board.pins.values()].find((map) => map.get("parent") === id)!;
+    expect(taped.get("kind")).toBe("tape");
+    expect(taped.get("page")).toBe(7);
+    // And the card's own pin is in a polaroid, which has one face — no key.
+    const onCard = [...board.pins.values()].find((map) => map.get("parent") !== id)!;
+    expect(onCard.has("page")).toBe(false);
+  });
+
+  /**
+   * Both arms, because they are two `createQuoteCard` calls and a page passed
+   * by one of them is not a page passed by the other. The written arm lands in
+   * the same frame as the release rather than after a round trip to disk, which
+   * is exactly why it is easy to leave out of a fix aimed at the slow one.
+   */
+  it("tapes a quotation to its page too, on the written arm", async () => {
+    const id = folder();
+    page = { sha256: SHA, index: 3, content: { kind: "plain", text: "..." }, origName: "notes.txt" };
+    clipper().cut(id, rect(-100, -80, 60, 70));
+    await settled();
+
+    const taped = [...board.pins.values()].find((map) => map.get("parent") === id)!;
+    expect(taped.get("kind")).toBe("tape");
+    expect(taped.get("page")).toBe(3);
+  });
+
   it("holds the bytes it just wrote, rather than waiting to be told", async () => {
     // Without this the card draws as undeveloped film until the next idle
     // reconcile — what `PosterGrabber` says, for its reason.
@@ -491,6 +530,7 @@ describe("what a rectangle yields, by what is on the page", () => {
       ly: -140,
       kind: "pushpin",
       color: "#c8352f",
+      page: null,
       wx: 0,
       wy: -140,
     });
@@ -519,6 +559,7 @@ describe("what a rectangle yields, by what is on the page", () => {
       ly: -140,
       kind: "pushpin",
       color: "#c8352f",
+      page: null,
       wx: 0,
       wy: -140,
     });

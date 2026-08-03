@@ -138,6 +138,7 @@ describe("turning a case file up to read it", () => {
         ly,
         kind: "pushpin",
         color: "#c8352f",
+        page: null,
         wx: 0,
         wy: 0,
       });
@@ -255,7 +256,7 @@ describe("Scene slots", () => {
   it("clears everything", () => {
     const scene = new Scene();
     scene.putItem(cold("a"), pose());
-    scene.putPin({ id: "p", parent: "a", lx: 0, ly: 0, kind: "pushpin", color: "#f00", wx: 0, wy: 0 });
+    scene.putPin({ id: "p", parent: "a", lx: 0, ly: 0, kind: "pushpin", color: "#f00", page: null, wx: 0, wy: 0 });
     scene.clear();
     expect(scene.size).toBe(0);
     expect(scene.pins.size).toBe(0);
@@ -271,6 +272,7 @@ describe("pin layout", () => {
     ly,
     kind: "pushpin",
     color: "#c8352f",
+    page: null,
     wx: 0,
     wy: 0,
   });
@@ -370,6 +372,7 @@ describe("which items a pin is pushed through", () => {
     ly,
     kind: "pushpin",
     color: "#c8352f",
+    page: null,
     wx: 0,
     wy: 0,
   });
@@ -662,6 +665,7 @@ describe("the reverse pin index", () => {
     ly: 0,
     kind: "pushpin",
     color: "#c8352f",
+    page: null,
     wx: 0,
     wy: 0,
   });
@@ -842,6 +846,7 @@ describe("bounds", () => {
       ly: -400,
       kind: "pushpin",
       color: "#f00",
+      page: null,
       wx: 900,
       wy: -400,
     });
@@ -875,6 +880,7 @@ describe("bounds", () => {
       ly: -50,
       kind: "pushpin",
       color: "#f00",
+      page: null,
       wx: 0,
       wy: -50,
     });
@@ -970,6 +976,7 @@ describe("Scene.renderRot", () => {
       ly: 0,
       kind: "pushpin",
       color: "#f00",
+      page: null,
       wx: 0,
       wy: 0,
     });
@@ -1260,6 +1267,7 @@ describe("the item a pin should travel with", () => {
     ly,
     kind: "pushpin",
     color: "#c8352f",
+    page: null,
     wx: 0,
     wy: 0,
   });
@@ -1322,6 +1330,7 @@ describe("Scene.rehomes", () => {
     ly,
     kind: "pushpin",
     color: "#c8352f",
+    page: null,
     wx: 0,
     wy: 0,
   });
@@ -1417,6 +1426,7 @@ describe("tape holds a string to the paper and the paper to nothing", () => {
         ly: -50,
         kind,
         color: "#c8352f",
+        page: null,
         wx: -100 + i * 20,
         wy: -50,
       });

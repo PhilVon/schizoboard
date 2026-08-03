@@ -247,6 +247,16 @@ export interface PinNode {
   ly: number;
   kind: string;
   color: string;
+  /**
+   * Which page of the parent's document this pin is stuck to, or null for a pin
+   * in the object itself — T-330. See `crdt/schema.ts`'s `PinFields.page`, and
+   * `SceneStroke.page` beside it, which is the same fact about a mark.
+   *
+   * Null for every pin on every board except the tape a quote card hangs from,
+   * which is why the two things that read it — the pin layer and the rope
+   * painter — both test it before they ask anything more expensive.
+   */
+  page: number | null;
   /** World position, recomputed in the LAYOUT phase. */
   wx: number;
   wy: number;
@@ -483,6 +493,9 @@ export class Scene {
    * describes.
    */
   private readonly paged = new Set<string>();
+
+  /** The same idea for pins — see [`pagedPins`], which is its reader. */
+  private readonly pagedPinIds = new Set<string>();
 
   /**
    * The reverse of `PinNode.parent`: which pins hold each item.
@@ -1240,6 +1253,10 @@ export class Scene {
     if (existing && existing.parent !== pin.parent) this.unindex(existing.parent, pin.id);
     this.overStale = true;
     this.pins.set(pin.id, pin);
+    // Recorded here, once per edit, rather than rediscovered by whoever asks —
+    // see [`pagedPins`].
+    if (pin.page === null) this.pagedPinIds.delete(pin.id);
+    else this.pagedPinIds.add(pin.id);
     if (pin.parent === null) return;
     let held = this.byParent.get(pin.parent);
     if (!held) this.byParent.set(pin.parent, (held = new Set()));
@@ -1252,8 +1269,29 @@ export class Scene {
     this.overStale = true;
     this.pins.delete(id);
     this.overTop.delete(id);
+    this.pagedPinIds.delete(id);
     this.unindex(pin.parent, id);
     return true;
+  }
+
+  /**
+   * Which pins are stuck to a page rather than to the object — T-330, and it
+   * exists so that everything downstream of it is free for every board that has
+   * never quoted a case file.
+   *
+   * Empty on all of them, and the two readers — the pin layer's cull and the
+   * rope painter's per-gap layer — both start by asking whether it is, because
+   * the alternative is a lookup per pin per string per frame to discover the
+   * same nothing.
+   *
+   * A set of the exceptions rather than a map of pages, for `strokesOn`'s
+   * reason: the question asked of it is "is there anything here at all", and the
+   * page itself is on the node once somebody has said yes. Maintained by
+   * `putPin` and `removePin`, which are the only writers, so it cannot drift
+   * from the pins it describes.
+   */
+  get pagedPins(): ReadonlySet<string> {
+    return this.pagedPinIds;
   }
 
   private unindex(parent: string | null, pinId: string): void {

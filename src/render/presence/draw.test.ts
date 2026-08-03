@@ -106,7 +106,7 @@ function source(...list: DrawnPeer[]): PeerSource {
 
 /** Free-floating, so its world position is the one given rather than an item's. */
 function pin(id: string, wx: number, wy: number): void {
-  scene.putPin({ id, parent: null, lx: 0, ly: 0, kind: "pin", color: "#c0392b", wx, wy });
+  scene.putPin({ id, parent: null, lx: 0, ly: 0, kind: "pin", color: "#c0392b", page: null, wx, wy });
 }
 
 /** Centred on the origin, so screen coordinates come out of the camera alone. */
@@ -263,8 +263,11 @@ describe("PeerPainter chrome", () => {
 describe("PeerPainter strings", () => {
   const ropes = {
     positions: new Float64Array([0, 0, 50, 10, 100, 0]),
-    visit(id: string, fn: (at: number, count: number) => void): void {
-      if (id === "s1") fn(0, 3);
+    visit(
+      id: string,
+      fn: (at: number, count: number, asleep: boolean, slack: number, a: string, b: string) => void,
+    ): void {
+      if (id === "s1") fn(0, 3, false, 0.1, "p0", "p1");
     },
     /** One gap, `p0` to `p1`, on the one string this fixture has. */
     segment(id: string, a: string, b: string, fn: (at: number, count: number) => void): void {
@@ -315,8 +318,11 @@ describe("PeerPainter strings", () => {
 describe("PeerPainter locks", () => {
   const ropes = {
     positions: new Float64Array([0, 0, 50, 10, 100, 0]),
-    visit(id: string, fn: (at: number, count: number) => void): void {
-      if (id === "s1") fn(0, 3);
+    visit(
+      id: string,
+      fn: (at: number, count: number, asleep: boolean, slack: number, a: string, b: string) => void,
+    ): void {
+      if (id === "s1") fn(0, 3, false, 0.1, "p0", "p1");
     },
     segment(id: string, a: string, b: string, fn: (at: number, count: number) => void): void {
       if (id === "s1" && a === "p0" && b === "p1") fn(0, 3);

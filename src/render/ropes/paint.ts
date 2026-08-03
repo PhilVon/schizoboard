@@ -56,6 +56,7 @@
 
 import { fibre } from "@/lib/material";
 import { presetSlack } from "@/lib/slack";
+import { tucked, tuckedGap, type ShownPage } from "@/state/facing";
 import { LIGHT_DX, LIGHT_DY, SHADOW_RGB } from "@/render/items/shadow";
 import type { RopeSet } from "@/sim/ropes";
 import type { Camera } from "@/state/camera";
@@ -317,9 +318,12 @@ const CULL_MARGIN = 64;
  * exactly as before, and a board that has been deliberately re-slacked segment
  * by segment pays at most four.
  */
-/** The gaps of one string that share a slack rung, as one path. */
+/** The gaps of one string that share a slack rung — and a layer, since T-330,
+ *  because a gap that ends at a tucked tape goes behind the paper whatever the
+ *  rest of the string does. */
 interface RungPath {
   readonly rung: number;
+  readonly layer: string;
   readonly path: Path2D;
 }
 
@@ -379,10 +383,62 @@ export class RopeLayer {
   private readonly batches: Batch[] = [];
   private readonly visible: string[] = [];
 
+  /** See [`setShownPage`]. */
+  private shownPage: ShownPage | null = null;
+  /**
+   * The strings with a put-away tape somewhere on them — rebuilt at the top of
+   * each draw, and empty on every board that has never quoted a case file.
+   *
+   * It exists for the hot loop and for nothing else: without it, "is this string
+   * one that has to be split" would be a walk of its nodes for every string in
+   * the viewport on every frame. Which of its *gaps* go behind the paper is
+   * `tuckedGap`'s question, asked one level down where there is a gap to ask
+   * about.
+   */
+  private readonly tuckedStrings = new Set<string>();
+
   constructor(canvas: HTMLCanvasElement, layer: "over" | "under") {
     this.canvas = canvas;
     this.ctx = canvas.getContext("2d");
     this.layer = layer;
+  }
+
+  /**
+   * Which face each item is showing — T-330, and the same function the pin
+   * layer, the item layer and the pen are handed.
+   *
+   * A thread taped to page four of a filing runs **under** the sheet on show
+   * whenever page four is not it — and a shut folder shows no page, so a shut
+   * folder's threads run under the folder and vanish into it. That is one
+   * sentence rather than three cases, and it is the whole of what this layer
+   * does with the answer.
+   *
+   * Only the gap that ends at the tape moves. A quote card's thread is a single
+   * gap so the distinction is invisible on the gesture that makes one, and it
+   * stops being invisible the moment somebody pulls a pin out of the middle of
+   * that thread (T-46): tucking the far half, which never went near the folder,
+   * would hide a string behind every note between here and the card.
+   */
+  setShownPage(resolve: ShownPage): void {
+    this.shownPage = resolve;
+  }
+
+  /**
+   * Which tapes are put away this frame, and which strings end at one.
+   *
+   * Rebuilt rather than invalidated, because it is derived from three things
+   * that change without a document write — the folder opening, shutting, and
+   * being turned — and because on every board it has ever run on the first line
+   * returns. `scene.pagedPins` is empty until somebody quotes a case file.
+   */
+  private findTucked(scene: Scene): void {
+    this.tuckedStrings.clear();
+    if (scene.pagedPins.size === 0) return;
+    for (const id of scene.pagedPins) {
+      const pin = scene.pins.get(id);
+      if (pin === undefined || !tucked(pin, this.shownPage)) continue;
+      for (const sid of scene.stringsThrough(id)) this.tuckedStrings.add(sid);
+    }
   }
 
   /**
@@ -418,13 +474,20 @@ export class RopeLayer {
     this.visible.length = 0;
     ropes.stringsIn(this.view, this.visible);
 
+    this.findTucked(scene);
     this.batches.length = 0;
     for (const id of this.visible) {
       const style = scene.strings.get(id);
-      if (style === undefined || style.layer !== this.layer) continue;
-      const parts = this.pathsFor(id, ropes, camera);
+      if (style === undefined) continue;
+      // The whole string is on one canvas unless a tape on it has been put
+      // away, which is the case for every string on every board bar the one
+      // being read — so this stays the single comparison it always was, plus a
+      // `has` on a set that is usually empty.
+      if (style.layer !== this.layer && !this.tuckedStrings.has(id)) continue;
+      const parts = this.pathsFor(id, ropes, camera, scene, style.layer);
       if (parts === null) continue;
       for (const part of parts) {
+        if (part.layer !== this.layer) continue;
         this.batchFor(style.color, style.thickness, style.material, part.rung).path.addPath(
           part.path,
         );
@@ -478,12 +541,15 @@ export class RopeLayer {
     // rather than worked around — the export owns this layer for the duration
     // and `invalidate` puts it back for the board.
     this.batches.length = 0;
+    this.findTucked(scene);
     for (const id of visible) {
       const style = scene.strings.get(id);
-      if (style === undefined || style.layer !== this.layer) continue;
-      const parts = this.pathsFor(id, ropes, camera);
+      if (style === undefined) continue;
+      if (style.layer !== this.layer && !this.tuckedStrings.has(id)) continue;
+      const parts = this.pathsFor(id, ropes, camera, scene, style.layer);
       if (parts === null) continue;
       for (const part of parts) {
+        if (part.layer !== this.layer) continue;
         this.batchFor(style.color, style.thickness, style.material, part.rung).path.addPath(
           part.path,
         );
@@ -645,8 +711,20 @@ export class RopeLayer {
    * the board to wherever the next one starts. Splitting by rung uses the same
    * property from the other end: the subpaths of one run can be spread across
    * several paths without the drawing changing, because they were never joined.
+   *
+   * And by *layer* since T-330, on exactly the same property and for a reason
+   * that is not a style at all: a gap that ends at a tape on a page nobody is
+   * looking at is behind the paper, and the gaps either side of it are not.
+   * `layer` on the string is what it is drawn on when nothing is put away, so a
+   * board with no case file open builds the one part it always did.
    */
-  private pathsFor(id: string, ropes: RopeSet, camera: Camera): RungPath[] | null {
+  private pathsFor(
+    id: string,
+    ropes: RopeSet,
+    camera: Camera,
+    scene: Scene,
+    layer: string,
+  ): RungPath[] | null {
     const cached = this.paths.get(id);
     if (cached !== undefined) return cached;
 
@@ -656,11 +734,16 @@ export class RopeLayer {
     const camY = camera.y;
     const parts: RungPath[] = [];
 
-    ropes.visit(id, (at, count, _asleep, slack) => {
+    ropes.visit(id, (at, count, _asleep, slack, a, b) => {
       const rung = slackRung(slack);
-      let part = parts.find((p) => p.rung === rung);
+      // Under, whatever the string says, when this gap reaches a tape that has
+      // been put away — see `tuckedGap`, which is also what the overlay asks
+      // before it lights a thread it would otherwise light across a shut
+      // folder.
+      const on = tuckedGap(scene, this.shownPage, a, b) ? "under" : layer;
+      let part = parts.find((p) => p.rung === rung && p.layer === on);
       if (part === undefined) {
-        part = { rung, path: new Path2D() };
+        part = { rung, layer: on, path: new Path2D() };
         parts.push(part);
       }
       const path = part.path;

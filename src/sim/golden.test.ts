@@ -52,7 +52,7 @@ const CASES: Array<{ name: string; a: [number, number]; b: [number, number]; sla
 ];
 
 function pin(id: string, x: number, y: number): void {
-  scene.putPin({ id, parent: null, lx: x, ly: y, kind: "pushpin", color: "#c8352f", wx: x, wy: y });
+  scene.putPin({ id, parent: null, lx: x, ly: y, kind: "pushpin", color: "#c8352f", page: null, wx: x, wy: y });
 }
 
 function movePin(id: string, x: number, y: number): void {

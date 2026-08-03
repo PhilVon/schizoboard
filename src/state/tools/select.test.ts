@@ -107,7 +107,7 @@ function paper(id: string, x: number, y: number, w = 200, h = 100, rot = 0): voi
 function putPin(id: string, parent: string | null, wx: number, wy: number): void {
   // `lx`/`ly` are the same numbers for a free pin, and for a parented one the
   // tests below place the item at the origin unrotated, so they still are.
-  scene.putPin({ id, parent, lx: wx, ly: wy, kind: "pushpin", color: "#c8352f", wx, wy });
+  scene.putPin({ id, parent, lx: wx, ly: wy, kind: "pushpin", color: "#c8352f", page: null, wx, wy });
 }
 
 /**
@@ -1507,6 +1507,7 @@ describe("turning a hanging item", () => {
       ly: -60,
       kind: "pushpin",
       color: "#c8352f",
+      page: null,
       wx: -80,
       wy: -60,
     });
@@ -1543,6 +1544,7 @@ describe("turning a hanging item", () => {
         ly: -60,
         kind: "pushpin",
         color: "#c8352f",
+        page: null,
         wx: lx,
         wy: -60,
       });
@@ -1574,6 +1576,7 @@ describe("turning a hanging item", () => {
         ly: -40,
         kind: "pushpin",
         color: "#c8352f",
+        page: null,
         wx: 0,
         wy: -40,
       });
@@ -2213,6 +2216,7 @@ describe("moving a pin between items that hang", () => {
       ly: -60,
       kind: "pushpin",
       color: "#c8352f",
+      page: null,
       wx: x - 80,
       wy: y - 60,
     });
@@ -3288,6 +3292,72 @@ describe("the scissors", () => {
     up(140, 0);
 
     expect(writes).toEqual([{ kind: "deleteStrings", stringIds: ["t"] }]);
+  });
+
+  /**
+   * A thread that has gone under the page on show — T-330.
+   *
+   * `stringAt` has always refused to look past the item an `under` string is
+   * passing beneath: what you cannot see you cannot grab. A tape's thread is
+   * the case where that is true of one *gap* while `layer` still says `over`
+   * and the rest of the run still draws there — so asking the stored field
+   * alone offers a cut on a piece of string that is not drawn under the cursor.
+   */
+  it("does not cut a thread through the folder it has gone inside", () => {
+    paper("folder", 0, 0, 400, 300);
+    scene.putPin({
+      id: "tape",
+      parent: "folder",
+      lx: 0,
+      ly: 0,
+      kind: "tape",
+      color: "#c8352f",
+      page: 4,
+      wx: 0,
+      wy: 0,
+    });
+    putPin("card", null, 600, 0);
+    putString("thread", ["tape", "card"]);
+
+    // Shut: `pageOf` says nothing is open, so the tape is inside the folder and
+    // the gap that reaches it is behind the paper.
+    down(120, 0, SCISSORS);
+    up(120, 0);
+    expect(writes).toEqual([]);
+
+    // Open at the page it is taped to, and the same press cuts.
+    pageOf.set("folder", 4);
+    down(120, 0, SCISSORS);
+    up(120, 0);
+    expect(writes).toEqual([{ kind: "deleteStrings", stringIds: ["thread"] }]);
+  });
+
+  /**
+   * The same thread run the other way round, so the tape is the gap's *second*
+   * node rather than its first. A run has no preferred direction — the pin a
+   * gap starts at is whichever end the string was drawn from — so naming one
+   * end and not the other refuses half the threads on the board and offers the
+   * rest.
+   */
+  it("refuses it whichever end of the gap the tape is", () => {
+    paper("folder", 0, 0, 400, 300);
+    scene.putPin({
+      id: "tape",
+      parent: "folder",
+      lx: 0,
+      ly: 0,
+      kind: "tape",
+      color: "#c8352f",
+      page: 4,
+      wx: 0,
+      wy: 0,
+    });
+    putPin("card", null, 600, 0);
+    putString("thread", ["card", "tape"]);
+
+    down(120, 0, SCISSORS);
+    up(120, 0);
+    expect(writes).toEqual([]);
   });
 
   /** Neither half on its own is a cut. `Ctrl` alone over a string is still the

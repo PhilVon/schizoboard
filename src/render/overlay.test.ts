@@ -370,8 +370,11 @@ describe("Overlay, strings", () => {
   const pool = new Float64Array([0, 0, 100, 40, 200, 0]);
   const ropes = {
     positions: pool,
-    visit: (id: string, fn: (at: number, count: number) => void): void => {
-      if (id === "s") fn(0, 3);
+    visit: (
+      id: string,
+      fn: (at: number, count: number, asleep: boolean, slack: number, a: string, b: string) => void,
+    ): void => {
+      if (id === "s") fn(0, 3, false, 0.1, "p0", "p1");
     },
     segment: (id: string, a: string, b: string, fn: (at: number, count: number) => void): void => {
       if (id === "s" && a === "p0" && b === "p1") fn(0, 3);
@@ -464,6 +467,62 @@ describe("Overlay, strings", () => {
     expect(seen[1]!.width).toBeGreaterThanOrEqual(9);
   });
 
+  /**
+   * A thread taped inside a shut folder — T-330.
+   *
+   * This canvas is above the items, so a halo along a gap that has gone behind
+   * the paper is the outline of a string drawn across a folder with no string on
+   * it: the strongest possible way of saying the thing is there, on the one
+   * frame it is not. The rope painter has already taken that gap off the over
+   * canvas; the chrome has to agree with it or the selection contradicts the
+   * drawing.
+   */
+  it("does not ring a gap that has gone under the page on show", () => {
+    scene.putPin({
+      id: "p0",
+      parent: "folder",
+      lx: 0,
+      ly: 0,
+      kind: "tape",
+      color: "#c8352f",
+      page: 4,
+      wx: 0,
+      wy: 0,
+    });
+    putString();
+    selection.replaceStrings(["s"]);
+    let page: number | null = 4;
+    overlay.setShownPage(() => page);
+
+    // Counted off the context, like the test above: a halo is two strokes, the
+    // colour and the middle taken back out. `clearRect` cannot answer this —
+    // the frame is cleared whether or not anything is put back on it, which is
+    // exactly how a chrome test goes vacuous.
+    const ctx = (overlay as unknown as { ctx: { stroke: () => void } }).ctx;
+    const stroke = ctx.stroke;
+    let strokes = 0;
+    ctx.stroke = (): void => {
+      strokes += 1;
+      stroke();
+    };
+
+    // Open at the page it came off: the halo is drawn.
+    draw();
+    expect(strokes).toBe(2);
+
+    // Shut. `dirtyFacing` is what marks the string on the frame a folder shuts,
+    // because shutting one writes nothing to the document — this canvas skips a
+    // frame on the same test the rope painter does, and the string it is handed
+    // is what wakes both.
+    strokes = 0;
+    page = null;
+    dirty.string("s");
+    draw();
+    // Nothing put back: what is left is a card on the cork with no outline
+    // running to a folder that has no string on it.
+    expect(strokes).toBe(0);
+  });
+
   it("restrokes a selected string that is still moving, and nothing else", () => {
     putString();
     selection.replaceStrings(["s"]);
@@ -503,7 +562,7 @@ describe("Overlay, strings", () => {
  */
 describe("chrome for a selected pin", () => {
   function putPin(id: string, parent: string | null, x: number, y: number): void {
-    scene.putPin({ id, parent, lx: x, ly: y, kind: "pushpin", color: "#c8352f", wx: x, wy: y });
+    scene.putPin({ id, parent, lx: x, ly: y, kind: "pushpin", color: "#c8352f", page: null, wx: x, wy: y });
   }
 
   it("rings each selected pin where the pin is", () => {
@@ -607,9 +666,12 @@ describe("Overlay, hovering a pin lights its threads", () => {
   const pool = new Float64Array([0, 0, 100, 40, 200, 0, 200, 0, 300, 40, 400, 0]);
   const ropes = {
     positions: pool,
-    visit: (id: string, fn: (at: number, count: number) => void): void => {
-      if (id === "s0") fn(0, 3);
-      if (id === "s1") fn(6, 3);
+    visit: (
+      id: string,
+      fn: (at: number, count: number, asleep: boolean, slack: number, a: string, b: string) => void,
+    ): void => {
+      if (id === "s0") fn(0, 3, false, 0.1, "p0", "p1");
+      if (id === "s1") fn(6, 3, false, 0.1, "p2", "p3");
     },
     segment: (id: string, a: string, b: string, fn: (at: number, count: number) => void): void => {
       if (id === "s0" && a === "p0" && b === "p1") fn(0, 3);
@@ -999,8 +1061,11 @@ describe("Overlay, the undo flash", () => {
   const pool = new Float64Array([0, 0, 100, 40, 200, 0]);
   const ropes = {
     positions: pool,
-    visit: (id: string, fn: (at: number, count: number) => void): void => {
-      if (id === "s") fn(0, 3);
+    visit: (
+      id: string,
+      fn: (at: number, count: number, asleep: boolean, slack: number, a: string, b: string) => void,
+    ): void => {
+      if (id === "s") fn(0, 3, false, 0.1, "p0", "p1");
     },
     segment: (id: string, a: string, b: string, fn: (at: number, count: number) => void): void => {
       if (id === "s" && a === "p0" && b === "p1") fn(0, 3);
@@ -1122,6 +1187,7 @@ describe("Overlay, the undo flash", () => {
       ly: 0,
       kind: "pin",
       color: "#a8322c",
+      page: null,
       wx: 0,
       wy: 0,
     });
