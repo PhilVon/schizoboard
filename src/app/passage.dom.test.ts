@@ -19,7 +19,7 @@
 
 import { beforeEach, describe, expect, it } from "vitest";
 
-import { passageBetween } from "@/app/clipping";
+import { passageBetween, passageBoxes, passageParts, passageSpan } from "@/app/clipping";
 
 /** A collapsed range at an offset in a text node — what a caret hit test hands
  *  back, and the only thing `passageBetween` is ever given. */
@@ -135,5 +135,90 @@ describe("a rectangle that spans a figure", () => {
     // the caller says "There is nothing written there" — which is true.
     const note = textIn(".leaf-figure-note");
     expect(passageBetween(caretAt(note, 4), caretAt(note, 20))).toBe("");
+  });
+});
+
+/**
+ * The words marked under the rectangle while it is still being dragged — T-283,
+ * Q-294.
+ *
+ * The claim the marking makes is that what is under the highlight is what will
+ * be on the card. So every test here asks the same question of `passageParts`
+ * that the block above asks of `passageBetween`, and the two must give the same
+ * answer about the same span — a highlight over words the quotation is going to
+ * drop would be the board offering to quote itself.
+ *
+ * Layout is the one thing this file cannot have: happy-dom answers zeroes for
+ * every rect. That is why the measuring is injected — what is decided in
+ * `clipping.ts` is *which stretches of which nodes* get measured, and that is
+ * exactly what is checked here.
+ */
+describe("the words the rectangle has hold of", () => {
+  const REASON = "the figure is a JPEG 2000 image, which this build cannot decode";
+
+  /** What the marking would be drawn over, as text — one string per box, in the
+   *  order the boxes come out. */
+  const marked = (from: Range, to: Range): string[] => {
+    const span = passageSpan(from, to);
+    return span === null ? [] : passageParts(span, document).map((part) => part.toString());
+  };
+
+  it("marks exactly the words the card will hold, on an ordinary page", () => {
+    const node = plainPage("The witness observed the vehicle parked outside.");
+    const from = caretAt(node, 15);
+    const to = caretAt(node, 30);
+    expect(marked(from, to)).toEqual(["observed the vehicle"]);
+    // The same span, read the two ways — this is the agreement, written down.
+    expect(marked(from, to).join("\n")).toBe(passageBetween(from, to));
+  });
+
+  it("marks from the whole word, not from where the rectangle's edge fell", () => {
+    // The widening is the reason the two ends are not the carets. A mark that
+    // started mid-word would be showing a fragment and delivering a quotation.
+    const node = plainPage("The witness observed the vehicle parked outside.");
+    expect(marked(caretAt(node, 15), caretAt(node, 30))[0]!.startsWith("observed")).toBe(true);
+  });
+
+  it("leaves the board's own sentence unmarked, as the quotation leaves it out", () => {
+    figurePage("The premises as they stood.", REASON, "Figure 1 - the frontage.");
+    const from = caretAt(textIn(".leaf-lines"), 6);
+    const to = caretAt(textIn(".leaf-lines", 1), 3);
+    const parts = marked(from, to);
+    expect(parts).toEqual(["premises as they stood.", "Figure"]);
+    expect(parts.join(" ")).not.toContain("JPEG 2000");
+    expect(parts.join("\n")).toBe(passageBetween(from, to));
+  });
+
+  it("marks nothing when the rectangle was drawn on that sentence alone", () => {
+    figurePage("The premises as they stood.", REASON, "Figure 1 - the frontage.");
+    const note = textIn(".leaf-figure-note");
+    expect(marked(caretAt(note, 4), caretAt(note, 20))).toEqual([]);
+  });
+
+  it("drops a box with no width, which is a caret rather than a word", () => {
+    // Every rect the measuring hands back is drawn, so an empty one is a stray
+    // tick on the paper at the end of the selection.
+    const node = plainPage("The witness observed the vehicle parked outside.");
+    const span = passageSpan(caretAt(node, 15), caretAt(node, 30))!;
+    const boxes = passageBoxes(span, () => [
+      { left: 10, top: 10, right: 40, bottom: 22 },
+      { left: 40, top: 10, right: 40, bottom: 22 },
+      { left: 40, top: 10, right: 60, bottom: 10 },
+    ]);
+    expect(boxes).toEqual([{ left: 10, top: 10, right: 40, bottom: 22 }]);
+  });
+
+  it("measures every part, so a quotation across a figure is marked on both sides", () => {
+    figurePage("The premises as they stood.", REASON, "Figure 1 - the frontage.");
+    const span = passageSpan(
+      caretAt(textIn(".leaf-lines"), 6),
+      caretAt(textIn(".leaf-lines", 1), 3),
+    )!;
+    const seen: string[] = [];
+    passageBoxes(span, (part) => {
+      seen.push(part.toString());
+      return [{ left: 0, top: 0, right: 1, bottom: 1 }];
+    });
+    expect(seen).toEqual(["premises as they stood.", "Figure"]);
   });
 });

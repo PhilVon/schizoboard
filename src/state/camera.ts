@@ -64,6 +64,27 @@ export interface Vec2 {
   y: number;
 }
 
+/**
+ * A box on the **screen**, in the coordinates `getBoundingClientRect` speaks.
+ *
+ * Here beside {@link Vec2} and {@link Bounds} rather than where it is produced,
+ * because two layers that never import each other both need to say it:
+ * `app/clipping.ts` measures figures and words in these, and `render/overlay.ts`
+ * draws the words it is handed. This module is the geometry both already
+ * depend on, and a second declaration of four numbers is the shape of mistake
+ * `tests/pin-kinds.test.ts` exists to catch elsewhere.
+ *
+ * Deliberately not `Bounds`: that is board space with `minX`/`minY`, and the
+ * whole hazard these two types guard against is one being passed where the
+ * other is wanted.
+ */
+export interface ScreenBox {
+  readonly left: number;
+  readonly top: number;
+  readonly right: number;
+  readonly bottom: number;
+}
+
 export interface Bounds {
   minX: number;
   minY: number;

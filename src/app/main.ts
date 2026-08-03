@@ -105,7 +105,7 @@ import { Torsion } from "@/sim/torsion";
 import { SIM_MARGIN } from "@/sim/tuning";
 import { AssetStates } from "@/state/assets";
 import { MissingAssets } from "@/state/missing";
-import { Camera, type Bounds } from "@/state/camera";
+import { Camera, type Bounds, type ScreenBox } from "@/state/camera";
 import { DirtySets } from "@/state/dirty";
 import { dirtyFacing } from "@/state/facing";
 import { Flashes } from "@/state/flash";
@@ -144,7 +144,9 @@ import {
   readingCorners,
   screenQuad,
   figureCrossed,
-  passageBetween,
+  passageBoxes,
+  passageSpan,
+  quotationIn,
 } from "@/app/clipping";
 import { SearchField, type Unsearched } from "@/ui/search";
 import { TuningPanel } from "@/ui/tuning";
@@ -2793,6 +2795,61 @@ async function boot(): Promise<void> {
   const flash = new Flash(world.layers.ui);
 
   /**
+   * The stretch of the open page a rectangle has hold of, or null.
+   *
+   * The one call in the quoting feature that needs a *document*, and both
+   * halves of the gesture make it: the release reads the words out of this
+   * ({@link Clipper}'s `passage`), and every frame of the drag before it
+   * measures the same stretch to mark the words on the screen — T-283, Q-294.
+   *
+   * Written once for that reason. Two carets computed two ways would be two
+   * answers to "which words", and the whole claim the marking makes is that
+   * what is under the highlight is what will be on the card.
+   *
+   * `caretRangeFromPoint` rather than `caretPositionFromPoint`: both exist in
+   * this webview and the first hands back a `Range` already, which is what
+   * `passageSpan` takes. Which four points the rectangle is, which two of them
+   * a passage runs between, and how far a caret is widened to make a word, are
+   * all decided next door in `clipping.ts` — a decision left in this file is a
+   * decision nothing tests.
+   */
+  const passageUnder = (itemId: string, rect: Bounds): Range | null => {
+    const quad = screenQuad(scene, camera, itemId, rect);
+    const ends = quad === null ? null : readingCorners(quad);
+    if (ends === null) return null;
+    const from = document.caretRangeFromPoint(ends[0].x, ends[0].y);
+    const to = document.caretRangeFromPoint(ends[1].x, ends[1].y);
+    if (from === null || to === null) return null;
+    return passageSpan(from, to);
+  };
+
+  /**
+   * The words the rectangle currently has hold of, in screen boxes — T-283.
+   *
+   * Asked once a frame while a clip drag is live and null on every other
+   * frame, which is what keeps this off the cost of an ordinary board: it is a
+   * caret hit test and a layout read, and neither happens unless somebody is
+   * dragging over a page.
+   *
+   * **Only where there are words to take.** A scan is quotable by rectangle
+   * alone (D-46) and a rectangle on one must go on looking exactly as it did —
+   * marking nothing is the honest picture of what a cut off a scan produces,
+   * which is pixels. The same test the cut itself forks on, asked a frame
+   * earlier, so the marking and the card cannot disagree about which arm this
+   * gesture is on.
+   */
+  const clipWords = (): readonly ScreenBox[] | null => {
+    const at = select.clipTarget;
+    if (at === null) return null;
+    const page = clipper?.pageOf(at.itemId) ?? null;
+    if (page === null) return null;
+    if (page.content.kind !== "text" && page.content.kind !== "plain") return null;
+    const span = passageUnder(at.itemId, at.rect);
+    if (span === null) return null;
+    return passageBoxes(span, (part) => part.getClientRects());
+  };
+
+  /**
    * Cutting a clipping out of an open page — T-282.
    *
    * Built here rather than beside the reader because it needs the one thing
@@ -2870,13 +2927,8 @@ async function boot(): Promise<void> {
      * figure it could not lift.
      */
     passage: (itemId, rect) => {
-      const quad = screenQuad(scene, camera, itemId, rect);
-      const ends = quad === null ? null : readingCorners(quad);
-      if (ends === null) return "";
-      const from = document.caretRangeFromPoint(ends[0].x, ends[0].y);
-      const to = document.caretRangeFromPoint(ends[1].x, ends[1].y);
-      if (from === null || to === null) return "";
-      return passageBetween(from, to);
+      const span = passageUnder(itemId, rect);
+      return span === null ? "" : quotationIn(span);
     },
     /**
      * Whether the rectangle crossed a picture on the page — T-331, Q-290.
@@ -4043,6 +4095,15 @@ async function boot(): Promise<void> {
        * page is at whatever angle the folder was scattered to.
        */
       select.clipping,
+      /**
+       * And which of the words inside it are going onto the card (T-283).
+       *
+       * Computed here rather than held on the tool, because it is a caret hit
+       * test and a layout read — a tool may touch neither. Null on every frame
+       * that is not a clip drag over a page with words on it, which is every
+       * frame on an ordinary board.
+       */
+      clipWords(),
     );
     hud.update(frame.now);
     /**

@@ -52,7 +52,7 @@ import { polaroidFor } from "@/lib/polaroid";
 import { rotateOut } from "@/lib/rotate";
 import type { PageContent } from "@/platform/types";
 import type { RasterCamera, RasterReport } from "@/render/items/raster";
-import type { Bounds, Camera, Vec2 } from "@/state/camera";
+import type { Bounds, Camera, ScreenBox, Vec2 } from "@/state/camera";
 import type { Scene } from "@/state/scene";
 
 /**
@@ -302,6 +302,20 @@ export class Clipper {
    * release, and the card is the one `createQuoteCard` has built since T-281 —
    * no asset, no polaroid, no bytes.
    */
+  /**
+   * Which page this item is showing and what is on it, or null — T-283.
+   *
+   * The same resolution {@link cut} forks on, offered to the frame *before* the
+   * release so that the words being marked under the rectangle can be gated on
+   * the arm the cut is going to take. Straight through to the injected answer:
+   * what this adds is that there is one join and both halves of the gesture use
+   * it, rather than the marking growing a second opinion about which page is
+   * open.
+   */
+  pageOf(itemId: string): ShownPage | null {
+    return this.options.shownPage(itemId);
+  }
+
   private words(
     itemId: string,
     rect: Bounds,
@@ -709,12 +723,30 @@ function isSpace(ch: string): boolean {
  * block, with the board's voice dropped.
  */
 export function passageBetween(from: Range, to: Range): string {
+  const span = passageSpan(from, to);
+  return span === null ? "" : quotationIn(span);
+}
+
+/**
+ * The stretch of the page a quotation would be taken from, or null — the first
+ * half of {@link passageBetween}, split out for T-283.
+ *
+ * Both halves have a caller now. The quotation reads the text out of this; the
+ * words drawn under the rectangle while somebody is still dragging
+ * ({@link passageBoxes}) measure the same stretch on the screen. They must
+ * agree, because the whole point of marking the words is that the card holds
+ * what was marked — and two functions that each decided for themselves where a
+ * passage starts would disagree on exactly the case this widening exists for.
+ * So there is one answer to "which stretch", computed once, and the two things
+ * that want it ask this.
+ */
+export function passageSpan(from: Range, to: Range): Range | null {
   const doc = from.startContainer.ownerDocument;
-  if (doc === null) return "";
+  if (doc === null) return null;
   // Both ends inside the board's own sentence about a figure: nothing of the
   // document was under the rectangle at all. One end inside it is dropped by
   // the walk below, which is the same answer arrived at one step later.
-  if (inBoardVoice(from.startContainer) && inBoardVoice(to.startContainer)) return "";
+  if (inBoardVoice(from.startContainer) && inBoardVoice(to.startContainer)) return null;
 
   const span = doc.createRange();
   try {
@@ -739,9 +771,92 @@ export function passageBetween(from: Range, to: Range): string {
   } catch {
     // The two carets landed in nodes with no common order — a rectangle that
     // started on the page and ended off it. Nothing was selected.
-    return "";
+    return null;
   }
-  return quotationIn(span);
+  return span;
+}
+
+/**
+ * Where the words a quotation would take are **on the screen** — T-283, Q-294.
+ *
+ * > Select a passage — and an index card comes out carrying the quote and its
+ * > page reference. — D-46 section 3
+ *
+ * The rectangle is the gesture and this is what makes it a *selection*: until
+ * the card landed there was no sign of which words had been caught, so a
+ * quotation was something you found out about afterwards. What is drawn from
+ * these boxes is the answer to "what will be on the card", asked of the same
+ * span the card is built from.
+ *
+ * **Text node by text node rather than `span.getClientRects()` outright**, and
+ * that is the whole of the work here. A range's own rects cover everything
+ * between its ends including the sentence the board writes where a figure it
+ * could not lift was — which `quotationIn` then drops. Marking words that are
+ * not going to be on the card would be a worse lie than marking nothing: it
+ * would be the board offering to quote itself.
+ *
+ * `rectsOf` is injected because a rect is a *layout*, and layout is the one
+ * thing a test cannot have — happy-dom answers zeroes for all of it. What is
+ * decided here is which stretches of which nodes are measured, and that is
+ * exactly what a test can hold.
+ */
+export function passageBoxes(
+  span: Range,
+  rectsOf: (part: Range) => Iterable<ScreenBox>,
+): readonly ScreenBox[] {
+  const doc = span.startContainer.ownerDocument;
+  if (doc === null) return [];
+  const boxes: ScreenBox[] = [];
+  for (const part of passageParts(span, doc)) {
+    for (const box of rectsOf(part)) {
+      // A collapsed part measures as a zero-width caret line. It is not a word
+      // and drawing it would put a stray tick at the end of every selection.
+      if (box.right > box.left && box.bottom > box.top) boxes.push(box);
+    }
+  }
+  return boxes;
+}
+
+/**
+ * The pieces of `span` whose text a quotation actually takes: every text node
+ * it touches, clipped to its ends, minus the board's own voice.
+ *
+ * Exported for its tests. A whole page with no figure on it is one text node
+ * and comes back as one part, which is the common case and the one the
+ * quotation has always been.
+ */
+export function passageParts(span: Range, doc: Document): readonly Range[] {
+  const root = span.commonAncestorContainer;
+  const parts: Range[] = [];
+  const walker = doc.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+  // A text node *is* the root when the range sits inside one, and a walker
+  // never visits its own root — so that case is answered directly.
+  const nodes: Text[] = root.nodeType === 3 ? [root as Text] : [];
+  for (let at = walker.nextNode(); at !== null; at = walker.nextNode()) nodes.push(at as Text);
+
+  for (const node of nodes) {
+    if (inBoardVoice(node)) continue;
+    const length = node.data.length;
+    if (length === 0) continue;
+    try {
+      // Wholly before the span, or wholly after it — the walker visits every
+      // text node under the common ancestor, and on a page with a figure that
+      // is more than the two the rectangle actually crossed.
+      if (span.comparePoint(node, length) < 0) continue;
+      if (span.comparePoint(node, 0) > 0) continue;
+      const part = doc.createRange();
+      part.selectNodeContents(node);
+      // Clipped to the span's own ends, so the first line is marked from the
+      // word the widening chose rather than from the edge of the node.
+      if (span.comparePoint(node, 0) < 0) part.setStart(span.startContainer, span.startOffset);
+      if (span.comparePoint(node, length) > 0) part.setEnd(span.endContainer, span.endOffset);
+      if (!part.collapsed) parts.push(part);
+    } catch {
+      // A node with no common order with the span — nothing to measure.
+      continue;
+    }
+  }
+  return parts;
 }
 
 /** One caret widened to the edge of the word it is standing in. */
@@ -770,21 +885,13 @@ function inBoardVoice(node: Node): boolean {
  * no figures the fragment is a single text node and this returns it unchanged,
  * which is what keeps every page in every filing exactly as T-320 left it.
  */
-function quotationIn(span: Range): string {
+export function quotationIn(span: Range): string {
   const cut = span.cloneContents();
   for (const note of [...cut.querySelectorAll(".leaf-figure-note")]) note.remove();
   return [...cut.childNodes]
     .map((node) => node.textContent ?? "")
     .filter((part) => part !== "")
     .join("\n");
-}
-
-/** A box on the screen, in the coordinates `getBoundingClientRect` speaks. */
-export interface ScreenBox {
-  readonly left: number;
-  readonly top: number;
-  readonly right: number;
-  readonly bottom: number;
 }
 
 /**
