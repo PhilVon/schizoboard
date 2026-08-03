@@ -273,6 +273,22 @@ export interface AssetFacts {
    * about transfers.
    */
   readonly poster: string;
+  /**
+   * The hash of the sidecar transcript that came in beside a recording, or `""`
+   * — the record's `transcript` (T-287), and `""` for everything that is not a
+   * film or a recording.
+   *
+   * Here as a *hash* and not as a boolean because the thing being asked is the
+   * one `readableAsset` asks in `main.ts`: a recording is readable when its
+   * record names a transcript, whether or not this machine holds the bytes of
+   * it. Keeping the two answers the same shape is what stops a tape saying it
+   * has no words on the one peer whose transfer has not committed yet (AC-668).
+   *
+   * Unlike `poster` it is never resolved through the `AssetResolver`: nothing
+   * here draws the transcript, and a *want* raised on it would fetch a file
+   * because somebody was looking at the outside of the box.
+   */
+  readonly transcript: string;
 }
 
 /** An item naming no asset, and a hash no record was ever written for. */
@@ -283,6 +299,7 @@ export const NO_FACTS: AssetFacts = {
   duration: null,
   pages: null,
   poster: "",
+  transcript: "",
 };
 
 /** What the document says about an asset. Pure — see [`AssetFacts`]. */
@@ -2236,6 +2253,23 @@ function buildLeaf(): {
   return { page, leaf, number, meta, body, scan, note };
 }
 
+/**
+ * The gummed label somebody stuck on a tape they never had a log sheet for —
+ * `CaseView.sticker` for why it exists at all (T-334).
+ *
+ * Built rather than written into the constructor twice, because a VHS and a
+ * compact cassette wear the same sticker and only the corner it is on differs.
+ * The words are here and not in `items.css` for the reason every other line on
+ * these objects is in the DOM: it is writing on the thing, so it is text a
+ * search of the page can find and a screen reader will read out — which is the
+ * one sentence on this object that a person who cannot see it most needs.
+ */
+function buildSticker(): HTMLDivElement {
+  const sticker = div("case-sticker");
+  sticker.textContent = NO_TRANSCRIPT;
+  return sticker;
+}
+
 class CaseView implements View {
   readonly archetype: CaseArchetype;
   readonly el: HTMLDivElement;
@@ -2291,6 +2325,33 @@ class CaseView implements View {
   private readonly print: HTMLDivElement | null;
   private readonly still: HTMLImageElement | null;
   /**
+   * A gummed sticker on the corner of the shell, reading `NO TRANSCRIPT` — the
+   * two plastic objects' only, and the whole of T-334.
+   *
+   * ## Why the sentence is on the object and not in the search field
+   *
+   * Q-273 settled that `Ctrl+F` reports what it could not read **among the
+   * matches**, because a board full of scans that have nothing to do with the
+   * query is not something the field should be talking about. A recording with
+   * no transcript falls straight through that rule: it has no words in it, so it
+   * is never a match, so it is never in the loop that does the counting — and
+   * the board answers "nothing found", which is true of what it can read and
+   * false about what is on the wall. `unsearchedAmongMatches` in `main.ts` says
+   * the same thing from the other end.
+   *
+   * A sticker does not walk that back, and that is what makes it the answer
+   * rather than a workaround. It says nothing about matches and nothing about
+   * the board; it is a fact about *this tape*, stated on the tape, the way an
+   * archive marks a reel it never had a log sheet for. Somebody searching for a
+   * line they remember from an interview can see, without asking, which of the
+   * recordings on the wall were never going to answer.
+   *
+   * A folder has none, and that is not an omission: a document nobody could read
+   * has a page that says why (`setPage`), and one nobody has the bytes of is
+   * drawn empty (`paintContents`). This is the object that had no way to say it.
+   */
+  private readonly sticker: HTMLDivElement | null;
+  /**
    * The case number and the page count again, typed at the head of the open
    * page as a document header — Q-267, and a folder's only.
    *
@@ -2332,10 +2393,10 @@ class CaseView implements View {
   /**
    * Everything off the asset record that reaches a label, as one string.
    *
-   * A digest rather than six compared fields, because the guard runs on every
+   * A digest rather than seven compared fields, because the guard runs on every
    * bind and the record changes about as often as never. `""` is the sentinel
-   * and cannot collide: a digest is six values joined by spaces, so the
-   * shortest one this can ever hold is five spaces.
+   * and cannot collide: a digest is seven values joined by spaces, so the
+   * shortest one this can ever hold is six spaces.
    */
   private boundFacts = "";
   private boundWear = -1;
@@ -2412,6 +2473,9 @@ class CaseView implements View {
       front.append(this.grain, label, this.meta, this.title, this.caption);
       this.print = null;
       this.still = null;
+      // A folder already has three ways of saying it could not be read, and all
+      // three are on the page. See `sticker`.
+      this.sticker = null;
       // The sheet inside, which is only ever seen with the cover folded back
       // (T-319). Between the pile and the cover in the DOM, so the cover
       // reveals it by leaving rather than by anything being switched on.
@@ -2484,6 +2548,7 @@ class CaseView implements View {
       print.append(still, div("case-clip"));
       this.print = print;
       this.still = still;
+      this.sticker = buildSticker();
       const sheet = buildLeaf();
       this.leaf = sheet.leaf;
       this.pageNumber = sheet.number;
@@ -2498,7 +2563,11 @@ class CaseView implements View {
       // sheaf that came *with* it rather than anything held inside the shell. So
       // the sheet stands in front of the object, which is where a stack of paper
       // propped against a cassette actually is (T-287).
-      this.body.append(shell, left, right, label, counter, print, sheet.page);
+      // The sticker goes on before the sheet and after everything else: it is
+      // stuck to the outside of the shell, so it is over the moulding, and the
+      // transcript's own pages stand in front of it when there are any — which
+      // there never are while it is showing.
+      this.body.append(shell, left, right, label, counter, print, this.sticker, sheet.page);
     } else {
       // A compact cassette, likewise from the reference, and its window is the
       // structural surprise: it is a hole *through the label*, with writing
@@ -2518,6 +2587,7 @@ class CaseView implements View {
       label.append(this.number, this.meta, window_, this.title, this.caption);
       this.print = null;
       this.still = null;
+      this.sticker = buildSticker();
       const sheet = buildLeaf();
       this.leaf = sheet.leaf;
       this.pageNumber = sheet.number;
@@ -2525,7 +2595,7 @@ class CaseView implements View {
       this.leafBody = sheet.body;
       this.leafScan = sheet.scan;
       this.leafNote = sheet.note;
-      this.body.append(shell, label, div("case-holes"), sheet.page);
+      this.body.append(shell, label, div("case-holes"), this.sticker, sheet.page);
     }
 
     // Tape last, over the front of the object, exactly as on the other two.
@@ -2582,7 +2652,13 @@ class CaseView implements View {
     // would stay blank until something else dirtied the item, and the tape you
     // were looking at when the bytes landed would be the one that never got a
     // picture. A url covers both halves: it is `""` until the phase is ready.
-    const digest = `${facts.kind} ${facts.name} ${facts.title} ${facts.duration} ${facts.pages} ${still.url}`;
+    // The transcript is in here as the *hash* and not as a url, which is the
+    // opposite choice to the still's above and is the same argument answered
+    // the other way. What the print draws is bytes, so it changes when the
+    // transfer commits; what the sticker draws is whether the record names a
+    // sidecar at all, and that is settled the moment a peer writes it. A tape
+    // whose transcript is on somebody else's machine still has one.
+    const digest = `${facts.kind} ${facts.name} ${facts.title} ${facts.duration} ${facts.pages} ${still.url} ${facts.transcript}`;
     if (
       this.boundCold === cold &&
       digest === this.boundFacts &&
@@ -2601,6 +2677,7 @@ class CaseView implements View {
     this.boundPlain = plain;
 
     this.paintPrint(still.url, cold.seed);
+    this.paintSticker(facts.transcript, cold.seed);
 
     // Typed, and never in the hand: this is the name on the file, which is a
     // thing that was printed rather than written. `caseNumber` says why the
@@ -2769,6 +2846,33 @@ class CaseView implements View {
     this.print.style.setProperty("--print-tilt", `${(valueAt(seed, "print", 0) * 2 - 1).toFixed(2)}`);
   }
 
+  /**
+   * The sticker, or no sticker — and the second is the ordinary case, because a
+   * recording that came in with its `.srt` beside it is a recording nobody has
+   * to be told anything about.
+   *
+   * `is-empty` and `display: none` rather than an opacity, on the same argument
+   * `paintPrint` makes: a board of interviews that all have transcripts should
+   * cost nothing at all for this feature, and a node that is not in the box
+   * model is the cheapest way to say that. It is also what makes "a tape with a
+   * transcript is drawn exactly as it was before this task" assertable.
+   *
+   * The tilt is seeded like the print's, for the same reason and one more: two
+   * tapes on a shelf with their stickers at identical angles would read as
+   * printed-on packaging, which is the one thing this must not look like. A
+   * sticker is something a person put there afterwards, and that is the whole
+   * claim it is making.
+   */
+  private paintSticker(transcript: string, seed: number): void {
+    if (this.sticker === null) return;
+    this.sticker.classList.toggle("is-empty", transcript.length > 0);
+    if (transcript.length > 0) return;
+    this.sticker.style.setProperty(
+      "--sticker-tilt",
+      `${(valueAt(seed, "sticker", 0) * 2 - 1).toFixed(2)}`,
+    );
+  }
+
   private paintContents(phase: AssetPhase, arrived: number): void {
     this.el.classList.remove(...FILM_CLASSES);
     const film = filmClass(phase);
@@ -2827,6 +2931,14 @@ class CaseView implements View {
       this.title.style.fontSize = `${Math.max(6, w * TITLE_SIZE).toFixed(1)}px`;
       this.caption.style.fontSize = body;
       if (this.counter) this.counter.style.fontSize = `${Math.max(4, w * DIGIT_SIZE).toFixed(1)}px`;
+      // Smaller than anything else written on the object, and the smallest
+      // floor on it. It is a stock label off a roll rather than something
+      // anybody chose the size of, and it must not compete with the two lines
+      // that say what the recording *is* — `sizeLabels` sizes the writing to be
+      // read across a room, and this is read by somebody already looking.
+      if (this.sticker) {
+        this.sticker.style.fontSize = `${Math.max(3, w * STICKER_SIZE).toFixed(1)}px`;
+      }
       if (this.field) this.field.style.fontSize = body;
     }
     writeTransform(this.el, x, y, rot, w, h, lift);
@@ -3143,6 +3255,33 @@ const NUMBER_SIZE = 0.055;
 const TITLE_SIZE = 0.058;
 /** And the rest, which is the runtime, the page count and the caption. */
 const CASE_TEXT_SIZE = 0.048;
+/**
+ * The sticker's, and the smallest type on any of these objects — a little under
+ * half the runtime beside it (T-334).
+ *
+ * A fraction of the object's width like every other line on these three, for
+ * `transform`'s reason: an object scaled up is a bigger object rather than one
+ * with bigger writing on it.
+ *
+ * **The number is a cassette's, and the VHS wears whatever comes of it.** A
+ * compact cassette's J-card runs to 82% of the face and its capstan cutouts
+ * start at 91%, so there is one nine-per-cent strip to put a label in and no
+ * second option; a VHS has the whole top right of its lip to spend. So this is
+ * settled by the object with no room and the one with room takes the same
+ * number, which is how every other size on these three was arrived at too.
+ *
+ * The strip is nine per cent and the sticker is six and a third of it, *turned*
+ * — the tilt widens the box it needs, which is the term the first version of
+ * `tests/case-sticker-css.test.ts` left out and a driven run found: at 0.026 the
+ * label came out touching the cutouts at 90.9% while the arithmetic said 90.
+ */
+export const STICKER_SIZE = 0.023;
+/**
+ * What it says, in the two words the human asked for (T-334). Upper case in the
+ * markup rather than by `text-transform`, because it is a stock label that was
+ * printed this way rather than a sentence this board is shouting.
+ */
+const NO_TRANSCRIPT = "NO TRANSCRIPT";
 
 /**
  * Text runs, back into lines.

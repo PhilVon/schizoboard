@@ -3192,6 +3192,121 @@ textarea.item-field::-webkit-scrollbar {
   border: 1px solid rgba(138, 138, 146, 0.88);
 }
 
+/* --- no transcript. T-334, DESIGN 3.7 ------------------------------------ */
+
+/*
+ * The sticker an archive puts on a reel it never had a log sheet for.
+ *
+ * `CaseView.sticker` carries the argument for saying it here rather than in the
+ * search field. What this block decides is where it goes and what it is made
+ * of, and both answers are the same one: **it is a thing somebody stuck on
+ * afterwards.**
+ *
+ * ## It is the same sticker and it is not in the same place
+ *
+ * The material, the type and the size are shared, because a roll of labels is a
+ * roll of labels. Where it goes is per kind, and the reason is that these two
+ * faces have their free space in different corners rather than that anybody
+ * preferred it that way. Both were measured off the rules below them:
+ *
+ *     VHS        lip 0-15%    print x 3.5-22.5%   label from y 27%
+ *                → the top right of the lip is 74% of the width, empty
+ *     cassette   J-card 9-82%   capstan cutouts y 91-96.5%, x 22-78%
+ *                → one strip, 82% to 91%, and nothing else fits anywhere
+ *
+ * A cassette has no second option: its label is nearly the whole face, and the
+ * only surface that is neither written on nor cut through is the nine per cent
+ * between the foot of the J-card and the cutouts. So the sticker is sized to
+ * *that*, and the VHS wears the same one somewhere it has room to spare.
+ *
+ * `tests/case-sticker-css.test.ts` is what keeps both clearances, because every
+ * number they are measured against is a percentage that has moved before.
+ *
+ * The shell is dark and this is pale, which is the same high-contrast trick
+ * `.folder-label` uses and the reason the eye finds it at all at board scale.
+ */
+.case-sticker {
+  position: absolute;
+  /* Sized to its own two words, exactly as the gummed label on a folder is
+     sized to the case number. A strip of paper is not a table cell — and no
+     `max-width`, because `white-space: nowrap` would overflow one rather than
+     honour it. What keeps this narrow is the type size, which is the thing that
+     actually governs how wide two words are. */
+  width: max-content;
+  padding: 0.22em 0.5em 0.26em;
+  /* Tight, because the height of this is what has to fit a cassette's nine per
+     cent. A stock label is one line of type and a hair of paper either side. */
+  line-height: 1.05;
+  border-radius: 1px;
+  /* One line, always. It is two short words on a stock label; wrapping would
+     make it a note. */
+  white-space: nowrap;
+  /* Typed, not written. Nobody letters a roll label by hand — it came off a
+     machine, which is also what stops it reading as a fifth thing the owner
+     wrote on the tape.
+
+     The same face as the case number and the runtime, and deliberately not the
+     UI's `--ui-mono`: a monospace on an object is the one thing that would make
+     this read as chrome drawn over the tape rather than a label stuck to it,
+     which is DESIGN 1.3's whole line. */
+  font-family: "Source Sans 3", ui-sans-serif, system-ui, sans-serif;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  /* A faded stamp red on off-white stock. Red because this is the one thing on
+     the object that is a warning rather than a description, and faded because a
+     saturated red on a dark shell is the brightest thing on the whole board -
+     which would make a tape with no transcript louder than one with a title. */
+  color: #8c2f22;
+  background: linear-gradient(to bottom, #f4efe0 0%, #e6dfcb 100%);
+  /* Stuck on, not printed: its own thin shadow, offset off the board's one
+     light and counter-turned into the item's frame like the print's above
+     (T-313). A tape stood on its end must not have a sticker lit from below. */
+  box-shadow:
+    calc(var(--lx, 0.5) * 1px) calc(var(--ly, 0.87) * 1px) 1.2px rgba(0, 0, 0, 0.4),
+    calc(var(--lx, 0.5) * 0.4px) calc(var(--ly, 0.87) * 0.4px) 0 rgba(255, 255, 255, 0.14) inset;
+  /* Nobody lines one of these up either. Seeded, so a shelf of unsearchable
+     recordings is a shelf of separate gestures rather than one repeated.
+
+     Half the print's, and not a matter of taste: a turned box needs more room
+     than a square one, and on a cassette this sits in a strip nine per cent
+     tall. At the print's 2.5deg the label came out touching the capstan
+     cutouts on a driven run. */
+  transform: rotate(calc(var(--sticker-tilt, 0) * 1.5deg));
+}
+
+/*
+ * A recording with its transcript beside it is a recording, and is drawn exactly
+ * as it was before T-334. `display` rather than an opacity for `paintPrint`'s
+ * reason: the ordinary case must cost nothing.
+ */
+.case-sticker.is-empty {
+  display: none;
+}
+
+/*
+ * On a VHS: the top right of the moulded lip, which is the one large clear
+ * surface the object has. The print is on the left of the same lip and the
+ * label starts a long way below, so this clears both with room to spare — the
+ * only face of the three where the placement was not forced.
+ */
+.item-case[data-kind="vhs"] .case-sticker {
+  right: 3.5%;
+  top: 3.5%;
+}
+
+/*
+ * On a compact cassette: the strip between the foot of the J-card and the
+ * capstan cutouts, and there is nowhere else. Right-aligned to match the tape's,
+ * so a shelf holding both is read in one column rather than two.
+ */
+.item-case[data-kind="cassette"] .case-sticker {
+  right: 7%;
+  /* Centred in the strip rather than sat on either edge of it — there are only
+     two or three per cent of slack, and spending it all at one end is how the
+     first version came to touch the cutouts. */
+  bottom: 10.5%;
+}
+
 /*
  * A compact cassette: the label is nearly the whole face.
  *

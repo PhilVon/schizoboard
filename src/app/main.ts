@@ -532,6 +532,10 @@ async function boot(): Promise<void> {
       duration: record.duration,
       pages: record.pages,
       poster: record.poster ?? "",
+      // The same answer `readableAsset` gives, handed to the renderer so a
+      // recording can say on its own face that there are no words in it to find
+      // (T-334). The hash rather than a flag, for the reason `AssetFacts` says.
+      transcript: record.transcript ?? "",
     };
   };
   /** Phase 3, after the torsion: the note being written on, laid flat (T-178). */
@@ -1778,10 +1782,13 @@ async function boot(): Promise<void> {
    * `readableHash` the search itself walks (T-287), so an interview whose `.srt`
    * turned out to be unreadable is counted rather than passed over. What this
    * still cannot say is anything about a recording that has *no* transcript:
-   * that one never becomes a match, so it is never in this loop to be counted,
-   * and it is invisible to `Ctrl+F` in a way nothing on screen admits. Q-273
-   * settled the reporting to be about the matches rather than about the board,
-   * and this is the corner of that decision where the two genuinely differ.
+   * that one never becomes a match, so it is never in this loop to be counted.
+   * Q-273 settled the reporting to be about the matches rather than about the
+   * board, and this is the corner of that decision where the two genuinely
+   * differ — so **the answer is not here** (T-334). A tape nobody transcribed is
+   * a fact about the tape, and it says so on its own face: `CaseView.sticker`
+   * draws `NO TRANSCRIPT` on it, which reports on the object rather than on the
+   * board and leaves this rule exactly as Q-273 left it.
    */
   const unsearchedAmongMatches = (): Unsearched => {
     let whole = 0;

@@ -2640,6 +2640,109 @@ describe("a folder, a tape and a cassette", () => {
     expect((host.querySelector(".case-still") as HTMLImageElement).getAttribute("src")).toBeNull();
   });
 
+  // --- T-334: a recording with no transcript says so on its own face --------
+
+  /** The sidecar — a text asset in its own right, hashed like any other (T-287). */
+  const TRANSCRIPT = "3ab7f001".padEnd(64, "2");
+
+  it("sticks a NO TRANSCRIPT label on a recording that has none", () => {
+    // The gap Q-273 leaves open: a tape with no words in it can never be a
+    // match, so it is never in the loop that counts what could not be read, and
+    // `Ctrl+F` answers "nothing found" about a wall it cannot see half of. The
+    // sticker says nothing about matches and nothing about the board — it is a
+    // fact about this recording, on this recording.
+    for (const kind of ["video", "audio"] as const) {
+      again();
+      const sticker = mount(facts({ kind })).querySelector(".case-sticker");
+      expect(sticker, kind).not.toBeNull();
+      expect(sticker!.classList.contains("is-empty"), kind).toBe(false);
+      expect(sticker!.textContent, kind).toBe("NO TRANSCRIPT");
+    }
+  });
+
+  it("takes it off a recording that arrived with its transcript beside it", () => {
+    // The ordinary case, and it must cost nothing: `display: none` on the class
+    // rather than an opacity, so a wall of interviews that all have their `.srt`
+    // is drawn exactly as it was before this task.
+    for (const kind of ["video", "audio"] as const) {
+      again();
+      const el = mount(facts({ kind, transcript: TRANSCRIPT }));
+      expect(el.querySelector(".case-sticker")!.classList.contains("is-empty"), kind).toBe(true);
+    }
+  });
+
+  it("puts no sticker on a case file", () => {
+    // Not an omission. A document nobody could read has a page that says why,
+    // and one nobody holds the bytes of is drawn empty — a folder has two ways
+    // of saying this already and a recording had none.
+    expect(mount(facts({ kind: "document" })).querySelector(".case-sticker")).toBeNull();
+  });
+
+  it("loses the sticker when a peer's transcript record lands, and nothing else changes", () => {
+    // The guard this defends is the bind's digest, and it is the same trap the
+    // poster test above covers from the other side: the item does not change
+    // when a transcript is attached — the *asset record* does, and that write
+    // may be a peer's and a network away. A digest that omitted the transcript
+    // would leave the tape you were looking at wearing a sticker that had
+    // stopped being true, until something else happened to dirty it.
+    let transcript = "";
+    const layer = new DomItemLayer(
+      host,
+      (sha) => ready(`asset://sha256/${sha}`),
+      () => ({ ...NO_FACTS, kind: "audio" as const, transcript }),
+    );
+    add("a", { assetId: HASH });
+    layer.sync(scene, dirty, null);
+    const sticker = host.querySelector(".case-sticker")!;
+    expect(sticker.classList.contains("is-empty")).toBe(false);
+
+    transcript = TRANSCRIPT;
+    dirty.item("a");
+    layer.sync(scene, dirty, null);
+    expect(sticker.classList.contains("is-empty")).toBe(true);
+  });
+
+  it("keeps the sticker on a recording whose transcript is on somebody else's machine", () => {
+    // The hash and not the bytes, which is the same bargain AC-668 strikes for
+    // the runtime and the case number. A record that names a sidecar is a
+    // recording with words in it; whether this laptop has fetched them yet is a
+    // transfer, and a tape that said NO TRANSCRIPT until one committed would be
+    // lying about the recording to report on the network.
+    const layer = new DomItemLayer(
+      host,
+      // Nothing has arrived here — not the recording, not the sidecar.
+      () => waiting(),
+      facts({ kind: "video", transcript: TRANSCRIPT }),
+    );
+    add("a", { assetId: HASH });
+    layer.sync(scene, dirty, null);
+    expect(host.querySelector(".case-sticker")!.classList.contains("is-empty")).toBe(true);
+  });
+
+  it("does not carry a sticker onto a recycled node", () => {
+    // Views are pooled and this one says something about the object it is on.
+    // A tape that inherited the last one's sticker would be a recording with a
+    // transcript telling you it has none — worse than either state alone.
+    let transcript = TRANSCRIPT;
+    const layer = new DomItemLayer(
+      host,
+      (sha) => ready(`asset://sha256/${sha}`),
+      () => ({ ...NO_FACTS, kind: "audio" as const, transcript }),
+    );
+    add("a", { assetId: HASH });
+    layer.sync(scene, dirty, null);
+    expect(host.querySelector(".case-sticker")!.classList.contains("is-empty")).toBe(true);
+
+    scene.removeItem("a");
+    dirty.item("a");
+    layer.sync(scene, dirty, null);
+
+    transcript = "";
+    add("b", { assetId: HASH });
+    layer.sync(scene, dirty, null);
+    expect(host.querySelector(".case-sticker")!.classList.contains("is-empty")).toBe(false);
+  });
+
   it("hands a recycled node back to its own kind", () => {
     // Three pools, not one. A cassette dressed out of a folder's subtree would
     // be a tab and no window, because the constructor is the only place the
