@@ -319,7 +319,18 @@ export class SelectTool implements Tool {
       { keys: "Shift+drag", does: "marquee on to the selection", holds: ["Shift"] },
       { keys: "R+drag", does: "rotate without the handle" },
       { keys: "Ctrl+drag a pin", does: "keep it in its own item", holds: ["Control"] },
-      { keys: "double-click a pin", does: "follow the whole thread" },
+      // Both ends of the same idea in one row, rather than a second row further
+      // down beside the gesture that makes the thread (T-285, Q-296). Two
+      // reasons, and the first is the honest one: following a thread from a pin
+      // and following one back to the page it was cut from are the same verb on
+      // the same red string, and splitting them would read as two features that
+      // happen to share a double-click. The second is T-252's — the bar rests on
+      // rows no key reveals, and every one added at rest is one more line
+      // somebody has to read past to find the one they wanted.
+      {
+        keys: "double-click a pin, or a quote's string",
+        does: "follow the thread, or open its page",
+      },
       // The gesture nothing else on the board suggests, which is this readout's
       // whole reason for existing: a case file offers *Open* on its menu and
       // there is no other sign that the key exists. Shutting it says so here

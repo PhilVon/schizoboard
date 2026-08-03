@@ -95,7 +95,7 @@ describe("the resting split", () => {
     // key to bring it back.
     expect(restingRows(SELECT).map((r) => r.keys)).toEqual([
       "R+drag",
-      "double-click a pin",
+      "double-click a pin, or a quote's string",
       "Enter",
       // Beside `Enter` because it is only meaningful once that has been used,
       // and at rest because it is behind no modifier — the arrows are the one
