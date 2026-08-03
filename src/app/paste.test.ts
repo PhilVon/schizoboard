@@ -87,15 +87,23 @@ class FakeNative {
     if (this.refuse.has(path)) throw new Error("no such file");
     return this.meta(`p${path}`, this.mimeFor.get(path));
   }
-  /** What each address says about itself, for the pages a test sets up. */
-  readonly cardFor = new Map<string, PageCard>();
+  /**
+   * What each address says about itself, for the pages a test sets up.
+   *
+   * `aboutMedia` may be left off and is filled in `false` below — the ordinary
+   * page, and the one nearly every fixture here is. A test about a watch page
+   * has to say so, which is the right way round: the whole of T-342 is that
+   * "declared no media" and "declared media we cannot hold" are different pages,
+   * so a fixture claiming the second must be explicit about it.
+   */
+  readonly cardFor = new Map<string, Omit<PageCard, "aboutMedia"> & { aboutMedia?: boolean }>();
   async pageCard(url: string): Promise<PageCard> {
     this.calls.push({ method: "card", arg: url });
     const card = this.cardFor.get(url);
     // A page nobody described is one that would not load, which is the
     // ordinary answer for most of the web and the one that makes a note.
     if (!card) throw new Error("not a page");
-    return card;
+    return { aboutMedia: false, ...card };
   }
 
   async assetIngestUrl(url: string): Promise<AssetMeta> {

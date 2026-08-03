@@ -58,6 +58,31 @@ pub struct Card {
     pub image: Option<String>,
     /// A film or a recording the page declares *and gives a media type for*.
     pub media: Option<Media>,
+    /// Whether the page says it is **about** a film or a recording — declared
+    /// media, holdable or not (T-342).
+    ///
+    /// This is the bit the module note above describes and this struct used to
+    /// throw away. A watch page carries an `og:video` pointing at its own embed
+    /// player, `holdable` refuses it because the type is `text/html`, and until
+    /// now the only thing that survived was `media: None` — which is
+    /// indistinguishable from a Wikipedia article that never mentioned a video
+    /// at all. Those two are not the same page and must not become the same
+    /// object: one is *about* a film and the other is not.
+    ///
+    /// So there are three answers here rather than two, and the frontend needs
+    /// all three:
+    ///
+    /// | declared | holdable | what it is |
+    /// |---|---|---|
+    /// | yes | yes | the file itself — a VHS, a cassette |
+    /// | yes | no | a page about media: a printed still with its address |
+    /// | no | — | a page about itself: a business card |
+    ///
+    /// True on the *declaration* rather than on anything fetched, which is what
+    /// keeps Q-304's one rule: no site list, no oEmbed call, nothing that knows
+    /// what YouTube is. A page that says `og:video` has said it is about a
+    /// video, and that is the whole of the claim being read.
+    pub about_media: bool,
 }
 
 /// A media file a page names, with the type it claims for it.
@@ -115,6 +140,11 @@ pub fn card(html: &str) -> Card {
         title = Some(text);
     }
 
+    // Read before `holdable` consumes them, because what it answers is a
+    // different question: this is "did the page say it is about media", and that
+    // stays true of a watch page whose video turns out to be a player.
+    let about_media = video.is_some() || audio.is_some();
+
     Card {
         title: og_title.or(title),
         site_name,
@@ -122,6 +152,7 @@ pub fn card(html: &str) -> Card {
         // Video before audio: a page that declares both is a page with a film on
         // it, and the film is the thing somebody came for.
         media: holdable(video, video_type).or_else(|| holdable(audio, audio_type)),
+        about_media,
     }
 }
 
@@ -145,17 +176,24 @@ pub fn card(html: &str) -> Card {
 /// The same media rule as a page's: the enclosure has to say it is audio or
 /// video. A feed enclosing a PDF newsletter is a feed this does not answer for.
 pub fn feed(xml: &str) -> Card {
-    let media = elements(xml, "enclosure")
+    let enclosures = elements(xml, "enclosure");
+    let atom: Vec<_> = elements(xml, "link")
+        .into_iter()
+        .filter(|tag| {
+            tag.attr("rel")
+                .is_some_and(|rel| rel.eq_ignore_ascii_case("enclosure"))
+        })
+        .collect();
+    // An enclosure of any sort, holdable or not — the same three-way answer a
+    // page gives (T-342). A feed that encloses something this board cannot hold
+    // is still a feed *about* what it encloses, and it is not a blog's articles.
+    let declares = !enclosures.is_empty() || !atom.is_empty();
+    let media = enclosures
         .into_iter()
         .find_map(|tag| holdable(tag.attr("url"), tag.attr("type")))
         // Atom spells the same thing as a link with a relation.
         .or_else(|| {
-            elements(xml, "link")
-                .into_iter()
-                .filter(|tag| {
-                    tag.attr("rel")
-                        .is_some_and(|rel| rel.eq_ignore_ascii_case("enclosure"))
-                })
+            atom.into_iter()
                 .find_map(|tag| holdable(tag.attr("href"), tag.attr("type")))
         });
     Card {
@@ -169,6 +207,7 @@ pub fn feed(xml: &str) -> Card {
         // when it could NOT get the file — here it got the file.
         image: None,
         media,
+        about_media: declares,
     }
 }
 
@@ -395,6 +434,24 @@ mod tests {
         assert!(card.image.is_some());
         // ...and no film, because the page said the video is a page.
         assert_eq!(card.media, None);
+        // And the part that used to be thrown away (T-342): it still SAID it is
+        // about a video, which is what makes this a printed still rather than a
+        // business card. Without this the page is indistinguishable from an
+        // article that never mentioned a video.
+        assert!(card.about_media);
+    }
+
+    #[test]
+    fn a_page_about_nothing_in_particular_is_not_about_media() {
+        // The other side of the bit above, and the one that keeps the business
+        // card: an ordinary article declares no video and no audio.
+        let html = r#"<head>
+            <meta property="og:title" content="Cork (material)">
+            <meta property="og:image" content="https://e.org/cork.jpg">
+        </head>"#;
+        let card = card(html);
+        assert_eq!(card.media, None);
+        assert!(!card.about_media);
     }
 
     #[test]
@@ -402,7 +459,22 @@ mod tests {
         // Silence is not a claim. Guessing from the URL is what puts a tape on
         // the wall that cannot play.
         let html = r#"<meta property="og:video" content="https://e.com/reel.mp4">"#;
-        assert_eq!(card(html).media, None);
+        let card = card(html);
+        assert_eq!(card.media, None);
+        // It is still a page about a video, and it says so. The type is what
+        // decides whether we can HOLD the film; the property is what says the
+        // page is about one.
+        assert!(card.about_media);
+    }
+
+    #[test]
+    fn declared_audio_counts_as_much_as_declared_video() {
+        // A track page — the Spotify half of T-290's title.
+        let html = r#"<meta property="og:audio" content="https://e.com/player">
+                      <meta property="og:audio:type" content="text/html">"#;
+        let card = card(html);
+        assert_eq!(card.media, None);
+        assert!(card.about_media);
     }
 
     #[test]

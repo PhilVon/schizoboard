@@ -168,6 +168,27 @@ export interface PageCard {
    * so there is nothing here to hang a tape on that could not play.
    */
   readonly media: { readonly url: string; readonly mime: string } | null;
+  /**
+   * Whether the page says it is **about** a film or a recording — T-342.
+   *
+   * The bit `media` alone cannot carry, and the reason this interface had a hole
+   * in it. `media: null` covers two pages that are nothing like each other: a
+   * watch page, which declared a video and offered a player instead of a film,
+   * and an article, which never mentioned one. Reading those as the same thing
+   * is how a YouTube paste became a business card.
+   *
+   * Three answers, and the caller needs all three — `media` first, then this:
+   *
+   * | media | aboutMedia | the object |
+   * |---|---|---|
+   * | set | — | the file itself: a tape, a cassette |
+   * | null | `true` | a printed still of a page about media, with its address |
+   * | null | `false` | a business card |
+   *
+   * It is the page's *claim*, not anything fetched, which is what keeps Q-304's
+   * single rule: nothing here knows what YouTube is.
+   */
+  readonly aboutMedia: boolean;
 }
 
 // --- reading a document (T-297, T-299, T-318) -------------------------------
