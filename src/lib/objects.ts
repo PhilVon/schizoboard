@@ -601,16 +601,83 @@ const TYPED_ADVANCE = 0.62;
 const LABEL_FLOOR = 0.5;
 
 /**
+ * Rough advance width of a business card's title face — Source Sans 3 at 600,
+ * letterspaced a hair tight — as a fraction of its own size.
+ *
+ * `fitLabel`'s constant for the third face on this board, and measured in the
+ * running webview like the hand's rather than estimated like the tab's, because
+ * what it decides is whether a *host* fits: a card's top line is the page's own
+ * title, and when the page has none the host takes that line (T-339).
+ *
+ * | what was written | advance |
+ * |---|---|
+ * | `archive.org` | 0.419 |
+ * | `en.wikipedia.org` | 0.430 |
+ * | `open.spotify.com` | 0.448 |
+ * | `docs.google.com` | 0.468 |
+ * | `github.com` | 0.471 |
+ * | `news.ycombinator.com` | 0.481 |
+ * | `www.theguardian.com` | 0.494 |
+ * | `example.com` | 0.505 |
+ *
+ * **0.52, above every one of them**, on the asymmetry the other two constants
+ * state: high leaves a little air at the end of the line, low writes past it.
+ * A host is a narrow alphabet — letters, digits, dots and hyphens, no capitals
+ * and no `m`-heavy prose — which is why the spread here is tighter than the
+ * hand's and why the safe margin can be small.
+ */
+const CARD_TITLE_ADVANCE = 0.52;
+
+/**
  * The size a typed label has to come down to for `text` to fit `box` units.
  *
  * Never larger than `size` — a short name does not get a bigger tab, because
  * the tab is a physical thing and the type on it is a physical size. And never
  * below the floor, past which the label truncates rather than shrinking on.
+ *
+ * `advance` is the face's, and the default is the typed one this was written
+ * for. It is a parameter rather than a second function because the *rule* is
+ * one rule — a label that will not fit is written smaller and then, eventually,
+ * cut — and only the alphabet changes between the tab of a folder and the top
+ * line of a business card.
  */
-export function fitLabel(text: string, box: number, size: number): number {
+export function fitLabel(
+  text: string,
+  box: number,
+  size: number,
+  advance: number = TYPED_ADVANCE,
+): number {
   if (text.length === 0 || box <= 0) return size;
-  const wanted = box / (text.length * TYPED_ADVANCE);
+  const wanted = box / (text.length * advance);
   return Math.max(size * LABEL_FLOOR, Math.min(size, wanted));
+}
+
+/**
+ * The size a **host** has to come down to for it to fit a card's top line —
+ * T-341.
+ *
+ * ## Why a host is not the title it is standing in for
+ *
+ * The line is set for a page's own title, which is prose: it wraps, it clamps to
+ * two lines, and `overflow-wrap: anywhere` is there so that one long word in a
+ * real headline cannot ride out over the edge of the card. A host is not prose.
+ * It is a single unbreakable token, so that same rule broke it wherever the line
+ * ran out — `news.ycombinator.` on one line and `com` on the next, which is not
+ * a name anybody would write on a card.
+ *
+ * So it is fitted as what it is: a label, in the same words `fitLabel` already
+ * uses for a folder's tab. **The card does not grow**, which is the whole of the
+ * instruction behind this — an 85 by 55 mm card is a physical object and a long
+ * address is not a reason for a bigger one — and it does not silently overflow
+ * either. A person with a long name and a small card writes smaller.
+ *
+ * `measure` and the answer are both in `em` of the block's own type, which is
+ * what makes this independent of the card's size: every line on the card is an
+ * `em` multiple of one number, so the ratio a host needs is the same whether the
+ * card is at its own size or has been dragged out to twice it.
+ */
+export function fitHost(host: string, measure: number, size: number): number {
+  return fitLabel(host, measure, size, CARD_TITLE_ADVANCE);
 }
 
 /**

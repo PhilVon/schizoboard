@@ -3137,6 +3137,60 @@ describe("a link card", () => {
     expect((el.querySelector(".card-site") as HTMLElement).classList).toContain("is-empty");
   });
 
+  /**
+   * T-341, and the rule is Phil's: the card does not change size to fit the
+   * writing, the writing changes size to fit the card.
+   */
+  it("writes a long host smaller rather than breaking it across two lines", () => {
+    again();
+    const short = mount(facts(), { source: "https://e.com/x", text: "" });
+    const shortSize = (short.querySelector(".card-title") as HTMLElement).style.fontSize;
+    again();
+    const long = mount(facts(), { source: "https://news.ycombinator.com/item?id=1", text: "" });
+    const title = long.querySelector(".card-title") as HTMLElement;
+
+    // Smaller than the line's own 1.9em, and smaller than a host that fits.
+    expect(Number.parseFloat(title.style.fontSize)).toBeLessThan(1.9);
+    expect(Number.parseFloat(title.style.fontSize)).toBeLessThan(Number.parseFloat(shortSize));
+    // And it is the *whole* host, not `news.ycombinator.` with `com` under it.
+    expect(text(long, "card-title")).toBe("news.ycombinator.com");
+    // The class is what turns off the prose rules — one line, no break inside a
+    // word — and it is on the element the stylesheet expects.
+    expect(title.classList).toContain("is-host");
+  });
+
+  it("leaves a real title alone, because prose wraps and a host does not", () => {
+    // The fit is for the host case only. A page's own title is prose: it wraps,
+    // it clamps at two lines, and `overflow-wrap: anywhere` is there so that one
+    // long word in a headline cannot ride out over the edge of the card.
+    again();
+    const el = mount(facts(), {
+      source: PAGE,
+      text: "A very long headline indeed about the corkboards of County Wexford",
+    });
+    const title = el.querySelector(".card-title") as HTMLElement;
+    expect(title.style.fontSize).toBe("");
+    expect(title.classList).not.toContain("is-host");
+  });
+
+  it("takes the host's size back off when somebody names the card themselves", () => {
+    // The same node, rebound. A pooled element that kept the shrunk size would
+    // set a person's own title at whatever the host before it needed.
+    again();
+    const layer = new DomItemLayer(host, () => waiting(), facts());
+    add("a", { source: "https://news.ycombinator.com/x", text: "" }, { w: 132, h: 85 });
+    layer.sync(scene, dirty, null);
+    const title = host.querySelector(".card-title") as HTMLElement;
+    expect(title.style.fontSize).not.toBe("");
+
+    scene.putItem({ ...scene.cold("a")!, text: "Mine" }, scene.poseOf("a")!);
+    dirty.item("a");
+    layer.sync(scene, dirty, null);
+    expect(text(host.firstElementChild as HTMLElement, "card-title")).toBe("Mine");
+    expect(title.style.fontSize).toBe("");
+    expect(title.classList).not.toContain("is-host");
+  });
+
   it("says nothing where a peer wrote an address that will not parse", () => {
     // `source` is a field in a shared document, so this is a string a peer chose
     // and this build has no say in. A blank company line is a card; the word

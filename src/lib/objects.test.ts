@@ -7,6 +7,7 @@ import {
   carriesItsOwnName,
   CARD_UNITS,
   fileNoun,
+  fitHost,
   fitWriting,
   HAND_LINE,
   isCaseObject,
@@ -430,6 +431,52 @@ describe("the reference a card cites its source by", () => {
     // Zero is a measurement — the opening frame is a real place on a tape, and
     // the same distinction runtimeLabel already draws for a spine.
     expect(timeReference("interview.mp4", hash, 0)).toBe("interview.mp4 0:00");
+  });
+});
+
+describe("a host written on a card's top line", () => {
+  // The printed block's measure and the title's size, both in `em` of the
+  // block's own type — `render/items/dom.ts`'s CARD_TYPE_MEASURE and
+  // CARD_TITLE_EM, which `tests/card-title-css.test.ts` holds against the
+  // stylesheet.
+  const measure = (1 - 2 * 0.09) / 0.055;
+  const nominal = 1.9;
+  const fit = (host: string): number => fitHost(host, measure, nominal);
+
+  it("leaves a host that already fits at the size the line was set at", () => {
+    // A short host does not get bigger type. The line is a printed thing at a
+    // printed size, and 1.9em is what a name on a business card is.
+    expect(fit("e.com")).toBe(nominal);
+    expect(fit("github.com")).toBe(nominal);
+  });
+
+  it("writes a long host smaller rather than breaking it in half", () => {
+    // The defect this exists for: `news.ycombinator.` on the first line and
+    // `com` on the second, which is not a name anybody would print.
+    const size = fit("news.ycombinator.com");
+    expect(size).toBeLessThan(nominal);
+    // And it fits on ONE line at that size, which is the whole claim — measured
+    // the way the box measures, at the advance the face was probed at.
+    expect("news.ycombinator.com".length * size * 0.52).toBeLessThanOrEqual(measure);
+  });
+
+  it("stops at a floor rather than writing an address nobody can read", () => {
+    // Past the floor the line clips and the ellipsis says so. A host of sixty
+    // characters is a subdomain somebody generated, and shrinking on to fit it
+    // would set the card's largest type smaller than its smallest.
+    const absurd = `${"sub.".repeat(20)}example.com`;
+    expect(fit(absurd)).toBe(nominal * 0.5);
+    expect(fit(absurd)).toBeGreaterThan(0.8);
+  });
+
+  it("does not resize the card, whatever the host is", () => {
+    // Phil's rule, stated as arithmetic: the answer is a multiple of the type's
+    // own size and never a width, so nothing here can ask the object to grow.
+    // Every answer is between the floor and the ceiling.
+    for (const host of ["a.io", "example.com", "news.ycombinator.com", "x".repeat(200)]) {
+      expect(fit(host)).toBeLessThanOrEqual(nominal);
+      expect(fit(host)).toBeGreaterThanOrEqual(nominal * 0.5);
+    }
   });
 });
 

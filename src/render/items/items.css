@@ -3840,6 +3840,27 @@ textarea.item-field::-webkit-scrollbar {
 }
 
 /*
+ * The same line carrying a host instead of a title — T-341.
+ *
+ * A page with no title of its own gives its host the top line (T-339), and a
+ * host is not prose: it is one unbreakable token, so the `overflow-wrap:
+ * anywhere` that keeps a long word in a real headline from riding off the card
+ * broke it wherever the line ran out — `news.ycombinator.` above `com`.
+ *
+ * So it is set as what it is, in the same three declarations the company and
+ * address lines below already use: one line, and cut with an ellipsis if it
+ * cannot be written small enough to fit. `dom.ts` writes that size, and the
+ * card itself never grows — an 85 by 55 mm card is a physical object, and a
+ * long address is not a reason for a bigger one.
+ */
+.card-title.is-host {
+  display: block;
+  white-space: nowrap;
+  overflow-wrap: normal;
+  text-overflow: ellipsis;
+}
+
+/*
  * Whose card it is — the host, as the company line.
  *
  * Small capitals, widely letterspaced, which is what a company line on a card

@@ -50,6 +50,7 @@ import {
   caseNumber,
   fitWriting,
   HAND_LINE,
+  fitHost,
   fitLabel,
   PAGE_TEXT_SIZE,
   folderBulk,
@@ -1376,7 +1377,31 @@ class PolaroidView implements View {
  * card is therefore small type on a small object, which is what a business card
  * *is* — you pick one up to read it, and on this board that is the zoom.
  */
-const CARD_TEXT = 0.055;
+export const CARD_TEXT = 0.055;
+
+/**
+ * The printed block's side inset, as a fraction of the card — `items.css`'s
+ * `.card-type { inset: 14% 9% 12% }`, held here because the fit below is
+ * arithmetic and CSS cannot hand a number to arithmetic.
+ *
+ * `tests/card-title-css.test.ts` asserts the two agree, the arrangement
+ * `HAND_LINE` and `A4_UNITS` already have with the stylesheet.
+ */
+export const CARD_TYPE_INSET = 0.09;
+
+/** The title's size, in `em` of the block — `items.css`'s `.card-title`. */
+export const CARD_TITLE_EM = 1.9;
+
+/**
+ * How wide the printed block is in `em` of its own type, which is the measure a
+ * host has to fit inside.
+ *
+ * A ratio of two ratios, and therefore a constant: the block's font size is a
+ * fraction of the card's width and its box is another fraction of the same
+ * width, so the card's own size cancels. That is why the title can be fitted
+ * once when it is bound rather than again every time the item is resized.
+ */
+const CARD_TYPE_MEASURE = (1 - 2 * CARD_TYPE_INSET) / CARD_TEXT;
 
 /**
  * A link card: the page's picture washed into the stock, with the title, the
@@ -1533,6 +1558,17 @@ class CardView implements View {
     this.title.textContent = written || site;
     this.site.textContent = written ? site : "";
     this.address.textContent = addressLabel(source);
+    // A host standing in for a title is a *label* and is set as one — one line,
+    // written smaller if it has to be, never broken mid-word (T-341). The class
+    // is what tells the stylesheet which of the two kinds of string is up there;
+    // the size is what keeps the card from growing to fit an address.
+    const host = written === "" && site !== "";
+    this.title.classList.toggle("is-host", host);
+    if (host) {
+      this.title.style.fontSize = `${fitHost(site, CARD_TYPE_MEASURE, CARD_TITLE_EM).toFixed(3)}em`;
+    } else {
+      this.title.style.removeProperty("font-size");
+    }
     // So the stylesheet can close the gap a missing line would otherwise leave.
     this.site.classList.toggle("is-empty", this.site.textContent === "");
     this.title.classList.toggle("is-empty", this.title.textContent === "");
