@@ -426,8 +426,21 @@ const _: () = assert!(MAX_PASTE_BYTES < MAX_ASSET_BYTES);
 /// by hand, after the message type and the frame (D-28).
 pub const CHUNK_BYTES: u64 = 256 * 1024;
 
-/// Redirect hops [`AssetStore::ingest_url`] will follow, checking each one.
-const MAX_REDIRECTS: u8 = 3;
+/// Redirect hops [`fetch`] will follow, checking each one.
+///
+/// Three was enough while the only thing being fetched was a picture, and it is
+/// not enough for a podcast — T-289. A real enclosure address is a chain of
+/// tracking hops before it reaches the audio: NPR's Planet Money goes
+/// swap.fm, byspotify, podtrac, simplecast and then the mp3, which is **four**,
+/// and the walk was giving up one short. It presented as the paste making a
+/// note, which is exactly what an address nobody could fetch is supposed to do,
+/// so nothing looked broken.
+///
+/// Raising it costs nothing in safety and that is worth being explicit about:
+/// every hop is resolved through [`PublicOnlyResolver`] and re-checked, so a
+/// longer chain is more *time*, never a weaker rule. What the bound is actually
+/// for is a redirect loop, and eight ends one just as surely as three.
+const MAX_REDIRECTS: u8 = 8;
 
 /// What ingestion returns. Note what is *not* here: the bytes.
 ///
@@ -926,16 +939,40 @@ pub const MAX_PAGE_BYTES: u64 = 1024 * 1024;
 /// what a file *is* — no object is made of these bytes and none of them reaches
 /// the store — it is asking a page what it says about itself, and a server that
 /// says it is not sending a page is answering that question.
-pub fn fetch_page(url: &str) -> Result<String> {
+pub fn fetch_page(url: &str) -> Result<Page> {
     let got = fetch(url, MAX_PAGE_BYTES, OverCap::Truncate)?;
-    let declared = got.content_type.as_deref().unwrap_or("");
-    if !declared.eq_ignore_ascii_case("text/html") && !declared.eq_ignore_ascii_case("application/xhtml+xml") {
-        return Err(Error::Fetch(format!("{declared} is not a page")));
-    }
+    let declared = got.content_type.as_deref().unwrap_or("").to_ascii_lowercase();
+    let kind = match declared.as_str() {
+        "text/html" | "application/xhtml+xml" => PageKind::Markup,
+        // A podcast feed — T-289's fourth source. Servers spell it every one of
+        // these ways and a good few spell it `text/html` by accident, which is
+        // why the reader below is chosen by *content* in that one case rather
+        // than trusted to the header.
+        "application/rss+xml" | "application/atom+xml" | "application/xml" | "text/xml" => {
+            PageKind::Feed
+        }
+        other => return Err(Error::Fetch(format!("{other} is not a page"))),
+    };
     // Lossy, because a page's encoding is declared in the page and a mis-set
     // charset must not lose the whole card — a replacement character in a title
     // is a bad character, and a refusal here is no object at all.
-    Ok(String::from_utf8_lossy(&got.bytes).into_owned())
+    let text = String::from_utf8_lossy(&got.bytes).into_owned();
+    Ok(Page { kind, text })
+}
+
+/// What came back from an address that named no file.
+pub struct Page {
+    pub kind: PageKind,
+    pub text: String,
+}
+
+/// Which reader a fetched document wants.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PageKind {
+    /// A web page — read for what it says about itself.
+    Markup,
+    /// A podcast feed — read for the file it hands over.
+    Feed,
 }
 
 fn check_fetchable(url: &str) -> Result<()> {

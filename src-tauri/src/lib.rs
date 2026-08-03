@@ -687,7 +687,17 @@ async fn asset_ingest_url(app: AppHandle, url: String) -> Result<AssetMeta, asse
 /// going to be if this failed.
 #[tauri::command]
 async fn page_card(url: String) -> Result<opengraph::Card, String> {
-    blocking(move || assets::fetch_page(&url).map(|html| opengraph::card(&html))).await
+    blocking(move || {
+        assets::fetch_page(&url).map(|page| match page.kind {
+            assets::PageKind::Markup => opengraph::card(&page.text),
+            // A feed is a list rather than a page about a thing, so it is read
+            // for the file it hands over rather than for what it says about
+            // itself — T-289. One command either way: the frontend is asking
+            // "what is at this address", and a feed is one of the answers.
+            assets::PageKind::Feed => opengraph::feed(&page.text),
+        })
+    })
+    .await
 }
 
 #[tauri::command]

@@ -83,14 +83,13 @@ pub fn card(html: &str) -> Card {
     let mut audio = None;
     let mut audio_type = None;
 
-    for tag in metas(html) {
+    for tag in elements(html, "meta") {
         let Some(key) = tag.attr("property").or_else(|| tag.attr("name")) else {
             continue;
         };
         let Some(content) = tag.attr("content") else {
             continue;
         };
-        let content = decode_entities(&content);
         if content.trim().is_empty() {
             continue;
         }
@@ -123,6 +122,53 @@ pub fn card(html: &str) -> Card {
         // Video before audio: a page that declares both is a page with a film on
         // it, and the film is the thing somebody came for.
         media: holdable(video, video_type).or_else(|| holdable(audio, audio_type)),
+    }
+}
+
+/// Read a podcast feed's newest episode as a card — T-289.
+///
+/// The fourth source in the task, and the only one that is neither a file nor a
+/// page: a feed is a *list*, and what somebody pasting one wants on the wall is
+/// the episode, not the list. RSS carries the file outright —
+/// `<enclosure url="…" type="audio/mpeg">` is a plain address to a plain mp3,
+/// which is what makes podcasts the one popular audio source needing no
+/// scraping and no player.
+///
+/// **The first enclosure, which is the newest episode by convention and not by
+/// guarantee.** Feeds are published newest-first and every reader in the world
+/// relies on it, but nothing in the format says so — a feed that is ordered the
+/// other way puts its oldest episode on the board, and that is a wrong episode
+/// rather than a wrong kind of object. Taking all of them was the alternative
+/// and it is worse: pasting one address and getting two hundred cassettes is
+/// not something anybody meant.
+///
+/// The same media rule as a page's: the enclosure has to say it is audio or
+/// video. A feed enclosing a PDF newsletter is a feed this does not answer for.
+pub fn feed(xml: &str) -> Card {
+    let media = elements(xml, "enclosure")
+        .into_iter()
+        .find_map(|tag| holdable(tag.attr("url"), tag.attr("type")))
+        // Atom spells the same thing as a link with a relation.
+        .or_else(|| {
+            elements(xml, "link")
+                .into_iter()
+                .filter(|tag| {
+                    tag.attr("rel")
+                        .is_some_and(|rel| rel.eq_ignore_ascii_case("enclosure"))
+                })
+                .find_map(|tag| holdable(tag.attr("href"), tag.attr("type")))
+        });
+    Card {
+        // A feed's first `<title>` is the channel's — the podcast, rather than
+        // the episode. That is the right one: it is what somebody would call
+        // the thing they just put on the board.
+        title: title_element(xml),
+        site_name: None,
+        // Deliberately not `<itunes:image>` or `<image><url>`. Cover art is not
+        // a still of the episode, and a printed still is what this board makes
+        // when it could NOT get the file — here it got the file.
+        image: None,
+        media,
     }
 }
 
@@ -164,10 +210,10 @@ fn title_element(html: &str) -> Option<String> {
     (!text.is_empty()).then_some(text)
 }
 
-/// One `<meta>` element's raw attribute text.
-struct Meta<'a>(&'a str);
+/// One element's raw attribute text.
+struct Attrs<'a>(&'a str);
 
-impl Meta<'_> {
+impl Attrs<'_> {
     /// The value of an attribute, in either kind of quotes or none at all.
     fn attr(&self, name: &str) -> Option<String> {
         let lower = self.0.to_ascii_lowercase();
@@ -197,7 +243,12 @@ impl Meta<'_> {
                     .find(|c: char| c.is_whitespace() || c == '>')
                     .unwrap_or(body.len()),
             };
-            return Some(body.get(..end)?.to_string());
+            // Decoded here, because *every* attribute value in HTML and XML is
+            // entity-encoded and there is no caller for which that is not true.
+            // Doing it at one caller instead is what let a real podcast feed
+            // through with `&amp;` still in its enclosure URL — a query string
+            // with the wrong parameter names, fetched, and blamed on the feed.
+            return Some(decode_entities(body.get(..end)?));
         }
         None
     }
@@ -211,30 +262,36 @@ fn html_before(lower: &str, at: usize) -> bool {
     }
 }
 
-/// Every `<meta …>` element in the markup, as raw attribute text.
-fn metas(html: &str) -> Vec<Meta<'_>> {
-    let lower = html.to_ascii_lowercase();
+/// Every `<name …>` element in the markup, as raw attribute text.
+///
+/// Written for `<meta>` and generalised for `<enclosure>`, which is the same
+/// question asked of a feed: both are elements whose whole content is their
+/// attributes, and neither has children worth walking into.
+fn elements<'a>(markup: &'a str, name: &str) -> Vec<Attrs<'a>> {
+    let lower = markup.to_ascii_lowercase();
+    let open = format!("<{name}");
     let mut out = Vec::new();
     let mut from = 0;
-    while let Some(at) = lower[from..].find("<meta") {
+    while let Some(at) = lower[from..].find(&open) {
         let start = from + at;
+        let past = start + open.len();
         // `<metadata>` is not `<meta>`.
-        let after = lower[start + 5..].chars().next();
+        let after = lower[past..].chars().next();
         if !matches!(after, Some(c) if c.is_whitespace() || c == '/' || c == '>') {
-            from = start + 5;
+            from = past;
             continue;
         }
         let end = match lower[start..].find('>') {
             Some(gt) => start + gt,
-            // An unclosed tag at the end of a truncated page — the cap in
+            // An unclosed tag at the end of a truncated document — the cap in
             // `fetch_page` makes this the ordinary case rather than a malformed
-            // one, so it reads to the end rather than giving up on the page.
-            None => html.len(),
+            // one, so it reads to the end rather than giving up.
+            None => markup.len(),
         };
-        if let Some(body) = html.get(start + 5..end) {
-            out.push(Meta(body));
+        if let Some(body) = markup.get(past..end) {
+            out.push(Attrs(body));
         }
-        from = end.max(start + 5);
+        from = end.max(past);
     }
     out
 }
@@ -391,6 +448,82 @@ mod tests {
         let html = "<meta property='og:image' content='https://e.com/1.png'>\
                     <meta property='og:image' content='https://e.com/2.png'>";
         assert_eq!(card(html).image.as_deref(), Some("https://e.com/1.png"));
+    }
+
+    #[test]
+    fn a_feed_hands_over_its_newest_episode() {
+        let xml = r#"<rss version="2.0"><channel>
+            <title>The Wexford Enquiry</title>
+            <item>
+              <title>Episode 12</title>
+              <enclosure url="https://cdn.example.com/ep12.mp3" length="9" type="audio/mpeg"/>
+            </item>
+            <item>
+              <title>Episode 11</title>
+              <enclosure url="https://cdn.example.com/ep11.mp3" length="9" type="audio/mpeg"/>
+            </item>
+        </channel></rss>"#;
+        let card = feed(xml);
+        assert_eq!(card.title.as_deref(), Some("The Wexford Enquiry"));
+        assert_eq!(
+            card.media,
+            Some(Media {
+                url: "https://cdn.example.com/ep12.mp3".into(),
+                mime: "audio/mpeg".into(),
+            })
+        );
+        // No cover art: it got the file, so there is no printed still to make.
+        assert_eq!(card.image, None);
+    }
+
+    /// Found on a live feed, not in a fixture. NPR's enclosure URL is a
+    /// tracking redirect with a query string, and every `&` in it arrives as
+    /// `&amp;` — which is what an XML attribute containing an ampersand looks
+    /// like. Fetching it verbatim asks for parameters nobody has.
+    #[test]
+    fn an_ampersand_in_an_enclosure_url_is_an_ampersand() {
+        let xml = r#"<rss><channel><item><enclosure
+            url="https://cdn.example.com/ep.mp3?a=1&amp;b=2&amp;c=3" type="audio/mpeg"/>
+        </item></channel></rss>"#;
+        assert_eq!(
+            feed(xml).media.map(|m| m.url),
+            Some("https://cdn.example.com/ep.mp3?a=1&b=2&c=3".to_string())
+        );
+    }
+
+    #[test]
+    fn an_entity_is_decoded_once_and_not_twice() {
+        // A title that is *about* an entity — "&amp;amp;" is how a page writes
+        // the five characters `&amp;`, and decoding it twice would silently
+        // rewrite what somebody wrote.
+        let html = r#"<meta property="og:title" content="Write &amp;amp; for an ampersand">"#;
+        assert_eq!(
+            card(html).title.as_deref(),
+            Some("Write &amp; for an ampersand")
+        );
+    }
+
+    #[test]
+    fn an_atom_feed_spells_it_as_a_link_and_is_read_the_same_way() {
+        let xml = r#"<feed><title>The Wexford Enquiry</title><entry>
+            <link rel="alternate" href="https://example.com/ep12" type="text/html"/>
+            <link rel="enclosure" href="https://cdn.example.com/ep12.m4a" type="audio/mp4"/>
+        </entry></feed>"#;
+        let card = feed(xml);
+        assert_eq!(card.media.as_ref().map(|m| m.mime.as_str()), Some("audio/mp4"));
+        // And the alternate link, which is a web page, is not mistaken for one.
+        assert_eq!(
+            card.media.map(|m| m.url),
+            Some("https://cdn.example.com/ep12.m4a".to_string())
+        );
+    }
+
+    #[test]
+    fn a_feed_enclosing_something_that_is_not_media_hands_over_nothing() {
+        let xml = r#"<rss><channel><item>
+            <enclosure url="https://e.com/newsletter.pdf" type="application/pdf"/>
+        </item></channel></rss>"#;
+        assert_eq!(feed(xml).media, None);
     }
 
     #[test]
