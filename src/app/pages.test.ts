@@ -21,6 +21,7 @@ function pageAt(index: number): DocumentPage {
     width: 595,
     height: 842,
     content: { kind: "plain", text: `page ${index}` },
+    cues: [],
   };
 }
 

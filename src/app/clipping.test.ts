@@ -27,6 +27,8 @@ import { Camera } from "@/state/camera";
 import { Scene } from "@/state/scene";
 
 const SHA = "d0c5".padEnd(64, "0");
+/** The recording a transcript is a transcript of — T-287. */
+const OTHER_SHA = "7a9e".padEnd(64, "1");
 const CLIP_SHA = "c11b".padEnd(64, "0");
 
 const SCAN: PageContent = {
@@ -51,6 +53,8 @@ let drawn: number;
 let encoded: { bytes: Uint8Array; mime: string } | null;
 /** What the caret hit test finds under the rectangle on a typed page. */
 let passage: string;
+/** Where the injected passage started in the page, for a transcript's cue. */
+let startedAt: number;
 /** What the rectangle crossed on a typed page — T-331, Q-290. */
 let overFigure: FigureUnder | null;
 
@@ -110,7 +114,7 @@ function clipper(): Clipper {
       return Promise.resolve({ sha256: CLIP_SHA, w: 480, h: 300, size: bytes.length });
     },
     stored: (sha256) => held.push(sha256),
-    passage: () => passage,
+    passage: () => ({ text: passage, at: startedAt }),
     say: (message) => said.push(message),
   });
 }
@@ -144,8 +148,9 @@ beforeEach(() => {
   drawn = 1;
   encoded = { bytes: new Uint8Array([1, 2, 3, 4]), mime: "image/webp" };
   passage = "the third invoice has no counter-signature";
+  startedAt = 0;
   overFigure = null;
-  page = { sha256: SHA, index: 4, content: SCAN, origName: "scan.pdf" };
+  page = { sha256: SHA, index: 4, content: SCAN, origName: "scan.pdf", cues: [], of: null };
   registerAsset(
     board,
     SHA,
@@ -174,7 +179,7 @@ describe("what a rectangle yields, by what is on the page", () => {
     // typed page are our hand on our paper — lifting them would photograph the
     // reading surface and call it the document.
     const id = folder();
-    page = { sha256: SHA, index: 4, content: TYPED, origName: "scan.pdf" };
+    page = { sha256: SHA, index: 4, content: TYPED, origName: "scan.pdf", cues: [], of: null };
     clipper().cut(id, rect(-100, -80, 60, 70));
     await settled();
 
@@ -190,7 +195,7 @@ describe("what a rectangle yields, by what is on the page", () => {
     // only `text` left the commonest typed page falling through to the picture
     // arm, which a mutation caught and this stops.
     const id = folder();
-    page = { sha256: SHA, index: 2, content: { kind: "plain", text: "..." }, origName: "notes.txt" };
+    page = { sha256: SHA, index: 2, content: { kind: "plain", text: "..." }, origName: "notes.txt", cues: [], of: null };
     clipper().cut(id, rect(-100, -80, 60, 70));
     await settled();
 
@@ -202,7 +207,7 @@ describe("what a rectangle yields, by what is on the page", () => {
 
   it("writes the passage with its citation under it, on index stock", async () => {
     const id = folder();
-    page = { sha256: SHA, index: 4, content: TYPED, origName: "scan.pdf" };
+    page = { sha256: SHA, index: 4, content: TYPED, origName: "scan.pdf", cues: [], of: null };
     clipper().cut(id, rect(-100, -80, 60, 70));
     await settled();
 
@@ -238,7 +243,7 @@ describe("what a rectangle yields, by what is on the page", () => {
 
     it("fits the citation on the paper, not past the bottom of it", async () => {
       const id = folder();
-      page = { sha256: SHA, index: 1, content: TYPED, origName: "filing.pdf" };
+      page = { sha256: SHA, index: 1, content: TYPED, origName: "filing.pdf", cues: [], of: null };
       passage = [
         "MATTER OF HARTLEY",
         "and in the matter of an application under section 12",
@@ -265,7 +270,7 @@ describe("what a rectangle yields, by what is on the page", () => {
         sha256: SHA,
         index: 12,
         content: TYPED,
-        origName: "witness-statement-second-supplemental-exhibit-B.pdf",
+        origName: "witness-statement-second-supplemental-exhibit-B.pdf", cues: [], of: null
       };
       passage = "he did not";
       clipper().cut(id, rect(-100, -80, 60, 70));
@@ -284,7 +289,7 @@ describe("what a rectangle yields, by what is on the page", () => {
       // separate facts because "unchanged" was the guess and it was wrong by
       // six units — `NOTE_MIN_H` hid the two rows on this card but not quite.
       const id = folder();
-      page = { sha256: SHA, index: 4, content: TYPED, origName: "scan.pdf" };
+      page = { sha256: SHA, index: 4, content: TYPED, origName: "scan.pdf", cues: [], of: null };
       passage = "the third invoice has no counter-signature";
       clipper().cut(id, rect(-100, -80, 60, 70));
       await settled();
@@ -299,7 +304,7 @@ describe("what a rectangle yields, by what is on the page", () => {
 
   it("threads a written card exactly as it threads a picture", async () => {
     const id = folder();
-    page = { sha256: SHA, index: 4, content: TYPED, origName: "scan.pdf" };
+    page = { sha256: SHA, index: 4, content: TYPED, origName: "scan.pdf", cues: [], of: null };
     clipper().cut(id, rect(-100, -80, 60, 70));
     await settled();
 
@@ -314,7 +319,7 @@ describe("what a rectangle yields, by what is on the page", () => {
     // a figure is the original image laid on our paper, which is exactly the
     // standing Q-199 gives a scan.
     const id = folder();
-    page = { sha256: SHA, index: 5, content: TYPED, origName: "filing.pdf" };
+    page = { sha256: SHA, index: 5, content: TYPED, origName: "filing.pdf", cues: [], of: null };
     overFigure = "drawn";
     clipper().cut(id, rect(-100, -80, 60, 70));
     await settled();
@@ -331,7 +336,7 @@ describe("what a rectangle yields, by what is on the page", () => {
     // one thing no other gesture on this board reaches. So the picture wins
     // outright rather than by a ratio nobody can see while they are dragging.
     const id = folder();
-    page = { sha256: SHA, index: 5, content: TYPED, origName: "filing.pdf" };
+    page = { sha256: SHA, index: 5, content: TYPED, origName: "filing.pdf", cues: [], of: null };
     overFigure = "drawn";
     passage = "The premises as they stood on the evening in question:";
     clipper().cut(id, rect(-100, -80, 60, 70));
@@ -344,7 +349,7 @@ describe("what a rectangle yields, by what is on the page", () => {
 
   it("is still the words on a page whose figure the rectangle missed", async () => {
     const id = folder();
-    page = { sha256: SHA, index: 5, content: TYPED, origName: "filing.pdf" };
+    page = { sha256: SHA, index: 5, content: TYPED, origName: "filing.pdf", cues: [], of: null };
     overFigure = null;
     clipper().cut(id, rect(-100, -80, 60, 70));
     await settled();
@@ -359,7 +364,7 @@ describe("what a rectangle yields, by what is on the page", () => {
     // under the cursor is at that moment explaining itself, and a board that
     // argues with its own page is worse than one that says nothing.
     const id = folder();
-    page = { sha256: SHA, index: 5, content: TYPED, origName: "filing.pdf" };
+    page = { sha256: SHA, index: 5, content: TYPED, origName: "filing.pdf", cues: [], of: null };
     overFigure = "unliftable";
     passage = "";
     clipper().cut(id, rect(-100, -80, 60, 70));
@@ -374,7 +379,7 @@ describe("what a rectangle yields, by what is on the page", () => {
     // Q-290 gives the picture the rectangle, and here there is no picture to
     // give — so the words are the only thing that was ever there.
     const id = folder();
-    page = { sha256: SHA, index: 5, content: TYPED, origName: "filing.pdf" };
+    page = { sha256: SHA, index: 5, content: TYPED, origName: "filing.pdf", cues: [], of: null };
     overFigure = "unliftable";
     clipper().cut(id, rect(-100, -80, 60, 70));
     await settled();
@@ -388,7 +393,7 @@ describe("what a rectangle yields, by what is on the page", () => {
     // one in the running app. Asserted anyway because the guard is a `kind`
     // check a refactor could widen without anything noticing.
     const id = folder();
-    page = { sha256: SHA, index: 2, content: { kind: "plain", text: "..." }, origName: "notes.txt" };
+    page = { sha256: SHA, index: 2, content: { kind: "plain", text: "..." }, origName: "notes.txt", cues: [], of: null };
     overFigure = "drawn";
     clipper().cut(id, rect(-100, -80, 60, 70));
     await settled();
@@ -401,7 +406,7 @@ describe("what a rectangle yields, by what is on the page", () => {
     // AC-855, and the same answer the picture arm gives when nothing could be
     // drawn: no card, no pin, no string.
     const id = folder();
-    page = { sha256: SHA, index: 4, content: TYPED, origName: "scan.pdf" };
+    page = { sha256: SHA, index: 4, content: TYPED, origName: "scan.pdf", cues: [], of: null };
     passage = "   ";
     clipper().cut(id, rect(-100, -80, 60, 70));
     await settled();
@@ -413,7 +418,7 @@ describe("what a rectangle yields, by what is on the page", () => {
 
   it("says so on a page that is blank or unreadable", async () => {
     const id = folder();
-    page = { sha256: SHA, index: 4, content: { kind: "empty" }, origName: "scan.pdf" };
+    page = { sha256: SHA, index: 4, content: { kind: "empty" }, origName: "scan.pdf", cues: [], of: null };
     clipper().cut(id, rect(-100, -80, 60, 70));
     await settled();
 
@@ -474,7 +479,7 @@ describe("what a rectangle yields, by what is on the page", () => {
    */
   it("tapes it to the page the rectangle was drawn on", async () => {
     const id = folder();
-    page = { sha256: SHA, index: 7, content: SCAN, origName: "scan.pdf" };
+    page = { sha256: SHA, index: 7, content: SCAN, origName: "scan.pdf", cues: [], of: null };
     clipper().cut(id, rect(-100, -80, 60, 70));
     await settled();
 
@@ -494,13 +499,90 @@ describe("what a rectangle yields, by what is on the page", () => {
    */
   it("tapes a quotation to its page too, on the written arm", async () => {
     const id = folder();
-    page = { sha256: SHA, index: 3, content: { kind: "plain", text: "..." }, origName: "notes.txt" };
+    page = { sha256: SHA, index: 3, content: { kind: "plain", text: "..." }, origName: "notes.txt", cues: [], of: null };
     clipper().cut(id, rect(-100, -80, 60, 70));
     await settled();
 
     const taped = [...board.pins.values()].find((map) => map.get("parent") === id)!;
     expect(taped.get("kind")).toBe("tape");
     expect(taped.get("page")).toBe(3);
+  });
+
+  /**
+   * T-287, Q-301. A transcript is a page like any other and is quoted by the
+   * same gesture — but what the card *says it came from* is the one thing
+   * about it that is not like any other page. The sidecar is a file nobody put
+   * on the wall and nobody thinks of as having pages, so `interview.srt p. 1`
+   * names the wrong file and gives a number that cannot be followed back.
+   */
+  it("cites a recording and the moment, not the sidecar and a page", async () => {
+    const id = folder();
+    passage = "I asked him twice and he gave me the same answer";
+    page = {
+      sha256: SHA,
+      index: 1,
+      content: { kind: "plain", text: "..." },
+      origName: "interview.srt",
+      cues: [
+        { offset: 0, at: 0 },
+        { offset: 46, at: 724 },
+      ],
+      of: { sha256: OTHER_SHA, origName: "interview.mp3" },
+    };
+    clipper().cut(id, rect(-100, -80, 60, 70));
+    await settled();
+
+    const made = card(id)!;
+    const written = itemText(board, made)?.toString() ?? "";
+    expect(written).toContain("interview.mp3");
+    expect(written).not.toContain("interview.srt");
+    expect(written).not.toContain("p. 1");
+  });
+
+  /**
+   * The offset is what picks the cue, and picking the wrong one is a citation
+   * that is plausible, precise and wrong — the worst kind on a board of
+   * evidence. Two cues and a passage that starts inside the second.
+   */
+  it("cites the cue the passage started in and not the first on the page", async () => {
+    const id = folder();
+    page = {
+      sha256: SHA,
+      index: 1,
+      content: { kind: "plain", text: "..." },
+      origName: "interview.srt",
+      cues: [
+        { offset: 0, at: 0 },
+        { offset: 46, at: 724 },
+      ],
+      of: { sha256: OTHER_SHA, origName: "interview.mp3" },
+    };
+    startedAt = 60;
+    clipper().cut(id, rect(-100, -80, 60, 70));
+    await settled();
+    expect(itemText(board, card(id)!)?.toString()).toContain("interview.mp3 12:04");
+  });
+
+  it("cites the recording alone when the quote starts before any cue", async () => {
+    // A weaker reference rather than a broken one, which is the form
+    // `pageReference` already takes for a document with no pages of its own.
+    const id = folder();
+    page = {
+      sha256: SHA,
+      index: 1,
+      content: { kind: "plain", text: "..." },
+      origName: "interview.srt",
+      cues: [{ offset: 40, at: 724 }],
+      of: { sha256: OTHER_SHA, origName: "interview.mp3" },
+    };
+    startedAt = 0;
+    clipper().cut(id, rect(-100, -80, 60, 70));
+    await settled();
+
+    const written = itemText(board, card(id)!)?.toString() ?? "";
+    expect(written).toContain("interview.mp3");
+    expect(written).not.toContain("12:04");
+    expect(written).not.toContain("0:00");
   });
 
   it("holds the bytes it just wrote, rather than waiting to be told", async () => {
@@ -649,7 +731,7 @@ describe("what a rectangle yields, by what is on the page", () => {
     const slot = scene.slotOf(id)!;
     scene.swing[slot] = 0.028;
     scene.driftX[slot] = 7;
-    page = { sha256: SHA, index: 4, content: TYPED, origName: "scan.pdf" };
+    page = { sha256: SHA, index: 4, content: TYPED, origName: "scan.pdf", cues: [], of: null };
     const before = { ...readItem(id, board.items.get(id)!)! };
     clipper().cut(id, rect(-100, -80, 60, 70));
     await settled();

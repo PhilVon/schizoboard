@@ -3057,11 +3057,24 @@ async function boot(): Promise<void> {
       const page = reader.page(sha256, index).page;
       if (page === null) return null;
       const record = board.assets.get(sha256);
+      // What the item itself is wearing, which for a recording is the tape and
+      // for a case file is the same hash again. The difference between the two
+      // is the whole of what makes this page a *transcript* rather than a
+      // document, and it is the one thing a citation has to know: a quote off a
+      // transcript names the recording and the moment, never the sidecar and a
+      // page number (T-287, Q-301).
+      const worn = scene.cold(itemId)?.assetId ?? null;
+      const tape = worn !== null && worn !== sha256 ? board.assets.get(worn) : undefined;
       return {
         sha256,
         index: page.index,
         content: page.content,
         origName: (record ? readAsset(sha256, record)?.origName : null) ?? null,
+        cues: page.cues,
+        of:
+          worn === null || tape === undefined
+            ? null
+            : { sha256: worn, origName: readAsset(worn, tape)?.origName ?? null },
       };
     },
     rasterise: (itemId, ctx, camera) => items.rasteriseInFrame(scene, itemId, ctx, camera),
@@ -3108,7 +3121,15 @@ async function boot(): Promise<void> {
      */
     passage: (itemId, rect) => {
       const span = passageUnder(itemId, rect);
-      return span === null ? "" : quotationIn(span);
+      if (span === null) return { text: "", at: 0 };
+      // Where the passage began, in the page's own text — what a transcript's
+      // citation is built from (T-287). `startOffset` is a `Range`'s offset in
+      // its container, and a plain page is written with `textContent`, so its
+      // whole text is one node and the two are the same number. A typed page is
+      // built out of many nodes and this is an offset into whichever one the
+      // caret landed in — which no citation reads, because a typed page has no
+      // cues and is cited by its page number.
+      return { text: quotationIn(span), at: span.startOffset };
     },
     /**
      * Whether the rectangle crossed a picture on the page — T-331, Q-290.

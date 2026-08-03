@@ -89,7 +89,7 @@ const arrived = (
   figureUrls: readonly (string | null)[] = [],
 ): PageView => ({
   phase: "ready",
-  page: { index, width: 595, height: 842, content },
+  page: { index, width: 595, height: 842, content, cues: [] },
   reason: null,
   imageUrl,
   figureUrls,

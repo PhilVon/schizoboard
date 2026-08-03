@@ -587,6 +587,13 @@ export function timeReference(
   seconds: number | null,
 ): string {
   const name = referenceName(filename, sha256);
-  const at = runtimeLabel(seconds);
+  // **Floored, where a runtime is rounded** — and the difference is what the
+  // two numbers are for. A runtime is a length, and a 90.6 second tape is
+  // fairly called a minute and a half. A citation is a *place to go and
+  // listen*, so it must never name a moment after the words: rounding a line
+  // said at 15.6 seconds to `0:16` sends somebody to a point where it has
+  // already been said. Half a second is nothing to a duration and is the whole
+  // of a short answer. Driven out of a transcript, not reasoned into one.
+  const at = runtimeLabel(seconds === null ? null : Math.floor(seconds));
   return at === "" ? name : `${name} ${at}`;
 }
