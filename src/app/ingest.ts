@@ -53,6 +53,18 @@ export type Ingested =
        * meant to put down is what keeps `layout`'s fan counting what they see.
        */
       sidecar?: { sha256: string; asset: AssetInput };
+      /**
+       * What to write under it — T-290.
+       *
+       * Only a *printed still* has one: a picture lifted off a page because the
+       * page was the thing somebody pasted, which needs to say what page it
+       * came from or it is an unattributed photograph of a stranger's website.
+       * Every other asset arrives with an empty caption, which is what a
+       * photograph you pasted yourself should have — D-46 gives a polaroid a
+       * caption in the person's own hand, and filling it in for them is not
+       * that.
+       */
+      caption?: string;
     }
   | { kind: "text"; text: string };
 
@@ -115,6 +127,23 @@ export function noteSizeFor(text: string): { w: number; h: number } {
 
 const IMAGE_EXTENSIONS = /\.(png|jpe?g|gif|webp|bmp|avif|heic|tiff?)($|\?|#)/i;
 
+/**
+ * The rest of what this board can hold, by the object each one becomes — T-289.
+ *
+ * A film, a recording and a document, beside the photograph that was here
+ * first. Nothing here decides what the file *is*: `Paste.accept` does that from
+ * the sniffed bytes, and this only decides whether the URL is worth one fetch.
+ *
+ * **`.html` and `.htm` are deliberately absent, and so is every page-shaped
+ * extension.** The shell has no signature for markup, so it falls back to
+ * `text/plain`, which `assetKind` calls a document — so a URL tried here would
+ * come back a *case file holding its own angle brackets*, which is the object
+ * Q-265 refused when it cut `rtf` and `html` from the extractors. A web page is
+ * a note with its address on it until somebody builds the thing that reads one.
+ */
+const FILE_EXTENSIONS =
+  /\.(mp3|m4a|aac|wav|flac|ogg|oga|opus|wma|mp4|m4v|mov|webm|mkv|avi|pdf|txt|md|csv|log|srt|vtt)($|\?|#)/i;
+
 export function isHttpUrl(text: string): boolean {
   const trimmed = text.trim();
   return /^https?:\/\/\S+$/i.test(trimmed) && !/\s/.test(trimmed);
@@ -129,6 +158,27 @@ export function isHttpUrl(text: string): boolean {
  */
 export function looksLikeImageUrl(url: string): boolean {
   return isHttpUrl(url) && IMAGE_EXTENSIONS.test(url);
+}
+
+/**
+ * Is this URL worth *trying* as a file at all — T-289.
+ *
+ * The same guess one kind wider, and it is the whole of what stood between a
+ * pasted `interview.mp3` and a cassette on the wall: the ingest gate has taken
+ * every kind since T-260 and the store has sniffed and measured them since
+ * T-262, so a direct media URL already had a cassette waiting for it and was
+ * never offered. It arrived as a note with its own address written on it.
+ *
+ * **Conservative on purpose, and the asymmetry with a local file is deliberate.**
+ * A file dragged in from the OS is something somebody chose; a URL is text that
+ * happened to be on a clipboard, and every guess that comes back wrong here
+ * costs a network fetch and can put an object on the wall that lies about what
+ * it is. So this asks for an extension it recognises rather than fetching to
+ * find out — which is also what keeps a YouTube link out of it (T-290), since a
+ * watch page names no file.
+ */
+export function looksLikeFileUrl(url: string): boolean {
+  return looksLikeImageUrl(url) || (isHttpUrl(url) && FILE_EXTENSIONS.test(url));
 }
 
 export interface PastedHtml {
@@ -308,7 +358,7 @@ export function layout(payloads: readonly Ingested[], at: BoardPoint): CreateIte
       seed,
       assetId: payload.kind === "asset" ? payload.sha256 : null,
       ...(payload.kind === "asset" ? { asset: payload.asset } : {}),
-      text: payload.kind === "text" ? payload.text : "",
+      text: payload.kind === "text" ? payload.text : (payload.caption ?? ""),
     };
   });
 }

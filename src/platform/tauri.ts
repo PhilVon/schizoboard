@@ -16,6 +16,7 @@ import { listen } from "@tauri-apps/api/event";
 
 import type {
   AssetMeta,
+  PageCard,
   AssetVariant,
   BundleOpened,
   BundleSpec,
@@ -129,6 +130,10 @@ export class TauriPlatform implements Platform {
 
   assetIngestUrl(url: string): Promise<AssetMeta> {
     return invoke<AssetMeta>("asset_ingest_url", { url });
+  }
+
+  pageCard(url: string): Promise<PageCard> {
+    return invoke<PageCard>("page_card", { url });
   }
 
   assetHas(hashes: string[]): Promise<boolean[]> {

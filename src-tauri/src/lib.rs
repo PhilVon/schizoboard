@@ -34,6 +34,10 @@ mod docstore;
 // a tape (T-302). The rest of it — the pages themselves — is `reading`.
 pub mod document;
 mod media;
+// What a page says it is (T-289, Q-304). `pub` so the fetch that feeds it and
+// the command that answers with it can both name the type; the parser itself
+// touches no network and is testable on a string.
+pub mod opengraph;
 // `pub` for the reason `document` is, and reached through `reading` (T-318).
 pub mod pages;
 mod print;
@@ -663,6 +667,27 @@ async fn asset_ingest_url(app: AppHandle, url: String) -> Result<AssetMeta, asse
     .await?;
     schedule_variants(&app, meta.sha256.clone());
     Ok(meta)
+}
+
+/// What a page says it is — T-289, T-290, Q-304.
+///
+/// The other half of a pasted URL. `asset_ingest_url` is for an address that
+/// names a file; this is for one that names a *page about* a file, which is
+/// what an archive.org item, a Commons file page and a watch page all are.
+///
+/// **It ingests nothing and returns no bytes.** What comes back is four strings
+/// the page said about itself, and the frontend decides what to do with them —
+/// which is the same division `document_page` keeps: Rust reads, the frontend
+/// means. A lead in `image` goes back through `asset_ingest_url` like any other
+/// picture, so the store still sniffs every byte that becomes an object and no
+/// page's claim about itself is ever believed about a file.
+///
+/// Errors are strings rather than `Refusal`s: a page that will not load is not
+/// a paste being refused, it is a paste falling back to the note it was always
+/// going to be if this failed.
+#[tauri::command]
+async fn page_card(url: String) -> Result<opengraph::Card, String> {
+    blocking(move || assets::fetch_page(&url).map(|html| opengraph::card(&html))).await
 }
 
 #[tauri::command]
@@ -1369,6 +1394,7 @@ pub fn run() {
             asset_ingest_bytes,
             asset_ingest_path,
             asset_ingest_url,
+            page_card,
             asset_has,
             asset_export,
             asset_gc,

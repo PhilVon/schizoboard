@@ -45,14 +45,14 @@ import {
   decodeDataUrl,
   isHttpUrl,
   layout,
-  looksLikeImageUrl,
+  looksLikeFileUrl,
   readHtml,
   resolveAgainst,
   type BoardPoint,
   type Ingested,
 } from "@/app/ingest";
 import { assetKind } from "@/lib/objects";
-import type { AssetMeta, Platform } from "@/platform/types";
+import type { AssetMeta, PageCard, Platform } from "@/platform/types";
 import { refusalOf } from "@/platform/types";
 import type { Camera } from "@/state/camera";
 import { isTextTarget } from "@/state/input";
@@ -530,7 +530,13 @@ export class Paste {
    * a blank square — and so would any URL that answered 200 with an HTML
    * interstitial or a tracking pixel's JSON.
    */
-  private accept(out: Ingested[], meta: AssetMeta, what: string, origName?: string): void {
+  private accept(
+    out: Ingested[],
+    meta: AssetMeta,
+    what: string,
+    origName?: string,
+    caption?: string,
+  ): void {
     const kind = assetKind(meta.mime);
     // Decided from the sniffed bytes and never from the name. `meta.mime` is
     // the shell's answer after reading the magic numbers (`assets.rs`), so a
@@ -577,6 +583,10 @@ export class Paste {
         // a file this machine has.
         ...(meta.pages !== null ? { pages: meta.pages } : {}),
       },
+      // Only a printed still has one — see `Ingested`. Omitted rather than
+      // passed as `""`, so a photograph's caption stays the empty thing the
+      // person is meant to write in themselves.
+      ...(caption !== undefined && caption !== "" ? { caption } : {}),
     });
   }
 
@@ -706,7 +716,7 @@ export class Paste {
       sources.slice(0, MAX_REMOTE_FETCHES),
       "images in the pasted markup",
     )) {
-      await this.fetchImage(out, source);
+      await this.fetchFile(out, source);
     }
     return out;
   }
@@ -715,19 +725,90 @@ export class Paste {
     const text = raw.trim();
     if (!text) return [];
     // "A URL: note showing the URL; if it's an image URL, fetched natively (no
-    // CORS wall) and made a polaroid."
-    if (looksLikeImageUrl(text)) {
+    // CORS wall) and made a polaroid." — and since T-289 that is true of a film,
+    // a recording and a document too. Nothing here decides which: the store
+    // sniffs the bytes and `accept` picks the object, exactly as it does for a
+    // file dragged in from the OS.
+    if (looksLikeFileUrl(text)) {
       const out: Ingested[] = [];
-      await this.fetchImage(out, text);
+      await this.fetchFile(out, text);
       if (out.length > 0) return out;
-      // The fetch failed, or what came back was not a picture. The URL is still
-      // what the user copied, so it falls through and becomes a note — which is
-      // the other half of the same row.
+      // The fetch failed, or what came back was refused. The URL is still what
+      // the user copied, so it falls through and becomes a note — which is the
+      // other half of the same row, and is what a link to a web page has always
+      // been.
+    } else if (isHttpUrl(text)) {
+      // An address that names no file. Most of what anybody pastes is one of
+      // these, and until T-289 every one of them was a note — including the
+      // archive.org item and the Commons file page that have the thing you
+      // wanted one link away.
+      const out = await this.fromPage(text);
+      if (out.length > 0) return out;
     }
     return [{ kind: "text", text }];
   }
 
-  private async fetchImage(out: Ingested[], source: string): Promise<void> {
+  /**
+   * A page, read for what it says it is — T-289, T-290, Q-304.
+   *
+   * Two outcomes and they are different objects, which is the point.
+   *
+   * **A page that declares real media gets the media.** An archive.org item
+   * says its audio is `audio/mpeg` and names the mp3, so what lands is the
+   * cassette, and the page was only ever the way to find it.
+   *
+   * **Anything else that offers a picture gets a printed still** — a polaroid
+   * of whatever the page shows, with the page's title and its address written
+   * underneath. That is T-290's object, and the reason it is not a tape is one
+   * line up in Rust: a watch page's `og:video` is a player typed `text/html`,
+   * and `opengraph.rs` will not call that media. So the honest thing arrives —
+   * a picture of the thing, and the address to go and watch it — rather than a
+   * VHS that cannot play.
+   *
+   * Empty for everything else, which is most of the web, and the caller then
+   * makes the note it would always have made. A page that will not load is the
+   * same answer: `pageCard` rejects, and a link that turns out to be dead is
+   * still the link somebody copied.
+   */
+  private async fromPage(url: string): Promise<Ingested[]> {
+    let card;
+    try {
+      card = await this.options.native.pageCard(url);
+    } catch (error) {
+      // Not said out loud. Every URL anybody pastes comes through here, and a
+      // sentence about Open Graph on each one would be the board explaining its
+      // own plumbing for the ordinary case of pasting a link.
+      console.warn(`could not read ${url} as a page:`, error);
+      return [];
+    }
+
+    const out: Ingested[] = [];
+    if (card.media !== null) {
+      await this.fetchFile(out, card.media.url);
+      if (out.length > 0) return out;
+      // Declared and then would not come. Falls through to the still, which is
+      // a weaker object rather than a broken one.
+    }
+    if (card.image !== null) {
+      await this.fetchFile(out, card.image, captionFor(card, url));
+    }
+    return out;
+  }
+
+  /**
+   * Fetch one address and offer whatever came back to the gate.
+   *
+   * Named for the file rather than for the picture since T-289, because that is
+   * all it ever did: it ingests bytes and `accept` decides what they are. Its
+   * two callers ask different questions and neither is answered here — the
+   * markup arm is asking about an `<img src>` it found, and the text arm about
+   * a URL somebody copied.
+   */
+  private async fetchFile(
+    out: Ingested[],
+    source: string,
+    caption?: string,
+  ): Promise<void> {
     const { native } = this.options;
     try {
       const decoded = decodeDataUrl(source);
@@ -736,7 +817,7 @@ export class Paste {
         return;
       }
       if (!isHttpUrl(source)) return;
-      this.accept(out, await native.assetIngestUrl(source), source, baseName(source));
+      this.accept(out, await native.assetIngestUrl(source), source, baseName(source), caption);
     } catch (error) {
       // Not fatal, and not silent. A photograph that would not come is a note
       // with its address on it, which is more use than nothing.
@@ -749,6 +830,27 @@ export class Paste {
     console.warn(`paste: taking ${MAX_PER_PASTE} of ${values.length} ${what}`);
     return values.slice(0, MAX_PER_PASTE);
   }
+}
+
+/**
+ * What goes under a printed still — T-290.
+ *
+ * > a printed still with the title and the URL written under it
+ *
+ * The address as well as the title, and the address is the load-bearing half:
+ * this object exists *because* the thing itself could not be brought onto the
+ * board, so the one thing it owes somebody is the way back to it. A title alone
+ * would be a photograph of a website with a caption, which is the object that
+ * lies.
+ *
+ * The site's name is left out. `og:site_name` is usually the host with a
+ * capital letter — "YouTube" over a youtube.com address — and the URL is
+ * already saying it, in the form somebody can actually follow.
+ */
+function captionFor(card: PageCard, url: string): string {
+  const title = (card.title ?? "").trim();
+  return title === "" ? url : `${title}
+${url}`;
 }
 
 /** Did the clipboard hold anything at all? Used only to tell a paste that found

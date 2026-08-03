@@ -15,6 +15,7 @@ import { Paste } from "@/app/paste";
 import type {
   AssetMeta,
   ClipboardPayload,
+  PageCard,
   Platform,
   PlatformEvents,
   Refusal,
@@ -84,10 +85,24 @@ class FakeNative {
     if (this.refuse.has(path)) throw new Error("no such file");
     return this.meta(`p${path}`, this.mimeFor.get(path));
   }
+  /** What each address says about itself, for the pages a test sets up. */
+  readonly cardFor = new Map<string, PageCard>();
+  async pageCard(url: string): Promise<PageCard> {
+    this.calls.push({ method: "card", arg: url });
+    const card = this.cardFor.get(url);
+    // A page nobody described is one that would not load, which is the
+    // ordinary answer for most of the web and the one that makes a note.
+    if (!card) throw new Error("not a page");
+    return card;
+  }
+
   async assetIngestUrl(url: string): Promise<AssetMeta> {
     this.calls.push({ method: "url", arg: url });
     if (this.refuse.has(url)) throw new Error("could not fetch");
-    return this.meta(`u${url}`);
+    // Through `mimeFor` like the path route, so a test can say what an address
+    // actually serves — without it every URL is a PNG and T-289's whole
+    // question ("what does a media URL become") cannot be asked.
+    return this.meta(`u${url}`, this.mimeFor.get(url));
   }
   async clipboardReadManifest(): Promise<{ kinds: ("files" | "text")[] }> {
     return { kinds: this.nativeFiles.length > 0 ? ["files"] : [] };
@@ -329,9 +344,153 @@ describe("what wins", () => {
     expect(note?.text).toBe("https://example.com/gone.png");
   });
 
+  /**
+   * T-289. The gate has taken every kind since T-260 and the store has sniffed
+   * and measured them since T-262, so a cassette was already waiting for a
+   * pasted `interview.mp3` — the URL was simply never offered, and arrived as a
+   * note with its own address written on it.
+   */
+  it("fetches a direct media URL and puts the recording on the wall", async () => {
+    native.mimeFor.set("https://example.com/interview.mp3", "audio/mpeg");
+    await firePaste({ text: "https://example.com/interview.mp3" });
+
+    expect(native.calls).toEqual([{ method: "url", arg: "https://example.com/interview.mp3" }]);
+    const made = itemsOnBoard()[0]!;
+    const record = board.assets.get(String(made.assetId));
+    expect(record?.get("mime")).toBe("audio/mpeg");
+    // And the duration the shell measured at ingest, which is what the spine
+    // and the J-card are written from and has no second chance to be taken.
+    expect(record?.get("duration")).toBe(92);
+  });
+
+  it("fetches a direct film URL too, and keeps what it was called", async () => {
+    native.mimeFor.set("https://example.com/reel.mp4", "video/mp4");
+    await firePaste({ text: "https://example.com/reel.mp4" });
+
+    const made = itemsOnBoard()[0]!;
+    const record = board.assets.get(String(made.assetId));
+    expect(record?.get("mime")).toBe("video/mp4");
+    expect(record?.get("origName")).toBe("reel.mp4");
+  });
+
+  /**
+   * The refusing half of the same gesture (T-290). A watch page names no file,
+   * so the guess never reaches for it — and it must not, because what comes
+   * back is markup, which sniffs as text and would arrive as a *case file
+   * holding its own angle brackets*.
+   */
+  it("never fetches a watch page, which names no file", async () => {
+    await firePaste({ text: "https://www.youtube.com/watch?v=dQw4w9WgXcQ" });
+    // It is *read* as a page (T-289) — that is how the still is found — but it
+    // is never handed to the ingest as a file, which is what would come back
+    // markup and become a case file full of angle brackets.
+    expect(native.calls.filter((c) => c.method === "url")).toEqual([]);
+    expect(itemsOnBoard()[0]!.type).toBe("note");
+  });
+
+  it("never fetches a page, whatever it is called", async () => {
+    // Q-265 cut `html` from the extractors for this reason: the shell has no
+    // signature for markup, so it falls back to text/plain, which `assetKind`
+    // calls a document. A fetched page would open as angle brackets set in the
+    // board's own hand.
+    await firePaste({ text: "https://example.com/report.html" });
+    // Read as a page, never ingested as one. A `.html` address IS a page, so
+    // asking it what it says is right; handing it to the store is what Q-265
+    // refused.
+    expect(native.calls.filter((c) => c.method === "url")).toEqual([]);
+    expect(itemsOnBoard()[0]!.type).toBe("note");
+  });
+
+  /**
+   * T-289, Q-304. The page was only ever the way to find the file: an
+   * archive.org item declares its audio and names the mp3, and what lands is
+   * the cassette.
+   */
+  it("takes the media a page declares, and the page is not the object", async () => {
+    native.cardFor.set("https://archive.org/details/wexford", {
+      title: "The Wexford Tapes",
+      siteName: "Internet Archive",
+      image: "https://archive.org/services/img/wexford",
+      media: { url: "https://archive.org/download/wexford/01.mp3", mime: "audio/mpeg" },
+    });
+    native.mimeFor.set("https://archive.org/download/wexford/01.mp3", "audio/mpeg");
+
+    await firePaste({ text: "https://archive.org/details/wexford" });
+
+    const made = itemsOnBoard()[0]!;
+    const record = board.assets.get(String(made.assetId));
+    expect(record?.get("mime")).toBe("audio/mpeg");
+    // And the still it also offered was never fetched: the recording is the
+    // thing, and a photograph of the page beside it would be clutter.
+    expect(native.calls).toEqual([
+      { method: "card", arg: "https://archive.org/details/wexford" },
+      { method: "url", arg: "https://archive.org/download/wexford/01.mp3" },
+    ]);
+  });
+
+  /**
+   * The other outcome, and T-290's whole object. A watch page declares an
+   * `og:video` that is a player rather than a film, so Rust hands over no media
+   * at all — see `opengraph.rs`. What is left is a picture and an address.
+   */
+  it("makes a printed still of a page whose video is not a film", async () => {
+    native.cardFor.set("https://www.youtube.com/watch?v=abc", {
+      title: "The Wexford Interview",
+      siteName: "YouTube",
+      image: "https://i.ytimg.com/vi/abc/hq.jpg",
+      media: null,
+    });
+
+    await firePaste({ text: "https://www.youtube.com/watch?v=abc" });
+
+    const made = itemsOnBoard()[0]!;
+    expect(made.assetId).not.toBeNull();
+    // The title and the address, under the picture. The address is the
+    // load-bearing half: this object exists because the thing itself could not
+    // be brought onto the board.
+    expect(made.text).toBe("The Wexford Interview\nhttps://www.youtube.com/watch?v=abc");
+  });
+
+  it("keeps the address alone when a page offers a picture and no title", async () => {
+    native.cardFor.set("https://e.com/thing", {
+      title: null,
+      siteName: null,
+      image: "https://e.com/thumb.jpg",
+      media: null,
+    });
+    await firePaste({ text: "https://e.com/thing" });
+    expect(itemsOnBoard()[0]!.text).toBe("https://e.com/thing");
+  });
+
+  it("writes nothing under a photograph somebody pasted themselves", async () => {
+    // A caption is the person's own hand (D-46). Only a printed still gets one
+    // written for it, because only it has to say where it came from.
+    await firePaste({ text: "https://example.com/a.png" });
+    expect(itemsOnBoard()[0]!.text).toBe("");
+  });
+
+  it("makes a note of a page with nothing to say", async () => {
+    native.cardFor.set("https://e.com/an-essay", {
+      title: "An essay",
+      siteName: null,
+      image: null,
+      media: null,
+    });
+    await firePaste({ text: "https://e.com/an-essay" });
+
+    const made = itemsOnBoard()[0]!;
+    expect(made.assetId).toBeNull();
+    // The URL, not the title: nothing was fetched, so this is the note the
+    // paste would always have made and it says what was on the clipboard.
+    expect(made.text).toBe("https://e.com/an-essay");
+  });
+
   it("leaves a URL that is not a picture as a note", async () => {
     await firePaste({ text: "https://example.com/an-article" });
-    expect(native.calls).toEqual([]);
+    // The page is *asked* now (T-289) and said nothing, which is the ordinary
+    // answer. What matters is unchanged: nothing was ingested and the note is
+    // the address somebody copied.
+    expect(native.calls).toEqual([{ method: "card", arg: "https://example.com/an-article" }]);
     expect(itemsOnBoard()[0]!.type).toBe("note");
   });
 

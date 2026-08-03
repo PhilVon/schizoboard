@@ -36,6 +36,7 @@ import {
   type DocState,
   type DocumentPage,
   type ExportKind,
+  type PageCard,
   type PageText,
   type Platform,
   type PlatformEvents,
@@ -243,6 +244,14 @@ export class MockPlatform implements Platform {
     // Deliberately not a `fetch`: it would work for a handful of permissive
     // hosts and fail for most, which is worse than failing consistently.
     return unavailable("Fetching a URL without a CORS wall");
+  }
+
+  pageCard(): Promise<PageCard> {
+    // For `assetIngestUrl`'s reason twice over: reading a page needs the fetch
+    // that has no CORS wall, and the SSRF rules that make one safe live in
+    // Rust. A browser build makes the note instead, which is what it made
+    // before any of this existed.
+    return unavailable("Reading what a page says it is");
   }
 
   async assetHas(hashes: string[]): Promise<boolean[]> {

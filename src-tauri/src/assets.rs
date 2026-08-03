@@ -813,6 +813,131 @@ fn fetch_error(e: ureq::Error) -> Error {
 /// sees `file:///etc/passwd`. Deleting it would weaken the error messages and
 /// nothing else — and deleting the resolver would remove the guarantee entirely,
 /// so if one of the two has to go, it is this one.
+/// What to do with a body that runs past the cap.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum OverCap {
+    /// Half a file is not a file. The only honest answer for an asset.
+    Refuse,
+    /// Read what fits and use it. Right only where the beginning is the part
+    /// that matters, which of a page it is.
+    Truncate,
+}
+
+/// What one guarded fetch came back with.
+pub struct Fetched {
+    pub bytes: Vec<u8>,
+    /// The declared type with its parameters stripped, or `None` if the server
+    /// said nothing. A claim, not evidence — [`sniff_mime`] is the evidence.
+    pub content_type: Option<String>,
+}
+
+/// Fetch one address, with every rule [`AssetStore::ingest_url`] documents.
+///
+/// **Extracted so that there is exactly one of these**, and that is the whole
+/// reason it is a function rather than a second loop written next to the first.
+/// The redirect walk is where this application's SSRF defence actually lives —
+/// each hop re-checked, relative locations refused, the body bounded after
+/// decompression — and a second copy of it would be a second thing to keep
+/// right, which is the way that defence would quietly stop being one.
+///
+/// `cap` is the caller's, because the two callers are bounding different
+/// things: an asset is bounded by what this build will hold, and a page is
+/// bounded by how much of a `<head>` is worth reading.
+///
+/// `over` is the caller's for the same reason, and the difference is not a
+/// detail. Half an asset is not an asset — a truncated JPEG is a broken file
+/// and refusing it is the only honest answer. Half a *page* is a page: the
+/// `<head>` arrives first and everything worth reading is in it, so a bound
+/// there is a bound on **work**, not a judgement about the page. Found by
+/// driving it: a YouTube watch page is over half a megabyte of markup and was
+/// failing with "too large for one asset", which is both the wrong words and
+/// the wrong answer — its Open Graph tags had arrived long before the cap.
+fn fetch(url: &str, cap: u64, over: OverCap) -> Result<Fetched> {
+    let agent = fetch_agent();
+
+    let mut current = url.to_string();
+    for _ in 0..=MAX_REDIRECTS {
+        check_fetchable(&current)?;
+        let mut response = agent.get(&current).call().map_err(fetch_error)?;
+
+        if response.status().is_redirection() {
+            let location = response
+                .headers()
+                .get("location")
+                .and_then(|v| v.to_str().ok())
+                .ok_or_else(|| Error::Fetch("redirect without a location".into()))?;
+            // Relative redirects are refused rather than resolved. Joining
+            // URLs correctly is a parser's job, and being wrong about it
+            // here means checking one host and fetching another.
+            if !(location.starts_with("http://") || location.starts_with("https://")) {
+                return Err(Error::Fetch("relative redirect".into()));
+            }
+            current = location.to_string();
+            continue;
+        }
+
+        let content_type = response
+            .headers()
+            .get("content-type")
+            .and_then(|v| v.to_str().ok())
+            .map(|v| v.split(';').next().unwrap_or(v).trim().to_string());
+
+        let mut bytes = Vec::new();
+        response
+            .body_mut()
+            .as_reader()
+            // One past the cap, so that going over is detectable at all — a
+            // read of exactly `cap` cannot tell a file that fits from one that
+            // was cut off at the boundary.
+            .take(cap + 1)
+            .read_to_end(&mut bytes)
+            .map_err(|e| Error::Fetch(e.to_string()))?;
+        if bytes.len() as u64 > cap {
+            match over {
+                OverCap::Refuse => return Err(Error::TooLarge(bytes.len() as u64)),
+                OverCap::Truncate => bytes.truncate(cap as usize),
+            }
+        }
+        return Ok(Fetched {
+            bytes,
+            content_type,
+        });
+    }
+    Err(Error::Fetch("too many redirects".into()))
+}
+
+/// How much of a page is worth reading to find what it says it is — T-289.
+///
+/// Open Graph tags live in `<head>`, so this is a bound on work rather than a
+/// limit a page can fail: what runs past it is dropped and what arrived is
+/// read (see [`OverCap`]). It is also what stops a hostile server holding a
+/// blocking thread open streaming an endless document, which `MAX_ASSET_BYTES`
+/// would do far too slowly to notice.
+///
+/// A megabyte because real pages are enormous. A YouTube watch page is over
+/// half of one before its `<head>` is done, which is what this was originally
+/// set to — the tags were arriving and being thrown away with the error.
+pub const MAX_PAGE_BYTES: u64 = 1024 * 1024;
+
+/// Fetch a page and hand back its markup, for [`crate::opengraph`].
+///
+/// Refuses anything the server does not call HTML. That is a claim rather than
+/// evidence, and here the claim is the right thing to trust: this is not asking
+/// what a file *is* — no object is made of these bytes and none of them reaches
+/// the store — it is asking a page what it says about itself, and a server that
+/// says it is not sending a page is answering that question.
+pub fn fetch_page(url: &str) -> Result<String> {
+    let got = fetch(url, MAX_PAGE_BYTES, OverCap::Truncate)?;
+    let declared = got.content_type.as_deref().unwrap_or("");
+    if !declared.eq_ignore_ascii_case("text/html") && !declared.eq_ignore_ascii_case("application/xhtml+xml") {
+        return Err(Error::Fetch(format!("{declared} is not a page")));
+    }
+    // Lossy, because a page's encoding is declared in the page and a mis-set
+    // charset must not lose the whole card — a replacement character in a title
+    // is a bad character, and a refusal here is no object at all.
+    Ok(String::from_utf8_lossy(&got.bytes).into_owned())
+}
+
 fn check_fetchable(url: &str) -> Result<()> {
     let uri: Uri = url
         .parse()
@@ -1684,48 +1809,8 @@ impl AssetStore {
     /// connect to another — is closed by the resolver, not by the pre-flight.
     /// See [`PublicOnlyResolver`] for why that distinction is the whole fix.
     pub fn ingest_url(&self, url: &str) -> Result<AssetMeta> {
-        let agent = fetch_agent();
-
-        let mut current = url.to_string();
-        for _ in 0..=MAX_REDIRECTS {
-            check_fetchable(&current)?;
-            let mut response = agent.get(&current).call().map_err(fetch_error)?;
-
-            if response.status().is_redirection() {
-                let location = response
-                    .headers()
-                    .get("location")
-                    .and_then(|v| v.to_str().ok())
-                    .ok_or_else(|| Error::Fetch("redirect without a location".into()))?;
-                // Relative redirects are refused rather than resolved. Joining
-                // URLs correctly is a parser's job, and being wrong about it
-                // here means checking one host and fetching another.
-                if !(location.starts_with("http://") || location.starts_with("https://")) {
-                    return Err(Error::Fetch("relative redirect".into()));
-                }
-                current = location.to_string();
-                continue;
-            }
-
-            let content_type = response
-                .headers()
-                .get("content-type")
-                .and_then(|v| v.to_str().ok())
-                .map(|v| v.split(';').next().unwrap_or(v).trim().to_string());
-
-            let mut bytes = Vec::new();
-            response
-                .body_mut()
-                .as_reader()
-                .take(MAX_ASSET_BYTES + 1)
-                .read_to_end(&mut bytes)
-                .map_err(|e| Error::Fetch(e.to_string()))?;
-            if bytes.len() as u64 > MAX_ASSET_BYTES {
-                return Err(Error::TooLarge(bytes.len() as u64));
-            }
-            return self.ingest_bytes(&bytes, content_type.as_deref());
-        }
-        Err(Error::Fetch("too many redirects".into()))
+        let got = fetch(url, MAX_ASSET_BYTES, OverCap::Refuse)?;
+        self.ingest_bytes(&got.bytes, got.content_type.as_deref())
     }
 
     // --- variants -----------------------------------------------------------
