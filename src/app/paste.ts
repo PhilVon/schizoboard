@@ -536,6 +536,7 @@ export class Paste {
     what: string,
     origName?: string,
     caption?: string,
+    from?: string,
   ): void {
     const kind = assetKind(meta.mime);
     // Decided from the sniffed bytes and never from the name. `meta.mime` is
@@ -587,6 +588,9 @@ export class Paste {
       // passed as `""`, so a photograph's caption stays the empty thing the
       // person is meant to write in themselves.
       ...(caption !== undefined && caption !== "" ? { caption } : {}),
+      // The page this stands in for, kept where rewriting the caption cannot
+      // reach it (T-290, Q-305).
+      ...(from !== undefined && from !== "" ? { source: from } : {}),
     });
   }
 
@@ -790,7 +794,7 @@ export class Paste {
       // a weaker object rather than a broken one.
     }
     if (card.image !== null) {
-      await this.fetchFile(out, card.image, captionFor(card, url));
+      await this.fetchFile(out, card.image, captionFor(card, url), url);
     }
     return out;
   }
@@ -808,6 +812,7 @@ export class Paste {
     out: Ingested[],
     source: string,
     caption?: string,
+    from?: string,
   ): Promise<void> {
     const { native } = this.options;
     try {
@@ -817,7 +822,7 @@ export class Paste {
         return;
       }
       if (!isHttpUrl(source)) return;
-      this.accept(out, await native.assetIngestUrl(source), source, baseName(source), caption);
+      this.accept(out, await native.assetIngestUrl(source), source, baseName(source), caption, from);
     } catch (error) {
       // Not fatal, and not silent. A photograph that would not come is a note
       // with its address on it, which is more use than nothing.

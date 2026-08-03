@@ -136,6 +136,10 @@ export class TauriPlatform implements Platform {
     return invoke<PageCard>("page_card", { url });
   }
 
+  openLink(url: string): Promise<void> {
+    return invoke<void>("open_link", { url });
+  }
+
   assetHas(hashes: string[]): Promise<boolean[]> {
     return invoke<boolean[]>("asset_has", { hashes });
   }

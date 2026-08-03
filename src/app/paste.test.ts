@@ -198,7 +198,13 @@ function imageFile(bytes: number, type = "image/png", name = "photo.png"): unkno
 }
 
 /** Everything on the board, oldest first. */
-function itemsOnBoard(): { type: string; assetId: string | null; text: string; x: number }[] {
+function itemsOnBoard(): {
+  type: string;
+  assetId: string | null;
+  source: string | null;
+  text: string;
+  x: number;
+}[] {
   const out = [];
   for (const [id, map] of board.items) {
     const fields = readItem(id, map);
@@ -207,6 +213,7 @@ function itemsOnBoard(): { type: string; assetId: string | null; text: string; x
     out.push({
       type: fields.type,
       assetId: fields.assetId,
+      source: fields.source,
       text: String(text ?? ""),
       x: fields.x,
     });
@@ -449,6 +456,45 @@ describe("what wins", () => {
     // load-bearing half: this object exists because the thing itself could not
     // be brought onto the board.
     expect(made.text).toBe("The Wexford Interview\nhttps://www.youtube.com/watch?v=abc");
+  });
+
+  /**
+   * T-290, Q-305. The address is in the caption too, and the caption is not
+   * good enough to open: it is text the person can edit, so the link would be
+   * destroyed by rewriting the words around it.
+   */
+  it("keeps the page it stands in for where editing cannot reach it", async () => {
+    native.cardFor.set("https://www.youtube.com/watch?v=abc", {
+      title: "The Wexford Interview",
+      siteName: "YouTube",
+      image: "https://i.ytimg.com/vi/abc/hq.jpg",
+      media: null,
+    });
+    await firePaste({ text: "https://www.youtube.com/watch?v=abc" });
+
+    const made = itemsOnBoard()[0]!;
+    expect(made.source).toBe("https://www.youtube.com/watch?v=abc");
+  });
+
+  it("gives no source to a photograph that came from a clipboard", async () => {
+    // Only an object standing in for something that could not be brought onto
+    // the board has one. A picture somebody pasted IS the thing.
+    await firePaste({ text: "https://example.com/a.png" });
+    expect(itemsOnBoard()[0]!.source).toBeNull();
+  });
+
+  it("gives no source to the media a page handed over", async () => {
+    // The recording is on the board. There is nothing it stands in for, and a
+    // link back to the page it was listed on is a different idea from this one.
+    native.cardFor.set("https://archive.org/details/wexford", {
+      title: "The Wexford Tapes",
+      siteName: "Internet Archive",
+      image: "https://archive.org/services/img/wexford",
+      media: { url: "https://archive.org/download/wexford/01.mp3", mime: "audio/mpeg" },
+    });
+    native.mimeFor.set("https://archive.org/download/wexford/01.mp3", "audio/mpeg");
+    await firePaste({ text: "https://archive.org/details/wexford" });
+    expect(itemsOnBoard()[0]!.source).toBeNull();
   });
 
   it("keeps the address alone when a page offers a picture and no title", async () => {

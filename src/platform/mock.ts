@@ -246,6 +246,13 @@ export class MockPlatform implements Platform {
     return unavailable("Fetching a URL without a CORS wall");
   }
 
+  openLink(url: string): Promise<void> {
+    // A browser can do this one perfectly well, and it is the one thing in this
+    // file that has a real answer rather than a refusal.
+    window.open(url, "_blank", "noopener,noreferrer");
+    return Promise.resolve();
+  }
+
   pageCard(): Promise<PageCard> {
     // For `assetIngestUrl`'s reason twice over: reading a page needs the fetch
     // that has no CORS wall, and the SSRF rules that make one safe live in

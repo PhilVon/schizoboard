@@ -117,6 +117,26 @@ export interface ItemFields {
   seed: number;
   assetId: string | null;
   /**
+   * Where this came from, when it came from somewhere on the web — T-290,
+   * Q-305.
+   *
+   * A pasted link becomes an object *about* a page, and the one thing such an
+   * object owes anybody is the way back to the page. That address is written in
+   * its caption too, and the caption is not good enough to open: it is text the
+   * person can edit, so the link would be destroyed by rewriting the words
+   * around it. Q-305 chose the field for that reason.
+   *
+   * **Null for almost everything, and that is the shape rather than an
+   * omission.** A photograph somebody pasted came from their clipboard, a note
+   * came from their hands, and a case file came from a disk — none of them has
+   * a source in this sense. Only an object standing in for something that could
+   * not be brought onto the board has one.
+   *
+   * It crosses the wire like any other field, so a peer can open the link too;
+   * that is what makes it a field rather than something local.
+   */
+  source: string | null;
+  /**
    * What has been overridden of what the seed would decide — `lib/style.ts`.
    *
    * Always an object, never null, and `{}` for the overwhelming majority of
@@ -419,6 +439,9 @@ export function readItem(id: string, map: YMap): ItemFields | null {
     z,
     seed: num(map.get("seed"), 0) >>> 0,
     assetId: typeof map.get("assetId") === "string" ? (map.get("assetId") as string) : null,
+    // Read the way `assetId` is, and absent on every item written before this
+    // existed — which is the ordinary case and reads as null.
+    source: typeof map.get("source") === "string" ? (map.get("source") as string) : null,
     style: readStyle(map.get("style")),
     createdBy: num(map.get("createdBy"), 0),
     createdAt: num(map.get("createdAt"), 0),

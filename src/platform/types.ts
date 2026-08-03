@@ -537,6 +537,16 @@ export interface Platform {
    * in the same note.
    */
   pageCard(url: string): Promise<PageCard>;
+  /**
+   * Hand a web address to whatever the operating system opens links with —
+   * T-290, Q-305.
+   *
+   * **`http` and `https` only**, checked again in Rust, because the address
+   * comes off an item's `source` and an item is a thing a *peer* can write. A
+   * scheme this refuses is a link that does nothing, which is the right failure:
+   * the alternative is handing an unknown handler an argument.
+   */
+  openLink(url: string): Promise<void>;
   assetHas(hashes: string[]): Promise<boolean[]>;
 
   /**

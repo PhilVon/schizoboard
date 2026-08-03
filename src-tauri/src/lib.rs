@@ -700,6 +700,44 @@ async fn page_card(url: String) -> Result<opengraph::Card, String> {
     .await
 }
 
+/// Hand an address to whatever the operating system opens links with — T-290.
+///
+/// **`http` and `https` only, and the check is here rather than at the caller.**
+/// The address comes off an item's `source`, which is a field in a *shared
+/// document*: a peer can write anything into it, and that peer is not
+/// necessarily somebody whose board you would run a program from. Handing the
+/// shell an arbitrary scheme is how a link becomes an execution — `file:` opens
+/// whatever is on this disk, and Windows has a long history of registered
+/// handlers that take arguments. The frontend validates the same thing for the
+/// same reason; this is the one that has to hold, because it is the last line
+/// before the OS.
+///
+/// It is also the first time this application hands anything to the shell at
+/// all. `tauri-plugin-opener` has been a dependency since T-101 for the save
+/// dialog and has never been reachable from the webview — it still is not, and
+/// this command is the whole of the exposure.
+#[tauri::command]
+async fn open_link(app: AppHandle, url: String) -> Result<(), String> {
+    if !is_web_address(&url) {
+        return Err(format!("{url} is not a web address"));
+    }
+    tauri_plugin_opener::OpenerExt::opener(&app)
+        .open_url(url, None::<&str>)
+        .map_err(|e| e.to_string())
+}
+
+/// The whole of what [`open_link`] will hand to the shell.
+///
+/// Its own function so it can be tested without an `AppHandle`, which the
+/// command needs and a rule does not. **A prefix test and not a parse**: a URL
+/// parser that disagreed with the shell's about where the scheme ends is
+/// exactly the gap this is here to close, and "starts with http:// or https://"
+/// is a claim no parser can talk anybody out of.
+fn is_web_address(url: &str) -> bool {
+    let lower = url.trim_start().to_ascii_lowercase();
+    lower.starts_with("http://") || lower.starts_with("https://")
+}
+
 #[tauri::command]
 async fn asset_has(app: AppHandle, hashes: Vec<String>) -> Result<Vec<bool>, String> {
     // The return type is spelled out because `?` alone does not pin it: it
@@ -1405,6 +1443,7 @@ pub fn run() {
             asset_ingest_path,
             asset_ingest_url,
             page_card,
+            open_link,
             asset_has,
             asset_export,
             asset_gc,
@@ -1440,6 +1479,28 @@ pub fn run() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// T-290. `source` is a field in a shared document, so this is untrusted
+    /// input from a peer, and the failure it prevents is a link that is an
+    /// execution rather than a link.
+    #[test]
+    fn only_the_web_is_handed_to_the_shell() {
+        assert!(is_web_address("https://example.com/a"));
+        assert!(is_web_address("HTTP://EXAMPLE.COM"));
+        assert!(is_web_address("  https://example.com"), "leading space");
+
+        assert!(!is_web_address("file:///C:/Windows/System32/calc.exe"));
+        assert!(!is_web_address("javascript:alert(1)"));
+        // This application's own scheme, which is exactly the one somebody
+        // would think is safe: a schizo:// link is handled by the deep-link
+        // plugin and is not something an item gets to trigger.
+        assert!(!is_web_address("schizo://board/x"));
+        assert!(!is_web_address("ftp://example.com/x"));
+        assert!(!is_web_address("https:/example.com"), "one slash is not a URL");
+        assert!(!is_web_address(""));
+        // A scheme that merely begins the same way.
+        assert!(!is_web_address("httpsx://example.com"));
+    }
 
     /// The environment is process-wide, so these run one after another rather
     /// than in parallel with each other.

@@ -65,6 +65,14 @@ export type Ingested =
        * that.
        */
       caption?: string;
+      /**
+       * The page this object stands in for — T-290, Q-305.
+       *
+       * Travels with the caption and for the same reason, but it is the durable
+       * half: the caption is text somebody can rewrite, and this is what the
+       * board opens.
+       */
+      source?: string;
     }
   | { kind: "text"; text: string };
 
@@ -359,6 +367,9 @@ export function layout(payloads: readonly Ingested[], at: BoardPoint): CreateIte
       assetId: payload.kind === "asset" ? payload.sha256 : null,
       ...(payload.kind === "asset" ? { asset: payload.asset } : {}),
       text: payload.kind === "text" ? payload.text : (payload.caption ?? ""),
+      ...(payload.kind === "asset" && payload.source !== undefined
+        ? { source: payload.source }
+        : {}),
     };
   });
 }

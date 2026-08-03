@@ -28,7 +28,11 @@ import {
 import { PageReader } from "@/app/pages";
 import { TextIndex } from "@/app/textindex";
 import * as ops from "@/crdt/ops";
-import { readAsset, SCHEMA_VERSION } from "@/crdt/schema";
+// `readItem` is aliased because this file already has one: `readItem` here is
+// T-273's *verb*, which turns a case file up and flies to it. Two very
+// different things with one obvious name, and the schema's is the one that
+// gets renamed because the local one is what this file is mostly about.
+import { readAsset, readItem as readItemFields, SCHEMA_VERSION } from "@/crdt/schema";
 import {
   attachPoster,
   bringToFront,
@@ -1642,6 +1646,26 @@ async function boot(): Promise<void> {
   };
 
   /**
+   * The web address an item stands in for, or null — T-290, Q-305.
+   *
+   * Off the *document* rather than off `scene.cold`, which does not carry it:
+   * this is asked when a menu opens rather than every frame, so there is no case
+   * for widening the record the renderer walks.
+   *
+   * **Validated here as well as in Rust**, and the repetition is deliberate. An
+   * item is a thing a peer can write, so `source` is untrusted input on both
+   * sides of the boundary — this is what stops the *row* appearing for an
+   * address that could never be opened, and Rust's check is what stops the
+   * address reaching the shell. Neither makes the other redundant: one is about
+   * what the menu offers and one is about what the OS is handed.
+   */
+  const sourceOf = (itemId: string): string | null => {
+    const map = board.items.get(itemId);
+    const source = map ? readItemFields(itemId, map)?.source : null;
+    return source && /^https?:\/\//i.test(source) ? source : null;
+  };
+
+  /**
    * Which page of this item is the face on show — T-278, and null for every
    * item on the board except the one case file that is open.
    *
@@ -2845,6 +2869,23 @@ async function boot(): Promise<void> {
           // (T-317). The same three hops `openable` makes, and the same reason
           // the menu cannot make them itself: a kind comes off an asset record.
           kindOfItem,
+          // Following a pasted link back to its page (T-290, Q-305). The
+          // address is read from the document rather than from the caption,
+          // which is a thing somebody can rewrite — and validated here as well
+          // as in Rust, because an item is a thing a peer can write.
+          {
+            can: (id: string) => sourceOf(id) !== null,
+            run: (id: string) => {
+              const source = sourceOf(id);
+              if (source === null) return;
+              void native.openLink(source).catch((error: unknown) => {
+                // Said, not swallowed. A row that does nothing and explains
+                // nothing is indistinguishable from a broken board (DESIGN 1.3).
+                console.warn(`could not open ${source}:`, error);
+                flash.say("That link could not be opened.");
+              });
+            },
+          },
           // Reading a recording's transcript (T-287, Q-299). Narrower than
           // `readable` on purpose: a case file is readable and must not get this
           // row, because *Open* above already turns it up on its own pages and
