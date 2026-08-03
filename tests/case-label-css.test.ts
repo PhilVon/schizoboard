@@ -171,7 +171,6 @@ describe("the writing on a compact cassette's label", () => {
   const number = declarations('.item-case[data-kind="cassette"] .case-label > .case-number');
   const meta = declarations('.item-case[data-kind="cassette"] .case-label > .case-meta');
   const title = declarations('.item-case[data-kind="cassette"] .case-title');
-  const clamped = declarations('.item-case[data-kind="cassette"] .case-caption:not(.item-field)');
 
   /**
    * A filename is longer than a name somebody writes. The label's own override
@@ -209,9 +208,18 @@ describe("the writing on a compact cassette's label", () => {
    * a rendering fault where an ellipsis reads as a label that ran out of room.
    */
   it("truncates the writing by whole lines", () => {
-    expect(title.get("-webkit-line-clamp")).toBe("2");
-    expect(clamped.get("-webkit-line-clamp")).toBe("1");
-    for (const rule of [title, clamped]) {
+    // The counts are a fact about a cassette's label and stay scoped to it; the
+    // *mechanism* moved up to `.case-title` on T-338, because it was true of
+    // every object and being written here is what let a tape and a folder keep
+    // the defect. `case-fitting-css.test.ts` is what holds the general half.
+    const kind = declarations('.item-case[data-kind="cassette"]');
+    expect(kind.get("--case-title-lines")).toBe("2");
+    expect(kind.get("--case-caption-lines")).toBe("1");
+    for (const rule of [
+      declarations(".case-title"),
+      declarations(".case-caption:not(.item-field)"),
+    ]) {
+      expect(rule.get("-webkit-line-clamp")).toMatch(/^var\(--case-(title|caption)-lines\)$/);
       expect(rule.get("display")).toBe("-webkit-box");
       expect(rule.get("-webkit-box-orient")).toBe("vertical");
     }
@@ -225,7 +233,11 @@ describe("the writing on a compact cassette's label", () => {
    * descenders with a whole row to itself — is what settled it.
    */
   it("sets the hand on a line the hand's descenders fit inside", () => {
-    expect(Number.parseFloat(title.get("line-height")!)).toBeGreaterThanOrEqual(1.32);
+    // Also moved up on T-338 and asserted for every kind there. Kept here as
+    // well, because this is where the number was measured and this test is what
+    // a change to it would be checked against.
+    const line = declarations(".item-case").get("--case-line");
+    expect(Number.parseFloat(line!)).toBeGreaterThanOrEqual(1.32);
   });
 
   /**

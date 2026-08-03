@@ -1542,14 +1542,86 @@ textarea.item-field::-webkit-scrollbar {
  * third of real documents declare a title and that `titleWorthWriting` refuses
  * a good half of those as the design file they were printed out of.
  */
+/*
+ * --- writing that has to fit its object (T-338) ---------------------------
+ *
+ * Every label on this board is a **fixed box with somebody else's words in it**.
+ * The object is the size it is — a VHS is 187 by 103 mm whatever is recorded on
+ * it — so the writing is what has to give, and there are exactly two ways it
+ * can: end early and say so, or be written smaller. Which one a surface wants
+ * turns on one question, and only one:
+ *
+ *   **Can this text be lost?**
+ *
+ * A title off a file and a caption somebody wrote can be: nothing depends on the
+ * end of them, and a person writing past the end of a label expects the label to
+ * run out. Those are the ones below, and they end in an ellipsis. The other
+ * answer — written smaller — belongs to text where the end is the point, and it
+ * lives in `lib/objects.ts` as `fitLabel` because that is arithmetic rather than
+ * a declaration.
+ *
+ * ## Two numbers, and both were measured
+ *
+ * `--case-line` is the line box the board's hand actually needs. T-306 measured
+ * it: `1.15` is tighter than Patrick Hand descends, so every `g`, `y` and `j`
+ * was shaved off flat by the `overflow: hidden` these carry, and `1.32` is where
+ * the ink stops meeting the edge. That fix was written as
+ * `[data-kind="cassette"]` and left there, so the tape and the folder kept the
+ * defect for as long as there has been anything to write on them — which is what
+ * this section is really correcting: **a rule that was applied to the object in
+ * front of somebody rather than to every object it was true of.**
+ *
+ * `--case-lines` is how many **whole** lines the label can afford. Whole is the
+ * whole point: a box holding one and two thirds of a line draws the second one
+ * cut through the middle, top and bottom at once, which reads as a rendering
+ * fault where an ellipsis reads as a label that ran out of room. Measured on the
+ * running app at the size ingest creates each object, as `(label inner height −
+ * the row the case number and the runtime share) ÷ the line box`:
+ *
+ * | object | room | whole lines |
+ * |---|---|---|
+ * | VHS | 58.4 − 23.3 over a 19.32 line | **1.82 → 1** |
+ * | compact cassette | 58.8 − 11.9 over 11.88 | 3.95 → 3 |
+ * | manilla folder | 250.7 − 41.7 over 32.09 | 6.51 → 6 |
+ *
+ * The cassette's 3 is what T-306 already spends (two lines of title and one of
+ * caption), which is the measurement agreeing with a number arrived at by
+ * looking — worth saying, because it is the only cross-check available.
+ *
+ * **A tape's label holds one line, and that is a fact about the object** rather
+ * than a budget to be argued with: a VHS spine label is a narrow strip and this
+ * one is proportionally narrower still, because two windows flank it. So when a
+ * tape carries both a title and something somebody wrote, they cannot both be
+ * there — see the `:has()` rule further down, where the person with the pen wins
+ * for the reason the cassette already gives.
+ *
+ * `max-height` as well as the clamp, and in `em` so it is exactly N line boxes:
+ * the clamp alone counts lines, and what squeezed the tape was the grid *row*
+ * being shorter than the lines in it. This makes the element hold a whole number
+ * of lines by construction, whatever the grid does around it.
+ */
+.item-case {
+  --case-line: 1.32;
+  --case-title-lines: 2;
+  --case-caption-lines: 1;
+}
+
+.case-title,
+.case-caption:not(.item-field) {
+  font-family: "Patrick Hand", "Segoe Script", "Bradley Hand", cursive;
+  line-height: var(--case-line);
+  white-space: pre-wrap;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
 .case-title {
   grid-row: 2;
   grid-column: 1 / -1;
-  font-family: "Patrick Hand", "Segoe Script", "Bradley Hand", cursive;
-  line-height: 1.15;
   color: #2f2820;
-  white-space: pre-wrap;
-  overflow: hidden;
+  -webkit-line-clamp: var(--case-title-lines);
+  max-height: calc(var(--case-title-lines) * var(--case-line) * 1em);
 }
 
 /* Whatever the person looking at it wrote on the object. People write on
@@ -1558,10 +1630,45 @@ textarea.item-field::-webkit-scrollbar {
   grid-row: 3;
   grid-column: 1 / -1;
   font-family: "Patrick Hand", "Segoe Script", "Bradley Hand", cursive;
-  line-height: 1.15;
+  line-height: var(--case-line);
   color: #3f3428;
   white-space: pre-wrap;
   overflow: hidden;
+}
+
+/*
+ * `:not(.item-field)` on the box treatment, because the caption is the one line
+ * a caret can reach and the editor over it is a `<textarea>` — `-webkit-box`
+ * would take a text field apart.
+ */
+.case-caption:not(.item-field) {
+  -webkit-line-clamp: var(--case-caption-lines);
+  max-height: calc(var(--case-caption-lines) * var(--case-line) * 1em);
+}
+
+/*
+ * A tape has room for one line of writing and no more (see the table above), and
+ * when there is both a title and a caption the caption takes it. The person with
+ * the pen wins, which is the rule the cassette already states: a caption is what
+ * *this* board says about the recording, and the title is what the file came
+ * calling itself.
+ *
+ * `display: none` rather than a clamp of zero, which is not a value: an element
+ * clamped to nothing still takes its row.
+ */
+.item-case[data-kind="vhs"] {
+  --case-title-lines: 1;
+}
+
+.item-case[data-kind="vhs"] .case-label:has(.case-caption:not(.is-empty)) .case-title {
+  display: none;
+}
+
+/* Six whole lines of room, so two apiece is comfortable — and a folder's front
+   panel has the paper spilling out of it above, which is why this does not take
+   everything it could. */
+.item-case[data-kind="folder"] {
+  --case-caption-lines: 2;
 }
 
 .case-title:empty,
@@ -3193,33 +3300,20 @@ textarea.item-field::-webkit-scrollbar {
 }
 
 /*
- * And a line box the hand's ink fits inside.
+ * A cassette's share of the three whole lines its label holds.
  *
- * `line-height: 1.15` is tighter than Patrick Hand descends, so every `g`, `y`
- * and `j` was shaved off flat by the `overflow: hidden` these two carry — two
- * units on every cassette on the board, and it predates T-304 by as long as
- * there has been anything to write. 1.32 is where the ink stops meeting the
- * edge.
+ * The line box and the clamping mechanism used to be declared here, scoped to
+ * this one kind, and T-338 moved them up to `.case-title` where they are true of
+ * every object — which is what let a tape and a folder keep the defect this
+ * fixed. What is left here is the only part that was ever a fact about a
+ * cassette: how many of its lines each thing gets.
  *
- * Clamped rather than clipped, which is the other half. An `auto` row squeezed
- * by a label with more in it than it holds cuts the *last line in half*, and
- * half a line of handwriting reads as a rendering fault where an ellipsis reads
- * as a label that ran out of room — which is what has happened.
- *
- * `:not(.item-field)` because the caption is the one line on this object a caret
- * can reach, and the editor over it is a `<textarea>`: `-webkit-box` would take
- * a text field apart.
+ * Two for the title and one for the caption, which is exactly the three the
+ * label measures out.
  */
-.item-case[data-kind="cassette"] .case-title,
-.item-case[data-kind="cassette"] .case-caption:not(.item-field) {
-  line-height: 1.32;
-  display: -webkit-box;
-  -webkit-box-orient: vertical;
-  -webkit-line-clamp: 2;
-}
-
-.item-case[data-kind="cassette"] .case-caption:not(.item-field) {
-  -webkit-line-clamp: 1;
+.item-case[data-kind="cassette"] {
+  --case-title-lines: 2;
+  --case-caption-lines: 1;
 }
 
 /*
@@ -3228,8 +3322,8 @@ textarea.item-field::-webkit-scrollbar {
  * what *this* board says about the recording, and the title is what the file
  * came calling itself.
  */
-.item-case[data-kind="cassette"] .case-label:has(.case-caption:not(.is-empty)) .case-title {
-  -webkit-line-clamp: 1;
+.item-case[data-kind="cassette"] .case-label:has(.case-caption:not(.is-empty)) {
+  --case-title-lines: 1;
 }
 
 /* The runtime is on row 5 and everything above it is content, so the label
