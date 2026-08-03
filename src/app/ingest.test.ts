@@ -13,6 +13,7 @@ import {
   resolveAgainst,
   isHttpUrl,
   layout,
+  looksLikeFileUrl,
   looksLikeImageUrl,
   noteSizeFor,
   type Ingested,
@@ -208,6 +209,28 @@ describe("reading a clipboard's mind", () => {
     expect(looksLikeImageUrl("https://e.com/a.png?size=2")).toBe(true);
     expect(looksLikeImageUrl("https://e.com/article")).toBe(false);
     expect(looksLikeImageUrl("a.png")).toBe(false);
+  });
+
+  it("leans towards every kind this board can hold, not just a picture", () => {
+    // T-289. The gate and the store take all four kinds; the guess is what
+    // decides whether an address is worth one fetch.
+    expect(looksLikeFileUrl("https://e.com/interview.mp3")).toBe(true);
+    expect(looksLikeFileUrl("https://e.com/reel.MP4?t=2")).toBe(true);
+    expect(looksLikeFileUrl("https://e.com/filing.pdf")).toBe(true);
+    expect(looksLikeFileUrl("https://e.com/a.png")).toBe(true);
+  });
+
+  it("leaves a page alone, whatever it is called", () => {
+    // Markup has no signature, so it sniffs as text and `assetKind` calls text
+    // a document — a fetched page would arrive as a case file holding its own
+    // angle brackets, which is what Q-265 refused.
+    expect(looksLikeFileUrl("https://e.com/report.html")).toBe(false);
+    expect(looksLikeFileUrl("https://e.com/report.htm")).toBe(false);
+    // And a watch page names no file at all, which is what keeps T-290's
+    // refusal from needing a list of sites.
+    expect(looksLikeFileUrl("https://www.youtube.com/watch?v=abc123")).toBe(false);
+    expect(looksLikeFileUrl("https://open.spotify.com/track/xyz")).toBe(false);
+    expect(looksLikeFileUrl("https://e.com/an-article")).toBe(false);
   });
 
   it("decodes a data URL and refuses one it cannot", () => {

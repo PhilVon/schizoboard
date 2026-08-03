@@ -45,7 +45,7 @@ import {
   decodeDataUrl,
   isHttpUrl,
   layout,
-  looksLikeImageUrl,
+  looksLikeFileUrl,
   readHtml,
   resolveAgainst,
   type BoardPoint,
@@ -706,7 +706,7 @@ export class Paste {
       sources.slice(0, MAX_REMOTE_FETCHES),
       "images in the pasted markup",
     )) {
-      await this.fetchImage(out, source);
+      await this.fetchFile(out, source);
     }
     return out;
   }
@@ -715,19 +715,32 @@ export class Paste {
     const text = raw.trim();
     if (!text) return [];
     // "A URL: note showing the URL; if it's an image URL, fetched natively (no
-    // CORS wall) and made a polaroid."
-    if (looksLikeImageUrl(text)) {
+    // CORS wall) and made a polaroid." — and since T-289 that is true of a film,
+    // a recording and a document too. Nothing here decides which: the store
+    // sniffs the bytes and `accept` picks the object, exactly as it does for a
+    // file dragged in from the OS.
+    if (looksLikeFileUrl(text)) {
       const out: Ingested[] = [];
-      await this.fetchImage(out, text);
+      await this.fetchFile(out, text);
       if (out.length > 0) return out;
-      // The fetch failed, or what came back was not a picture. The URL is still
-      // what the user copied, so it falls through and becomes a note — which is
-      // the other half of the same row.
+      // The fetch failed, or what came back was refused. The URL is still what
+      // the user copied, so it falls through and becomes a note — which is the
+      // other half of the same row, and is what a link to a web page has always
+      // been.
     }
     return [{ kind: "text", text }];
   }
 
-  private async fetchImage(out: Ingested[], source: string): Promise<void> {
+  /**
+   * Fetch one address and offer whatever came back to the gate.
+   *
+   * Named for the file rather than for the picture since T-289, because that is
+   * all it ever did: it ingests bytes and `accept` decides what they are. Its
+   * two callers ask different questions and neither is answered here — the
+   * markup arm is asking about an `<img src>` it found, and the text arm about
+   * a URL somebody copied.
+   */
+  private async fetchFile(out: Ingested[], source: string): Promise<void> {
     const { native } = this.options;
     try {
       const decoded = decodeDataUrl(source);

@@ -87,7 +87,10 @@ class FakeNative {
   async assetIngestUrl(url: string): Promise<AssetMeta> {
     this.calls.push({ method: "url", arg: url });
     if (this.refuse.has(url)) throw new Error("could not fetch");
-    return this.meta(`u${url}`);
+    // Through `mimeFor` like the path route, so a test can say what an address
+    // actually serves — without it every URL is a PNG and T-289's whole
+    // question ("what does a media URL become") cannot be asked.
+    return this.meta(`u${url}`, this.mimeFor.get(url));
   }
   async clipboardReadManifest(): Promise<{ kinds: ("files" | "text")[] }> {
     return { kinds: this.nativeFiles.length > 0 ? ["files"] : [] };
@@ -327,6 +330,57 @@ describe("what wins", () => {
     // is more use than nothing at all.
     const note = itemsOnBoard().find((i) => i.type === "note");
     expect(note?.text).toBe("https://example.com/gone.png");
+  });
+
+  /**
+   * T-289. The gate has taken every kind since T-260 and the store has sniffed
+   * and measured them since T-262, so a cassette was already waiting for a
+   * pasted `interview.mp3` — the URL was simply never offered, and arrived as a
+   * note with its own address written on it.
+   */
+  it("fetches a direct media URL and puts the recording on the wall", async () => {
+    native.mimeFor.set("https://example.com/interview.mp3", "audio/mpeg");
+    await firePaste({ text: "https://example.com/interview.mp3" });
+
+    expect(native.calls).toEqual([{ method: "url", arg: "https://example.com/interview.mp3" }]);
+    const made = itemsOnBoard()[0]!;
+    const record = board.assets.get(String(made.assetId));
+    expect(record?.get("mime")).toBe("audio/mpeg");
+    // And the duration the shell measured at ingest, which is what the spine
+    // and the J-card are written from and has no second chance to be taken.
+    expect(record?.get("duration")).toBe(92);
+  });
+
+  it("fetches a direct film URL too, and keeps what it was called", async () => {
+    native.mimeFor.set("https://example.com/reel.mp4", "video/mp4");
+    await firePaste({ text: "https://example.com/reel.mp4" });
+
+    const made = itemsOnBoard()[0]!;
+    const record = board.assets.get(String(made.assetId));
+    expect(record?.get("mime")).toBe("video/mp4");
+    expect(record?.get("origName")).toBe("reel.mp4");
+  });
+
+  /**
+   * The refusing half of the same gesture (T-290). A watch page names no file,
+   * so the guess never reaches for it — and it must not, because what comes
+   * back is markup, which sniffs as text and would arrive as a *case file
+   * holding its own angle brackets*.
+   */
+  it("never fetches a watch page, which names no file", async () => {
+    await firePaste({ text: "https://www.youtube.com/watch?v=dQw4w9WgXcQ" });
+    expect(native.calls).toEqual([]);
+    expect(itemsOnBoard()[0]!.type).toBe("note");
+  });
+
+  it("never fetches a page, whatever it is called", async () => {
+    // Q-265 cut `html` from the extractors for this reason: the shell has no
+    // signature for markup, so it falls back to text/plain, which `assetKind`
+    // calls a document. A fetched page would open as angle brackets set in the
+    // board's own hand.
+    await firePaste({ text: "https://example.com/report.html" });
+    expect(native.calls).toEqual([]);
+    expect(itemsOnBoard()[0]!.type).toBe("note");
   });
 
   it("leaves a URL that is not a picture as a note", async () => {
