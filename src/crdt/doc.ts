@@ -247,9 +247,17 @@ export function referencedAssets(board: BoardDoc): string[] {
     // poster rather than with the task that generalises it, and a keep-set
     // that is one hash short is silent, permanent and on the wrong side of the
     // sweep's own comment about what a bundle embeds.
+    //
+    // The sidecar arrived, and it is the same two lines rather than the
+    // generalisation, on the same argument. **It is the worse loss of the two**:
+    // a collected poster is a still that can be grabbed again off a film this
+    // machine still holds, and a collected transcript is a file that only ever
+    // existed beside something on somebody's disk — nothing can derive it, and
+    // re-dropping the recording will not bring it back (T-287).
     const record = board.assets.get(asset);
-    const poster = record ? readAsset(asset, record)?.poster : null;
-    if (poster) referenced.add(poster);
+    const named = record ? readAsset(asset, record) : null;
+    if (named?.poster) referenced.add(named.poster);
+    if (named?.transcript) referenced.add(named.transcript);
   }
   return [...referenced];
 }

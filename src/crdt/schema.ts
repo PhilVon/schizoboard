@@ -283,6 +283,31 @@ export interface AssetFields {
    * which is the per-property fill-in `registerAsset`'s comment anticipates.
    */
   poster: string | null;
+  /**
+   * The sidecar transcript that came in beside a recording — itself an asset,
+   * named by its own hash (T-287). `null` for everything else, and for a
+   * recording that arrived without one.
+   *
+   * A hash for `poster`'s reasons, and one more that only applies here. A page's
+   * text is *derived*: any machine holding the file can extract it, so D-46
+   * section 2 keeps it a local index and no peer is ever short of it. A
+   * transcript cannot be derived from anything — it is a second file somebody
+   * happened to have next to the first — so a peer that never sees those bytes
+   * has no route to them at all. Holding it as an asset is what makes a
+   * recording quotable on a machine that was not the one it was dropped on.
+   *
+   * **The transcript's *text* still never enters the document**, and this field
+   * is what keeps that affordable rather than compromising it: what crosses is
+   * 64 characters of hash, and the lines themselves are read off the bytes into
+   * the same local index a case file's pages go into.
+   *
+   * Unlike `poster` this *is* known at ingest — the sidecar is read off the disk
+   * in the same gesture that read the recording — so nothing has to go looking
+   * for it later. It is still written by its own op rather than by
+   * `registerAsset`, because the sidecar needs a record of its own in the same
+   * transaction and that is `attachPoster`'s shape exactly.
+   */
+  transcript: string | null;
 }
 
 // --- coercion -------------------------------------------------------------
@@ -580,6 +605,7 @@ export function readAsset(sha256: string, map: YMap): AssetFields | null {
     duration: positive(map.get("duration")),
     pages: positive(map.get("pages")),
     poster: hash(map.get("poster"), sha256),
+    transcript: hash(map.get("transcript"), sha256),
   };
 }
 

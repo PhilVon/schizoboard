@@ -39,7 +39,7 @@
  * frames rather than in the middle of one.
  */
 
-import { createItems, type CreateItemInput } from "@/crdt/ops";
+import { attachTranscript, createItems, type CreateItemInput } from "@/crdt/ops";
 import { boardSealed, type BoardDoc } from "@/crdt/doc";
 import {
   decodeDataUrl,
@@ -78,6 +78,16 @@ const MAX_PER_PASTE = 50;
  * one; a fragment carrying more than a handful is not the case this is for.
  */
 const MAX_REMOTE_FETCHES = 8;
+
+/**
+ * The spellings a transcript sits beside a recording under — T-287.
+ *
+ * `.srt` first because it is what anybody's tooling emits and what a broadcaster
+ * hands over; `.vtt` second because it is the one a browser wants. Two and not a
+ * list: every further spelling is another disk probe on every recording anybody
+ * ever drops, paid by everyone to serve nobody until somebody asks.
+ */
+const SIDECAR_EXTENSIONS = [".srt", ".vtt"] as const;
 
 export interface PasteOptions {
   native: Platform;
@@ -346,6 +356,21 @@ export class Paste {
     if (payloads.length === 0) return;
     const inputs: CreateItemInput[] = layout(payloads, at);
     const created = createItems(this.options.board, inputs);
+    // After the items and in its own transaction, which is what keeps one
+    // Ctrl+Z the undo of one paste: `Origin.SIDECAR` is off the undo stack, so
+    // this cannot land on top of the thing the person actually did. It has to
+    // come second rather than first — `createItems` is what registers the
+    // recording's record, and `attachTranscript` is silent on a recording that
+    // is not there (T-287).
+    for (const payload of payloads) {
+      if (payload.kind !== "asset" || payload.sidecar === undefined) continue;
+      attachTranscript(
+        this.options.board,
+        payload.sha256,
+        payload.sidecar.sha256,
+        payload.sidecar.asset,
+      );
+    }
     this.options.onCreated?.(created.map((item) => item.itemId));
   }
 
@@ -407,6 +432,10 @@ export class Paste {
         if (path !== undefined) {
           this.tried.add(path);
           this.accept(out, await this.options.native.assetIngestPath(path), path, baseName(path));
+          // Only on this arm. The fallback below is holding bytes the webview
+          // gave it and has no path at all, and a transcript is found by looking
+          // *beside* a file — there is no beside without one (T-287).
+          await this.sidecar(out, path);
           continue;
         }
       } catch (error) {
@@ -551,6 +580,65 @@ export class Paste {
     });
   }
 
+  /**
+   * Look beside a recording for its transcript, and hang it off the payload —
+   * T-287, D-46 section 3: *"audio is quoted from a transcript, because you
+   * cannot select a sound — which is why a sidecar `.srt` sitting next to the
+   * media file is worth ingesting."*
+   *
+   * **By name, and that is not the exception to AC-650 it looks like.** The rule
+   * that an extension is what somebody typed and the bytes are what the board
+   * decides on is about *what a file is*, and it is untouched: the sidecar goes
+   * through `assetIngestPath` like everything else and is sniffed there. What is
+   * decided by name here is only *which file to look at*, and a sidecar
+   * convention is a naming convention — `interview.srt` beside `interview.mp4`
+   * is the whole of it. There is nothing in the bytes of a directory to sniff.
+   *
+   * Two spellings, `.srt` first because it is the one anybody's tooling emits.
+   * A miss is the ordinary case rather than an error: most recordings have no
+   * transcript, `assetIngestPath` refuses a path that is not there, and that
+   * refusal is swallowed here — it is not a file the person asked for, so it
+   * must not reach `refuse` and be read out as something the board could not
+   * hold.
+   */
+  private async sidecar(out: Ingested[], path: string): Promise<void> {
+    const last = out[out.length - 1];
+    if (last?.kind !== "asset") return;
+    const kind = assetKind(last.asset.mime);
+    if (kind !== "video" && kind !== "audio") return;
+    const stem = withoutExtension(path);
+    if (stem === null) return;
+    for (const extension of SIDECAR_EXTENSIONS) {
+      const beside = `${stem}${extension}`;
+      if (this.tried.has(beside)) continue;
+      this.tried.add(beside);
+      try {
+        const meta = await this.options.native.assetIngestPath(beside);
+        // A recording that is its own transcript is a filesystem answering the
+        // same bytes for two names. `attachTranscript` refuses it too; refusing
+        // here as well is what stops the sidecar being *ingested* a second time
+        // under a name the store will only dedupe back to the first.
+        if (meta.sha256 === last.sha256) return;
+        out[out.length - 1] = {
+          ...last,
+          sidecar: {
+            sha256: meta.sha256,
+            asset: {
+              w: meta.w,
+              h: meta.h,
+              mime: meta.mime,
+              size: meta.size,
+              ...(baseName(beside) ? { origName: baseName(beside) } : {}),
+            },
+          },
+        };
+        return;
+      } catch {
+        // No transcript by that spelling. The common case, and silent.
+      }
+    }
+  }
+
   /** Ask the shell what it can see that the webview could not. */
   private async fromNativeClipboard(): Promise<Ingested[]> {
     try {
@@ -578,6 +666,7 @@ export class Paste {
       try {
         this.tried.add(path);
         this.accept(out, await this.options.native.assetIngestPath(path), path, baseName(path));
+        await this.sidecar(out, path);
       } catch (error) {
         // Said rather than swallowed, on the same argument as `fromFiles`: this
         // road has no fallback behind it, so a file that fails here is a file
@@ -666,6 +755,21 @@ export class Paste {
  *  nothing from a paste of nothing. */
 function hadSomething(clip: Snapshot): boolean {
   return clip.files.length > 0 || clip.text.trim().length > 0 || clip.html.trim().length > 0;
+}
+
+/**
+ * The path with its last extension taken off, or `null` when it has none.
+ *
+ * Split on the *basename* rather than the whole path, so a directory with a dot
+ * in it — `C:/case files v2/interview` — is not read as an extension and does
+ * not send the search off to a sibling that could never exist.
+ */
+function withoutExtension(path: string): string | null {
+  const name = baseName(path);
+  if (name === undefined) return null;
+  const dot = name.lastIndexOf(".");
+  if (dot <= 0) return null;
+  return path.slice(0, path.length - (name.length - dot));
 }
 
 /** The last path or URL segment, kept as the asset's `origName` — the one piece

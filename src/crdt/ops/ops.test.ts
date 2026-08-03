@@ -10,6 +10,7 @@ import { initialiseBoard, openBoardDoc, type BoardDoc } from "@/crdt/doc";
 import { Origin, TRACKED_ORIGINS, isTracked } from "@/crdt/origins";
 import {
   attachPoster,
+  attachTranscript,
   bringToFront,
   createItems,
   createPin,
@@ -243,6 +244,127 @@ describe("attachPoster", () => {
     });
     attachPoster(b, FILM, STILL, still);
     expect(undo.canUndo()).toBe(false);
+  });
+});
+
+/**
+ * The sidecar transcript — T-287. Deliberately tested against the same shape as
+ * `attachPoster` above, because it *is* that shape: the tests that differ are
+ * the ones where the two genuinely differ, and the rest agreeing is the claim.
+ */
+describe("attachTranscript", () => {
+  const TAPE = "7".repeat(64);
+  const WORDS = "8".repeat(64);
+  const words = { w: 0, h: 0, mime: "text/plain", size: 8192, origName: "interview.srt" };
+
+  function withTape(): BoardDoc {
+    const b = board();
+    createItems(b, [
+      {
+        type: "polaroid",
+        x: 0,
+        y: 0,
+        w: 300,
+        h: 180,
+        assetId: TAPE,
+        asset: { w: 1920, h: 1080, mime: "video/mp4", size: 9_000_000, duration: 61 },
+      },
+    ]);
+    return b;
+  }
+
+  it("registers the transcript and points the recording at it", () => {
+    const b = withTape();
+    attachTranscript(b, TAPE, WORDS, words);
+
+    expect(readAsset(TAPE, b.assets.get(TAPE)!)!.transcript).toBe(WORDS);
+    const record = readAsset(WORDS, b.assets.get(WORDS)!)!;
+    expect(record.mime).toBe("text/plain");
+    expect(record.origName).toBe("interview.srt");
+    expect(record.size).toBe(8192);
+  });
+
+  /**
+   * The one guard `attachPoster` has no use for. A poster is made by us out of a
+   * film we are holding, so it cannot be the film; a sidecar is a path a shell
+   * handed over, and a shell that answers the same bytes for two names — or a
+   * `.srt` dropped on its own — would write a record naming itself.
+   */
+  it("refuses a recording that would be its own transcript", () => {
+    const b = withTape();
+    let updates = 0;
+    b.doc.on("update", () => (updates += 1));
+    attachTranscript(b, TAPE, TAPE, words);
+
+    // Asserted on the **raw key and the wire**, not through `readAsset`. That
+    // reader rejects a self-reference on its own, so a test that only asked it
+    // what the transcript was would pass with this guard deleted — it did, which
+    // is how this test came to be written twice. What the guard buys is that the
+    // key is never written at all: no update, and nothing on the record for a
+    // later build with a different reader to find and believe.
+    expect(b.assets.get(TAPE)!.get("transcript")).toBeUndefined();
+    expect(updates).toBe(0);
+  });
+
+  it("leaves everything else on the recording's record exactly as it was", () => {
+    const b = withTape();
+    const before = readAsset(TAPE, b.assets.get(TAPE)!)!;
+    attachTranscript(b, TAPE, WORDS, words);
+    const after = readAsset(TAPE, b.assets.get(TAPE)!)!;
+    expect({ ...after, transcript: null }).toEqual({ ...before, transcript: null });
+  });
+
+  it("writes nothing at all for a recording this board no longer has", () => {
+    const b = board();
+    attachTranscript(b, TAPE, WORDS, words);
+    expect(b.assets.has(TAPE)).toBe(false);
+    expect(b.assets.has(WORDS)).toBe(false);
+  });
+
+  it("is silent when it is asked for the answer that is already there", () => {
+    const b = withTape();
+    attachTranscript(b, TAPE, WORDS, words);
+    let updates = 0;
+    b.doc.on("update", () => (updates += 1));
+    attachTranscript(b, TAPE, WORDS, words);
+    expect(updates).toBe(0);
+  });
+
+  it("is not a thing Ctrl+Z can take off a tape", () => {
+    expect(isTracked(Origin.SIDECAR)).toBe(false);
+
+    const b = withTape();
+    const undo = new Y.UndoManager([b.items, b.assets], {
+      trackedOrigins: new Set(TRACKED_ORIGINS),
+    });
+    attachTranscript(b, TAPE, WORDS, words);
+    expect(undo.canUndo()).toBe(false);
+  });
+
+  /**
+   * The whole point of the field, stated as a test: a reference crosses and the
+   * file does not. D-46 section 2 is a rule about the wire, so it wants an
+   * assertion about the wire.
+   *
+   * **Measured against the file's own size rather than against its contents.**
+   * The first version of this asserted that no line of the transcript appeared
+   * in the update, which was both false and vacuous — false because `origName`
+   * legitimately travels, exactly as it does for every asset on this board, and
+   * vacuous because nothing in this op is ever handed a line to leak. The claim
+   * that can actually fail is the one about magnitude: an eight kilobyte file is
+   * named by an update a fraction of its size, and it stays that way however
+   * long the transcript is, which is what would stop being true the day somebody
+   * decided the text may as well ride along.
+   */
+  it("names an eight kilobyte file in an update a fraction of its size", () => {
+    const b = withTape();
+    let bytes = new Uint8Array();
+    b.doc.on("update", (update: Uint8Array) => (bytes = update));
+    attachTranscript(b, TAPE, WORDS, words);
+
+    expect(readAsset(WORDS, b.assets.get(WORDS)!)!.size).toBe(8192);
+    expect(new TextDecoder().decode(bytes)).toContain(WORDS);
+    expect(bytes.byteLength).toBeLessThan(words.size / 4);
   });
 });
 

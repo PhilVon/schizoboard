@@ -23,7 +23,7 @@ import {
   SealedBoardError,
 } from "@/crdt/doc";
 import { applyPersisted } from "@/crdt/ops/load";
-import { attachPoster, createItems, deleteItems } from "@/crdt/ops/items";
+import { attachPoster, attachTranscript, createItems, deleteItems } from "@/crdt/ops/items";
 import { readAsset, SCHEMA_VERSION } from "@/crdt/schema";
 import { assetKind } from "@/lib/objects";
 
@@ -31,6 +31,8 @@ const PHOTO = "a".repeat(64);
 const OTHER = "b".repeat(64);
 /** A film's poster frame — an asset of its own, hashed like any other picture. */
 const STILL = "c".repeat(64);
+/** The sidecar transcript beside a recording — an asset of its own too (T-287). */
+const WORDS = "e".repeat(64);
 
 const meta = (sha256: string) => ({
   w: 10,
@@ -152,6 +154,40 @@ describe("which photographs a board references", () => {
     const doc = board();
     const [item] = createItems(doc, [polaroid(PHOTO)]);
     attachPoster(doc, PHOTO, STILL, meta(STILL));
+    deleteItems(doc, [item!.itemId]);
+    expect(referencedAssets(doc)).toEqual([]);
+  });
+
+  /**
+   * The same hazard as the still above, and the worse half of it.
+   *
+   * A collected poster is a still that can be grabbed again off a film this
+   * machine is still holding. A collected transcript is gone: nothing derives it
+   * from the recording's bytes, and re-dropping the tape will not bring it back
+   * unless the `.srt` still happens to be sitting beside it on that disk.
+   */
+  it("names the transcript a recording points at, which no item wears", () => {
+    const doc = board();
+    const [item] = createItems(doc, [polaroid(PHOTO)]);
+    expect(item).toBeDefined();
+    attachTranscript(doc, PHOTO, WORDS, meta(WORDS));
+    expect(referencedAssets(doc).sort()).toEqual([PHOTO, WORDS].sort());
+  });
+
+  /** Both at once, because a film with a still and a transcript is the ordinary
+   *  interview and the two are read off one record. */
+  it("names a still and a transcript together", () => {
+    const doc = board();
+    createItems(doc, [polaroid(PHOTO)]);
+    attachPoster(doc, PHOTO, STILL, meta(STILL));
+    attachTranscript(doc, PHOTO, WORDS, meta(WORDS));
+    expect(referencedAssets(doc).sort()).toEqual([PHOTO, STILL, WORDS].sort());
+  });
+
+  it("forgets a transcript as soon as the recording wearing it goes", () => {
+    const doc = board();
+    const [item] = createItems(doc, [polaroid(PHOTO)]);
+    attachTranscript(doc, PHOTO, WORDS, meta(WORDS));
     deleteItems(doc, [item!.itemId]);
     expect(referencedAssets(doc)).toEqual([]);
   });
@@ -520,10 +556,12 @@ describe("a record written by a build that knows more than this one", () => {
     map.set("size", 1234);
     map.set("origName", "holiday.png");
     // Four keys from a build that measures more than this one does. `poster`
-    // was one of them until T-270; it is deliberately not one now, because a
-    // key this build has learned proves nothing about the ones it has not.
+    // was one of them until T-270 and `transcript` until T-287; neither is one
+    // now, because a key this build has learned proves nothing about the ones
+    // it has not — which is the second time that sentence has had to be acted
+    // on rather than only written down.
     map.set("chapters", 12);
-    map.set("transcript", "d".repeat(64));
+    map.set("speakers", 3);
     map.set("loudness", -14.2);
     map.set("kind", "photograph-of-a-kind-we-do-not-have");
     doc.assets.set(PHOTO, map);
@@ -601,6 +639,7 @@ describe("a record written by a build that knows more than this one", () => {
       duration: null,
       pages: null,
       poster: null,
+      transcript: null,
     });
   });
 });

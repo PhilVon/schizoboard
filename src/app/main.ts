@@ -449,6 +449,29 @@ async function boot(): Promise<void> {
    * opinion about it. Asked once per hash — `titles.set` before the await, so a
    * board of forty folders is forty probes and not forty a frame.
    */
+  /**
+   * The hash whose *words* an object is read for — T-287, Q-299.
+   *
+   * The identity for a case file and the sidecar for a recording. It is asked at
+   * the hash rather than at the item because two of its three callers only ever
+   * have a hash: the page resolver the renderer holds, which `dom.ts` calls with
+   * whatever the item is wearing, and the index that is filled when a record
+   * appears. `readableHash` is the same question from an item id.
+   *
+   * **The renderer's call is the one that made this necessary**, and it is worth
+   * saying why rather than leaving it as symmetry. The layer draws a page by
+   * asking `pageOf(cold.assetId)`, which for a tape is the tape — so without
+   * this, turning a cassette up on its transcript asks `PageReader` for page one
+   * *of the recording*, which does not refuse it: it queues a document read of a
+   * four hundred megabyte film and draws a sheet saying it could not be read.
+   */
+  const readableAsset = (sha256: string): string | null => {
+    const map = board.assets.get(sha256);
+    const record = map ? readAsset(sha256, map) : null;
+    if (record === null) return null;
+    return record.kind === "video" || record.kind === "audio" ? record.transcript : sha256;
+  };
+
   const assetFacts = (sha256: string): AssetFacts => {
     const map = board.assets.get(sha256);
     const record = map ? readAsset(sha256, map) : null;
@@ -485,6 +508,16 @@ async function boot(): Promise<void> {
     // bytes are the one thing it cannot work around, and a document whose
     // transfer has not committed becomes ready later and is asked then.
     if (record.kind === "document" && assets.isReady(sha256)) textIndex.wants(sha256);
+    // And what a *recording* says, which is the same question asked of a
+    // different hash — T-287. The transcript is a text asset in its own right,
+    // so what goes into the index is the sidecar rather than the tape, and the
+    // readiness that matters is the sidecar's: an interview whose 400 MB is
+    // still in flight has a transcript of a few kilobytes that arrived long ago,
+    // and there is no reason to make the search wait for the film to be able to
+    // find the words in it.
+    if (record.transcript !== null && assets.isReady(record.transcript)) {
+      textIndex.wants(record.transcript);
+    }
     return {
       kind: record.kind,
       name: record.origName,
@@ -565,7 +598,14 @@ async function boot(): Promise<void> {
   // page is a fact about the file: two folders of one document are one set of
   // pages. Which page the reader is on is T-321's, so this answers for
   // whichever that is.
-  (sha256) => reader.page(sha256),
+  // Through `readableAsset`, so a tape turned up on its transcript is asked for
+  // a page of the *transcript* (T-287). Without it the hash the item wears is
+  // handed straight to the reader, which does not refuse a film — it starts
+  // reading one as a document and draws a sheet saying it could not.
+  (sha256) => {
+    const words = readableAsset(sha256);
+    return words === null ? null : reader.page(words);
+  },
   // And which face each item is showing (T-278) — the same function the pen is
   // handed, deliberately: what a mark is filed against and what is drawn have to
   // be one answer. Declared below, hoisted to here.
@@ -1249,7 +1289,11 @@ async function boot(): Promise<void> {
    * one `assetFacts` makes.
    */
   const search = new Search((itemId, needle) => {
-    const sha256 = scene.cold(itemId)?.assetId ?? null;
+    // `readableHash` rather than the item's own asset, so a tape is searched by
+    // its transcript (T-287). Still three hops and still nothing about kinds
+    // here: what changed is which hash the second hop lands on, and a recording
+    // with no sidecar answers null on the same line a photograph does.
+    const sha256 = readableHash(itemId);
     return sha256 === null ? null : textIndex.find(sha256, needle);
   });
   const flight = new Flight();
@@ -1317,6 +1361,41 @@ async function boot(): Promise<void> {
     return (map ? readAsset(sha256, map)?.kind : undefined) ?? "unknown";
   };
 
+  /**
+   * The hash of the words this item can be read for, which is not always the
+   * hash it wears — T-287.
+   *
+   * A case file's words are its own bytes. A recording's are its sidecar's: a
+   * tape has no text in it and nothing on this board will ever put any there
+   * (D-46 section 6 refuses transcription outright), so the only words a
+   * recording has are the ones that arrived beside it. Null for everything with
+   * neither, which is every photograph, every note, and every interview nobody
+   * had a `.srt` for.
+   *
+   * One function rather than the two hops written out at each caller, because
+   * there are three of them now — the search, the reader and the quote gesture —
+   * and a board where `Ctrl+F` finds a tape it cannot then open is worse than
+   * one where it never found it.
+   */
+  const readableHash = (itemId: string): string | null => {
+    const sha256 = scene.cold(itemId)?.assetId ?? null;
+    return sha256 === null ? null : readableAsset(sha256);
+  };
+
+  /**
+   * Is there something to turn this item up and *read* — T-287, Q-299.
+   *
+   * Not the same question as {@link openable}, and the two have to stay apart.
+   * `openable` is about the gesture: `Enter` and the menu's *Open* start
+   * whatever this object does, which for a tape is playing it. This is about the
+   * reading surface, and it is true of exactly the things that have words —
+   * every case file, and a recording that arrived with a transcript beside it.
+   *
+   * A record that has not arrived answers false rather than throwing, which is
+   * the same answer it gives every other predicate in this file.
+   */
+  const readable = (itemId: string): boolean => readableHash(itemId) !== null;
+
   const openable = (itemId: string): boolean => {
     const sha256 = scene.cold(itemId)?.assetId ?? null;
     if (sha256 === null) return false;
@@ -1360,6 +1439,25 @@ async function boot(): Promise<void> {
     // set — the fork Q-197 settled, and the reason the two branches are not one
     // gesture with a flag: a document is read *against* the board and a film
     // takes the board away.
+    /**
+     * **Shutting comes before every kind, and it did not used to** — T-335.
+     *
+     * > | Shut it | `Escape`, or `Enter` again — DESIGN section 3.9
+     *
+     * That row was true of everything openable until a recording could be *read*
+     * (T-287). Below this line a tape goes to `watchItem` and a cassette to
+     * `hearItem` on any press at all, so `Enter` on a transcript standing open
+     * put the film on the set instead of shutting it — and the second half of
+     * the documented way out simply did not exist for the one object that had
+     * just gained a new way in. Phil found it by trying to close one.
+     *
+     * Above the kinds rather than repeated inside each, because "press it again
+     * and it goes away" is a fact about *being open* and not about what kind of
+     * file is behind it. A recording that is **not** open still reaches the
+     * branches below and still plays, which is the whole of what `Enter` meant
+     * before.
+     */
+    if (opening.itemId === itemId) return closeOpen();
     if (kindOfItem(itemId) === "video") return watchItem(itemId);
     // And the third object, which takes over nothing at all (T-277). A cassette
     // does not turn up to be read and does not go on a set: it plays where it
@@ -1367,7 +1465,8 @@ async function boot(): Promise<void> {
     // which D-46 section 4 calls the strongest reading of *nothing blocks
     // thinking* anywhere in this feature.
     if (kindOfItem(itemId) === "audio") return hearItem(itemId);
-    if (opening.itemId === itemId) return closeOpen();
+    // The toggle used to be here, where only a case file could reach it. It is
+    // above the kinds now — see the note there.
     readItem(itemId);
     return true;
   };
@@ -1391,7 +1490,12 @@ async function boot(): Promise<void> {
     // Say which file is being read, so the shell holds that one open and lets
     // go of whatever it was holding. Not the *page* — asking for one is what
     // fetches it, and the layer does that when it draws.
-    const reading = scene.cold(itemId)?.assetId ?? null;
+    // `readableHash` and not the item's own asset, so a recording opens on its
+    // transcript (T-287, Q-299). The page count comes off that same hash for the
+    // same reason — a tape's record says how many *seconds* it is and a
+    // transcript's says how many pages, and reading the wrong one would put "1
+    // of 92" at the head of a two page sheaf.
+    const reading = readableHash(itemId);
     if (reading !== null) {
       const record = board.assets.get(reading);
       reader.open(reading, (record ? readAsset(reading, record)?.pages : null) ?? null);
@@ -1408,13 +1512,18 @@ async function boot(): Promise<void> {
    *
    * False for anything without a readable inside, which is the whole of the
    * caller's fallback: the flight it would have made is the flight it makes.
-   * A tape is refused here rather than put on, and deliberately — a recording
-   * has no page, its transcript is a sidecar nobody has written yet (T-287),
-   * and a search that started the film would be the loudest thing on this board
-   * happening because somebody typed a third character.
+   *
+   * **A recording is now let through, and only because of what it opens onto**
+   * (T-287, Q-299). The line this replaced refused a tape outright, on the
+   * argument that "a search that started the film would be the loudest thing on
+   * this board happening because somebody typed a third character" — and that
+   * argument is untouched, because this does not start the film. It turns the
+   * tape up on its transcript, which is a sheet of paper and is silent. A
+   * recording with no transcript still fails, one line down, on having nothing
+   * readable rather than on being a recording.
    */
   const readInside = (itemId: string, page: number): boolean => {
-    if (!openable(itemId) || kindOfItem(itemId) === "video") return false;
+    if (!readable(itemId)) return false;
     readItem(itemId);
     // After the open rather than inside it: `reader.open` is idempotent on the
     // document already being read and leaves its page where it is, which is
@@ -1520,7 +1629,13 @@ async function boot(): Promise<void> {
     // Let the file go. On a 51 MB scan that is 51 MB of working set the shell
     // was holding open, and it is held until somebody says — Rust cannot infer
     // that a folder has been shut.
-    const wasReading = scene.cold(opening.itemId)?.assetId ?? null;
+    // The hash that was being *read*, which for a recording is its transcript
+    // and not the tape (T-287). Closing the tape's hash instead is silently
+    // wrong in exactly T-326's way: `PageReader.close` matches on what it is
+    // reading, so a mismatched hash leaves the document open, its pages held and
+    // its blob URLs unrevoked — and tells the shell to let go of a file it was
+    // never holding.
+    const wasReading = readableHash(opening.itemId);
     if (wasReading !== null) reader.close(wasReading);
     opening.close();
     return true;
@@ -1629,14 +1744,23 @@ async function boot(): Promise<void> {
    *
    * A folder is counted `whole` when the shell could not read it at all or
    * every page of it is silent, and `part` when some of it was readable. Only
-   * documents can be either — nothing else is ever asked, so a note and a
-   * photograph sit at `unasked` and fall out here.
+   * things with words can be either — a note and a photograph are never asked,
+   * so they sit at `unasked` and fall out here.
+   *
+   * **A recording is asked about its transcript**, through the same
+   * `readableHash` the search itself walks (T-287), so an interview whose `.srt`
+   * turned out to be unreadable is counted rather than passed over. What this
+   * still cannot say is anything about a recording that has *no* transcript:
+   * that one never becomes a match, so it is never in this loop to be counted,
+   * and it is invisible to `Ctrl+F` in a way nothing on screen admits. Q-273
+   * settled the reporting to be about the matches rather than about the board,
+   * and this is the corner of that decision where the two genuinely differ.
    */
   const unsearchedAmongMatches = (): Unsearched => {
     let whole = 0;
     let part = 0;
     for (const id of search.ids) {
-      const sha256 = scene.cold(id)?.assetId ?? null;
+      const sha256 = readableHash(id);
       if (sha256 === null) continue;
       const found = textIndex.of(sha256);
       if (found.phase === "unreadable") {
@@ -2721,6 +2845,24 @@ async function boot(): Promise<void> {
           // (T-317). The same three hops `openable` makes, and the same reason
           // the menu cannot make them itself: a kind comes off an asset record.
           kindOfItem,
+          // Reading a recording's transcript (T-287, Q-299). Narrower than
+          // `readable` on purpose: a case file is readable and must not get this
+          // row, because *Open* above already turns it up on its own pages and
+          // two rows for one act is worse than one row nobody can find.
+          {
+            can: (id: string) => {
+              const kind = kindOfItem(id);
+              return (kind === "video" || kind === "audio") && readable(id);
+            },
+            showing: (id: string) => opening.itemId === id,
+            // The toggle, not `openItem`'s: that one plays a recording that is
+            // not open, which is right for `Enter` and wrong for a row that
+            // says *Read the transcript*. Same row, same verb, both directions.
+            run: (id: string) => {
+              if (opening.itemId === id) void closeOpen();
+              else readItem(id);
+            },
+          },
         ),
         held ? undefined : () => selection.replace([itemId]),
       );

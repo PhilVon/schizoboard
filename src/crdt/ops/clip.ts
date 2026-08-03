@@ -520,5 +520,16 @@ function assetInput(board: BoardDoc, sha256: string): AssetInput | null {
     // than on whether the field is set, so a tape that arrives naming a still
     // nobody has grabs the same frame to the same hash and repairs it.
     ...(asset.poster !== null ? { poster: asset.poster } : {}),
+    // And the transcript, carried for the same reason and with the wrinkle one
+    // turn worse: there is **no** repair behind this one. A still can be grabbed
+    // again off a film, so a tape that lands naming a poster nobody holds fixes
+    // itself; a transcript is a second file that existed beside the first on
+    // somebody's disk, and nothing on the far board can derive it. So the hash
+    // is carried in the knowledge that it may dangle there — which costs a
+    // keep-set entry pointing at nothing and an index that reads as unreadable,
+    // and is strictly better than the alternative, where copying a recording
+    // *within one board* silently drops a transcript both copies can reach
+    // (T-287).
+    ...(asset.transcript !== null ? { transcript: asset.transcript } : {}),
   };
 }

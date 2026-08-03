@@ -26,6 +26,9 @@ import { declarations } from "./css-declarations";
 const page = declarations(".folder-page");
 const leaf = declarations(".folder-leaf");
 const cover = declarations('.item-case[data-kind="folder"] .folder-front');
+/** The same sheet on the two objects that gained one with T-287. */
+const tapePage = declarations('.item-case[data-kind="vhs"] .folder-page');
+const cassettePage = declarations('.item-case[data-kind="cassette"] .folder-page');
 
 /** A4 at this board's scale. Off `objects.ts` and never written out here: the
  *  whole point of these assertions is that the stylesheet agrees with the one
@@ -111,6 +114,60 @@ describe("the sheet inside an open folder", () => {
     const sheet = openSheetOf(folder!.w, folder!.h);
     expect(sheet.w).toBeCloseTo(unrotatedH, 0);
     expect(sheet.h).toBeCloseTo(unrotatedW, 0);
+  });
+});
+
+/**
+ * T-287, Q-299: a recording with a transcript beside it is read on *a case
+ * file's* reading surface — so there has to be one surface rather than three
+ * that resemble each other, and these are the numbers that decide whether that
+ * is true.
+ */
+describe("the same sheet on a tape and a cassette", () => {
+  /** The unrotated box the `inset` cuts out of an object of this size. */
+  function sheet(declared: Map<string, string>, box: { w: number; h: number }) {
+    const { top, side } = inset(declared.get("inset")!);
+    return { w: box.w * (1 - (2 * side) / 100), h: box.h * (1 - (2 * top) / 100) };
+  }
+
+  const shapes = [
+    { name: "a VHS", declared: tapePage, box: objectSizeFor("video") },
+    { name: "a compact cassette", declared: cassettePage, box: objectSizeFor("audio") },
+  ] as const;
+
+  for (const { name, declared, box } of shapes) {
+    /**
+     * The claim the arithmetic in `items.css` is making. A4's *proportions*
+     * rather than A4's size: the sheet scales with the object the way a folder's
+     * does — `openSheetOf` has always said the sheet is a fraction of the box
+     * rather than an absolute — so what has to survive on a smaller object is
+     * the shape of a piece of paper.
+     */
+    it(`is a sheet of paper's proportions on ${name}`, () => {
+      expect(box).not.toBeNull();
+      const cut = sheet(declared, box!);
+      expect(cut.h / cut.w).toBeCloseTo(A4.h / A4.w, 2);
+    });
+
+    /**
+     * And it stands proud of its object by the same fraction the folder's does.
+     * That number is what makes the three read as one surface; if a cassette's
+     * sheet were tucked further in, it would read as a different, smaller kind
+     * of paper rather than as the same sheaf against a smaller box.
+     */
+    it(`stands as far out of ${name} as it does out of a folder`, () => {
+      expect(inset(declared.get("inset")!).top).toBeCloseTo(inset(page.get("inset")!).top, 3);
+    });
+  }
+
+  /** Nothing is drawn at rest, which is the folder's own invariant reaching the
+   *  two objects that just gained a sheet. Neither overrides the opacity, so
+   *  they inherit `clamp(0, --open * 5, 1)` and a tape nobody is reading has an
+   *  absent `--open` and a fully transparent page. */
+  it("draws nothing at all on a tape nobody is reading", () => {
+    expect(tapePage.get("opacity")).toBeUndefined();
+    expect(cassettePage.get("opacity")).toBeUndefined();
+    expect(page.get("opacity")).toContain("--open");
   });
 });
 
