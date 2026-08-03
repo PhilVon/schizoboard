@@ -930,6 +930,8 @@ Two more exports beside the bundle, and they answer a different question. A `.sc
 
 **Neither carries chrome.** No dev HUD, no tool drawer, no info bar, no fps counter. This is not automatic: the first PDF this project produced printed all of it.
 
+**An export draws the object and never the recording**, and that is the answer rather than a limitation (T-296). A picture of your thinking has a VHS in it — black case, its label legible, its counter and its poster still — and no frame of the film; a cassette is a J-card with a name and a runtime on it; a case file is a manilla folder with its case number on the tab and its page count at the corner. That is what those objects *are* on this board: §6's whole argument is that the board draws physical things and the media is what you get when you open one, so an export of a tape showing a still of the tape is the object being drawn correctly and not the film going missing. Somebody will file it as a bug, which is why it is written here. The one thing that would be a defect is an object arriving *blank* — pins were absent from every image until T-214 and ink until T-215, both silently — so the guarantee worth holding is that the object comes through with its writing on it, and there is a test on the copy an export is made from that says so.
+
 Three things an export must force that the screen never does, each of which was invisible until a rendered page was looked at:
 
 - **The camera fits the page, not the window.** A print lays the document out at the paper width and fires no `resize`, so a board fitted for the window sits in the corner of a mostly empty page with its ropes cut off at the old width.

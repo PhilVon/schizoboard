@@ -15,6 +15,7 @@ import {
   type AssetView,
 } from "@/render/items/dom";
 import { objectSizeFor } from "@/lib/objects";
+import { serialise } from "@/render/items/raster";
 import { tapedCorners } from "@/render/items/tape";
 import { dogEarOf } from "@/render/items/wear";
 import { DirtySets } from "@/state/dirty";
@@ -2738,6 +2739,31 @@ describe("a folder, a tape and a cassette", () => {
     again();
     const cassette = mount(facts({ kind: "audio", name: "track03.mp3", title: "Interview" }));
     expect(cassette.querySelector<HTMLElement>(".case-title")!.textContent).toBe("Interview");
+  });
+
+  /**
+   * T-296. An export draws the *object* and never the recording, which is
+   * correct and is also the thing somebody will file as a bug — so what has to
+   * hold is that the object arrives whole: a tape in the picture is a tape,
+   * with its label readable.
+   *
+   * Asserted on the copy the export actually makes rather than on the live
+   * node, because that copy is where an object has gone missing before. Pins
+   * were absent from every image until T-214 and ink until T-215, and both were
+   * silent: the export drew, wrote a file, and said nothing about what was not
+   * in it.
+   */
+  it("hands a tape to an export with its label still on it", () => {
+    const tape = mount(facts({ kind: "video", name: "S03E04.mkv", title: "Silo" }));
+    const copy = serialise(tape);
+
+    // The face, so the stylesheet inside the SVG paints a VHS rather than a
+    // bare div — `data-kind` is what every case rule is written against.
+    expect(copy).toContain('data-kind="vhs"');
+    // And the writing, which is the whole of what an export of a tape is for:
+    // the film cannot play in a PNG, so the label is the object's only voice.
+    expect(copy).toContain("Silo");
+    expect(copy).toContain("S03E04");
   });
 
   it("is a tape with only its filename on it when the container says nothing", () => {

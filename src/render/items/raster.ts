@@ -36,6 +36,22 @@
  *    store, so a note somebody drew on clones as a correctly-sized transparent
  *    rectangle. See [`inlineInk`].
  *
+ * ## What an export of a tape is, before anybody reports it
+ *
+ * **The object, and never the recording** (T-296, DESIGN §7.9). A film exports
+ * as the VHS it is on this board — the case, the label, the counter, the poster
+ * still — and a recording as a J-card with a name and a runtime. There is no
+ * frame of video in the file and there is not meant to be one: the board draws
+ * physical things and the media is what you get when you *open* one, so a still
+ * of the tape is the object drawn correctly rather than the film gone missing.
+ *
+ * It is written here because this is the file somebody opens when they go
+ * looking for the missing video. What would be a real defect is an object
+ * arriving **blank**, which is the failure this whole module keeps having in
+ * one form or another — the pins (T-214), the ink (T-215), the font (D-34 §4)
+ * — and every one of them was silent. So the line to hold is that whatever a
+ * face draws itself out of survives the clone with its writing on it.
+ *
  * ## Why this is in `render/items/` and not in `app/`
  *
  * Because the alternative is a second module with an opinion about how an item
