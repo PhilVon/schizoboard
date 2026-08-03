@@ -13,6 +13,7 @@ import {
   Scene,
   type ItemColdInput,
   type ItemPose,
+  type PinNode,
   type SceneStroke,
   type StringNodes,
 } from "@/state/scene";
@@ -189,6 +190,207 @@ describe("turning a case file up to read it", () => {
 
     it("is null for an item that is not there", () => {
       expect(new Scene().openBoundsOf("gone")).toBeNull();
+    });
+  });
+
+  /**
+   * T-328, measured on the running app at 156 board units.
+   *
+   * A pin arriving is not the paper moving. The turn is measured about
+   * `solePin`, which is a question about *how many* pins hold the item — so a
+   * second pin pushed into an open case file took the turn's translation to
+   * zero in the frame it arrived, and the folder leapt to where turning about
+   * its own centre would have put it. Nought to one does the same in reverse.
+   *
+   * It is a T-282 clipping that finds it: a pasted folder has exactly one pin,
+   * so the first cut threw the page out from under the cursor and every
+   * rectangle after it landed on bare cork. Q-291 has since taped that thread
+   * rather than pinning it, but `state/tools/pin.ts` still places a pin wherever
+   * the hit test lands, and an open folder is an ordinary item with an ordinary
+   * rectangle.
+   */
+  describe("and a pin arriving does not move it", () => {
+    const pin = (id: string, parent: string | null, lx: number, ly: number): PinNode => ({
+      id,
+      parent,
+      lx,
+      ly,
+      kind: "pushpin",
+      color: "#c8352f",
+      page: null,
+      wx: 0,
+      wy: 0,
+    });
+
+    const drawn = (scene: Scene) => {
+      const slot = scene.slotOf("f")!;
+      return { x: scene.renderX(slot), y: scene.renderY(slot), rot: scene.renderRot(slot) };
+    };
+
+    /** A case file as a paste leaves it: one pin, turned up, one frame drawn. */
+    const opened = (pins: readonly PinNode[] = [pin("p0", "f", -144, -136)]) => {
+      const scene = new Scene();
+      scene.putItem(cold("f"), pose({ x: 200, y: -60, w: 480, h: 344, rot: 0.12 }));
+      for (const p of pins) scene.putPin(p);
+      scene.layoutPins();
+      scene.setOpen("f", 1);
+      return scene;
+    };
+
+    it("holds still when a second pin goes into the page", () => {
+      const scene = opened();
+      const slot = scene.slotOf("f")!;
+      const before = drawn(scene);
+      // What is at stake, asserted rather than assumed: turning about the pin
+      // has carried the folder a long way from where turning about its own
+      // centre would leave it, and that gap is the size of the leap.
+      expect(
+        Math.hypot(before.x - scene.settledX(slot), before.y - scene.settledY(slot)),
+      ).toBeGreaterThan(100);
+      expect(scene.solePin("f")).not.toBeNull();
+
+      scene.putPin(pin("cut", "f", 40, 30));
+      scene.layoutPins();
+      // The condition that used to zero the pivot: two pins have no sole one.
+      expect(scene.solePin("f")).toBeNull();
+
+      scene.setOpen("f", 1); // the next frame
+      expect(drawn(scene)).toEqual(before);
+    });
+
+    it("holds still when the first pin arrives, which is the same jump backwards", () => {
+      const scene = opened([]);
+      const before = drawn(scene);
+      expect(scene.solePin("f")).toBeNull();
+
+      scene.putPin(pin("p0", "f", -144, -136));
+      scene.layoutPins();
+      expect(scene.solePin("f")).not.toBeNull();
+
+      scene.setOpen("f", 1);
+      expect(drawn(scene)).toEqual(before);
+    });
+
+    it("holds still when the pin it turns about is pulled out from under it", () => {
+      // The fallback point, and the only thing it is for: the pin the turn took
+      // hold of is gone, so the last place it was is the only honest answer.
+      const scene = opened();
+      const before = drawn(scene);
+
+      scene.removePin("p0");
+      scene.layoutPins();
+      expect(scene.solePin("f")).toBeNull();
+
+      scene.setOpen("f", 1);
+      expect(drawn(scene)).toEqual(before);
+    });
+
+    it("chooses again the next time it is opened", () => {
+      // Held for the length of one turn, not for the life of the item. A folder
+      // shut with two pins in it and opened afresh turns about its own centre,
+      // because that is what two pins mean.
+      const scene = opened();
+      scene.putPin(pin("cut", "f", 40, 30));
+      scene.layoutPins();
+      scene.setOpen("f", 1);
+
+      scene.setOpen(null, 0);
+      scene.setOpen("f", 1);
+
+      const slot = scene.slotOf("f")!;
+      expect(scene.renderX(slot)).toBeCloseTo(scene.settledX(slot), 9);
+      expect(scene.renderY(slot)).toBeCloseTo(scene.settledY(slot), 9);
+    });
+
+    it("re-reads where that pin is, because the paper moves under it and the pin does not", () => {
+      // Why the point is recomputed from the latched pin every frame rather than
+      // frozen along with it. A free pin is stuck in the cork, so dragging the
+      // folder it is pushed through puts the same pin somewhere else in the
+      // folder's own frame. The oracle is a folder opened where the dragged one
+      // arrives: same pin, same pose, so the same drawn pose.
+      const scene = opened([pin("free", null, 120, -120)]);
+      expect(scene.solePin("f")?.id).toBe("free");
+      scene.setPose("f", { x: 260, y: -20 });
+      scene.layoutPins();
+      scene.setOpen("f", 1);
+
+      const fresh = new Scene();
+      fresh.putItem(cold("f"), pose({ x: 260, y: -20, w: 480, h: 344, rot: 0.12 }));
+      fresh.putPin(pin("free", null, 120, -120));
+      fresh.layoutPins();
+      fresh.setOpen("f", 1);
+
+      expect(drawn(scene).x).toBeCloseTo(drawn(fresh).x, 9);
+      expect(drawn(scene).y).toBeCloseTo(drawn(fresh).y, 9);
+    });
+
+    it("still tells the camera where the folder actually is", () => {
+      // `openBoundsOf` is the same four calls as the turn by construction, and a
+      // pivot read live here while the turn held a latched one would put those
+      // two 156 units apart — the folder landing somewhere the camera is not.
+      const scene = opened();
+      scene.putPin(pin("cut", "f", 40, 30));
+      scene.layoutPins();
+      scene.setOpen("f", 1);
+      expect(scene.openBoundsOf("f")).toEqual(scene.boundsOf("f"));
+    });
+
+    it("survives the pose the second pin bakes, which is the rest of the gesture", () => {
+      // The unit tests above are only half the claim. What actually happens when
+      // a pin is pushed in is that `settleOnPin` writes the drawn pose in the
+      // same transaction, and phase 3 then drops the swing it just baked — both
+      // of which move the numbers the pivot is computed from. The pin's place in
+      // the item's frame comes through unchanged, and this is what says so.
+      const scene = new Scene();
+      scene.putItem(cold("f"), pose({ x: 200, y: -60, w: 480, h: 344, rot: 0.12 }));
+      scene.putPin(pin("p0", "f", -144, -136));
+      scene.layoutPins();
+      const slot = scene.slotOf("f")!;
+
+      const dirty = new DirtySets();
+      const torsion = new Torsion();
+      dirty.everything();
+      torsion.step(scene, dirty, 0);
+      expect(scene.swing[slot]).not.toBe(0);
+
+      scene.setOpen("f", 1);
+      const before = drawn(scene);
+
+      scene.setPose("f", drawnPose(scene, "f")!);
+      scene.putPin(pin("cut", "f", 40, 30));
+      scene.layoutPins();
+      dirty.everything();
+      torsion.step(scene, dirty, 16);
+      expect(scene.swing[slot]).toBe(0);
+      scene.setOpen("f", 1);
+
+      const after = drawn(scene);
+      expect(after.x).toBeCloseTo(before.x, 3);
+      expect(after.y).toBeCloseTo(before.y, 3);
+      expect(after.rot).toBeCloseTo(before.rot, 6);
+    });
+
+    it("is the same for a note being written on, which is the same turn", () => {
+      // One pivot, two target angles — so the lay-flat had the identical hazard
+      // and is fixed by the identical three lines. A note pinned mid-sentence is
+      // the gesture that reaches it.
+      const scene = new Scene();
+      scene.putItem(cold("n"), pose({ x: 0, y: 0, w: 100, h: 100, rot: 2 }));
+      scene.putPin(pin("p", "n", -45, -45));
+      scene.layoutPins();
+      scene.setFlatten("n", 1);
+
+      const slot = scene.slotOf("n")!;
+      const before = { x: scene.renderX(slot), y: scene.renderY(slot) };
+      expect(Math.hypot(before.x, before.y)).toBeGreaterThan(71);
+
+      scene.putPin(pin("second", "n", 20, 20));
+      scene.layoutPins();
+      expect(scene.solePin("n")).toBeNull();
+
+      scene.setFlatten("n", 1);
+      expect(scene.renderX(slot)).toBe(before.x);
+      expect(scene.renderY(slot)).toBe(before.y);
     });
   });
 

@@ -390,6 +390,33 @@ export class Scene {
   private flatDY = 0;
 
   /**
+   * The pin this turn is measured about, taken hold of when it starts and held
+   * until it ends — with the point it was last at, in the item's own frame.
+   *
+   * **Latched rather than asked every frame, and that is T-328.** The pivot is
+   * [`solePin`], which is a question about *how many* pins hold the item, and
+   * the answer changes the moment one arrives or leaves. Recomputed live, a
+   * second pin pushed into an open case file takes the turn's translation to
+   * zero in a single frame and the folder leaps to where turning about its own
+   * centre would have put it — 156 board units, measured on the running app
+   * while cutting a clipping out of a page. Nought to one does the same thing in
+   * the other direction.
+   *
+   * A pin arriving is not the paper moving, so the drawn pose must not depend on
+   * how many pins are in it *at this instant*. It depends on the point the turn
+   * began about, and that is what these hold.
+   *
+   * The point is still recomputed from the pin every frame — the pin is stuck in
+   * the cork and the paper under it is not, so its place in the item's frame
+   * moves whenever the item is dragged. `flatAt` is the last answer, and it is
+   * what gets used when the pin itself is pulled out mid-turn: the item is now
+   * held by nothing, and holding the pivot it had is what leaves it where it is
+   * instead of snapping it back to its centre.
+   */
+  private flatPin: string | null = null;
+  private readonly flatAt: Point = { x: 0, y: 0 };
+
+  /**
    * The open case file, for `setOpen`: the same four fields as the lay-flat
    * above and for the same reasons, because it is the same motion with a
    * different target angle (T-273).
@@ -403,6 +430,13 @@ export class Scene {
   private openT = 0;
   private openDX = 0;
   private openDY = 0;
+
+  /** The pin the open turn took hold of, and where it last was — [`flatPin`]
+   *  for the whole of why it is held rather than asked for. This is the pair
+   *  T-328 was measured on; the lay-flat has the same hazard by the same route
+   *  and is fixed by the same three lines. */
+  private openPin: string | null = null;
+  private readonly openAt: Point = { x: 0, y: 0 };
 
   private capacity = INITIAL_CAPACITY;
   private readonly slots = new Map<string, number>();
@@ -788,11 +822,15 @@ export class Scene {
       this.flatT = 0;
       this.flatDX = 0;
       this.flatDY = 0;
+      this.flatPin = null;
       return true;
     }
 
+    // The turn starting is the one moment the pivot is chosen — see [`flatPin`].
+    if (this.flatSlot !== slot) this.flatPin = this.latchPivot(itemId!, slot, this.flatAt);
+
     const settled = this.settledRot(slot);
-    const at = this.turnPivot(itemId!, slot);
+    const at = this.heldPivot(this.flatPin, slot, this.flatAt);
     const to = this.aboutPivot(at, settled, shortest(settled) * (1 - t));
 
     if (
@@ -840,11 +878,16 @@ export class Scene {
       this.openT = 0;
       this.openDX = 0;
       this.openDY = 0;
+      this.openPin = null;
       return true;
     }
 
+    // Once, as the folder starts to turn, and not again until it is shut and
+    // opened afresh — [`openPin`], and the 156 units it cost (T-328).
+    if (this.openSlot !== slot) this.openPin = this.latchPivot(itemId!, slot, this.openAt);
+
     const settled = this.settledRot(slot);
-    const at = this.turnPivot(itemId!, slot);
+    const at = this.heldPivot(this.openPin, slot, this.openAt);
     const to = this.aboutPivot(at, settled, openAngle(shortest(settled), t));
 
     if (
@@ -863,7 +906,7 @@ export class Scene {
   }
 
   /**
-   * The point an item turns about when it is laid flat or opened, or null.
+   * The point an item **not yet turning** would turn about, or null.
    *
    * Two pins hold the paper rigid and none leaves it lying on the cork; in
    * neither case is there a point it obviously turns about, so it turns about
@@ -873,10 +916,47 @@ export class Scene {
    * `pinPivot`, not `pin.lx`/`pin.ly` — the pin holding this note need not be
    * one it parents (T-188), and turning about a point in the wrong frame takes
    * the paper off the screen instead of standing it up.
+   *
+   * Asked of a turn that has **not started**, and only there: the one live
+   * caller left is {@link openBoundsOf}, aiming the camera at a folder that is
+   * still lying closed. A turn under way holds the answer it got here rather
+   * than asking again — [`flatPin`] is why, and {@link latchPivot} is where it
+   * is taken.
    */
   private turnPivot(itemId: string, slot: number): Point | null {
     const pin = this.solePin(itemId);
     return pin === null ? null : this.pinPivot(pin.id, slot, flatPivot);
+  }
+
+  /**
+   * Take hold of the pin a turn will be measured about, and of where it is.
+   *
+   * Both halves in one call because a latch that recorded the pin without its
+   * point would leave [`heldPivot`] one frame of grace to be handed a pin that
+   * has already gone, and answer `(0, 0)` — the item's own centre, which is the
+   * bug this exists to stop, arriving in the one case nobody would test.
+   */
+  private latchPivot(itemId: string, slot: number, at: Point): string | null {
+    const pin = this.solePin(itemId);
+    if (pin === null) return null;
+    this.pinPivot(pin.id, slot, at);
+    return pin.id;
+  }
+
+  /**
+   * Where a turn already under way is measured about, or null when it began
+   * about the item's own centre and so goes on turning about it.
+   *
+   * Recomputed from the latched pin every frame rather than read out of `at`,
+   * because a pin is stuck in the cork and the paper under it is not: drag an
+   * open folder and the same pin is a different point in its frame. `at` is the
+   * fallback for that pin having been pulled out from under a turn still in
+   * progress — the last place it was, which is where the paper is drawn, rather
+   * than a centre it has not been at since the turn began.
+   */
+  private heldPivot(pinId: string | null, slot: number, at: Point): Point | null {
+    if (pinId === null) return null;
+    return this.pinPivot(pinId, slot, at) ?? at;
   }
 
   /**
@@ -1844,16 +1924,27 @@ export class Scene {
    * from under the camera by a good part of its own height (T-323).
    *
    * It computes the pose {@link setOpen} would write at `t === 1` rather than
-   * predicting it: same `settledRot`, same `openAngle`, same `turnPivot` and
+   * predicting it: same `settledRot`, same `openAngle`, same pivot and the same
    * `aboutPivot`. If those two ever disagree the folder lands somewhere the
    * camera is not looking, so they are deliberately the same four calls.
+   *
+   * Which is why the pivot is asked for the way `setOpen` would ask for it at
+   * this moment: the pin it has hold of if this folder is the open one, and the
+   * pin it hangs from if the turn has yet to start (T-328). Reading `solePin`
+   * outright would send the camera to where a folder *would* go if it were
+   * opening now — and on a folder already open with a second pin in its page,
+   * that is 156 units from where it actually is.
    */
   openBoundsOf(id: string, pad = 0, out: Bounds = { minX: 0, minY: 0, maxX: 0, maxY: 0 }): Bounds | null {
     const slot = this.slots.get(id);
     if (slot === undefined) return null;
     const settled = this.settledRot(slot);
     const angle = openAngle(shortest(settled), 1);
-    const to = this.aboutPivot(this.turnPivot(id, slot), settled, angle);
+    const at =
+      slot === this.openSlot
+        ? this.heldPivot(this.openPin, slot, this.openAt)
+        : this.turnPivot(id, slot);
+    const to = this.aboutPivot(at, settled, angle);
     return this.boxAround(slot, this.settledX(slot) + to.x, this.settledY(slot) + to.y, angle, pad, out);
   }
 
