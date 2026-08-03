@@ -813,6 +813,16 @@ fn fetch_error(e: ureq::Error) -> Error {
 /// sees `file:///etc/passwd`. Deleting it would weaken the error messages and
 /// nothing else — and deleting the resolver would remove the guarantee entirely,
 /// so if one of the two has to go, it is this one.
+/// What to do with a body that runs past the cap.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum OverCap {
+    /// Half a file is not a file. The only honest answer for an asset.
+    Refuse,
+    /// Read what fits and use it. Right only where the beginning is the part
+    /// that matters, which of a page it is.
+    Truncate,
+}
+
 /// What one guarded fetch came back with.
 pub struct Fetched {
     pub bytes: Vec<u8>,
@@ -833,7 +843,16 @@ pub struct Fetched {
 /// `cap` is the caller's, because the two callers are bounding different
 /// things: an asset is bounded by what this build will hold, and a page is
 /// bounded by how much of a `<head>` is worth reading.
-fn fetch(url: &str, cap: u64) -> Result<Fetched> {
+///
+/// `over` is the caller's for the same reason, and the difference is not a
+/// detail. Half an asset is not an asset — a truncated JPEG is a broken file
+/// and refusing it is the only honest answer. Half a *page* is a page: the
+/// `<head>` arrives first and everything worth reading is in it, so a bound
+/// there is a bound on **work**, not a judgement about the page. Found by
+/// driving it: a YouTube watch page is over half a megabyte of markup and was
+/// failing with "too large for one asset", which is both the wrong words and
+/// the wrong answer — its Open Graph tags had arrived long before the cap.
+fn fetch(url: &str, cap: u64, over: OverCap) -> Result<Fetched> {
     let agent = fetch_agent();
 
     let mut current = url.to_string();
@@ -867,11 +886,17 @@ fn fetch(url: &str, cap: u64) -> Result<Fetched> {
         response
             .body_mut()
             .as_reader()
+            // One past the cap, so that going over is detectable at all — a
+            // read of exactly `cap` cannot tell a file that fits from one that
+            // was cut off at the boundary.
             .take(cap + 1)
             .read_to_end(&mut bytes)
             .map_err(|e| Error::Fetch(e.to_string()))?;
         if bytes.len() as u64 > cap {
-            return Err(Error::TooLarge(bytes.len() as u64));
+            match over {
+                OverCap::Refuse => return Err(Error::TooLarge(bytes.len() as u64)),
+                OverCap::Truncate => bytes.truncate(cap as usize),
+            }
         }
         return Ok(Fetched {
             bytes,
@@ -883,12 +908,16 @@ fn fetch(url: &str, cap: u64) -> Result<Fetched> {
 
 /// How much of a page is worth reading to find what it says it is — T-289.
 ///
-/// Open Graph tags live in `<head>`, and a `<head>` that has not finished
-/// inside a quarter of a megabyte belongs to a page this board has no business
-/// making an object out of. It is also the bound that keeps a hostile server
-/// from holding a thread open streaming an endless document at us, which
-/// `MAX_ASSET_BYTES` would do far too slowly to notice.
-pub const MAX_PAGE_BYTES: u64 = 512 * 1024;
+/// Open Graph tags live in `<head>`, so this is a bound on work rather than a
+/// limit a page can fail: what runs past it is dropped and what arrived is
+/// read (see [`OverCap`]). It is also what stops a hostile server holding a
+/// blocking thread open streaming an endless document, which `MAX_ASSET_BYTES`
+/// would do far too slowly to notice.
+///
+/// A megabyte because real pages are enormous. A YouTube watch page is over
+/// half of one before its `<head>` is done, which is what this was originally
+/// set to — the tags were arriving and being thrown away with the error.
+pub const MAX_PAGE_BYTES: u64 = 1024 * 1024;
 
 /// Fetch a page and hand back its markup, for [`crate::opengraph`].
 ///
@@ -898,7 +927,7 @@ pub const MAX_PAGE_BYTES: u64 = 512 * 1024;
 /// the store — it is asking a page what it says about itself, and a server that
 /// says it is not sending a page is answering that question.
 pub fn fetch_page(url: &str) -> Result<String> {
-    let got = fetch(url, MAX_PAGE_BYTES)?;
+    let got = fetch(url, MAX_PAGE_BYTES, OverCap::Truncate)?;
     let declared = got.content_type.as_deref().unwrap_or("");
     if !declared.eq_ignore_ascii_case("text/html") && !declared.eq_ignore_ascii_case("application/xhtml+xml") {
         return Err(Error::Fetch(format!("{declared} is not a page")));
@@ -1780,7 +1809,7 @@ impl AssetStore {
     /// connect to another — is closed by the resolver, not by the pre-flight.
     /// See [`PublicOnlyResolver`] for why that distinction is the whole fix.
     pub fn ingest_url(&self, url: &str) -> Result<AssetMeta> {
-        let got = fetch(url, MAX_ASSET_BYTES)?;
+        let got = fetch(url, MAX_ASSET_BYTES, OverCap::Refuse)?;
         self.ingest_bytes(&got.bytes, got.content_type.as_deref())
     }
 

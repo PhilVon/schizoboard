@@ -53,6 +53,18 @@ export type Ingested =
        * meant to put down is what keeps `layout`'s fan counting what they see.
        */
       sidecar?: { sha256: string; asset: AssetInput };
+      /**
+       * What to write under it — T-290.
+       *
+       * Only a *printed still* has one: a picture lifted off a page because the
+       * page was the thing somebody pasted, which needs to say what page it
+       * came from or it is an unattributed photograph of a stranger's website.
+       * Every other asset arrives with an empty caption, which is what a
+       * photograph you pasted yourself should have — D-46 gives a polaroid a
+       * caption in the person's own hand, and filling it in for them is not
+       * that.
+       */
+      caption?: string;
     }
   | { kind: "text"; text: string };
 
@@ -346,7 +358,7 @@ export function layout(payloads: readonly Ingested[], at: BoardPoint): CreateIte
       seed,
       assetId: payload.kind === "asset" ? payload.sha256 : null,
       ...(payload.kind === "asset" ? { asset: payload.asset } : {}),
-      text: payload.kind === "text" ? payload.text : "",
+      text: payload.kind === "text" ? payload.text : (payload.caption ?? ""),
     };
   });
 }

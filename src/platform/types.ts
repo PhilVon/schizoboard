@@ -139,6 +139,37 @@ export interface AssetMeta {
   pages: number | null;
 }
 
+/**
+ * What a page says it is — T-289, T-290, Q-304.
+ *
+ * The other half of a pasted URL. `assetIngestUrl` is for an address that names
+ * a file; this is for one that names a *page about* a file, which is what an
+ * archive.org item, a Commons file page and a watch page all are.
+ *
+ * Every field is absent far more often than not, and a card with nothing in it
+ * is the ordinary answer for most of the web — the paste then falls back to the
+ * note it would always have made.
+ */
+export interface PageCard {
+  readonly title: string | null;
+  readonly siteName: string | null;
+  /**
+   * A picture the page offers, absolute. **A lead, not a picture**: it goes
+   * back through `assetIngestUrl` like any other address, so the store sniffs
+   * the bytes and a page claiming its image is a PDF gets a folder.
+   */
+  readonly image: string | null;
+  /**
+   * A film or a recording the page declares *and gives a media type for*.
+   *
+   * Null for a watch page, and that is the whole of T-290 rather than an
+   * omission: such a page does declare an `og:video`, and it is an embed URL
+   * typed `text/html` — a player, not a film. Rust refuses to call that media,
+   * so there is nothing here to hang a tape on that could not play.
+   */
+  readonly media: { readonly url: string; readonly mime: string } | null;
+}
+
 // --- reading a document (T-297, T-299, T-318) -------------------------------
 
 /**
@@ -497,6 +528,15 @@ export interface Platform {
   assetIngestBytes(bytes: Uint8Array, mime?: string): Promise<AssetMeta>;
   assetIngestPath(path: string): Promise<AssetMeta>;
   assetIngestUrl(url: string): Promise<AssetMeta>;
+  /**
+   * What a page says it is — {@link PageCard}, T-289.
+   *
+   * Rejects rather than returning an empty card when the page will not load
+   * or is not a page at all, because those are different from a page that
+   * loaded and had nothing to say — and only the caller knows that both end
+   * in the same note.
+   */
+  pageCard(url: string): Promise<PageCard>;
   assetHas(hashes: string[]): Promise<boolean[]>;
 
   /**
