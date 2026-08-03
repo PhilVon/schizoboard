@@ -22,7 +22,7 @@
  */
 
 import type { AssetInput, CreateItemInput } from "@/crdt/ops";
-import { assetKind, objectSizeFor } from "@/lib/objects";
+import { assetKind, CARD_UNITS, objectSizeFor } from "@/lib/objects";
 import { polaroidFor } from "@/lib/polaroid";
 import { newSeed, valueAt } from "@/lib/seed";
 
@@ -335,10 +335,18 @@ export function layout(payloads: readonly Ingested[], at: BoardPoint): CreateIte
     // objects with sizes of their own — a VHS is 187 by 103 millimetres whatever
     // is recorded on it — which is why this is a lookup by kind and not a
     // measurement, and why it is right before a single byte has arrived.
+    // And a link card is the exception to the exception (T-339). Its bytes are
+    // a jpeg, so `objectSizeFor` says nothing and `polaroidFor` would cut a
+    // 1200 by 630 banner into a wide print — but the object is not a print of
+    // the banner, it is a business card with the banner washed into its stock,
+    // and a business card is 85 by 55 mm whatever picture is on it. What says so
+    // is `source`: the item is *about* somewhere. Same test as the renderer's
+    // `archetypeOf`, and it has to be, or the card would arrive the wrong shape
+    // and stay that way — a size is written into the document once.
     const size =
       payload.kind === "asset"
         ? (objectSizeFor(assetKind(payload.asset.mime)) ??
-          polaroidFor(payload.asset.w, payload.asset.h))
+          (payload.source !== undefined ? CARD_UNITS : polaroidFor(payload.asset.w, payload.asset.h)))
         : noteSizeFor(payload.text);
 
     // Position along the fan, in [-1, 1] rather than in item indices: the

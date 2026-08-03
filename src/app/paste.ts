@@ -794,7 +794,7 @@ export class Paste {
       // a weaker object rather than a broken one.
     }
     if (card.image !== null) {
-      await this.fetchFile(out, card.image, captionFor(card, url), url);
+      await this.fetchFile(out, card.image, captionFor(card), url);
     }
     return out;
   }
@@ -838,24 +838,30 @@ export class Paste {
 }
 
 /**
- * What goes under a printed still — T-290.
+ * What is written on a link card — T-290, and rewritten by T-339.
  *
- * > a printed still with the title and the URL written under it
+ * **The title alone, now that the object draws its own address.** It used to be
+ * the title and the URL on two lines, because the object was a printed still and
+ * a caption under a photograph was the only surface there was to write on. A
+ * business card has three lines and knows where they go: the name from here, and
+ * the company and the address off the item's `source` (`lib/objects.ts`'s
+ * `siteLabel` and `addressLabel`). Leaving the URL in here as well would print it
+ * on the card twice.
  *
- * The address as well as the title, and the address is the load-bearing half:
- * this object exists *because* the thing itself could not be brought onto the
- * board, so the one thing it owes somebody is the way back to it. A title alone
- * would be a photograph of a website with a caption, which is the object that
- * lies.
+ * That the address is no longer in the item's *text* is the one thing worth
+ * naming, because text is what a person can edit and `source` is not. It is the
+ * right way round: T-290 already found that a caption is not good enough to open
+ * — rewriting the words around a link would destroy it — which is why Q-305 put
+ * the address on a field of its own. This finishes the move rather than starting
+ * one.
  *
- * The site's name is left out. `og:site_name` is usually the host with a
- * capital letter — "YouTube" over a youtube.com address — and the URL is
- * already saying it, in the form somebody can actually follow.
+ * `""` for a page with no title, and the card is a card without it: the host
+ * carries the top line instead, which is what a card for an untitled page should
+ * say. It is also what leaves the text *empty and editable* — click into it and
+ * name the thing yourself.
  */
-function captionFor(card: PageCard, url: string): string {
-  const title = (card.title ?? "").trim();
-  return title === "" ? url : `${title}
-${url}`;
+function captionFor(card: PageCard): string {
+  return (card.title ?? "").trim();
 }
 
 /** Did the clipboard hold anything at all? Used only to tell a paste that found

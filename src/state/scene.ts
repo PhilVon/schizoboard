@@ -131,6 +131,21 @@ export interface ItemCold {
   /** Plain text snapshot. The Y.Text stays behind the binding. */
   text: string;
   /**
+   * Where this item came from, when it stands in for a page — `crdt/schema.ts`
+   * says what the field is and why it is a field.
+   *
+   * Cold, and *here*, because the face is chosen from it (T-339). Every other
+   * face on this board comes off the asset's mime, and this one cannot: the
+   * asset behind a link card is the page's picture, and a picture is a
+   * photograph. What makes the object a business card is that the item is about
+   * somewhere, which is exactly this field — so the renderer has to be able to
+   * see it, and until now nothing below `app/main.ts` could.
+   *
+   * `null` for almost everything. A photograph came off a clipboard and a note
+   * came out of somebody's hands; neither has a source in this sense.
+   */
+  source: string | null;
+  /**
    * What has been overridden of what `seed` would decide — `lib/style.ts`.
    *
    * Cold rather than hot, and it belongs here for the reason everything else in
@@ -144,9 +159,20 @@ export interface ItemCold {
   style: ItemStyle;
 }
 
-/** What [`Scene.putItem`] will take: a cold record whose `style` may be left
- *  off, because an item with nothing overridden is the ordinary one. */
-export type ItemColdInput = Omit<ItemCold, "style"> & { style?: ItemStyle };
+/**
+ * What [`Scene.putItem`] will take: a cold record whose `style` and `source` may
+ * be left off, because an item with nothing overridden and nowhere it came from
+ * is the ordinary one.
+ *
+ * Both are filled in at the door — see [`Scene.putItem`] — so that the
+ * *stored* record still has every field and no reader anywhere has to ask
+ * whether an absent `source` means "no source" or "not read yet". The answer is
+ * always the first, and this is where it is given.
+ */
+export type ItemColdInput = Omit<ItemCold, "style" | "source"> & {
+  style?: ItemStyle;
+  source?: string | null;
+};
 
 /**
  * Where a pin should be parented and what its coordinates become there — the
@@ -1054,14 +1080,18 @@ export class Scene {
   /**
    * Insert or replace. Returns the slot.
    *
-   * `style` may be left off and is filled in with `NO_STYLE`. The invariant
-   * that a stored `ItemCold` always carries an object is worth having — it is
-   * what lets every reader write `cold.style.paperStock ?? seedAnswer` without
-   * a null check — but it is worth having *here*, at the one door into the
-   * mirror, rather than restated by every literal that builds one.
+   * `style` may be left off and is filled in with `NO_STYLE`, and `source` with
+   * `null`. The invariant that a stored `ItemCold` always carries both is worth
+   * having — it is what lets every reader write `cold.style.paperStock ??
+   * seedAnswer` and `if (cold.source)` without asking whether the field was
+   * absent or merely unset — but it is worth having *here*, at the one door into
+   * the mirror, rather than restated by every literal that builds one.
    */
   putItem(input: ItemColdInput, pose: ItemPose): number {
-    const cold: ItemCold = input.style === undefined ? { ...input, style: NO_STYLE } : (input as ItemCold);
+    const cold: ItemCold =
+      input.style !== undefined && input.source !== undefined
+        ? (input as ItemCold)
+        : { ...input, source: input.source ?? null, style: input.style ?? NO_STYLE };
     // Geometry in, so what is over what may have changed.
     this.overStale = true;
     let slot = this.slots.get(cold.id);

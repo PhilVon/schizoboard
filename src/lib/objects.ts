@@ -250,6 +250,31 @@ export function objectSizeFor(kind: AssetKind): ObjectSize | null {
 }
 
 /**
+ * A business card: 85 by 55 mm, at the family's 1.55 units to the millimetre —
+ * 132 by 85 units, and the smallest object on the board (T-339).
+ *
+ * Here, beside the folder and the two tapes, because it is the same kind of
+ * fact: an object with a real size, whose proportions are not a taste call. The
+ * 85 by 55 is ISO 7810 ID-1, which is a credit card and is also what nearly
+ * every business card outside North America is cut to, and being *the* card
+ * size is most of what makes the shape recognisable at a glance.
+ *
+ * It is deliberately not `objectSizeFor`'s business, and that is the whole
+ * modelling difference this task turns on. Those three sizes are chosen from
+ * the file's **kind** — a PDF is a folder, an mp4 is a tape — and this one
+ * cannot be, because the file behind a link card is a jpeg and a jpeg is a
+ * photograph. What makes it a card is that the *item* has a `source`: it is not
+ * a picture that came from a page, it is an object about a page that happens to
+ * have a picture. `render/items/dom.ts`'s `archetypeOf` is where that reading is
+ * written down; this is its size.
+ *
+ * The smallest of the family and it should be. A card is a small object, and
+ * one that arrived the same size as the tape beside it would be claiming to
+ * hold something.
+ */
+export const CARD_UNITS: ObjectSize = units({ w: 85, h: 55 });
+
+/**
  * The sheet inside an open case file, **in the folder's own unrotated frame** —
  * which is the frame ink is stored in, and the reason this exists (T-278).
  *
@@ -325,6 +350,68 @@ export function pagesLabel(pages: number | null): string {
   if (pages === null || !Number.isFinite(pages) || pages < 0) return "";
   const whole = Math.floor(pages);
   return whole === 1 ? "1 p." : `${whole} pp.`;
+}
+
+/**
+ * The longest a line off an item's `source` may be before it is cut.
+ *
+ * `source` is a field in a shared document, so it is a string a peer chose and
+ * this build has no say in its length. CSS already stops a long address showing
+ * — one line, ellipsised — but it does not stop it being *in the DOM*, and a
+ * card wearing a megabyte of text node is a card that costs a megabyte to lay
+ * out on every bind. Two hundred is far past any address anybody would put on a
+ * card and far short of anything that costs.
+ */
+const ADDRESS_MAX = 200;
+
+/**
+ * Who the card is *from*, as a business card says it — the host, which is the
+ * nearest thing a page has to a company name.
+ *
+ * Not `og:site_name`, which the page usually also declares and which is not
+ * stored: it would be a second field on the item saying a thing the address
+ * already says, and it would be absent on exactly the pages that have no title
+ * either. The host is on every link by construction, it is what a person reads
+ * to know where something came from, and it needs nothing crossing the wire
+ * that is not crossing already.
+ *
+ * `www.` comes off because nobody has said it out loud since about 2005 and no
+ * card has ever been printed with it.
+ *
+ * `""` for anything that will not parse. This reads a field a peer wrote, so
+ * "will not parse" is an ordinary state rather than a bug, and a card with no
+ * company line is a card — where a card with the word `undefined` on it is a
+ * defect somebody would have to report.
+ */
+export function siteLabel(url: string): string {
+  let host: string;
+  try {
+    host = new URL(url).hostname;
+  } catch {
+    return "";
+  }
+  return host.startsWith("www.") ? host.slice(4) : host;
+}
+
+/**
+ * The address itself, as it is printed on the card — the scheme taken off, for
+ * the reason `www.` comes off the line above it.
+ *
+ * `https://` is not information. It is on essentially every link, it is what
+ * the person's browser would put back for them, and eight characters of it at
+ * the head of a five-point line on a 55 mm card is a real fraction of the only
+ * line that says where this thing actually goes.
+ *
+ * The *stored* `source` keeps its scheme and is the one that gets opened — this
+ * is a label and nothing reads it back. That split is why taking the scheme off
+ * here is safe: `app/main.ts` validates `^https?://` against the field, not
+ * against what is written on the object.
+ */
+export function addressLabel(url: string): string {
+  const bare = url.replace(/^https?:\/\//i, "").replace(/^www\./i, "");
+  const cut = bare.length > ADDRESS_MAX ? bare.slice(0, ADDRESS_MAX) : bare;
+  // A trailing slash on a bare host is punctuation the page put there.
+  return cut.endsWith("/") ? cut.slice(0, -1) : cut;
 }
 
 /**

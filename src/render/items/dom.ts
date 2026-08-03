@@ -44,6 +44,7 @@ import {
   FRAME_SIDE,
 } from "@/lib/polaroid";
 import {
+  addressLabel,
   caseNumber,
   fitLabel,
   PAGE_TEXT_SIZE,
@@ -51,6 +52,7 @@ import {
   openSheetOf,
   pagesLabel,
   runtimeLabel,
+  siteLabel,
   titleWorthWriting,
   type AssetKind,
 } from "@/lib/objects";
@@ -282,7 +284,7 @@ export const NO_FACTS: AssetFacts = {
 export type AssetLookup = (sha256: string) => AssetFacts;
 
 /**
- * The five faces.
+ * The six faces.
  *
  * Three of them arrived together (T-267) and share one class, for the reason
  * five paper stocks share `PaperView`: what differs between a folder, a tape and
@@ -291,8 +293,11 @@ export type AssetLookup = (sha256: string) => AssetFacts;
  * and the pooling. They are separate *archetypes* rather than one, so the pool
  * hands a recycled node back to its own kind and a cassette never has to be
  * dressed out of a folder's subtree.
+ *
+ * `card` is the sixth and the odd one (T-339) — the only face not chosen from a
+ * mime. See [`archetypeOf`].
  */
-type Archetype = "polaroid" | "paper" | "folder" | "vhs" | "cassette";
+type Archetype = "polaroid" | "paper" | "folder" | "vhs" | "cassette" | "card";
 
 /** The three of them, as the one type that means "an object with a file in it". */
 type CaseArchetype = "folder" | "vhs" | "cassette";
@@ -328,8 +333,32 @@ const MAX_RASTERS_PER_FRAME = 3;
  * that are one state here: an item with no asset at all, an asset whose record
  * has not arrived, and a mime this build has never heard of. All three are a
  * frame around nothing, which is what a photograph with no bytes already is.
+ *
+ * ## The third argument, which is the exception D-46 did not have (T-339)
+ *
+ * "The face is chosen from the asset's mime" was written without exception, and
+ * the link card is one. Its asset is the page's picture and a picture is a jpeg,
+ * so every reading of the mime says *photograph* — and the object is not a
+ * photograph. It is a business card: a thing **about** a page, whose picture is
+ * washed into its stock rather than being its subject. What makes it one is that
+ * the item has a `source`, which is a field on the *item* and not a fact about
+ * any file. So this takes three arguments, the third is that field, and the
+ * exception is written here in the one function that chooses a face rather than
+ * happening quietly in a branch of a renderer.
+ *
+ * **After the three cases and not before them**, which is the other half of
+ * Phil's rule and the half a reordering would silently break: *a page that hands
+ * over a real file still becomes the file*. An archive.org item is a VHS and a
+ * podcast feed is a cassette, and neither stops being one for having come from
+ * somewhere. Today `app/paste.ts` cannot produce that combination at all — the
+ * media arm of `fromPage` passes no `from` — so this ordering is a guard against
+ * a future paste route rather than a live fork, and it costs one line to be
+ * right in advance.
+ *
+ * A source with no asset at all is a card too, and deliberately: a page that
+ * declared a title and no picture is still a card, printed on blank stock.
  */
-function archetypeOf(type: string, kind: AssetKind): Archetype {
+function archetypeOf(type: string, kind: AssetKind, source: string | null): Archetype {
   if (type !== "polaroid") return "paper";
   switch (kind) {
     case "document":
@@ -339,7 +368,7 @@ function archetypeOf(type: string, kind: AssetKind): Archetype {
     case "audio":
       return "cassette";
     default:
-      return "polaroid";
+      return source ? "card" : "polaroid";
   }
 }
 
@@ -1267,6 +1296,360 @@ class PolaroidView implements View {
     // subtree, so a view recycled onto a different item would sit there wearing
     // the previous item's marks. The bitmap is a cache of strokes that are still
     // in the document, so this costs a re-raster if the item comes back.
+    this.ink.release();
+  }
+}
+
+/**
+ * The type on a business card, as a fraction of its width — one number for the
+ * block, and `items.css` sets the three lines in `em` off it.
+ *
+ * Sized from the real object rather than picked. A name on an 85 mm card is set
+ * at about 9 or 10 point, which is a shade under a ninth of the card's width;
+ * the block's own size is that over the title's 1.9 em, and the company and
+ * address lines come out at the 6 and 5 point those lines really are. The whole
+ * card is therefore small type on a small object, which is what a business card
+ * *is* — you pick one up to read it, and on this board that is the zoom.
+ */
+const CARD_TEXT = 0.055;
+
+/**
+ * How far the embossed writing is displaced from itself, as a fraction of the
+ * card's width — the whole of the relief, since an emboss drawn in CSS is two
+ * offset copies of the glyph and nothing else.
+ *
+ * Larger than life on purpose, and this is the one number here that is. A real
+ * emboss stands about a third of a millimetre off the card, which is four
+ * thousandths of its width and would be a sub-pixel offset at any zoom anybody
+ * looks at a board from — an effect that is physically right and visually
+ * absent. Twice that reads as raised type at a readable zoom and still vanishes
+ * into the ink at a wall-of-cards one, which is the correct way round for it to
+ * fail.
+ */
+const CARD_RELIEF = 0.008;
+
+/**
+ * A link card: the page's picture washed into the stock, with the title, the
+ * site and the address embossed over it (T-339).
+ *
+ * ## Why it is not a polaroid with different CSS
+ *
+ * It is a different object, and the difference is what the picture is *for*. A
+ * polaroid's photograph is its subject: it sits in a window, square, with a
+ * caption written under it in somebody's hand. A card's picture is its **paper**
+ * — washed back until it is a colour and a suggestion rather than a thing you
+ * look at — and what is written on it is *printed*, in three lines that a
+ * business card has always had. Sharing a class would mean a window that
+ * sometimes is not one and a caption that is sometimes three typeset lines,
+ * which is two objects wearing one name.
+ *
+ * The wash is why this reads at all, and it is **opacity over the stock rather
+ * than a filter**, which is a decision with two reasons behind it. The first is
+ * that it makes legibility arithmetic instead of taste: at `--card-wash` over
+ * cream card, every possible banner — a black photograph, a saturated brand
+ * red, a white page — lands inside a known lightness band, so embossed ink
+ * reads over all of them and it can be *checked* rather than eyeballed on
+ * whichever page happened to be pasted. Opacity scales chroma by the same
+ * factor, so the desaturation comes free from the same declaration. The second
+ * is that a `filter` anywhere inside an item rasterises the whole item in a
+ * print — `.item` is a stacking context — and a board of link cards printing as
+ * bitmaps is a price nobody agreed to for a saturation curve.
+ *
+ * ## No film, and that is the same argument the tape makes
+ *
+ * A photograph with no bytes is an item with nothing in it, so it draws five
+ * states and owes the person an account of each. A card with no picture is a
+ * card: the title, the site and the address are all written on it, all legible,
+ * and all facts this machine holds without a byte of the banner. So a missing
+ * banner is blank stock and nothing else — which is also, for free, exactly what
+ * a page that declared a title and no picture should look like.
+ */
+class CardView implements View {
+  readonly archetype = "card" as const;
+  readonly el: HTMLDivElement;
+  readonly ink: ItemInk;
+  /** A card is stiff and this one has no torn silhouette to fold — see
+   *  [`setCurl`] for the part of that which is a real question. */
+  readonly folded = -1;
+
+  private readonly shadow = new ShadowNode();
+  private readonly tape = new TapeSet();
+  private readonly body: HTMLDivElement;
+  private readonly shot: HTMLImageElement;
+  private readonly grain: HTMLDivElement;
+  private readonly type: HTMLDivElement;
+  private readonly title: HTMLDivElement;
+  private readonly site: HTMLDivElement;
+  private readonly address: HTMLDivElement;
+  /** The three printed lines, which are what ages by losing — `CaseView.ages`
+   *  says why the stock is not in here. */
+  private readonly ages: readonly HTMLElement[];
+
+  private boundCold: ItemCold | null = null;
+  /** The banner's URL, or `""`. The url and not the hash, for the reason
+   *  `CaseView`'s digest gives: the hash is known long before the bytes are. */
+  private boundShot: string | null = null;
+  /** What `swapShot` is trying to show — see `PolaroidView.swapPhoto`. */
+  private pending: string | null = null;
+  private boundWear = -1;
+  /** The width the type and the relief were written for. */
+  private sizedFor = -1;
+  private field: HTMLTextAreaElement | null = null;
+  private readonly writtenLight = new Float32Array(3).fill(-9);
+
+  constructor() {
+    this.el = document.createElement("div");
+    this.el.className = "item item-card";
+    this.ink = new ItemInk(this.el);
+
+    // The card itself. Its own box inside the item, like `.pol-frame`, so the
+    // shadow can hang outside the stock without the stock's `overflow: hidden`
+    // — which the wash needs — cutting it off at the corner.
+    this.body = div("card-body");
+
+    this.shot = document.createElement("img");
+    this.shot.className = "card-shot";
+    this.shot.decoding = "async";
+    this.shot.draggable = false;
+    // Empty, and for a stronger reason than the tape's still. This picture has
+    // been washed back to about a third of its contrast: it is stock, not
+    // content, and the three lines over it already say everything the card says.
+    this.shot.alt = "";
+    // A banner that will not decode is a card with no banner, which is a state
+    // this object already draws and does not need telling about. Nothing torn:
+    // see the class comment.
+    this.shot.addEventListener("error", () => this.clearShot());
+
+    // The fibre in the stock, over the wash because it is the surface of the
+    // card and the picture is *in* it. Same shared tile and same per-item offset
+    // as a folder's kraft, so a wall of cards is not one texture repeated.
+    this.grain = div("card-grain");
+    this.grain.style.backgroundImage = `url(${paperGrainUrl("cream")})`;
+
+    this.type = div("card-type");
+    this.title = div("card-title");
+    this.site = div("card-site");
+    this.address = div("card-address");
+    this.ages = [this.title, this.site, this.address];
+    this.type.append(this.title, this.site, this.address);
+
+    this.body.append(this.shot, this.grain, div("card-age"), this.type);
+    // Tape last, over the card, where a strip put on afterwards would be.
+    this.el.append(this.shadow.el, this.body, ...this.tape.nodes);
+  }
+
+  bind(
+    cold: ItemCold,
+    _facts: AssetFacts,
+    assetUrl: AssetResolver,
+    screenPx: number,
+    wear: number,
+    _plain: boolean,
+  ): void {
+    // `plain` is ignored, and that is the whole of this face's relationship with
+    // the LOD tier. It means "put the writing down as a text node rather than a
+    // box per character" (`hand.ts`), and these three lines were never in a hand
+    // to begin with — a card is printed. Everything else the tier changes is
+    // paint, off `[data-lod]` on the host.
+    const asset = cold.assetId ? assetUrl(cold.assetId, screenPx) : NO_ASSET;
+    const worn = Math.round(wear * 100);
+    const sameWear = worn === this.boundWear;
+    if (this.boundCold === cold && asset.url === this.boundShot && sameWear) return;
+
+    if (!sameWear) {
+      this.boundWear = worn;
+      this.paintAge(worn / 100);
+    }
+    this.boundCold = cold;
+    if (asset.url !== this.boundShot) {
+      const replacing = Boolean(this.boundShot);
+      this.boundShot = asset.url;
+      this.swapShot(asset.url, replacing);
+    }
+
+    // Typed, all three, and never in the hand. A business card is a thing that
+    // was *printed*: the one hand-written thing on this board that came from a
+    // person is a caption somebody wrote, and none of these is that — the title
+    // is the page's own, and the two lines under it are the address it lives at.
+    //
+    // The fallback is the one piece of arrangement here. A page with no title
+    // gives its host the top line rather than leaving a card whose largest type
+    // is blank; the company line then has nothing left to say and goes. The item
+    // text stays empty either way, which is what makes clicking into an untitled
+    // card an invitation to name the thing yourself.
+    const source = cold.source ?? "";
+    const written = cold.text.trim();
+    const site = siteLabel(source);
+    this.title.textContent = written || site;
+    this.site.textContent = written ? site : "";
+    this.address.textContent = addressLabel(source);
+    // So the stylesheet can close the gap a missing line would otherwise leave.
+    this.site.classList.toggle("is-empty", this.site.textContent === "");
+    this.title.classList.toggle("is-empty", this.title.textContent === "");
+    this.grain.style.backgroundPosition = grainPosition(cold.seed);
+  }
+
+  /**
+   * What the years take off a card — the printing, and nothing else.
+   *
+   * The same split `CaseView.paintAge` measured and recorded: what ages by
+   * *gaining* is the stock, which takes its years as a background layer in
+   * `items.css`, and what ages by *losing* is the ink. Putting the filter on the
+   * body instead would reach the banner, and fading a page's brand colour is
+   * ageing the website rather than the card somebody was handed.
+   */
+  private paintAge(wear: number): void {
+    this.el.classList.toggle(IS_AGED, wear > 0);
+    if (wear > 0) this.el.style.setProperty("--age", wear.toFixed(2));
+    else this.el.style.removeProperty("--age");
+    const filter = wearFilter(wear);
+    for (const el of this.ages) el.style.filter = filter;
+    // The field stands in for the title, which is in `ages`, so it takes the
+    // same age — or the writing lifts out of its own years while you type.
+    if (this.field) this.field.style.filter = filter;
+  }
+
+  /**
+   * Point the banner at `url`, or take it away.
+   *
+   * The decode-then-swap of `PolaroidView.swapPhoto`, for the same reason and
+   * against a smaller stake: assigning `src` blanks the picture until the new
+   * bytes decode, and on a card that is the stock flashing back to cream. The
+   * `pending` guard is what stops an in-flight decode landing on whatever item
+   * this pooled node has been recycled onto since.
+   */
+  private swapShot(url: string, replacing: boolean): void {
+    this.pending = url;
+    if (!url) {
+      this.clearShot();
+      return;
+    }
+    if (!replacing) {
+      this.shot.src = url;
+      this.body.classList.remove("is-blank");
+      return;
+    }
+    const next = new Image();
+    next.decoding = "async";
+    next.src = url;
+    const apply = (): void => {
+      if (this.pending !== url) return;
+      this.shot.src = url;
+      this.body.classList.remove("is-blank");
+    };
+    void next.decode().then(apply, apply);
+  }
+
+  /** Blank stock. An empty `src` would fetch the page itself. */
+  private clearShot(): void {
+    if (this.shot.getAttribute("src") !== null) this.shot.removeAttribute("src");
+    this.body.classList.add("is-blank");
+  }
+
+  transform(x: number, y: number, rot: number, w: number, h: number, lift: number, _open: number): void {
+    if (w !== this.sizedFor) {
+      this.sizedFor = w;
+      // One size on the block and three `em` multiples in the stylesheet, so a
+      // card somebody has resized keeps its typography rather than three numbers
+      // drifting apart. The floor is a card drawn at a wall-of-cards zoom, where
+      // the lines are a texture and a sub-pixel size costs a layout for nothing.
+      this.type.style.fontSize = `${Math.max(3, w * CARD_TEXT).toFixed(2)}px`;
+      // And the relief, which is a length rather than a type size and so cannot
+      // ride on the `em`: the stylesheet multiplies it by the light.
+      this.el.style.setProperty("--relief", `${(w * CARD_RELIEF).toFixed(3)}px`);
+      // The editor's field needs nothing here, unlike a polaroid's — it wears
+      // `.card-title`, whose size is `1.9em` of the block this line just wrote,
+      // so it follows a resize for free. Writing an inline size onto it would
+      // *beat* that rule and set the caret's line at the block's size, which is
+      // the title at about half the type it is printed at.
+    }
+    writeTransform(this.el, x, y, rot, w, h, lift);
+    setCarried(this.el, this.shadow, lift);
+    this.shadow.update(rot);
+    this.tape.update(rot);
+    // The emboss is the only lit thing on this object, and it is lit by the same
+    // one light as everything else — so the light has to be counter-rotated into
+    // the card's own frame, exactly as the case objects' creases are (T-313).
+    // Without it a card scattered at 40 degrees has its writing raised toward
+    // its own private sun, which DESIGN 4.1 calls the fastest way to break a
+    // surface.
+    writeLight(this.el, rot, this.writtenLight);
+  }
+
+  /**
+   * Not built, and it is a question rather than an omission.
+   *
+   * DESIGN 4.4 puts the curl under "notes, cards and scraps", and a business
+   * card is thin board that really does lift at a corner. What stops it here is
+   * that `curl.ts`'s shading is drawn against a *sheet's silhouette* — the torn
+   * outline `PaperView` cuts and this object does not have — so giving a card a
+   * curl means deciding what its edge is first, which is a bigger question than
+   * this face. Refusing it costs the same as the polaroid's refusal: the pins
+   * hold it exactly as much either way.
+   */
+  setCurl(): void {}
+
+  /** Nothing inside. See the interface — every view is offered these and each
+   *  answers for its own material. */
+  setPage(): void {}
+
+  hold(_audio: HTMLAudioElement | null): void {}
+
+  setReeled(_reeled: number): void {}
+
+  setTape(seed: number, corners: number): void {
+    this.tape.bind(seed, corners);
+  }
+
+  /**
+   * The caret goes on the **title**, which is the one line of the three that is
+   * anybody's to change.
+   *
+   * The site and the address are read off `source`, and `source` is not text —
+   * it is the field Q-305 created precisely so that rewriting the words on an
+   * object could not destroy the way back to the page. So there is nothing to
+   * put a caret in there, and the line a person can edit is the name they would
+   * write on a card they were given.
+   */
+  adopt(field: HTMLTextAreaElement | null): void {
+    if (field === null) {
+      this.el.classList.remove("is-editing");
+      this.field?.remove();
+      this.field = null;
+      return;
+    }
+    this.el.classList.add("is-editing");
+    // Idempotent — re-appending a focused node blurs it, and that blur is what
+    // closes the editor.
+    if (this.field === field && field.parentNode === this.type) return;
+    this.field = field;
+    field.className = "item-field card-title";
+    field.style.filter = wearFilter(this.boundWear > 0 ? this.boundWear / 100 : 0);
+    // First, where the static title is, so the two other lines stay under it.
+    this.type.prepend(field);
+  }
+
+  release(): void {
+    this.boundCold = null;
+    this.adopt(null);
+    // The banner goes, and the in-flight decode with it: a pooled node keeps its
+    // subtree, so a card recycled onto another item would wear the last one's
+    // page until its own bytes resolved.
+    this.boundShot = null;
+    this.pending = null;
+    this.clearShot();
+    this.title.textContent = "";
+    this.site.textContent = "";
+    this.address.textContent = "";
+    // Ageing, on the same argument `PolaroidView.release` gives: `paintAge` only
+    // runs when the wear moved, so a node recycled onto a new item on an old
+    // board would otherwise keep the previous card's fade.
+    this.boundWear = -1;
+    this.el.classList.remove(IS_AGED, "is-lifted");
+    this.el.style.removeProperty("--age");
+    for (const el of this.ages) el.style.removeProperty("filter");
+    this.tape.release();
+    this.shadow.reset();
     this.ink.release();
   }
 }
@@ -2977,6 +3360,7 @@ export class DomItemLayer implements ItemLayer {
     folder: [],
     vhs: [],
     cassette: [],
+    card: [],
   };
 
   /**
@@ -3646,7 +4030,7 @@ export class DomItemLayer implements ItemLayer {
     // what is written on that face is a fact about the rest of the record, which
     // is the same lookup and would otherwise be a second one.
     const facts = cold.assetId ? this.assetFacts(cold.assetId) : NO_FACTS;
-    const archetype = archetypeOf(cold.type, facts.kind);
+    const archetype = archetypeOf(cold.type, facts.kind, cold.source);
 
     if (view && view.archetype !== archetype) {
       // A type is immutable after creation, so this used to mean a peer had
@@ -3916,8 +4300,8 @@ export class DomItemLayer implements ItemLayer {
     // question is the *type* on its own and never the asset, which is why this
     // is the one caller that does not need a lookup: nothing with a file behind
     // it is cut to a ragged edge, and `archetypeOf` maps every non-`polaroid`
-    // type to paper whatever kind is passed.
-    if (cold === null || archetypeOf(cold.type, "unknown") !== "paper") return null;
+    // type to paper whatever kind and whatever source are passed.
+    if (cold === null || archetypeOf(cold.type, "unknown", null) !== "paper") return null;
     const worn = Math.round(wearOf(cold.seed, this.ageDays(cold)) * 100) / 100;
     const w = scene.w[slot]!;
     const h = scene.h[slot]!;
@@ -4130,6 +4514,7 @@ export class DomItemLayer implements ItemLayer {
 
   private create(archetype: Archetype): View {
     if (isCase(archetype)) return new CaseView(archetype);
+    if (archetype === "card") return new CardView();
     return archetype === "polaroid" ? new PolaroidView(this.firstSight) : new PaperView();
   }
 
@@ -4150,14 +4535,22 @@ export class DomItemLayer implements ItemLayer {
       view.release();
       view.el.remove();
     }
-    for (const pooled of [...this.pool.polaroid, ...this.pool.paper]) pooled.release();
+    // Every bucket, and that is a fix rather than a style change (T-339). This
+    // named `polaroid` and `paper` and was written when those were the only two
+    // — so the three case objects have been going unreleased since T-267, and a
+    // pooled folder holds exactly what the paragraph above says a dropped
+    // element holds: an ink canvas's backing store, alive until the collector
+    // gets to it. Iterating the record is what stops the sixth face being the
+    // fourth thing this line forgets.
+    for (const bucket of Object.values(this.pool)) {
+      for (const pooled of bucket) pooled.release();
+      bucket.length = 0;
+    }
     this.views.clear();
     this.inkPending.clear();
     this.coarse.clear();
     this.upgradeWanted = false;
     this.developed.clear();
-    this.pool.polaroid.length = 0;
-    this.pool.paper.length = 0;
     this.order = [];
     this.orderedBy.clear();
     this.rank.clear();

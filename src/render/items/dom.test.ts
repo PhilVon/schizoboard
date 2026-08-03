@@ -3010,3 +3010,171 @@ describe("a folder, a tape and a cassette", () => {
     });
   });
 });
+
+/**
+ * The link card — T-339.
+ *
+ * The one face on this board that is **not** chosen from a mime. Every test here
+ * turns on that: the asset behind one of these is a jpeg, so every reading of
+ * the file says photograph, and what makes the object a business card is that
+ * the *item* has a `source`.
+ */
+describe("a link card", () => {
+  const HASH = "b17f30ca".padEnd(64, "0");
+  const PAGE = "https://www.example.org/some/article?ref=x";
+
+  function facts(over: Partial<AssetFacts> = {}): AssetLookup {
+    return () => ({ ...NO_FACTS, kind: "image", ...over });
+  }
+
+  function again(): void {
+    document.body.innerHTML = "";
+    host = document.createElement("div");
+    document.body.append(host);
+    scene = new Scene();
+    dirty = new DirtySets();
+  }
+
+  /** Mount one item and hand back its element. */
+  function mount(lookup: AssetLookup, cold: Partial<ItemCold> = {}): HTMLElement {
+    const layer = new DomItemLayer(host, (sha) => ready(`asset://sha256/${sha}`), lookup);
+    add("a", { assetId: HASH, ...cold }, { w: 132, h: 85 });
+    layer.sync(scene, dirty, null);
+    return host.firstElementChild as HTMLElement;
+  }
+
+  function text(el: HTMLElement, cls: string): string {
+    return (el.querySelector(`.${cls}`) as HTMLElement | null)?.textContent ?? "";
+  }
+
+  it("wears the card face when the item is about a page, and the photograph's when it is not", () => {
+    // Identical assets — the same hash, the same `image` kind. The only
+    // difference between these two items is one field on the *item*, and it is
+    // the whole difference between an object about a page and a picture.
+    again();
+    expect(mount(facts(), { source: PAGE }).className).toContain("item-card");
+    again();
+    expect(mount(facts(), { source: null }).className).toContain("item-polaroid");
+  });
+
+  it("still becomes the file when a page handed one over", () => {
+    // Phil's rule, and the half a reordering of `archetypeOf` would silently
+    // break: an archive.org item is a VHS and a podcast feed is a cassette, and
+    // neither stops being one for having come from somewhere.
+    for (const [kind, face] of [
+      ["video", "vhs"],
+      ["audio", "cassette"],
+      ["document", "folder"],
+    ] as const) {
+      again();
+      const el = mount(facts({ kind }), { source: PAGE });
+      expect(el.className).toContain("item-case");
+      expect(el.dataset["kind"]).toBe(face);
+    }
+  });
+
+  it("prints the title, the site and the address", () => {
+    again();
+    const el = mount(facts(), { source: PAGE, text: "An article about cork" });
+    expect(text(el, "card-title")).toBe("An article about cork");
+    // The host as the company line, with `www.` off it — nobody has said it out
+    // loud since about 2005 and no card has ever been printed with it.
+    expect(text(el, "card-site")).toBe("example.org");
+    // And the address along the foot, with the scheme off: eight characters of
+    // `https://` at the head of the smallest line on the card is a real fraction
+    // of the only line that says where the thing goes.
+    expect(text(el, "card-address")).toBe("example.org/some/article?ref=x");
+  });
+
+  it("gives the top line to the host when the page had no title", () => {
+    // A card whose largest type is blank is not a card. The host takes the name
+    // line and the company line then has nothing left to say, so it goes — while
+    // the item's text stays empty, which is what makes clicking into an untitled
+    // card an invitation to name the thing yourself.
+    again();
+    const el = mount(facts(), { source: PAGE, text: "" });
+    expect(text(el, "card-title")).toBe("example.org");
+    expect(text(el, "card-site")).toBe("");
+    expect((el.querySelector(".card-site") as HTMLElement).classList).toContain("is-empty");
+  });
+
+  it("says nothing where a peer wrote an address that will not parse", () => {
+    // `source` is a field in a shared document, so this is a string a peer chose
+    // and this build has no say in. A blank company line is a card; the word
+    // `undefined` on one is a defect somebody would have to report.
+    again();
+    const el = mount(facts(), { source: "not a url at all", text: "Hm" });
+    expect(text(el, "card-site")).toBe("");
+    expect(text(el, "card-address")).toBe("not a url at all");
+  });
+
+  it("is blank stock when the banner has not arrived, and never torn film", () => {
+    // The tape's argument, not the photograph's. A card with no picture still
+    // has its title, its site and its address on it, all legible on a machine
+    // that will never hold a byte — so the missing banner is stock and nothing
+    // else. Which is also what a page that declared no picture looks like.
+    again();
+    const layer = new DomItemLayer(host, () => waiting(), facts());
+    add("a", { assetId: HASH, source: PAGE, text: "Hm" }, { w: 132, h: 85 });
+    layer.sync(scene, dirty, null);
+    const el = host.firstElementChild as HTMLElement;
+    expect(el.className).not.toContain("is-waiting");
+    expect(el.className).not.toContain("is-torn");
+    expect((el.querySelector(".card-body") as HTMLElement).classList).toContain("is-blank");
+    expect(el.querySelector(".card-shot")!.hasAttribute("src")).toBe(false);
+    expect(text(el, "card-title")).toBe("Hm");
+  });
+
+  it("lights the emboss in the card's own frame", () => {
+    // The emboss is the only lit thing on this object and the board has one
+    // light (DESIGN 4.1). `items.css` takes its own offsets from `--lx`/`--ly`,
+    // so a card scattered at an angle whose properties did not turn would have
+    // its writing raised toward its own private sun.
+    again();
+    const layer = new DomItemLayer(host, (sha) => ready(`asset://sha256/${sha}`), facts());
+    add("a", { assetId: HASH, source: PAGE }, { w: 132, h: 85, rot: 0 });
+    layer.sync(scene, dirty, null);
+    const el = host.firstElementChild as HTMLElement;
+    const flat = el.style.getPropertyValue("--lx");
+    expect(Number.parseFloat(flat)).toBeCloseTo(0.5, 2);
+
+    scene.putItem(
+      { id: "a", type: "polaroid", z: "a0", seed: 1, assetId: HASH, source: PAGE, createdBy: 1, createdAt: 0, text: "" },
+      { x: 0, y: 0, rot: 0.7, w: 132, h: 85 },
+    );
+    dirty.item("a");
+    layer.sync(scene, dirty, null);
+    expect(Number.parseFloat(el.style.getPropertyValue("--lx"))).not.toBeCloseTo(0.5, 2);
+    // And the relief itself is a length in board units, so a card somebody
+    // resized is embossed proportionally rather than by a fixed number of pixels.
+    expect(Number.parseFloat(el.style.getPropertyValue("--relief"))).toBeGreaterThan(0);
+  });
+
+  it("hands back a clean node when the item stops being a card", () => {
+    // The pool recycles by archetype, and a card that gave its node back still
+    // wearing the last page's banner and writing would be the next card's for a
+    // frame. Modelled by the ordinary cause: a record landing late and turning
+    // an object into a folder.
+    again();
+    let kind: AssetFacts["kind"] = "image";
+    const layer = new DomItemLayer(host, (sha) => ready(`asset://sha256/${sha}`), () => ({
+      ...NO_FACTS,
+      kind,
+    }));
+    add("a", { assetId: HASH, source: PAGE, text: "An article" }, { w: 132, h: 85 });
+    layer.sync(scene, dirty, null);
+    const card = host.firstElementChild as HTMLElement;
+    expect(card.className).toContain("item-card");
+
+    kind = "document";
+    dirty.item("a");
+    layer.sync(scene, dirty, null);
+    expect(host.children.length).toBe(1);
+    expect((host.firstElementChild as HTMLElement).className).toContain("item-case");
+    // The released card, off the tree and stripped.
+    expect(card.isConnected).toBe(false);
+    expect(text(card, "card-title")).toBe("");
+    expect(text(card, "card-address")).toBe("");
+    expect(card.querySelector(".card-shot")!.hasAttribute("src")).toBe(false);
+  });
+});

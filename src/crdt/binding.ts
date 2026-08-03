@@ -194,6 +194,12 @@ export class Binding {
         createdBy: fields.createdBy,
         createdAt: fields.createdAt,
         text: text instanceof Y.Text ? text.toString() : "",
+        // Cold like the rest of it, and read here rather than off the map by
+        // whoever wants it: the face is chosen from this (T-339), so the
+        // renderer needs it on the record it already has. `app/main.ts` still
+        // reads the *document* for the open-in-browser row, deliberately — that
+        // one is a claim on the shell and belongs against the source of truth.
+        source: fields.source,
         // A write inside the style map already routes here — the nested-event
         // branch below ends in `syncItem` — so choosing a paper stock rebuilds
         // the item's view with no new observer and no new dirty flag.

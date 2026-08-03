@@ -20,6 +20,8 @@ import type {
   PlatformEvents,
   Refusal,
 } from "@/platform/types";
+import { CARD_UNITS } from "@/lib/objects";
+import { polaroidFor } from "@/lib/polaroid";
 import { Camera } from "@/state/camera";
 
 interface Call {
@@ -204,6 +206,8 @@ function itemsOnBoard(): {
   source: string | null;
   text: string;
   x: number;
+  w: number;
+  h: number;
 }[] {
   const out = [];
   for (const [id, map] of board.items) {
@@ -216,6 +220,10 @@ function itemsOnBoard(): {
       source: fields.source,
       text: String(text ?? ""),
       x: fields.x,
+      // The box, for T-339: a link card is cut to a card and not to its banner,
+      // and a size is written into the document once.
+      w: fields.w,
+      h: fields.h,
     });
   }
   return out;
@@ -440,7 +448,7 @@ describe("what wins", () => {
    * `og:video` that is a player rather than a film, so Rust hands over no media
    * at all — see `opengraph.rs`. What is left is a picture and an address.
    */
-  it("makes a printed still of a page whose video is not a film", async () => {
+  it("makes a card of a page whose video is not a film", async () => {
     native.cardFor.set("https://www.youtube.com/watch?v=abc", {
       title: "The Wexford Interview",
       siteName: "YouTube",
@@ -452,10 +460,36 @@ describe("what wins", () => {
 
     const made = itemsOnBoard()[0]!;
     expect(made.assetId).not.toBeNull();
-    // The title and the address, under the picture. The address is the
-    // load-bearing half: this object exists because the thing itself could not
-    // be brought onto the board.
-    expect(made.text).toBe("The Wexford Interview\nhttps://www.youtube.com/watch?v=abc");
+    // The title alone since T-339. The address is still the load-bearing half of
+    // this object — it exists *because* the thing itself could not be brought
+    // onto the board — but it is on `source` now and the card prints it from
+    // there, so putting it in the text as well would print it twice.
+    expect(made.text).toBe("The Wexford Interview");
+    expect(made.source).toBe("https://www.youtube.com/watch?v=abc");
+  });
+
+  /**
+   * T-339. A business card is 85 by 55 mm whatever picture is washed into it, so
+   * the banner's own shape decides nothing — which is the whole difference
+   * between an object *about* a page and a print of one.
+   */
+  it("cuts a link card to a business card and not to its banner", async () => {
+    native.cardFor.set("https://e.com/thing", {
+      title: "A thing",
+      siteName: null,
+      image: "https://e.com/banner.jpg",
+      media: null,
+    });
+
+    await firePaste({ text: "https://e.com/thing" });
+
+    const made = itemsOnBoard()[0]!;
+    expect(made.w).toBe(CARD_UNITS.w);
+    expect(made.h).toBe(CARD_UNITS.h);
+    // And the banner really would have decided the shape, so this is not a
+    // fixture agreeing with itself: the same 1200 by 800 pasted on its own is a
+    // print of that shape.
+    expect(polaroidFor(1200, 800).w).not.toBe(CARD_UNITS.w);
   });
 
   /**
@@ -497,7 +531,15 @@ describe("what wins", () => {
     expect(itemsOnBoard()[0]!.source).toBeNull();
   });
 
-  it("keeps the address alone when a page offers a picture and no title", async () => {
+  /**
+   * T-339 turned this one round. It used to assert that an untitled page kept
+   * its address in the text, because a caption was the only surface there was to
+   * write on. A card has three lines and reads them off `source`, so an untitled
+   * page leaves the text **empty** — the host takes the top line instead, and
+   * the empty text is what makes clicking into the card an invitation to name
+   * the thing yourself. Nothing is lost: the address is still on the item.
+   */
+  it("leaves the text empty when a page offers a picture and no title", async () => {
     native.cardFor.set("https://e.com/thing", {
       title: null,
       siteName: null,
@@ -505,7 +547,9 @@ describe("what wins", () => {
       media: null,
     });
     await firePaste({ text: "https://e.com/thing" });
-    expect(itemsOnBoard()[0]!.text).toBe("https://e.com/thing");
+    const made = itemsOnBoard()[0]!;
+    expect(made.text).toBe("");
+    expect(made.source).toBe("https://e.com/thing");
   });
 
   it("writes nothing under a photograph somebody pasted themselves", async () => {

@@ -1080,7 +1080,8 @@ textarea.item-field::-webkit-scrollbar {
 
 .paper-age,
 .paper-worn,
-.pol-age {
+.pol-age,
+.card-age {
   position: absolute;
   inset: 0;
   display: none;
@@ -1089,7 +1090,8 @@ textarea.item-field::-webkit-scrollbar {
 
 .item.is-aged .paper-age,
 .item.is-aged .paper-worn,
-.item.is-aged .pol-age {
+.item.is-aged .pol-age,
+.item.is-aged .card-age {
   display: block;
 }
 
@@ -3525,3 +3527,239 @@ textarea.item-field::-webkit-scrollbar {
  * note is about a tier that no longer exists, and is kept only because the
  * *reasoning* still governs anything that proposes to remove text at a zoom.
  */
+
+/* --- the business card. T-339 --------------------------------------------- */
+
+/*
+ * A link that hands over no file at all becomes an object *about* a page: the
+ * page's own picture washed into the stock, with the title, the site and the
+ * address embossed over it and laid out the way a business card is laid out.
+ *
+ * The card is 132 by 85 board units — 85 by 55 mm at the family's 1.55 units to
+ * the millimetre, which is the size every business card outside North America is
+ * cut to. Everything below is a percentage or an `em` of that, like every other
+ * object here, so a card somebody has resized keeps its proportions and its
+ * typography together.
+ *
+ * ## The wash, which is the whole idea and is one declaration
+ *
+ * The banner is not a picture on the card, it is the card's paper. `--card-wash`
+ * is the only thing that makes it so: the `<img>` sits at that opacity over the
+ * stock, and what comes out is `wash x banner + (1 - wash) x stock` in every
+ * channel at once. Three things fall out of one number.
+ *
+ *  - **The lightness is bounded.** At 0.3 over `--card-stock` the darkest
+ *    possible banner — solid black — lands at 70% of the stock and the lightest
+ *    at the stock plus 30%. So the range any banner on the web can produce is
+ *    about 0.63 to 0.93 of white, and dark ink reads over all of it. That is the
+ *    part a single sample would have lied about: a brand colour and a night
+ *    photograph are the two ends, and an effect tuned on one is invisible on the
+ *    other.
+ *  - **The chroma comes with it.** Opacity scales saturation by the same factor,
+ *    so a page's red arrives as a pale flush rather than as red. Which is what
+ *    makes a wall of these recognisable at a glance without any one of them ever
+ *    having to be legible — the thing a cropped thumbnail could not do.
+ *  - **It prints.** A `filter` — the obvious way to desaturate — rasterises the
+ *    nearest stacking context that contains it, and `.item` is one because it
+ *    carries a transform, so a filtered card would export every glyph on itself
+ *    as pixels. Opacity on a leaf does not.
+ */
+.item-card {
+  /* How much of the banner survives. See above: this is a legibility bound as
+     much as a look, and moving it moves the floor the ink has to read against. */
+  --card-wash: 0.3;
+  /* Warm off-white board. Lighter than a folder's kraft and than a cassette's
+     J-card, because a business card is the one object in this family that is
+     printed on stock somebody chose to look clean. */
+  --card-stock: #f2ece0;
+  /* Near-black, warm, and never black — DESIGN 4.1's rule about shadow colour is
+     the same argument about ink on a board lit by one warm light. */
+  --card-ink: #2b241b;
+}
+
+/*
+ * The card itself, inside the item box the way `.pol-frame` is: the stock has to
+ * clip — a banner is `object-fit: cover` and hangs over the edges by design —
+ * and the item's shadow has to not be clipped.
+ *
+ * Two board units of corner. A guillotined card is very slightly rounded and a
+ * square corner reads as a rectangle of colour rather than as an object; at 132
+ * units across, two of them is a millimetre and a half.
+ */
+.card-body {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  border-radius: 2px;
+  background: var(--card-stock);
+}
+
+.card-shot {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  /* Cover, and no attempt to choose what part of the banner shows. A 1200 by 630
+     open-graph image cropped to a card is a face cut in half — which is exactly
+     the objection that killed the thumbnail — and at a third of its contrast
+     there is no face left to cut. What survives a wash is the colour and the
+     broad shape, and both survive any crop. */
+  object-fit: cover;
+  opacity: var(--card-wash);
+  pointer-events: none;
+}
+
+/* Nothing came, or nothing decoded. The stock is the whole card, which is what
+   a page that declared a title and no picture should look like anyway. */
+.card-body.is-blank > .card-shot {
+  display: none;
+}
+
+/*
+ * The fibre in the board, over the wash because it is the surface of the card
+ * and the picture is *in* it rather than on it.
+ *
+ * Half the strength of a folder's, and for the reason the stock is lighter: this
+ * is a printed card rather than handled kraft, and `multiply` at a folder's 0.13
+ * over a washed photograph reads as dirt.
+ */
+.card-grain {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background-repeat: repeat;
+  mix-blend-mode: multiply;
+  opacity: 0.07;
+  border-radius: inherit;
+}
+
+.card-age {
+  background: var(--paper-yellowing);
+}
+
+/*
+ * The printing.
+ *
+ * A business card's composition, which is older than any of us and is three
+ * things in a fixed relationship: the name at the top left, whose company under
+ * it in small letterspaced capitals, and the way to reach them along the foot.
+ * The middle of the card is left to the stock — here, to the page's own colour —
+ * because that space is what makes the arrangement read as a card rather than as
+ * a label with three lines on it.
+ *
+ * Four rows and the third is the space. `1fr` rather than a margin so the gap is
+ * whatever is left after the type, which keeps the address on the line it
+ * belongs on however many lines the title took.
+ *
+ * The insets are the trim: a real card is printed with about a seventh of its
+ * height clear at the head and an eighth at the foot.
+ */
+.card-type {
+  position: absolute;
+  inset: 14% 9% 12%;
+  display: grid;
+  grid-template-rows: auto auto 1fr auto;
+  /* Font size is written per item by `dom.ts` — CARD_TEXT — and the three lines
+     below are `em` of it, so one number sizes the card's whole typography. */
+  overflow: hidden;
+}
+
+.card-title,
+.card-site,
+.card-address {
+  font-family: "Source Sans 3", ui-sans-serif, system-ui, sans-serif;
+  color: var(--card-ink);
+  /*
+   * The emboss, and it is two offset copies of the glyph and nothing else.
+   *
+   * Raised type catches the light on the faces turned toward it and throws a
+   * shadow off the faces turned away, so the highlight is offset *against*
+   * `--lx`/`--ly` and the shadow *along* it — those being the direction from an
+   * object toward its shadow, published by `writeLight` in this card's own frame
+   * so that a card scattered at an angle is not lit from its own private sun.
+   *
+   * Both copies, always, and that is the part a light banner and a dark one
+   * disagree about: a white highlight is invisible on pale stock and a brown
+   * shadow is invisible on a dark photograph, so either one alone reads as
+   * embossing over half the web. Painted together, whichever one has contrast
+   * carries the relief — the same trick `curl.ts` uses when it paints one layer
+   * at `+k` and one at `-k` and lets the negative alpha clamp away.
+   */
+  text-shadow:
+    calc(var(--lx, 0.5) * -1 * var(--relief, 1px)) calc(var(--ly, 0.87) * -1 * var(--relief, 1px)) 0
+      rgba(255, 252, 244, 0.85),
+    calc(var(--lx, 0.5) * var(--relief, 1px)) calc(var(--ly, 0.87) * var(--relief, 1px)) 0
+      rgba(58, 42, 24, 0.36);
+}
+
+/*
+ * The name. Two lines at most — a page title is as long as somebody made it, and
+ * three lines of it would be the card's whole face — with the clamp cutting at a
+ * word rather than showing the middle of a sentence.
+ */
+.card-title {
+  grid-row: 1;
+  font-size: 1.9em;
+  font-weight: 600;
+  line-height: 1.08;
+  letter-spacing: -0.005em;
+  overflow-wrap: anywhere;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+/*
+ * Whose card it is — the host, as the company line.
+ *
+ * Small capitals, widely letterspaced, which is what a company line on a card
+ * has been set as for a century and is also what stops it competing with the
+ * name above it at a size only a shade smaller.
+ */
+.card-site {
+  grid-row: 2;
+  margin-top: 0.5em;
+  font-size: 0.8em;
+  font-weight: 600;
+  letter-spacing: 0.19em;
+  text-transform: uppercase;
+  color: #55483a;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/*
+ * The address, along the foot. One line, ellipsised, because an address that
+ * wrapped would take the space the composition depends on — and because the
+ * *whole* address is on the item as `source`, which is where the browser gets it
+ * from. This line says where the card goes; it is not the thing that goes there.
+ */
+.card-address {
+  grid-row: 4;
+  font-size: 0.78em;
+  letter-spacing: 0.005em;
+  color: #6b5b47;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* An untitled page puts its host on the top line and has nothing left for the
+   company line, which then takes no space rather than leaving a hole. */
+.card-title.is-empty,
+.card-site.is-empty {
+  display: none;
+}
+
+/* The caret takes the title's row, so nothing moves when one opens — and the
+   static line steps aside by going invisible rather than by leaving the grid. */
+.item-field.card-title {
+  display: block;
+  grid-row: 1;
+}
+
+.item.is-editing .card-type > div.card-title {
+  visibility: hidden;
+}

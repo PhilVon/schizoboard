@@ -1,11 +1,14 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  addressLabel,
   assetKind,
   canBeOpened,
   carriesItsOwnName,
+  CARD_UNITS,
   fileNoun,
   isCaseObject,
+  siteLabel,
   caseNumber,
   folderBulk,
   objectSizeFor,
@@ -110,6 +113,71 @@ describe("how big each object is", () => {
     // A picture is `polaroidFor`'s, and an unknown never gets past the gate.
     expect(objectSizeFor("image")).toBeNull();
     expect(objectSizeFor("unknown")).toBeNull();
+  });
+
+  it("cuts a business card to a business card, in the family's own scale", () => {
+    // 85 by 55 mm, which is ISO 7810 ID-1 and is also a credit card — being
+    // *the* card size is most of what makes the shape recognisable at a glance.
+    // Within a percent: the units are whole numbers, and 132 by 85 is as near
+    // as a 1.55 scale gets to 85 by 55 without carrying a fraction of a unit
+    // around for the rest of the object's life.
+    expect(Math.abs(CARD_UNITS.w / CARD_UNITS.h - 85 / 55)).toBeLessThan(0.01);
+    // And in true proportion to the three objects it stands beside, which is the
+    // whole reason those three share one scale: a card really is a little
+    // smaller than a compact cassette, and drawn any other way it would be
+    // claiming to hold something.
+    const cassette = objectSizeFor("audio")!;
+    expect(CARD_UNITS.w / cassette.w).toBeCloseTo(85 / 100, 2);
+    expect(CARD_UNITS.w).toBeLessThan(cassette.w);
+  });
+
+  it("is not `objectSizeFor`'s to answer, and that is the modelling difference", () => {
+    // The three sizes above are chosen from the file's kind. A card's cannot be:
+    // the file behind one is a jpeg, and a jpeg is a photograph. What makes it a
+    // card is a field on the *item*, so its size is a separate export and
+    // `objectSizeFor` goes on saying nothing about a picture.
+    expect(objectSizeFor("image")).toBeNull();
+  });
+});
+
+describe("what a card says about where it came from", () => {
+  it("takes the host as the company line, without the www", () => {
+    expect(siteLabel("https://www.example.org/a/b?c=d")).toBe("example.org");
+    expect(siteLabel("https://en.wikipedia.org/wiki/Cork")).toBe("en.wikipedia.org");
+  });
+
+  it("says nothing where a peer wrote something that will not parse", () => {
+    // `source` crosses the wire, so this reads a string somebody else chose. A
+    // card with no company line is a card; one with `undefined` printed on it is
+    // a defect somebody would have to report.
+    expect(siteLabel("not a url")).toBe("");
+    expect(siteLabel("")).toBe("");
+  });
+
+  it("prints the address without the scheme", () => {
+    // Eight characters of `https://` at the head of the smallest line on a 55 mm
+    // card is a real fraction of the only line that says where the thing goes —
+    // and it is not information, because it is on essentially every link.
+    expect(addressLabel("https://example.org/some/article?ref=x")).toBe(
+      "example.org/some/article?ref=x",
+    );
+    expect(addressLabel("http://www.example.org/")).toBe("example.org");
+  });
+
+  it("cuts an address nobody could have meant", () => {
+    // CSS already stops a long address *showing*. It does not stop it being in
+    // the DOM, and this is a field a peer wrote.
+    const long = `https://e.com/${"a".repeat(5000)}`;
+    expect(addressLabel(long).length).toBeLessThan(250);
+  });
+
+  it("leaves the stored address alone, which is the one that gets opened", () => {
+    // The split this depends on: these two are labels and nothing reads them
+    // back. `app/main.ts` validates `^https?://` against the *field*, so taking
+    // the scheme off here cannot widen what the shell will launch.
+    const source = "https://example.org/x";
+    expect(addressLabel(source)).not.toBe(source);
+    expect(source.startsWith("https://")).toBe(true);
   });
 });
 
