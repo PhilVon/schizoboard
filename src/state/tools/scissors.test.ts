@@ -123,6 +123,7 @@ beforeEach(() => {
     edit: () => undefined,
     open: () => false,
     turnPage: () => false,
+    follow: () => false,
     clip: () => undefined,
     held: new Set<string>(),
     write: {

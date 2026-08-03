@@ -319,7 +319,18 @@ export class SelectTool implements Tool {
       { keys: "Shift+drag", does: "marquee on to the selection", holds: ["Shift"] },
       { keys: "R+drag", does: "rotate without the handle" },
       { keys: "Ctrl+drag a pin", does: "keep it in its own item", holds: ["Control"] },
-      { keys: "double-click a pin", does: "follow the whole thread" },
+      // Both ends of the same idea in one row, rather than a second row further
+      // down beside the gesture that makes the thread (T-285, Q-296). Two
+      // reasons, and the first is the honest one: following a thread from a pin
+      // and following one back to the page it was cut from are the same verb on
+      // the same red string, and splitting them would read as two features that
+      // happen to share a double-click. The second is T-252's — the bar rests on
+      // rows no key reveals, and every one added at rest is one more line
+      // somebody has to read past to find the one they wanted.
+      {
+        keys: "double-click a pin, or a quote's string",
+        does: "follow the thread, or open its page",
+      },
       // The gesture nothing else on the board suggests, which is this readout's
       // whole reason for existing: a case file offers *Open* on its menu and
       // there is no other sign that the key exists. Shutting it says so here
@@ -1081,9 +1092,31 @@ export class SelectTool implements Tool {
        * nothing is compounding — a second double-click computed from a frame-old
        * number gives the same answer, and the answer is one of two values.
        */
-      const node = ctx.scene.strings.get(hit.string)?.nodes[hit.node];
+      const run = ctx.scene.strings.get(hit.string);
+      const node = run?.nodes[hit.node];
       if (this.pendingDouble) {
-        if (node) {
+        /**
+         * > Double-click the string from a quote card and the folder opens at
+         * > the page it came from. — T-285, Q-296
+         *
+         * Before the toggle rather than instead of it, and the order is the
+         * whole answer to Q-296. Double-click on a segment was already spoken
+         * for — it is toggle taut, DESIGN section 3.4 — and a citation string
+         * is the one run on the board where the person means something else by
+         * it: opening the source has no other affordance, while slack keeps the
+         * wheel over the segment and the 1-9 presets. So the specialisation is
+         * paid for by the string that has somewhere to go, and every other
+         * string reaches the `else` below unchanged.
+         *
+         * Every node rather than the one under the pointer. A citation run has
+         * two and only one of them is the tape, so asking about the segment the
+         * pointer happened to be over would make the gesture depend on which
+         * half of a thread you hit. `follow` is safe on any pin and says so
+         * (see `ToolContext.follow`), which is what lets this be a loop over
+         * the run rather than a test the tool is not entitled to make.
+         */
+        const followed = run !== undefined && run.nodes.some((n) => ctx.follow(n.pin));
+        if (!followed && node) {
           ctx.write.setNodeSlack(hit.string, node.nodeId, toggleTaut(node.slackAfter));
         }
       }

@@ -88,7 +88,7 @@ describe("the tool info bar", () => {
     bar.sync(SELECT, held());
     expect(toolRows().map((r) => r.querySelector(".toolinfo-keys")?.textContent)).toEqual([
       "R+drag",
-      "double-click a pin",
+      "double-click a pin, or a quote's string",
       "Enter",
       "arrows",
       // Held behind no modifier, because it is a bare drag on a page (T-282).
@@ -195,7 +195,7 @@ describe("the tool info bar", () => {
       bar.sync(SELECT, held("ControlLeft"));
       expect(toolRows().map((r) => r.querySelector(".toolinfo-keys")?.textContent)).toEqual([
         "R+drag",
-        "double-click a pin",
+        "double-click a pin, or a quote's string",
         "Enter",
         "arrows",
         "drag a page",

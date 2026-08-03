@@ -292,10 +292,20 @@ The critical detail: when the string splits at that point, **the slack must spli
 | Adjust one segment | Wheel over a selected segment | Slack up or down; the sag responds live |
 | Adjust the whole string | `Alt`+wheel | All segments together |
 | Slack presets | `1`–`9` with a string selected | Taut through to heavily draped |
-| Toggle taut | Double-click a segment | Snaps between taut and default slack |
+| Toggle taut | Double-click a segment | Snaps between taut and default slack — except on a citation string, below |
+| Follow the thread back | Double-click a citation string | The case file it was quoted from opens at the page the quote came from |
 | Tuck behind | Context menu → *Tuck behind* | Flips `layer`; the string now runs behind items instead of over them |
 | Restyle | Context menu | Colour (red is default — also blue, green, yellow, black, white), thickness, material (string / yarn / wire) |
 | Cut | `Ctrl`+`Alt`+click a string, **in any tool** — the scissors — or context menu → *Delete* | String removed; its pins stay where they are |
+
+**A citation string is the one exception to the toggle**, and the two rows above
+are in that order deliberately. A quote card arrives taped to the page it was cut
+from (§3.6, D-46 §3), and that tape is the whole of the citation — there is no
+record beside it. So the thread is a two-way link already, and following it back
+needs no affordance of its own: double-click it and the folder opens at the page.
+Slack loses nothing by it, because slack still has the wheel and the `1`–`9`
+presets on exactly that string, while opening the source had no other gesture at
+all. Every string that is not a citation toggles taut as it always has.
 
 **There is no pluck.** This table used to carry one — click and release on a
 taut string and a travelling wave ran down it, "purely for joy" — and it was

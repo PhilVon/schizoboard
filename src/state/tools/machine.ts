@@ -99,6 +99,10 @@ export interface ToolMachineOptions {
   open?: (itemId: string | null) => boolean;
   /** Turn a page in whatever case file is open (T-321). */
   turnPage?: (by: number) => boolean;
+  /** Open what a tape was quoted from, at its page — see `ToolContext.follow`
+   *  (T-285). Optional on `edit`'s terms, and the default answers no, which is
+   *  the answer for every pin that is not a citation anyway. */
+  follow?: (pinId: string) => boolean;
   /** Cut a clipping out of the page on show (T-282). Item-local rectangle. */
   clip?: (itemId: string, rect: Bounds) => void;
   /** True when navigation owns the pointer — space held, or mid-pan. */
@@ -212,6 +216,7 @@ export class ToolMachine {
       edit: options.edit ?? (() => undefined),
       open: options.open ?? (() => false),
       turnPage: options.turnPage ?? (() => false),
+      follow: options.follow ?? (() => false),
       clip: options.clip ?? (() => undefined),
       held: this.heldKeys,
     };

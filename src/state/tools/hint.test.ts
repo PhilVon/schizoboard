@@ -133,7 +133,7 @@ describe("every tool declares what it does", () => {
       "Shift+drag",
       "R+drag",
       "Ctrl+drag a pin",
-      "double-click a pin",
+      "double-click a pin, or a quote's string",
       "Enter",
       // Beside `Enter` rather than at the end, because it is only meaningful
       // once that has been used and the readout is read in order (T-321).
