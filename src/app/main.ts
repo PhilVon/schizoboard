@@ -485,6 +485,16 @@ async function boot(): Promise<void> {
     // bytes are the one thing it cannot work around, and a document whose
     // transfer has not committed becomes ready later and is asked then.
     if (record.kind === "document" && assets.isReady(sha256)) textIndex.wants(sha256);
+    // And what a *recording* says, which is the same question asked of a
+    // different hash — T-287. The transcript is a text asset in its own right,
+    // so what goes into the index is the sidecar rather than the tape, and the
+    // readiness that matters is the sidecar's: an interview whose 400 MB is
+    // still in flight has a transcript of a few kilobytes that arrived long ago,
+    // and there is no reason to make the search wait for the film to be able to
+    // find the words in it.
+    if (record.transcript !== null && assets.isReady(record.transcript)) {
+      textIndex.wants(record.transcript);
+    }
     return {
       kind: record.kind,
       name: record.origName,
@@ -1249,7 +1259,11 @@ async function boot(): Promise<void> {
    * one `assetFacts` makes.
    */
   const search = new Search((itemId, needle) => {
-    const sha256 = scene.cold(itemId)?.assetId ?? null;
+    // `readableHash` rather than the item's own asset, so a tape is searched by
+    // its transcript (T-287). Still three hops and still nothing about kinds
+    // here: what changed is which hash the second hop lands on, and a recording
+    // with no sidecar answers null on the same line a photograph does.
+    const sha256 = readableHash(itemId);
     return sha256 === null ? null : textIndex.find(sha256, needle);
   });
   const flight = new Flight();
@@ -1315,6 +1329,31 @@ async function boot(): Promise<void> {
     if (sha256 === null) return "unknown";
     const map = board.assets.get(sha256);
     return (map ? readAsset(sha256, map)?.kind : undefined) ?? "unknown";
+  };
+
+  /**
+   * The hash of the words this item can be read for, which is not always the
+   * hash it wears — T-287.
+   *
+   * A case file's words are its own bytes. A recording's are its sidecar's: a
+   * tape has no text in it and nothing on this board will ever put any there
+   * (D-46 section 6 refuses transcription outright), so the only words a
+   * recording has are the ones that arrived beside it. Null for everything with
+   * neither, which is every photograph, every note, and every interview nobody
+   * had a `.srt` for.
+   *
+   * One function rather than the two hops written out at each caller, because
+   * there are three of them now — the search, the reader and the quote gesture —
+   * and a board where `Ctrl+F` finds a tape it cannot then open is worse than
+   * one where it never found it.
+   */
+  const readableHash = (itemId: string): string | null => {
+    const sha256 = scene.cold(itemId)?.assetId ?? null;
+    if (sha256 === null) return null;
+    const map = board.assets.get(sha256);
+    const record = map ? readAsset(sha256, map) : null;
+    if (record === null) return null;
+    return record.kind === "video" || record.kind === "audio" ? record.transcript : sha256;
   };
 
   const openable = (itemId: string): boolean => {
@@ -1629,14 +1668,23 @@ async function boot(): Promise<void> {
    *
    * A folder is counted `whole` when the shell could not read it at all or
    * every page of it is silent, and `part` when some of it was readable. Only
-   * documents can be either — nothing else is ever asked, so a note and a
-   * photograph sit at `unasked` and fall out here.
+   * things with words can be either — a note and a photograph are never asked,
+   * so they sit at `unasked` and fall out here.
+   *
+   * **A recording is asked about its transcript**, through the same
+   * `readableHash` the search itself walks (T-287), so an interview whose `.srt`
+   * turned out to be unreadable is counted rather than passed over. What this
+   * still cannot say is anything about a recording that has *no* transcript:
+   * that one never becomes a match, so it is never in this loop to be counted,
+   * and it is invisible to `Ctrl+F` in a way nothing on screen admits. Q-273
+   * settled the reporting to be about the matches rather than about the board,
+   * and this is the corner of that decision where the two genuinely differ.
    */
   const unsearchedAmongMatches = (): Unsearched => {
     let whole = 0;
     let part = 0;
     for (const id of search.ids) {
-      const sha256 = scene.cold(id)?.assetId ?? null;
+      const sha256 = readableHash(id);
       if (sha256 === null) continue;
       const found = textIndex.of(sha256);
       if (found.phase === "unreadable") {
