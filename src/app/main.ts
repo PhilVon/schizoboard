@@ -1439,6 +1439,25 @@ async function boot(): Promise<void> {
     // set — the fork Q-197 settled, and the reason the two branches are not one
     // gesture with a flag: a document is read *against* the board and a film
     // takes the board away.
+    /**
+     * **Shutting comes before every kind, and it did not used to** — T-335.
+     *
+     * > | Shut it | `Escape`, or `Enter` again — DESIGN section 3.9
+     *
+     * That row was true of everything openable until a recording could be *read*
+     * (T-287). Below this line a tape goes to `watchItem` and a cassette to
+     * `hearItem` on any press at all, so `Enter` on a transcript standing open
+     * put the film on the set instead of shutting it — and the second half of
+     * the documented way out simply did not exist for the one object that had
+     * just gained a new way in. Phil found it by trying to close one.
+     *
+     * Above the kinds rather than repeated inside each, because "press it again
+     * and it goes away" is a fact about *being open* and not about what kind of
+     * file is behind it. A recording that is **not** open still reaches the
+     * branches below and still plays, which is the whole of what `Enter` meant
+     * before.
+     */
+    if (opening.itemId === itemId) return closeOpen();
     if (kindOfItem(itemId) === "video") return watchItem(itemId);
     // And the third object, which takes over nothing at all (T-277). A cassette
     // does not turn up to be read and does not go on a set: it plays where it
@@ -1446,7 +1465,8 @@ async function boot(): Promise<void> {
     // which D-46 section 4 calls the strongest reading of *nothing blocks
     // thinking* anywhere in this feature.
     if (kindOfItem(itemId) === "audio") return hearItem(itemId);
-    if (opening.itemId === itemId) return closeOpen();
+    // The toggle used to be here, where only a case file could reach it. It is
+    // above the kinds now — see the note there.
     readItem(itemId);
     return true;
   };
@@ -1609,7 +1629,13 @@ async function boot(): Promise<void> {
     // Let the file go. On a 51 MB scan that is 51 MB of working set the shell
     // was holding open, and it is held until somebody says — Rust cannot infer
     // that a folder has been shut.
-    const wasReading = scene.cold(opening.itemId)?.assetId ?? null;
+    // The hash that was being *read*, which for a recording is its transcript
+    // and not the tape (T-287). Closing the tape's hash instead is silently
+    // wrong in exactly T-326's way: `PageReader.close` matches on what it is
+    // reading, so a mismatched hash leaves the document open, its pages held and
+    // its blob URLs unrevoked — and tells the shell to let go of a file it was
+    // never holding.
+    const wasReading = readableHash(opening.itemId);
     if (wasReading !== null) reader.close(wasReading);
     opening.close();
     return true;
