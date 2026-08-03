@@ -231,8 +231,8 @@ impl WirePageText {
 }
 
 impl WireRole {
-    fn of(span: &crate::markdown::Span) -> WireRole {
-        use crate::markdown::Role;
+    fn of(span: &crate::prose::Span) -> WireRole {
+        use crate::prose::Role;
         let (role, level) = match span.role {
             Role::Heading(level) => ("heading", level),
             Role::Item(depth) => ("item", depth),

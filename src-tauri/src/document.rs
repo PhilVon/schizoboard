@@ -188,7 +188,7 @@ pub struct Page {
     /// for the same one. Spans are **clipped** to the page: a heading or a
     /// block quote can straddle a page boundary, and half of one drawn as
     /// ordinary prose is worse than either whole answer.
-    pub roles: Vec<crate::markdown::Span>,
+    pub roles: Vec<crate::prose::Span>,
 }
 
 /// What a page turned out to be. See the module header for why `Unsupported` is
@@ -400,7 +400,7 @@ enum Inner {
         /// on paper a markdown file is plain text cut the same way on the same
         /// grid, and a variant of its own would have every reader of a page
         /// asking a question none of them has a use for.
-        roles: Vec<crate::markdown::Span>,
+        roles: Vec<crate::prose::Span>,
     },
 }
 
@@ -461,6 +461,25 @@ impl Reader {
             Some(speech) => (speech.text, speech.marks),
             None => (text, Vec::new()),
         };
+        // **And an `.rtf` is read as its words rather than its control words**
+        // — T-350, the same substitution a third time. Asked of the content
+        // like the cues above and unlike the markdown below, because an RTF
+        // declares itself in its first five bytes and there is therefore a
+        // total test: `rtf::read` answers `None` for everything that is not
+        // one, so a text file is still a text file.
+        //
+        // Before the markdown line and after the cues line, and neither
+        // position is arbitrary. It cannot be a transcript, because an RTF's
+        // first block is its header rather than a cue; and it must be settled
+        // before the markdown flag is consulted, because a `.rtf` a person
+        // renamed to `.md` is an RTF and not a markdown file — the bytes decide
+        // where they can, and a name decides only what nothing else can answer.
+        let rich = crate::rtf::read(&text);
+        let read_already = rich.is_some();
+        let (text, mut roles) = match rich {
+            Some(read) => (read.text, read.roles),
+            None => (text, Vec::new()),
+        };
         // **And the second substitution, on the same line of reasoning and in
         // the same place** — T-346, D-65. A markdown file is read as its words
         // with the marks taken off, and what they were comes back as spans over
@@ -476,11 +495,15 @@ impl Reader {
         // `.srt` is not markdown and a `.md` is not a transcript, so at most one
         // of these ever fires. Cues first keeps the total test — which can say
         // "this is not a transcript" — ahead of the one that cannot refuse.
-        let (text, roles) = if markdown {
+        // `read_already` and not "did that produce any roles": an RTF of plain
+        // paragraphs has none, and reading its already-stripped words a second
+        // time as markdown would find asterisks in the prose.
+        let text = if markdown && !read_already {
             let read = crate::markdown::read(&text);
-            (read.text, read.roles)
+            roles = read.roles;
+            read.text
         } else {
-            (text, Vec::new())
+            text
         };
         let pages = crate::text::paginate(&text);
         // The same bound as a PDF's, for the same reason and in the same words:
@@ -654,7 +677,7 @@ impl Reader {
         &self,
         text: &str,
         marks: &[crate::cues::Mark],
-        roles: &[crate::markdown::Span],
+        roles: &[crate::prose::Span],
         range: std::ops::Range<usize>,
         index: u32,
     ) -> Page {
@@ -696,7 +719,7 @@ impl Reader {
             .map(|span| {
                 let start = span.start.max(range.start) - range.start;
                 let end = span.end.min(range.end) - range.start;
-                crate::markdown::Span {
+                crate::prose::Span {
                     start: shown[..start].encode_utf16().count(),
                     end: shown[..end].encode_utf16().count(),
                     role: span.role,
@@ -787,12 +810,20 @@ pub fn probe(bytes: &[u8], mime: &str, markdown: bool) -> Option<Probe> {
             // head of a two page transcript.
             let spoken = crate::cues::speech(&text);
             let read = spoken.as_ref().map_or(&text, |s| &s.text);
+            // And over the words of an `.rtf`, which is the same sentence a
+            // third time (T-350). Counting the control words instead would
+            // print "1 of 9" at the head of a two page letter and draw a folder
+            // four times too thick — the font table alone is a page of the
+            // grid.
+            let rich = crate::rtf::read(read);
+            let read = rich.as_ref().map_or(read, |r| &r.text);
             // And over the *read* markdown when it is markdown, which is this
             // count's whole job: `Reader::of_text` paginates the words with the
             // marks taken off, so counting the source here would put "1 of 5" at
             // the head of a three page file and draw a folder too thick for what
             // is in it. One substitution, applied in both places or in neither.
-            let stripped = markdown.then(|| crate::markdown::read(read).text);
+            let stripped =
+                (markdown && rich.is_none()).then(|| crate::markdown::read(read).text);
             let pages = crate::text::page_count(stripped.as_deref().unwrap_or(read));
             // Refused rather than trimmed, and by the same bound for the same
             // reason: a folder claiming more pages than this build will read is
@@ -3642,6 +3673,71 @@ mod tests {
         );
     }
 
+    // --- T-350: an rtf read as its words -------------------------------------
+
+    /// One RTF fixture, shaped the way a word processor writes one: a font
+    /// table nobody should read, and a sentence somebody should.
+    const RTF: &str = concat!(
+        r"{\rtf1\ansi{\fonttbl{\f0\fnil Calibri;}}",
+        r"\pard\outlinelevel0 The statement\par",
+        r"\pard He came on the \b Tuesday\b0  train.\par}"
+    );
+
+    /// The reader's own view, since `rtf.rs` tests the parser and this tests
+    /// the substitution being *in the pipeline* — which is where T-346's
+    /// equivalent found its bug.
+    #[test]
+    fn reads_an_rtf_as_its_words_wherever_the_markdown_flag_stands() {
+        // Both ways round, because the flag is a name's opinion and the
+        // signature is the file's: an `.rtf` a person renamed `.md` is still an
+        // RTF, and reading its stripped words a second time as markdown would
+        // be a second opinion about a settled question.
+        for markdown in [false, true] {
+            let reader = Reader::open_text(RTF.into(), markdown).expect("open");
+            let page = reader.page(1).unwrap();
+            let PageContent::Plain(text) = &page.content else {
+                panic!("an rtf is still a plain page — D-65");
+            };
+            assert_eq!(text.trim(), "The statement
+
+He came on the Tuesday train.");
+            assert!(!text.contains("Calibri"), "the font table reached the page");
+            assert_eq!(page.roles.first().map(|s| s.role), Some(crate::prose::Role::Heading(1)));
+            assert!(page.roles.iter().any(|s| s.role == crate::prose::Role::Strong));
+        }
+    }
+
+    /// AC-961. The record's count and the reader's pagination are the same
+    /// number, or a folder is drawn thicker than what is written in it — and
+    /// for an RTF the difference is not subtle, since the header alone fills a
+    /// page of the grid.
+    #[test]
+    fn counts_an_rtfs_pages_over_the_words_it_will_show() {
+        // A font table the size a real one is — Word writes an entry per face
+        // it has ever been asked for — so the packaging is more than a page of
+        // the grid on its own and the two counts cannot agree by accident.
+        let fonts: String = (0..120)
+            .map(|n| format!(r"{{\f{n}\fnil\fcharset0 Some Typeface {n};}}"))
+            .collect();
+        let body = "He came up from Wexford on the Tuesday train. ".repeat(30);
+        let source = format!(r"{{\rtf1\ansi{{\fonttbl{fonts}}}\pard {body}\par}}");
+
+        let probed = probe(source.as_bytes(), "text/rtf", false).expect("an rtf probes");
+        let reader = Reader::open_text(source.clone(), false).expect("open");
+        assert_eq!(probed.pages as usize, reader.page_count());
+
+        // **Strictly fewer** than the file counts as its own source. Agreement
+        // alone is not the claim — with the substitution deleted these two
+        // still agree, on the wrong number — so the assertion that fails when
+        // the feature is off is this one.
+        let raw = crate::text::page_count(&source);
+        assert!(
+            (probed.pages as usize) < raw,
+            "the packaging was counted as pages: {} of {raw}",
+            probed.pages
+        );
+    }
+
     // --- T-346: a markdown file read as what it says -------------------------
 
     /// The reader's own view of a markdown file, since `markdown.rs` tests the
@@ -3663,7 +3759,7 @@ mod tests {
             panic!("a markdown file is still a plain page — D-65");
         };
         assert!(!as_read.contains('#') && !as_read.contains('*'));
-        assert_eq!(page.roles.first().map(|s| s.role), Some(crate::markdown::Role::Heading(2)));
+        assert_eq!(page.roles.first().map(|s| s.role), Some(crate::prose::Role::Heading(2)));
     }
 
     #[test]
@@ -3737,7 +3833,7 @@ mod tests {
             let quoted = page
                 .roles
                 .iter()
-                .find(|s| s.role == crate::markdown::Role::Quote)
+                .find(|s| s.role == crate::prose::Role::Quote)
                 .unwrap_or_else(|| panic!("page {index} lost the quote"));
             // In this page's own offsets, and inside it — the same rebasing
             // `cues` gets, in UTF-16 for the same DOM caret.

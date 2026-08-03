@@ -44,68 +44,16 @@
 //! markdown", as against "is this markdown".
 
 use pulldown_cmark::{Event, HeadingLevel, Options, Parser, Tag, TagEnd};
-
-/// What a span of the read text is.
-///
-/// Deliberately small, and each of these earns its place by being something the
-/// sheet can *draw* differently — DESIGN's reading surface sets a heading larger
-/// and indents a list, and there is nothing it can do with the knowledge that
-/// two words were a reference link rather than an inline one. Anything markdown
-/// says that the paper cannot say back is packaging, and packaging is what this
-/// module exists to take off.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Role {
-    /// `#` through `######`. The level, one-based, because a sheet sets a
-    /// second-level heading smaller than a first.
-    Heading(u8),
-    /// A bullet or a numbered item, with how deeply it is nested — zero at the
-    /// top. The *marker* is not in the text: what was said is the words, and
-    /// the sheet draws the bullet. A quote cut from a list cites the words.
-    Item(u8),
-    /// Inside a `>` block. Somebody else's words inside this document, which is
-    /// a distinction this board of all boards should keep.
-    Quote,
-    /// Fenced, indented or inline. Set as it was written — a code block is the
-    /// one place in markdown where the line breaks and the spaces *are* the
-    /// content, so this is also the one role that suppresses the reflow below.
-    Code,
-    Emphasis,
-    Strong,
-}
-
-/// A run of the read text, and what it is.
-///
-/// `start` and `end` are byte offsets into [`Reading::text`] — the same units
-/// `text::paginate` tiles in and the same units `cues::Mark` uses, so a page's
-/// range and these spans are comparable without a second opinion about what a
-/// character is.
-///
-/// Spans **nest**: a `Strong` inside a `Heading` produces both, and neither is
-/// clipped to the other. The sheet draws them by containment, which is what a
-/// bold word in a heading actually is.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Span {
-    pub start: usize,
-    pub end: usize,
-    pub role: Role,
-}
-
-/// A markdown file with its marks taken off.
-#[derive(Debug, Clone, PartialEq)]
-pub struct Reading {
-    /// The words, and the shape of the page in blank lines. What paginates.
-    pub text: String,
-    /// In document order — outermost first where two overlap, so a reader
-    /// walking these alongside the text meets a heading before the bold word
-    /// inside it. `read` sorts them; a stack alone would give the reverse.
-    pub roles: Vec<Span>,
-}
+use crate::prose::{Out, Reading, Role, Span};
 
 /// Read markdown as its words.
 ///
 /// Takes text already decoded and normalised by [`crate::text::decode`], so the
 /// line endings are `\n` and the offsets below index the same string every other
 /// reader sees.
+///
+/// The shape that comes back is [`crate::prose::Reading`], which four formats
+/// now share — see that module for why it does not live here.
 pub fn read(text: &str) -> Reading {
     // Tables, footnotes and strikethrough stay off. Each is a further piece of
     // syntax to have an opinion about on paper, and the three of them together
@@ -115,20 +63,6 @@ pub fn read(text: &str) -> Reading {
     let parser = Parser::new_ext(text, Options::empty());
 
     let mut out = Out::default();
-    // Open spans, innermost last. A stack rather than the parser's own source
-    // offsets, because what is being described is the read text and the two do
-    // not line up: every mark taken off moves everything after it.
-    //
-    // **The start is `None` until the span holds a character**, and that is not
-    // tidiness — it is the fix for a bug the heading and list tests both caught
-    // on the first run. Separation between blocks is *owed* rather than
-    // written, so at the moment a heading opens, the two newlines before it
-    // have not been appended yet; taking `text.len()` there put them inside the
-    // span, and the second heading in a file came back reading "\n\nThree".
-    // Deciding the start at the first `push` is what makes a span begin at its
-    // own first word — and it retires the empty-span check in `close` into the
-    // same mechanism, since a span that never held a character never got one.
-    let mut open: Vec<(Option<usize>, Role)> = Vec::new();
     let mut depth: u8 = 0;
 
     for event in parser {
@@ -136,7 +70,7 @@ pub fn read(text: &str) -> Reading {
             Event::Start(tag) => match tag {
                 Tag::Heading { level, .. } => {
                     out.block();
-                    open.push((None, Role::Heading(level_of(level))));
+                    out.open(Role::Heading(level_of(level)));
                 }
                 Tag::Paragraph => out.block(),
                 Tag::List(_) => {
@@ -156,19 +90,19 @@ pub fn read(text: &str) -> Reading {
                 }
                 Tag::Item => {
                     out.line();
-                    open.push((None, Role::Item(depth.saturating_sub(1))));
+                    out.open(Role::Item(depth.saturating_sub(1)));
                 }
                 Tag::BlockQuote(_) => {
                     out.block();
-                    open.push((None, Role::Quote));
+                    out.open(Role::Quote);
                 }
                 Tag::CodeBlock(_) => {
                     out.block();
                     out.verbatim = true;
-                    open.push((None, Role::Code));
+                    out.open(Role::Code);
                 }
-                Tag::Emphasis => open.push((None, Role::Emphasis)),
-                Tag::Strong => open.push((None, Role::Strong)),
+                Tag::Emphasis => out.open(Role::Emphasis),
+                Tag::Strong => out.open(Role::Strong),
                 // **A link becomes its own text and loses its address**, which
                 // is the whole of the bug this module was raised for. Nothing
                 // on this sheet is clickable — a page is paper — so a URL set
@@ -183,23 +117,23 @@ pub fn read(text: &str) -> Reading {
                 _ => {}
             },
             Event::End(end) => match end {
-                TagEnd::Heading(_) | TagEnd::Item | TagEnd::BlockQuote(_) => out.close(&mut open),
+                TagEnd::Heading(_) | TagEnd::Item | TagEnd::BlockQuote(_) => out.close(),
                 TagEnd::CodeBlock => {
                     out.verbatim = false;
-                    out.close(&mut open);
+                    out.close();
                 }
-                TagEnd::Emphasis | TagEnd::Strong => out.close(&mut open),
+                TagEnd::Emphasis | TagEnd::Strong => out.close(),
                 TagEnd::List(_) => depth = depth.saturating_sub(1),
                 _ => {}
             },
-            Event::Text(text) | Event::Code(text) => out.push(&text, &mut open),
+            Event::Text(text) | Event::Code(text) => out.push(&text),
             // A soft break is where the *author* wrapped, and markdown says it
             // is not a line break — the paragraph reflows. Ours reflows onto a
             // 66-column grid, so honouring the source's wrapping would set a
             // paragraph ragged against a measure it was never written for. A
             // hard break is two spaces or a backslash and was meant.
-            Event::SoftBreak => out.push(" ", &mut open),
-            Event::HardBreak => out.newline(),
+            Event::SoftBreak => out.push(" "),
+            Event::HardBreak => out.line(),
             Event::Rule => out.block(),
             // Raw HTML in a markdown file is markup this board does not draw,
             // exactly like the asterisks. Dropped rather than set as characters.
@@ -208,109 +142,7 @@ pub fn read(text: &str) -> Reading {
         }
     }
 
-    // Anything still open at the end is a file that stopped mid-structure —
-    // pulldown-cmark closes its own tags, so this is belt and braces rather
-    // than a case anybody has seen. Closed at the end of the text so a span
-    // never points past it.
-    while !open.is_empty() {
-        out.close(&mut open);
-    }
-
-    // **Into document order**, which a stack does not give: spans are recorded
-    // when they *close*, so an inner one always lands before the outer one that
-    // contains it. Outermost first is the order a reader walking the text
-    // alongside these wants — it meets a heading before the bold word inside
-    // it, and a list item before the list nested in it — so the sort is by
-    // where a span starts and then by the longer of two that start together.
-    out.roles.sort_by(|a, b| a.start.cmp(&b.start).then(b.end.cmp(&a.end)));
-
-    Reading {
-        text: out.text.trim_end().to_owned(),
-        roles: out.roles,
-    }
-}
-
-/// The text being built, and the whitespace it owes.
-///
-/// Separation is *pending* rather than written, which is what keeps a blank
-/// line from being emitted before a block that turns out to be empty, and what
-/// stops two blocks in a row producing four newlines. Nothing is appended until
-/// there is something to append it before.
-#[derive(Default)]
-struct Out {
-    text: String,
-    roles: Vec<Span>,
-    /// `2` for a blank line between blocks, `1` for a new line, `0` for none.
-    owed: u8,
-    /// Inside a code block, where the line breaks are the content.
-    verbatim: bool,
-}
-
-impl Out {
-    fn block(&mut self) {
-        if !self.text.is_empty() {
-            self.owed = self.owed.max(2);
-        }
-    }
-
-    fn line(&mut self) {
-        if !self.text.is_empty() {
-            self.owed = self.owed.max(1);
-        }
-    }
-
-    fn newline(&mut self) {
-        self.line();
-    }
-
-    fn push(&mut self, text: &str, open: &mut [(Option<usize>, Role)]) {
-        if text.is_empty() {
-            return;
-        }
-        for _ in 0..self.owed {
-            self.text.push('\n');
-        }
-        self.owed = 0;
-        // Every span still waiting for a first character begins here — see the
-        // stack's comment in `read`.
-        let at = self.text.len();
-        for (start, _) in open.iter_mut() {
-            if start.is_none() {
-                *start = Some(at);
-            }
-        }
-        if self.verbatim {
-            self.text.push_str(text);
-            return;
-        }
-        // A newline inside ordinary text is the parser handing back a line of a
-        // paragraph, and it reflows for `SoftBreak`'s reason.
-        for (i, piece) in text.split('\n').enumerate() {
-            if i > 0 {
-                self.text.push(' ');
-            }
-            self.text.push_str(piece);
-        }
-    }
-
-    /// Close the innermost open span, unless it turned out to hold nothing.
-    ///
-    /// An empty span is a heading with no words in it or a list item that was
-    /// only a nested list — real things in real files, and a zero-length span
-    /// is a mark on the page with nothing under it.
-    fn close(&mut self, open: &mut Vec<(Option<usize>, Role)>) {
-        let Some((start, role)) = open.pop() else {
-            return;
-        };
-        // No start at all means nothing was ever pushed inside it.
-        let Some(start) = start else {
-            return;
-        };
-        let end = self.text.len();
-        if end > start {
-            self.roles.push(Span { start, end, role });
-        }
-    }
+    out.finish()
 }
 
 fn level_of(level: HeadingLevel) -> u8 {

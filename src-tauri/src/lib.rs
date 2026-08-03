@@ -37,6 +37,11 @@ pub mod document;
 // reason: `document` names its types in a reader's public shape, and the
 // parser itself is a pure function on a string.
 pub mod markdown;
+// The shape all four of those readings come out in (D-65, T-322). `pub` for
+// `markdown`'s reason exactly: `document` and `reading` both name its types.
+pub mod prose;
+// An rtf read as its words rather than its control words (T-350).
+pub mod rtf;
 mod media;
 // What a page says it is (T-289, Q-304). `pub` so the fetch that feeds it and
 // the command that answers with it can both name the type; the parser itself

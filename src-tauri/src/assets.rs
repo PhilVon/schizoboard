@@ -1148,6 +1148,20 @@ pub fn sniff_mime(bytes: &[u8]) -> Option<&'static str> {
     if bytes.starts_with(b"ID3") || is_mpeg_frame(bytes) {
         return Some("audio/mpeg");
     }
+    // Rich text, and it goes *above* the text arm rather than inside it. An
+    // RTF is ASCII from end to end, so `reads_as_text` accepts it and it used
+    // to come out of here as `text/plain` — a manilla folder whose page was set
+    // with the font table and the control words still on it (T-350).
+    //
+    // `text/rtf` and not `application/rtf`: both are registered and the two are
+    // interchangeable in the wild, but everything downstream of a document mime
+    // on this board asks `starts_with("text/")` — `objects.ts`'s `assetKind`,
+    // `document::probe`, `Reader::open` — and an RTF *is* text that states its
+    // own formatting. Choosing the other spelling would mean teaching four
+    // gates about a case that is not a new case.
+    if crate::rtf::is_rtf(bytes) {
+        return Some("text/rtf");
+    }
     // **Last, and it could not be anywhere else.** Every other arm here matches
     // a signature; text has none, so the only honest form the question can take
     // is *what is left*. Q-255 chose this over recognising a document by its
@@ -1229,6 +1243,10 @@ fn extension_for(mime: &str) -> &'static str {
         // mime for them: a `.md`, a `.csv` and a `.log` are told apart by their
         // names, and a name is the evidence this store does not keep.
         "text/plain" => "txt",
+        // And the one kind of text that *does* say what it is, so exporting one
+        // under `.txt` would hand somebody a file their word processor opens as
+        // control words (T-350).
+        "text/rtf" => "rtf",
         // Reachable now in a way it was not: ingestion no longer decodes
         // everything it commits, so a format the sniffer does not know still
         // gets stored and can still be exported. A store directory is a
@@ -2606,6 +2624,26 @@ mod tests {
         let mut broken = vec![0xc3, 0x28];
         broken.extend_from_slice(&accented.as_bytes()[..SNIFF_BYTES]);
         assert_eq!(sniff_mime(&broken), None);
+    }
+
+    /// AC-958. An RTF is ASCII, so the text arm below would claim it — and did,
+    /// until T-350. The test is the first five bytes and nothing else, so a
+    /// text file that merely quotes them stays a text file.
+    #[test]
+    fn an_rtf_is_rich_text_and_a_file_that_mentions_one_is_not() {
+        assert_eq!(sniff_mime(br"{\rtf1\ansi\deff0 Hello."), Some("text/rtf"));
+        assert_eq!(
+            sniff_mime(b"An RTF file starts with {\rtf1 and nothing else does."),
+            Some("text/plain")
+        );
+        // The five bytes and not six: the digit is a version, and a writer that
+        // moved on is still writing rich text.
+        assert_eq!(sniff_mime(br"{\rtf2 later."), Some("text/rtf"));
+
+        // And it leaves the store under its own name rather than as a `.txt`,
+        // which is what a word processor needs to open it again.
+        assert_eq!(extension_for("text/rtf"), "rtf");
+        assert_eq!(extension_for("text/plain"), "txt");
     }
 
     #[test]

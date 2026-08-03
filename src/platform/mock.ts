@@ -114,6 +114,10 @@ function sniffMime(bytes: Uint8Array): string {
   if (starts(bytes, "OggS")) return "audio/ogg";
   if (starts(bytes, "fLaC")) return "audio/flac";
   if (starts(bytes, "ID3") || (bytes[0] === 0xff && (bytes[1] ?? 0) >= 0xe0)) return "audio/mpeg";
+  // Above the text arm rather than inside it, because an RTF is ASCII from end
+  // to end and would otherwise come out of here as `text/plain` — a case file
+  // whose page is set with its own control words on it (T-350).
+  if (starts(bytes, "{\\rtf")) return "text/rtf";
   // Last, because text has no signature and the only honest form of the
   // question is what is left (Q-255). Mirrors `text::reads_as_text`: the same
   // window, the same three refusals, and the same tolerance for a character the
