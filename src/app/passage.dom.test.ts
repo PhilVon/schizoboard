@@ -222,3 +222,55 @@ describe("the words the rectangle has hold of", () => {
     expect(seen).toEqual(["premises as they stood.", "Figure"]);
   });
 });
+
+/**
+ * A page of markdown — T-348, AC-951.
+ *
+ * The blocks a markdown page is built out of are ordinary children of
+ * `.leaf-body`, exactly as `.leaf-lines` is, so the quote gesture needs no rule
+ * about them. What these assert is that it *stayed* that way: the one thing
+ * `quotationIn` drops is the board's own voice, and a heading is not that — it
+ * is the document speaking, and it belongs on the card.
+ */
+describe("a rectangle over a page of markdown", () => {
+  /** A markdown page as `writeMarkdown` builds it. */
+  function markdownPage(): void {
+    document.body.innerHTML =
+      `<div class="leaf-body">` +
+      `<div class="leaf-heading" data-level="2">The statement</div>` +
+      `<div class="leaf-item" data-level="0">He came on the Tuesday train</div>` +
+      `<div class="leaf-figure-note">this figure could not be lifted</div>` +
+      `<div class="leaf-quote">and said so plainly</div>` +
+      `</div>`;
+  }
+
+  it("carries a heading onto the card as words the document said", () => {
+    markdownPage();
+    const heading = document.querySelector(".leaf-heading")!.firstChild!;
+    const item = document.querySelector(".leaf-item")!.firstChild!;
+    const quoted = passageBetween(caretAt(heading, 0), caretAt(item, 28));
+    expect(quoted).toContain("The statement");
+    expect(quoted).toContain("He came on the Tuesday train");
+  });
+
+  it("still drops the board's own sentence from between them", () => {
+    // The defect T-332 was written for, in the one page shape that did not
+    // exist when it was fixed. A sentence this board wrote about a figure it
+    // could not lift must never go on a card as something the document said.
+    markdownPage();
+    const heading = document.querySelector(".leaf-heading")!.firstChild!;
+    const quote = document.querySelector(".leaf-quote")!.firstChild!;
+    const quoted = passageBetween(caretAt(heading, 0), caretAt(quote, 19));
+    expect(quoted).not.toContain("could not be lifted");
+    expect(quoted).toContain("and said so plainly");
+  });
+
+  it("keeps the blocks apart rather than running them together", () => {
+    markdownPage();
+    const heading = document.querySelector(".leaf-heading")!.firstChild!;
+    const item = document.querySelector(".leaf-item")!.firstChild!;
+    // A newline between them, the way the document had it — "statementHe" is
+    // the failure this rule was written against.
+    expect(passageBetween(caretAt(heading, 0), caretAt(item, 28))).not.toContain("statementHe");
+  });
+});

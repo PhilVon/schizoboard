@@ -220,6 +220,40 @@ export interface DocumentPage {
    * already the kind of fact that lives out here beside `index`.
    */
   readonly cues: readonly PageCue[];
+  /**
+   * What each stretch of this page is, for a page of markdown — T-348. Empty
+   * for every other page, which is most of them.
+   *
+   * Beside the content for `cues`' reason and one of its own: on paper a
+   * markdown file is plain text, cut the same way on the same grid and quoted
+   * by the same gesture, so its content arrives as `Plain` like any other text
+   * file. What is not plain about it is what the words *were*, and that is a
+   * fact about where the page came from rather than about the characters on it.
+   *
+   * In document order, outermost first where two overlap — so a heading arrives
+   * before the bold word inside it and a reader can nest them by containment.
+   */
+  readonly roles: readonly PageRole[];
+}
+
+/** What a stretch of a markdown page is — the six a sheet can draw. */
+export type PageRoleName = "heading" | "item" | "quote" | "code" | "emphasis" | "strong";
+
+/**
+ * One stretch of a page, and what it is.
+ *
+ * `start` and `end` are into the page's own text in the units a `Range` counts
+ * in — UTF-16 code units — for exactly `PageCue`'s reason: the only thing that
+ * compares one of these against a position is a DOM range.
+ *
+ * `level` is one-based for a heading, zero-based for a list item's nesting, and
+ * `0` for the other four, which have no depth rather than a depth of zero.
+ */
+export interface PageRole {
+  readonly start: number;
+  readonly end: number;
+  readonly role: PageRoleName;
+  readonly level: number;
 }
 
 /**

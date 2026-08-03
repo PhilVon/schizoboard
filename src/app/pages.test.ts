@@ -22,6 +22,7 @@ function pageAt(index: number): DocumentPage {
     height: 842,
     content: { kind: "plain", text: `page ${index}` },
     cues: [],
+    roles: [],
   };
 }
 
@@ -622,6 +623,7 @@ describe("the reading a document is opened with", () => {
         height: 0,
         content: { kind: "image" as const, image: { mime: "image/jpeg", width: 8, height: 8, bytes: 4 } },
         cues: [],
+    roles: [],
       }),
     });
     const reader = new PageReader(native, () => {});

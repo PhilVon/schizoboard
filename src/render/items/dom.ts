@@ -79,7 +79,7 @@ import { Deck } from "@/render/items/deck";
 import { TextEditor, type ItemEditorHooks } from "@/render/items/editor";
 import { clearHand, writeHand } from "@/render/items/hand";
 import type { PageView } from "@/app/pages";
-import type { PageFigure, TextRun } from "@/platform/types";
+import type { PageFigure, PageRole, TextRun } from "@/platform/types";
 import {
   exportStylesheet,
   rasteriseItems,
@@ -3015,6 +3015,20 @@ class CaseView implements View {
       // and the same page with it in hand are two different sheets (T-329).
       view?.figureUrls.join("|") ?? "",
       content?.kind === "text" ? content.figures.length : 0,
+      // And whether it has structure on it — T-348. A page's text length and
+      // index can both be unchanged while what the words *are* has changed
+      // entirely: the same file read plainly and read as markdown is the same
+      // page number with a different sheet on it, and a peer's record learning
+      // it is markdown is exactly when that happens. Without this the guard
+      // above holds and the reader goes on showing the reading it first drew.
+      //
+      // The *count*, and not a signature of the spans. A signature was written
+      // first and taken out again when a mutation showed nothing could fail
+      // with it gone: the roles are a pure function of this page's text, so two
+      // readings of one page cannot differ in their structure while agreeing on
+      // how many pieces it has. A guard against a state that cannot arise is a
+      // guard nobody can test.
+      page?.roles.length ?? 0,
     ].join(" ");
     if (digest === this.drawnPage) return;
     this.drawnPage = digest;
@@ -3054,9 +3068,23 @@ class CaseView implements View {
       scan.removeAttribute("src");
       setNote(view.reason ?? "this page could not be read");
     } else if (content.kind === "plain") {
-      // `plain` — the flag, not the content kind. Q-269: the hand's face without
-      // the per-glyph jitter, which measured 0.2 ms a page against 16.3.
-      writeHand(body, content.text, seed, true);
+      // A page of markdown is a *plain* page carrying roles — D-65 — so the
+      // branch is on what came with it rather than on a sixth content kind.
+      // Every text file goes down the first road, which is the one that has
+      // been here since T-320 and is still one `textContent` write.
+      if (page !== null && page.roles.length > 0) {
+        writeMarkdown(body, content.text, page.roles, seed);
+      } else {
+        // `plain` — the flag, not the content kind. Q-269: the hand's face
+        // without the per-glyph jitter, 0.2 ms a page against 16.3.
+        //
+        // And the body is emptied first when the last page left elements on it,
+        // for `writePage`'s reason: `writeHand` recognises its own text by a key
+        // on the host, and a host holding blocks has children that key knows
+        // nothing about.
+        if (body.firstElementChild !== null) clearHand(body);
+        writeHand(body, content.text, seed, true);
+      }
       scan.removeAttribute("src");
       setNote("");
     } else if (content.kind === "text") {
@@ -3438,6 +3466,129 @@ export function pageBlocks(
  * already written by a key on the host, and the host of a page with figures on
  * it holds children that key knows nothing about.
  */
+/**
+ * A page of markdown onto the sheet — T-348, and the visible half of T-337.
+ *
+ * The page arrives as **plain text plus role spans** (D-65), so this is the one
+ * place on the board that turns those back into something to look at. Nothing
+ * upstream knows: the text was paginated, indexed and cut for quotation as a
+ * flat string, and what happens here changes none of that.
+ *
+ * ## Elements, and why not one string with markup in it
+ *
+ * `writeHand` writes `textContent`, which is the right answer for every other
+ * page and cannot carry structure. So the blocks are built as elements —
+ * `.leaf-heading`, `.leaf-item`, `.leaf-quote`, `.leaf-code` — exactly as
+ * `writePage` already builds `.leaf-lines` around a figure, and for the same
+ * reason: the sheet is a document and a document has blocks on it.
+ *
+ * **Which means the quote gesture keeps working for free.** `quotationIn` takes
+ * a cut range block by block and joins the top-level nodes with a newline, and
+ * it drops exactly one class — `.leaf-figure-note`, the board's own voice. A
+ * heading is not that: it is the document speaking, so it goes onto a card as
+ * what it said. That is AC-951, and it is satisfied by these being ordinary
+ * children rather than by anything asking about them.
+ *
+ * ## Nesting, by containment
+ *
+ * The spans arrive in document order, outermost first, and they nest properly
+ * because a parser produced them — a bold word inside a heading is two spans,
+ * not one clipped to the other. So this walks the text once and opens an
+ * element wherever a span starts, which reproduces the containment without ever
+ * building a tree.
+ */
+function writeMarkdown(
+  body: HTMLElement,
+  text: string,
+  roles: readonly PageRole[],
+  seed: number,
+): void {
+  clearHand(body);
+  body.replaceChildren();
+
+  // A stack of what is open, innermost last, each with where it must close.
+  const open: { end: number; el: HTMLElement }[] = [];
+  const host = (): HTMLElement => open[open.length - 1]?.el ?? body;
+  let at = 0;
+  let next = 0;
+
+  const write = (to: number): void => {
+    if (to <= at) return;
+    // **The blank line between two blocks is not written**, and it is the one
+    // place the sheet does not show the page's characters exactly.
+    //
+    // The text carries its own separation — `markdown.rs` puts a blank line
+    // between blocks so that `text::paginate` has something to tile — and a
+    // block element already breaks the line. Writing both under `pre-wrap`
+    // stacks them: one break from the element, two more from the characters,
+    // and a heading sits three lines clear of its own paragraph. So the
+    // characters are dropped where an element is doing the same job, and
+    // `items.css` sets the gap. Only between blocks: inside one, every
+    // character goes down, because there the newlines are the document's.
+    if (open.length === 0 && text.slice(at, to).trim() === "") {
+      at = to;
+      return;
+    }
+    // A text node rather than `writeHand`, because the hand is the *sheet's* —
+    // `.folder-leaf` carries the face and every block inherits it. `writeHand`
+    // in plain mode is a `textContent` write plus a key on the host, and a key
+    // per block would be a guard nobody reads against a rewrite `setPage`'s
+    // digest already prevents.
+    host().append(document.createTextNode(text.slice(at, to)));
+    at = to;
+  };
+
+  while (at < text.length || next < roles.length) {
+    // Close everything that ends here, innermost first.
+    while (open.length > 0 && open[open.length - 1]!.end <= at) open.pop();
+    // Then open everything that starts here, outermost first — which is the
+    // order they arrive in, so no sorting and no lookahead.
+    if (next < roles.length && roles[next]!.start <= at) {
+      const role = roles[next]!;
+      next += 1;
+      // A zero-length span would open and never close on the same character.
+      // Rust drops these, and this is the second door on the same rule.
+      if (role.end <= role.start) continue;
+      const el = elementFor(role);
+      host().append(el);
+      open.push({ end: role.end, el });
+      continue;
+    }
+    // Otherwise write up to whichever comes first: the next span opening, or
+    // the innermost open one closing.
+    const until = Math.min(
+      next < roles.length ? roles[next]!.start : text.length,
+      open.length > 0 ? open[open.length - 1]!.end : text.length,
+      text.length,
+    );
+    if (until <= at) break;
+    write(until);
+  }
+  write(text.length);
+  // The seed is taken and unused, and that is deliberate rather than an
+  // oversight: every other writer on this sheet is seeded, and a signature that
+  // quietly differs is how the next person concludes markdown is exempt from
+  // something. Nothing here jitters, because the marks came off a machine.
+  void seed;
+}
+
+/** The element one role is drawn as. See `items.css` for what each looks like. */
+function elementFor(role: PageRole): HTMLElement {
+  // `em` and `strong` and not a `div` with a class, because those two are what
+  // they mean and a screen reader already knows it. The four block roles have
+  // no HTML element that says what they are on a *sheet of paper* — a heading
+  // here is a heading of a page inside an item, not of this document — so they
+  // are classed divs like `.leaf-lines` beside them.
+  if (role.role === "emphasis") return document.createElement("em");
+  if (role.role === "strong") return document.createElement("strong");
+  const el = document.createElement("div");
+  el.className = `leaf-${role.role}`;
+  if (role.role === "heading" || role.role === "item") {
+    el.dataset["level"] = String(Math.min(role.level, 6));
+  }
+  return el;
+}
+
 function writePage(
   body: HTMLElement,
   runs: readonly TextRun[],

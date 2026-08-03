@@ -18,7 +18,7 @@
 import { beforeEach, describe, expect, it } from "vitest";
 
 import type { PageView } from "@/app/pages";
-import type { PageContent, PageFigure } from "@/platform/types";
+import type { PageContent, PageFigure, PageRole } from "@/platform/types";
 import { DomItemLayer, NO_FACTS, type AssetView } from "@/render/items/dom";
 import { cloneForExport, inlineAssets } from "@/render/items/raster";
 import { DirtySets } from "@/state/dirty";
@@ -87,9 +87,10 @@ const arrived = (
   imageUrl: string | null = null,
   index = 1,
   figureUrls: readonly (string | null)[] = [],
+  roles: readonly PageRole[] = [],
 ): PageView => ({
   phase: "ready",
-  page: { index, width: 595, height: 842, content, cues: [] },
+  page: { index, width: 595, height: 842, content, cues: [], roles },
   reason: null,
   imageUrl,
   figureUrls,
@@ -506,5 +507,125 @@ describe("the header, while a page is open", () => {
     scene.setOpen("a", 1);
     layer.sync(scene, dirty, null);
     expect(host.querySelector(".leaf-meta")!.textContent).toBe("3 of 3");
+  });
+});
+
+/**
+ * A page of markdown — T-348, and the visible half of T-337.
+ *
+ * The page arrives as `plain` content with role spans beside it (D-65), so
+ * these are as much about that shape holding as about the drawing: nothing
+ * upstream learned a sixth content kind, and a text file with no roles is drawn
+ * exactly as it was before any of this.
+ */
+describe("a page of markdown", () => {
+  const role = (
+    start: number,
+    end: number,
+    name: PageRole["role"],
+    level = 0,
+  ): PageRole => ({ start, end, role: name, level });
+
+  /** "The statement\n\nHe came on the Tuesday train." with the heading marked. */
+  const PAGE = "The statement\n\nHe came on the Tuesday train.";
+
+  it("draws a heading as a heading and leaves the words alone", () => {
+    const leaf = leafOf(arrived({ kind: "plain", text: PAGE }, null, 1, [], [role(0, 13, "heading", 2)]));
+    const heading = leaf.querySelector(".leaf-heading") as HTMLElement;
+    expect(heading).not.toBeNull();
+    expect(heading.textContent).toBe("The statement");
+    // The level rides on the element, so `items.css` sets the size and this
+    // side never decides how big a heading is.
+    expect(heading.dataset["level"]).toBe("2");
+    // And the rest of the page is still on the sheet.
+    expect(bodyOf(leaf)).toContain("He came on the Tuesday train.");
+  });
+
+  it("is still a plain page, so nothing upstream learned a new kind", () => {
+    // D-65's bargain. `data-page` is what `items.css` keys the body's display
+    // off, and a sixth value here would be a stylesheet change per feature.
+    const leaf = leafOf(arrived({ kind: "plain", text: PAGE }, null, 1, [], [role(0, 13, "heading", 1)]));
+    expect(leaf.dataset["page"]).toBe("plain");
+  });
+
+  it("draws a text file with no roles exactly as it did before", () => {
+    // The overwhelmingly common page, and the one road that must not get
+    // slower or different: one `textContent` write, no elements at all.
+    const leaf = leafOf(arrived({ kind: "plain", text: "a memo" }));
+    expect(bodyOf(leaf)).toBe("a memo");
+    expect(leaf.querySelectorAll(".leaf-body > *")).toHaveLength(0);
+  });
+
+  it("indents a list and grows its bullet in the stylesheet, not in the words", () => {
+    // `markdown.rs` keeps the marker out of the text so a quote cut from a list
+    // cites the line rather than a hyphen. This is the other half of it.
+    const leaf = leafOf(
+      arrived({ kind: "plain", text: "milk\nbread\nrye" }, null, 1, [], [
+        role(0, 4, "item", 0),
+        role(5, 14, "item", 0),
+        role(11, 14, "item", 1),
+      ]),
+    );
+    const items = [...leaf.querySelectorAll(".leaf-item")] as HTMLElement[];
+    expect(items).toHaveLength(3);
+    expect(items[0]!.textContent).toBe("milk");
+    expect(items[2]!.dataset["level"]).toBe("1");
+    // No bullet in the text — it is `::before` in the stylesheet.
+    expect(bodyOf(leaf)).not.toContain("•");
+  });
+
+  it("nests a bold word inside the heading holding it", () => {
+    // Spans nest by containment, and they arrive outermost first, so this walks
+    // the text once and never has to build a tree.
+    const leaf = leafOf(
+      arrived({ kind: "plain", text: "A hard word" }, null, 1, [], [
+        role(0, 11, "heading", 1),
+        role(2, 6, "strong"),
+      ]),
+    );
+    const strong = leaf.querySelector(".leaf-heading strong");
+    expect(strong?.textContent).toBe("hard");
+    expect(leaf.querySelector(".leaf-heading")!.textContent).toBe("A hard word");
+  });
+
+  it("keeps somebody else's words marked as theirs", () => {
+    const leaf = leafOf(
+      arrived({ kind: "plain", text: "He said it plainly." }, null, 1, [], [role(0, 19, "quote")]),
+    );
+    expect(leaf.querySelector(".leaf-quote")?.textContent).toBe("He said it plainly.");
+  });
+
+  it("redraws when the same page is read the other way", () => {
+    // The digest guard. A page's index and its text length can both be
+    // unchanged while what the words *are* has changed entirely — which is
+    // exactly what happens when a peer's record learns the file is markdown.
+    const layer = layerFor(() => view);
+    let view: PageView = arrived({ kind: "plain", text: PAGE });
+    put({});
+    scene.setOpen("a", 1);
+    layer.sync(scene, dirty, null);
+    expect(host.querySelector(".leaf-heading")).toBeNull();
+
+    view = arrived({ kind: "plain", text: PAGE }, null, 1, [], [role(0, 13, "heading", 2)]);
+    dirty.item("a");
+    layer.sync(scene, dirty, null);
+    expect(host.querySelector(".leaf-heading")).not.toBeNull();
+  });
+
+  it("puts the sheet back to one text node when a plain page follows a marked one", () => {
+    // Views are pooled and a body holding blocks has children `writeHand`'s own
+    // key knows nothing about — the trap `writePage` already documents.
+    const layer = layerFor(() => view);
+    let view: PageView = arrived({ kind: "plain", text: PAGE }, null, 1, [], [role(0, 13, "heading", 2)]);
+    put({});
+    scene.setOpen("a", 1);
+    layer.sync(scene, dirty, null);
+    expect(host.querySelector(".leaf-heading")).not.toBeNull();
+
+    view = arrived({ kind: "plain", text: "a memo" });
+    dirty.item("a");
+    layer.sync(scene, dirty, null);
+    expect(host.querySelector(".leaf-heading")).toBeNull();
+    expect(host.querySelector(".leaf-body")!.textContent).toBe("a memo");
   });
 });

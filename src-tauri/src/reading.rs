@@ -69,6 +69,31 @@ pub struct WirePage {
     /// When each cue on this page was said — see [`Page::cues`]. Empty for
     /// every page that is not a page of a transcript, which is most of them.
     cues: Vec<WireCue>,
+    /// What each stretch of this page is, for a page of markdown — T-348.
+    /// Empty for every other page, which is most of them.
+    roles: Vec<WireRole>,
+}
+
+/// One stretch of a page, and what it is.
+///
+/// `start` and `end` are offsets into the page's own text in **UTF-16 code
+/// units**, for `WireCue`'s reason: the only thing that ever compares one of
+/// these against a position is a DOM range, and a DOM offset is an index into a
+/// JavaScript string.
+///
+/// `role` is a word and `level` a number, rather than one tagged union, because
+/// the two things that vary are independent and only two roles use the second —
+/// a heading's depth and a list item's nesting. A union would give every arm a
+/// payload to say it has none.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WireRole {
+    start: usize,
+    end: usize,
+    role: &'static str,
+    /// One-based for a heading, zero-based for a list item, and `0` for
+    /// everything else — which has no depth rather than a depth of zero.
+    level: u8,
 }
 
 /// One cue's place on a page, and the moment it names in the recording.
@@ -205,6 +230,26 @@ impl WirePageText {
     }
 }
 
+impl WireRole {
+    fn of(span: &crate::markdown::Span) -> WireRole {
+        use crate::markdown::Role;
+        let (role, level) = match span.role {
+            Role::Heading(level) => ("heading", level),
+            Role::Item(depth) => ("item", depth),
+            Role::Quote => ("quote", 0),
+            Role::Code => ("code", 0),
+            Role::Emphasis => ("emphasis", 0),
+            Role::Strong => ("strong", 0),
+        };
+        WireRole {
+            start: span.start,
+            end: span.end,
+            role,
+            level,
+        }
+    }
+}
+
 impl WirePage {
     fn of(page: &Page) -> WirePage {
         WirePage {
@@ -220,6 +265,7 @@ impl WirePage {
                     at: mark.at,
                 })
                 .collect(),
+            roles: page.roles.iter().map(WireRole::of).collect(),
         }
     }
 }

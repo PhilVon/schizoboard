@@ -2488,6 +2488,171 @@ textarea.item-field::-webkit-scrollbar {
   overflow-wrap: break-word;
 }
 
+
+/* --- a page of markdown. T-348, D-65 ------------------------------------- */
+
+/*
+ * What the marks meant, drawn instead of shown.
+ *
+ * The page arrives as plain text with role spans over it, and `writeMarkdown`
+ * turns those into blocks. So these rules are about **paper**, not about a
+ * browser's idea of a document: this is a sheet inside a folder on a corkboard,
+ * read at a distance, and the whole budget is `.folder-leaf`'s 46 rows.
+ *
+ * Every size here is in `em` against that inherited measure and none of them
+ * touches the page's *pagination*, which is `text.rs`'s grid and is decided by
+ * the bytes. A heading set larger takes more room on the sheet and does not
+ * move a single page boundary — which is what D-65 bought by keeping the text
+ * flat, and is the reason a citation stored today still means the same place
+ * after somebody edits this block.
+ */
+.leaf-heading,
+.leaf-item,
+.leaf-quote,
+.leaf-code {
+  display: block;
+  /* The blank line between blocks is drawn here rather than written into the
+     text — see `writeMarkdown`, which drops the characters an element is
+     already saying. */
+  margin: 0.55em 0 0;
+}
+
+/* Nothing above the first block: the sheet's own top margin is the page's. */
+.leaf-body > :first-child {
+  margin-top: 0;
+}
+
+/*
+ * A heading is bigger and set tighter, and it is **not bolder**.
+ *
+ * The sheet's face is the board's hand at page size, and a synthetic bold on a
+ * script face is a smear at this scale — the same reason `.case-title` writes
+ * rather than emboldens. Size and the space above it are what say "heading" on
+ * paper, which is what a typewriter had to work with too.
+ */
+.leaf-heading {
+  font-size: 1.32em;
+  line-height: 1.15;
+  margin-top: 0.9em;
+}
+
+/* Each level down is a step smaller, and the fourth is the same size as the
+   text with only its space above it left. Six levels exist in markdown; a page
+   of a case file that uses all six has other problems. */
+.leaf-heading[data-level="2"] {
+  font-size: 1.18em;
+}
+
+/*
+ * From the third level down, size stops doing the work and a rule under the
+ * words takes over.
+ *
+ * Driven, and it is the one thing the bench changed. At 1.07em a third-level
+ * heading came out 9.8px against a 9.2px page — six per cent, which is not a
+ * heading, it is a paragraph somebody nudged. Going bigger is not the answer
+ * either: three sizes above the text is already most of what a sheet this small
+ * can spend, and a fourth would make a sub-heading compete with the title.
+ *
+ * So it is underlined, which is what a typed document has always done with a
+ * sub-heading and costs no size at all. It also degrades in the right
+ * direction: at board scale the words go first and the rule is still there.
+ */
+.leaf-heading[data-level="3"],
+.leaf-heading[data-level="4"],
+.leaf-heading[data-level="5"],
+.leaf-heading[data-level="6"] {
+  font-size: 1.02em;
+  text-decoration: underline;
+  /* Clear of the descenders, which a hand has plenty of. */
+  text-underline-offset: 0.22em;
+  text-decoration-thickness: 0.5px;
+}
+
+/*
+ * A list item is indented and wears a bullet, and the bullet is drawn here
+ * rather than written into the text.
+ *
+ * `markdown.rs` deliberately keeps the marker out of the words — "what was said
+ * is the words, and the sheet draws the bullet" — so that a quote cut from a
+ * list cites the line and not a hyphen somebody's editor inserted. This is the
+ * other half of that decision.
+ */
+.leaf-item {
+  margin-top: 0.12em;
+  /* The text hangs off the bullet rather than wrapping under it, which is what
+     a list on paper does and what makes a two-line item read as one thing. */
+  padding-left: 1.15em;
+  text-indent: -1.15em;
+}
+
+.leaf-item::before {
+  content: "•  ";
+}
+
+/* Nested, one step per level. Three is as deep as a sheet this size can show a
+   list without the words running out of measure. */
+.leaf-item[data-level="1"] {
+  margin-left: 1.2em;
+}
+
+.leaf-item[data-level="2"],
+.leaf-item[data-level="3"],
+.leaf-item[data-level="4"],
+.leaf-item[data-level="5"],
+.leaf-item[data-level="6"] {
+  margin-left: 2.4em;
+}
+
+/* The first item of a list is the one that starts the block. */
+.leaf-item + .leaf-item {
+  margin-top: 0.12em;
+}
+
+/*
+ * Somebody else's words inside this document — a rule down the side, which is
+ * what a quoted block is on paper and in every printed transcript.
+ *
+ * Indented rather than italic: the hand is already a hand, and italicising a
+ * script face at this size makes it less legible rather than more.
+ */
+.leaf-quote {
+  padding-left: 0.8em;
+  border-left: 1px solid rgba(40, 34, 26, 0.35);
+  /* Off the ruling, so the rule does not sit on a printed line. */
+  margin-left: 0.15em;
+}
+
+/*
+ * Code, and the one block whose spaces are its content.
+ *
+ * A monospace here and nowhere else on this board, and it does not contradict
+ * DESIGN 1.3: the rule there is that chrome must not be drawn over the objects.
+ * This is not chrome — it is what the *document* is set in, on a page somebody
+ * typed a program onto, and a listing set in a hand is a listing nobody can
+ * read.
+ */
+.leaf-code {
+  font-family: ui-monospace, "Cascadia Mono", "Consolas", monospace;
+  font-size: 0.86em;
+  /* The reflow that every other block gets is exactly what a code block must
+     not have — `markdown.rs` keeps its line breaks and this keeps them drawn. */
+  white-space: pre-wrap;
+}
+
+/*
+ * And the two inline ones. `em` and `strong` are the elements themselves, so
+ * these rules only say what they look like in a hand rather than in a browser's
+ * defaults — a synthetic bold on a script face smears, so weight is bought with
+ * ink rather than with width.
+ */
+.leaf-body em {
+  font-style: italic;
+}
+
+.leaf-body strong {
+  font-weight: 600;
+}
+
 /*
  * A picture on a typed page, re-flowed with the text — T-329, Q-289.
  *
