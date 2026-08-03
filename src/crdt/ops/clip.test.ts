@@ -210,6 +210,46 @@ describe("what a copy takes", () => {
   });
 
   /**
+   * T-345, and it is the one field on the record that could not be re-decided
+   * on the far side even in principle.
+   *
+   * A duration can be measured again by anybody holding the bytes, and a poster
+   * grabbed again off the same frame. This came from a *filename*, and by the
+   * time a clip is being pasted there is no filename anywhere — only `origName`,
+   * which is a copy of the same fact and not a second source of it. So dropping
+   * it here would make a markdown file paste as its own asterisks: the whole
+   * bug T-337 exists to fix, reintroduced by the one route that looks like
+   * copying rather than like reading.
+   */
+  it("carries how a document is read onto another board", () => {
+    const [made] = createItems(board, [
+      {
+        type: "polaroid",
+        x: 0,
+        y: 0,
+        w: 300,
+        h: 300,
+        assetId: "notes1",
+        asset: {
+          w: 0,
+          h: 0,
+          mime: "text/plain",
+          size: 2048,
+          origName: "notes.md",
+          pages: 2,
+          markdown: true,
+        },
+      },
+    ]);
+
+    const clip = copySubgraph(board, { items: [made!.itemId], pins: [] })!;
+    const elsewhere = openBoardDoc();
+    pasteClip(elsewhere, clip, { x: 0, y: 0 });
+
+    expect(readAsset("notes1", elsewhere.assets.get("notes1")!)!.markdown).toBe(true);
+  });
+
+  /**
    * T-270, and it is the same argument with one wrinkle worth writing down.
    *
    * A copied tape is the same film, so it names the same still. What travels is

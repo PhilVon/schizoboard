@@ -531,5 +531,13 @@ function assetInput(board: BoardDoc, sha256: string): AssetInput | null {
     // *within one board* silently drops a transcript both copies can reach
     // (T-287).
     ...(asset.transcript !== null ? { transcript: asset.transcript } : {}),
+    // And how the text is read (T-345). Carried rather than re-decided, and
+    // this is the one field on the record that *cannot* be re-decided: it came
+    // from a filename, and by the time a clip is being pasted onto another
+    // board there is no filename anywhere — only `origName`, which is a copy of
+    // the same fact and not a second source of it. Dropping it here would make
+    // a markdown file paste as its own asterisks, which is the whole bug T-337
+    // exists to fix, reintroduced by the one route that looks like copying.
+    ...(asset.markdown ? { markdown: true } : {}),
   };
 }

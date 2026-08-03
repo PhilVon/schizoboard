@@ -102,6 +102,11 @@ export interface AssetInput {
    * the sidecar is a file sitting next to the one being read.
    */
   transcript?: string | null;
+  /**
+   * Whether this text is read as markdown (T-345). Absent and `false` mean the
+   * same thing, and only `true` is ever written — see `registerAsset`.
+   */
+  markdown?: boolean;
 }
 
 export interface CreatedItem {
@@ -156,6 +161,11 @@ export function registerAsset(
   if (typeof input.pages === "number") asset.set("pages", input.pages);
   if (typeof input.poster === "string") asset.set("poster", input.poster);
   if (typeof input.transcript === "string") asset.set("transcript", input.transcript);
+  // And only when it is *true*. The rule above is "written only when there is
+  // one", and for a boolean the absent key already says the common answer — so
+  // a `false` here would be a byte on the wire per asset to state the default,
+  // on a board where all but a handful of documents are not markdown.
+  if (input.markdown === true) asset.set("markdown", true);
   asset.set("addedBy", board.doc.clientID);
   asset.set("addedAt", now);
   board.assets.set(sha256, asset);

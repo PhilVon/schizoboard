@@ -619,6 +619,34 @@ export class Paste {
         // there is nothing to carry — the folder asks for it separately, against
         // a file this machine has.
         ...(meta.pages !== null ? { pages: meta.pages } : {}),
+        // **And the one fact on this record that a name decides** — T-345,
+        // Q-324, and it is the exception that has to justify itself.
+        //
+        // Every other line above comes from the bytes, which is AC-650 and the
+        // rule this whole gate exists to keep. This does not, and there is no
+        // honest way to make it: a markdown file has no signature, and every
+        // text file is valid markdown, so "is it markdown" has no total content
+        // test the way "is it made of cues" does (`cues.rs`). Measured over this
+        // repository, reading all text as markdown would alter 96% of source
+        // files and 37% of plain text ones — a hash beginning a line is a
+        // comment in half the languages anybody might drop.
+        //
+        // So the exception is drawn as narrowly as it can be. The **mime is
+        // still sniffed**: `kind` above already refused anything that is not a
+        // document, and the check below refuses anything that is not text — a
+        // `notes.md` holding a JPEG is a photograph here and stays one. What
+        // the name is allowed to decide is not *what this file is* but *how
+        // already-settled text should be read*, which is a smaller claim and a
+        // different question.
+        //
+        // And it is decided **here**, because this is the only place on the
+        // board where a filename legitimately exists. The store names originals
+        // by hash and `document.rs` says in so many words that a reader "never
+        // sees a name a person typed"; `ingest_bytes` has no name at all, so a
+        // file arriving from a peer has none either. Recording it means the far
+        // side agrees without ever being told a name — which is the same bargain
+        // `duration` and `pages` strike two lines up.
+        ...(isMarkdownName(origName) && meta.mime.startsWith("text/") ? { markdown: true } : {}),
       },
       // Only a printed still has one — see `Ingested`. Omitted rather than
       // passed as `""`, so a photograph's caption stays the empty thing the
@@ -1136,4 +1164,22 @@ function baseName(pathOrUrl: string): string | undefined {
   const withoutQuery = pathOrUrl.split(/[?#]/)[0] ?? "";
   const last = withoutQuery.split(/[\\/]/).pop();
   return last && last.length > 0 ? last : undefined;
+}
+
+/**
+ * Whether a name says this text is markdown — T-345, and the *only* thing on
+ * this board that a filename decides. `accept` carries the argument.
+ *
+ * Two spellings and not a list. `.md` is what everything writes and `.markdown`
+ * is what a handful of older tools still do; `.mdown`, `.mkd`, `.mdwn` and the
+ * rest are a long tail nobody has, and every further spelling is another way for
+ * a plain text file to be read as something it is not. The list can grow when
+ * somebody arrives holding one, which is the same rule `SIDECAR_EXTENSIONS`
+ * follows for a transcript.
+ *
+ * Case-insensitive because Windows is, and a `README.MD` copied off a share is
+ * the same file as a `readme.md`.
+ */
+function isMarkdownName(origName: string | undefined): boolean {
+  return origName !== undefined && /\.(md|markdown)$/i.test(origName);
 }

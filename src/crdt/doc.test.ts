@@ -688,6 +688,11 @@ describe("a record written by a build that knows more than this one", () => {
       pages: null,
       poster: null,
       transcript: null,
+      // A record written before this build existed says nothing about how its
+      // text is read, and `false` is the right answer rather than a missing
+      // one: a photograph is not markdown, and neither is a text file nobody
+      // named. See `AssetFields.markdown` — the absent key *is* the default.
+      markdown: false,
     });
   });
 });

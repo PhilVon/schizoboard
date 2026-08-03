@@ -1663,3 +1663,87 @@ describe("a transcript sitting next to a recording", () => {
     expect(itemsOnBoard()).toHaveLength(1);
   });
 });
+
+/**
+ * A markdown file says so on its own record — T-345, Q-324, D-65.
+ *
+ * **The one fact on an asset record that a filename decides**, so these tests
+ * are as much about how narrowly that exception is drawn as about the flag
+ * itself. The mime is still sniffed and still outranks the name; what the name
+ * settles is how text the bytes already agreed was text should be read.
+ */
+describe("a markdown file", () => {
+  function markdownOf(sha256: string): boolean {
+    const map = board.assets.get(sha256);
+    return map ? (readAsset(sha256, map)?.markdown ?? false) : false;
+  }
+
+  function onlyAsset(): string {
+    const [sha] = [...board.assets.keys()];
+    return sha!;
+  }
+
+  it("is marked as one when its name says so and its bytes are text", async () => {
+    native.mimeFor.set("C:/notes.md", "text/plain");
+    native.drop(["C:/notes.md"], 0, 0);
+    await settle();
+    expect(markdownOf(onlyAsset())).toBe(true);
+  });
+
+  it("takes the longer spelling too, and does not care about case", async () => {
+    // `.markdown` is what a handful of older tools still write, and a README
+    // copied off a Windows share arrives shouting.
+    for (const name of ["C:/a.markdown", "C:/B.MD"]) native.mimeFor.set(name, "text/plain");
+    native.drop(["C:/a.markdown", "C:/B.MD"], 0, 0);
+    await settle();
+    expect([...board.assets.keys()].every(markdownOf)).toBe(true);
+  });
+
+  it("leaves an ordinary text file alone", async () => {
+    // The measurement behind Q-324: a hash at the start of a line is a comment
+    // in half the languages anybody might drop, so nothing is read as markdown
+    // unless it said it was.
+    native.mimeFor.set("C:/server.log", "text/plain");
+    native.drop(["C:/server.log"], 0, 0);
+    await settle();
+    expect(markdownOf(onlyAsset())).toBe(false);
+  });
+
+  it("does not believe a name over the bytes", async () => {
+    // AC-650 survives this exception intact. A file called `holiday.md` that
+    // sniffs as a JPEG is a photograph, and a photograph is never read at all —
+    // so the flag would be a name overruling the one gate that decides what
+    // this board is holding.
+    native.mimeFor.set("C:/holiday.md", "image/jpeg");
+    native.drop(["C:/holiday.md"], 0, 0);
+    await settle();
+    expect(markdownOf(onlyAsset())).toBe(false);
+    // **The raw key and not the read**, because there are two guards here and
+    // this test is about the first one. `readAsset` refuses a markdown flag on
+    // anything that is not text, so asserting the *read* passes even with the
+    // gate's own check deleted — which is what a mutation showed, and is how a
+    // test ends up proving somebody else's rule.
+    expect(board.assets.get(onlyAsset())!.has("markdown")).toBe(false);
+  });
+
+  it("writes nothing at all for a file that is not markdown", async () => {
+    // An absent key and a `false` read identically, so writing the `false`
+    // would be a byte on the wire per asset to state the default — on a board
+    // where all but a handful of documents are not markdown.
+    native.mimeFor.set("C:/server.log", "text/plain");
+    native.drop(["C:/server.log"], 0, 0);
+    await settle();
+    expect(board.assets.get(onlyAsset())!.has("markdown")).toBe(false);
+  });
+
+  it("refuses a markdown flag a peer wrote onto something that is not text", async () => {
+    // The coercion in `readAsset`, not the gate. A later build that learns to
+    // read some other format this way must not be able to make this one hand a
+    // JPEG to a markdown parser by setting one key.
+    native.drop(["C:/photo.png"], 0, 0);
+    await settle();
+    const sha = onlyAsset();
+    board.assets.get(sha)!.set("markdown", true);
+    expect(markdownOf(sha)).toBe(false);
+  });
+});

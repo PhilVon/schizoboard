@@ -339,6 +339,33 @@ export interface AssetFields {
    * transaction and that is `attachPoster`'s shape exactly.
    */
   transcript: string | null;
+  /**
+   * Whether this text is to be read as markdown — T-345, Q-324, D-65.
+   *
+   * **The one field on this record that a name decided**, and it is here rather
+   * than being asked of the bytes because there is no honest way to ask. A
+   * markdown file has no signature and every text file is valid markdown, so
+   * the total content test `cues.rs` uses for a transcript has no equivalent:
+   * measured, reading all text as markdown would alter 96% of source files.
+   *
+   * So `paste.ts` decides it at the one place a filename exists on this board
+   * and writes it here, and everything downstream reads a *fact* rather than a
+   * name. That is what keeps the rest of the rule intact — the mime is still
+   * sniffed, so this only ever qualifies text the bytes already agreed was
+   * text, and what it settles is how to *read* that text rather than what the
+   * file is.
+   *
+   * It has to be on the record and not derived locally, for `duration`'s
+   * reason: the reader is in Rust and is handed a hash and an index, never a
+   * path and never a name (`document.rs`), and a peer that receives these bytes
+   * over the wire never had a filename at all. Without this the same file is a
+   * different document on the two machines holding it.
+   *
+   * `false` is never written — an absent key and a `false` read identically,
+   * and the overwhelming majority of assets on any board will never be
+   * markdown. See `registerAsset`.
+   */
+  markdown: boolean;
 }
 
 // --- coercion -------------------------------------------------------------
@@ -645,6 +672,12 @@ export function readAsset(sha256: string, map: YMap): AssetFields | null {
     pages: positive(map.get("pages")),
     poster: hash(map.get("poster"), sha256),
     transcript: hash(map.get("transcript"), sha256),
+    // Only ever true of text, whatever a peer wrote. A later build that learns
+    // to read some other format this way must not be able to make *this* one
+    // hand a JPEG to a markdown parser by setting one key — the mime is the
+    // fact the bytes decided and it outranks the flag, which is the whole
+    // shape of the exception `paste.ts` documents.
+    markdown: bool(map.get("markdown"), false) && mime.startsWith("text/"),
   };
 }
 
