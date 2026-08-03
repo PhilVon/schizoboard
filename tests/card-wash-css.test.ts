@@ -24,7 +24,7 @@
 
 import { describe, expect, it } from "vitest";
 
-import { bare, declarations, layers } from "./css-declarations";
+import { declarations, layers } from "./css-declarations";
 
 const card = declarations(".item-card");
 const shot = declarations(".card-shot");
@@ -104,6 +104,27 @@ describe("the wash bounds what any banner can do to the card", () => {
     expect(contrast(washed(BLACKEST), INK)).toBeGreaterThan(4.5);
   });
 
+  it("holds every line of the printing against that floor, not just the title", () => {
+    // The defect this test was extended for, found by looking at a card with a
+    // black banner on it. The company and address lines had their own quieter
+    // greys, chosen — like every colour anybody picks — against whatever was on
+    // screen at the time, which was cream. At the dark end of the range the
+    // smallest line on the card came out at 4.4:1 with a white emboss highlight
+    // sitting on top of it, and it was the one thing you could not read.
+    //
+    // The hierarchy on a card is carried by size and weight. Contrast is not
+    // spare capacity to spend on it, because contrast is the thing that runs out
+    // at an end of the range nobody is looking at.
+    const floor = washed(BLACKEST);
+    for (const [line, colour] of [
+      [".card-title", card.get("--card-ink")!],
+      [".card-site", declarations(".card-site").get("color")!],
+      [".card-address", declarations(".card-address").get("color")!],
+    ] as const) {
+      expect(contrast(floor, rgb(colour)), `${line} against the darkest banner`).toBeGreaterThan(4.5);
+    }
+  });
+
   it("leaves the lightest possible banner still visibly card", () => {
     // A white product page, which is the ceiling. If the wash let it through,
     // the card would be a white rectangle and there would be nothing to
@@ -130,15 +151,40 @@ describe("the wash bounds what any banner can do to the card", () => {
 describe("the emboss reads at both ends of that range", () => {
   const shadows = layers(type.get("text-shadow")!);
 
+  /** The `rgba(r, g, b, a)` at the end of one shadow layer. */
+  function colourOf(layer: string): { rgb: Rgb; alpha: number } {
+    const m = /rgba\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)\s*,\s*([\d.]+)\s*\)/.exec(layer);
+    expect(m, `a colour in "${layer}"`).not.toBeNull();
+    const [r, g, b, a] = m!.slice(1).map(Number) as [number, number, number, number];
+    return { rgb: [r, g, b], alpha: a };
+  }
+
   it("paints a highlight and a shadow, never one of them", () => {
     // The tempting undoing. On pale stock the shadow is doing all the work and
     // the highlight looks redundant; on a dark banner it is the other way round.
     // Drop either and the emboss is invisible over half the web.
+    //
+    // Read as luminance rather than matched against the literal colours, so
+    // that retuning either one is not a broken test — what has to hold is that
+    // one of them is lighter than the stock and the other darker, which is what
+    // makes it relief instead of a drop shadow.
     expect(shadows.length).toBe(2);
-    const light = shadows.filter((s) => s.includes("255, 252, 244"));
-    const dark = shadows.filter((s) => s.includes("58, 42, 24"));
-    expect(light.length).toBe(1);
-    expect(dark.length).toBe(1);
+    const [highlight, shadow] = shadows.map(colourOf) as [
+      ReturnType<typeof colourOf>,
+      ReturnType<typeof colourOf>,
+    ];
+    // Both are measured against the **stock**, because both are things that
+    // happen to the card's surface where the letter stands off it — not against
+    // the ink. The cast side is a warm brown lighter than the ink itself and
+    // should be: it is a shadow falling on cream board, not more printing.
+    expect(luminance(highlight.rgb)).toBeGreaterThan(luminance(STOCK));
+    expect(luminance(shadow.rgb)).toBeLessThan(luminance(STOCK));
+    // Both partly transparent. An opaque highlight is an outline: it replaces
+    // whatever the banner put under the letter instead of lifting it, and on a
+    // dark card that reads as a white halo round the smallest line rather than
+    // as a raised edge — which is exactly what a close-up showed.
+    expect(highlight.alpha).toBeLessThan(0.65);
+    expect(shadow.alpha).toBeLessThan(0.65);
   });
 
   it("offsets them against each other, along the board's one light", () => {
@@ -157,15 +203,19 @@ describe("the emboss reads at both ends of that range", () => {
     expect(highlight).toContain("var(--relief");
   });
 
-  it("is a length in board units, so a resized card is embossed in proportion", () => {
-    // Written by `dom.ts` as a fraction of the item's width. A fixed pixel
-    // relief would be a slab at 400% zoom and gone by 20%, which is the same
-    // mistake the selection outline was moved out of this file for.
-    expect(bare).toContain("--relief");
-    // Every length in it is `var(--relief, …)`; strike those out and no absolute
-    // one is left. The fallback inside the `var()` is the at-rest value for a
-    // node the renderer has not sized yet, not an offset anything is drawn at.
+  it("is a fraction of the letter, so every line is embossed for its own size", () => {
+    // An `em` and never a length. It was a length written per item from the
+    // card's *width*, which made one relief serve three lines set at 1.9, 0.8
+    // and 0.78 em — five times the relief, for its size, on the smallest of
+    // them. A raised letter's relief belongs to the letter.
+    //
+    // Riding on the type size also keeps the proportion through a zoom and a
+    // resize for free, since the block's own size is a fraction of the card.
+    expect(card.get("--relief")).toMatch(/^[\d.]+em$/);
+    // Every length in the shadow is `var(--relief, …)`; strike those out and no
+    // absolute one is left. The `var()` fallback is the at-rest value for a node
+    // the renderer has not sized yet, not an offset anything is drawn at.
     const offsets = type.get("text-shadow")!.replace(/var\(--relief[^)]*\)/g, "");
-    expect(offsets).not.toMatch(/\d+px/);
+    expect(offsets).not.toMatch(/[\d.]+(px|em)/);
   });
 });

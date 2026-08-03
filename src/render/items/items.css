@@ -3575,6 +3575,25 @@ textarea.item-field::-webkit-scrollbar {
   /* Near-black, warm, and never black — DESIGN 4.1's rule about shadow colour is
      the same argument about ink on a board lit by one warm light. */
   --card-ink: #2b241b;
+  /*
+   * How far the printing stands off the card — **an `em`, so it is a fraction of
+   * the letter rather than of the object**, which is the correction a close-up
+   * forced (T-339).
+   *
+   * It was a length written per item from the card's width, on the reasoning
+   * that a relief is a distance and not a type size. That is true of the paper
+   * and false of the letter: one number across three lines set at 1.9, 0.8 and
+   * 0.78 em gave the company line five times the relief, for its size, that the
+   * name had — and at a reading zoom the small lines were a white halo with a
+   * word inside it rather than anything raised. A raised letter's relief is a
+   * property of the letter.
+   *
+   * 0.04 em is about a twentieth of a cap height, which is roughly what a tenth
+   * of a millimetre of thermography is on a two-millimetre capital. Substituted
+   * rather than computed here — an unregistered custom property is a token, so
+   * the `em` resolves against whichever line uses it.
+   */
+  --relief: 0.04em;
 }
 
 /*
@@ -3686,10 +3705,10 @@ textarea.item-field::-webkit-scrollbar {
    * at `+k` and one at `-k` and lets the negative alpha clamp away.
    */
   text-shadow:
-    calc(var(--lx, 0.5) * -1 * var(--relief, 1px)) calc(var(--ly, 0.87) * -1 * var(--relief, 1px)) 0
-      rgba(255, 252, 244, 0.85),
-    calc(var(--lx, 0.5) * var(--relief, 1px)) calc(var(--ly, 0.87) * var(--relief, 1px)) 0
-      rgba(58, 42, 24, 0.36);
+    calc(var(--lx, 0.5) * -1 * var(--relief, 0.04em)) calc(var(--ly, 0.87) * -1 * var(--relief, 0.04em))
+      0 rgba(255, 250, 240, 0.5),
+    calc(var(--lx, 0.5) * var(--relief, 0.04em)) calc(var(--ly, 0.87) * var(--relief, 0.04em)) 0
+      rgba(58, 42, 24, 0.4);
 }
 
 /*
@@ -3724,7 +3743,9 @@ textarea.item-field::-webkit-scrollbar {
   font-weight: 600;
   letter-spacing: 0.19em;
   text-transform: uppercase;
-  color: #55483a;
+  /* Darker than it was, and the reason is the same as the address line's below:
+     it was chosen against a card whose banner happened to be pale. */
+  color: #3f3427;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -3740,7 +3761,20 @@ textarea.item-field::-webkit-scrollbar {
   grid-row: 4;
   font-size: 0.78em;
   letter-spacing: 0.005em;
-  color: #6b5b47;
+  /*
+   * Dark, not grey — the correction a dark banner forced.
+   *
+   * This line was `#6b5b47`, which is a perfectly good quiet grey **on cream**,
+   * and cream is what the card is when its banner is pale. Over the floor of the
+   * wash — the card a solid black banner makes — the same grey came out at 4.4:1
+   * with a white highlight sitting on top of it, and the smallest line on the
+   * card was the one you could not read. The hierarchy here is carried by size
+   * and by weight; it does not need to be carried by contrast as well, and the
+   * one place contrast is load-bearing is the end of the range nobody looks at
+   * while they are choosing a colour. `card-wash-css.test.ts` holds all three
+   * lines against that end now.
+   */
+  color: #453a2c;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;

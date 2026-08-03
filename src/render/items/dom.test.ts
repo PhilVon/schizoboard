@@ -3145,9 +3145,11 @@ describe("a link card", () => {
     dirty.item("a");
     layer.sync(scene, dirty, null);
     expect(Number.parseFloat(el.style.getPropertyValue("--lx"))).not.toBeCloseTo(0.5, 2);
-    // And the relief itself is a length in board units, so a card somebody
-    // resized is embossed proportionally rather than by a fixed number of pixels.
-    expect(Number.parseFloat(el.style.getPropertyValue("--relief"))).toBeGreaterThan(0);
+    // The relief itself is not written here at all — it is an `em` in the
+    // stylesheet, so it rides on the type size this *does* write and stays in
+    // proportion through a resize without a second number to keep in step.
+    // `card-wash-css.test.ts` is what holds that end of it.
+    expect(Number.parseFloat(el.querySelector<HTMLElement>(".card-type")!.style.fontSize)).toBeGreaterThan(0);
   });
 
   it("hands back a clean node when the item stops being a card", () => {

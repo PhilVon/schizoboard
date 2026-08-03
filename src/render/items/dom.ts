@@ -1314,21 +1314,6 @@ class PolaroidView implements View {
 const CARD_TEXT = 0.055;
 
 /**
- * How far the embossed writing is displaced from itself, as a fraction of the
- * card's width — the whole of the relief, since an emboss drawn in CSS is two
- * offset copies of the glyph and nothing else.
- *
- * Larger than life on purpose, and this is the one number here that is. A real
- * emboss stands about a third of a millimetre off the card, which is four
- * thousandths of its width and would be a sub-pixel offset at any zoom anybody
- * looks at a board from — an effect that is physically right and visually
- * absent. Twice that reads as raised type at a readable zoom and still vanishes
- * into the ink at a wall-of-cards one, which is the correct way round for it to
- * fail.
- */
-const CARD_RELIEF = 0.008;
-
-/**
  * A link card: the page's picture washed into the stock, with the title, the
  * site and the address embossed over it (T-339).
  *
@@ -1553,10 +1538,14 @@ class CardView implements View {
       // card somebody has resized keeps its typography rather than three numbers
       // drifting apart. The floor is a card drawn at a wall-of-cards zoom, where
       // the lines are a texture and a sub-pixel size costs a layout for nothing.
+      // One number, and it sizes the whole card: the three lines are `em` of it
+      // and so is the relief they are embossed at (`--relief` in `items.css`).
+      // That is not how the relief started — it was written from here as a
+      // length in board units, which gave the smallest line five times the
+      // relief for its size that the title had, and a close-up showed it as a
+      // halo rather than as raised type. A raised letter's relief belongs to the
+      // letter.
       this.type.style.fontSize = `${Math.max(3, w * CARD_TEXT).toFixed(2)}px`;
-      // And the relief, which is a length rather than a type size and so cannot
-      // ride on the `em`: the stylesheet multiplies it by the light.
-      this.el.style.setProperty("--relief", `${(w * CARD_RELIEF).toFixed(3)}px`);
       // The editor's field needs nothing here, unlike a polaroid's — it wears
       // `.card-title`, whose size is `1.9em` of the block this line just wrote,
       // so it follows a resize for free. Writing an inline size onto it would
@@ -1569,7 +1558,7 @@ class CardView implements View {
     this.tape.update(rot);
     // The emboss is the only lit thing on this object, and it is lit by the same
     // one light as everything else — so the light has to be counter-rotated into
-    // the card's own frame, exactly as the case objects' creases are (T-313).
+    // this card's own frame, exactly as the case objects' creases are (T-313).
     // Without it a card scattered at 40 degrees has its writing raised toward
     // its own private sun, which DESIGN 4.1 calls the fastest way to break a
     // surface.
