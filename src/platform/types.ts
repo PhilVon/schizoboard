@@ -371,6 +371,23 @@ export interface BundleWritten {
   bytes: number;
 }
 
+/**
+ * What an export would weigh, asked before there is a file to measure — T-291.
+ *
+ * `bytes` is the sum of the assets on this disk and **not** the size of the
+ * file: the snapshot is not in it, because this side is holding that and can
+ * add its length without sending it across; nor is the zip's per-entry
+ * overhead; nor is what deflate takes off a transcript. Everything that makes a
+ * bundle heavy is stored byte for byte (D-64 measured why), so it is a tight
+ * upper bound — and the word for it on the way out is "about".
+ */
+export interface BundleWeighed {
+  embedded: number;
+  /** Referenced by the board and not on this disk, so it will not be in it. */
+  missing: number;
+  bytes: number;
+}
+
 export interface BundleOpened {
   manifest: BundleManifest;
   /** The document the bundle holds, opaque — applying it is the caller's. */
@@ -745,6 +762,16 @@ export interface Platform {
    * section 11.1, risk 4) must not make a board un-handable.
    */
   bundleSaveAs(spec: BundleSpec, snapshot: Uint8Array): Promise<BundleWritten | null>;
+
+  /**
+   * What a bundle of this board would weigh, before one is written — T-291.
+   *
+   * The spec alone and no snapshot: only the shell knows which of the board's
+   * assets are actually on this disk, and it can weigh them from its own
+   * directory. Sending several megabytes of document across the boundary to be
+   * told a number would be the expensive half of an export done twice.
+   */
+  bundleWeigh(spec: BundleSpec): Promise<BundleWeighed>;
 
   /**
    * Read a `.schizo` the user picks, putting its photographs in this machine's

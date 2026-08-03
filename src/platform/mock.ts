@@ -29,6 +29,7 @@ import {
   type AssetMeta,
   type AssetVariant,
   type BundleOpened,
+  type BundleWeighed,
   type BundleWritten,
   type ClipboardKind,
   type ClipboardManifest,
@@ -375,6 +376,11 @@ export class MockPlatform implements Platform {
    */
   bundleSaveAs(): Promise<BundleWritten | null> {
     return unavailable("Exporting a board");
+  }
+
+  bundleWeigh(): Promise<BundleWeighed> {
+    // Weighing is the store's own directory, and a browser build has no store.
+    return unavailable("Weighing a board");
   }
 
   bundleOpen(): Promise<BundleOpened | null> {

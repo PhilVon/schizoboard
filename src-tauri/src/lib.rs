@@ -1093,6 +1093,24 @@ async fn doc_compact(app: AppHandle, request: tauri::ipc::Request<'_>) -> Result
 /// `Ok(None)` is a cancelled dialog: an ordinary outcome, not a failure.
 ///
 /// The payload is framed rather than JSON — see [`bundle::split_payload`].
+/// What an export of this board would weigh, before anybody picks a filename —
+/// T-291, Q-314.
+///
+/// Ordinary JSON arguments rather than [`bundle_save_as`]'s framed payload,
+/// because the snapshot is the half this question does not need: the caller
+/// already holds it and can add its length itself, and sending several
+/// megabytes across the boundary to be told a number the store could have
+/// answered from its own directory would be the expensive half of an export
+/// performed twice.
+#[tauri::command]
+async fn bundle_weigh(app: AppHandle, spec: bundle::Spec) -> Result<bundle::Weighed, String> {
+    blocking(move || -> assets::Result<bundle::Weighed> {
+        let store = store_of(&app).map_err(assets::Error::Unavailable)?;
+        Ok(bundle::weigh(&store, &spec))
+    })
+    .await
+}
+
 #[tauri::command]
 async fn bundle_save_as(
     app: AppHandle,
@@ -1473,6 +1491,7 @@ pub fn run() {
             doc_append_update,
             doc_load,
             doc_compact,
+            bundle_weigh,
             bundle_save_as,
             bundle_open,
             reading::document_page_count,
@@ -1511,7 +1530,10 @@ mod tests {
         // plugin and is not something an item gets to trigger.
         assert!(!is_web_address("schizo://board/x"));
         assert!(!is_web_address("ftp://example.com/x"));
-        assert!(!is_web_address("https:/example.com"), "one slash is not a URL");
+        assert!(
+            !is_web_address("https:/example.com"),
+            "one slash is not a URL"
+        );
         assert!(!is_web_address(""));
         // A scheme that merely begins the same way.
         assert!(!is_web_address("httpsx://example.com"));

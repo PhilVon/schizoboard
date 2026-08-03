@@ -20,6 +20,7 @@ import type {
   AssetVariant,
   BundleOpened,
   BundleSpec,
+  BundleWeighed,
   BundleWritten,
   ClipboardKind,
   ClipboardManifest,
@@ -250,6 +251,12 @@ export class TauriPlatform implements Platform {
     payload.set(json, 4);
     payload.set(snapshot, 4 + json.byteLength);
     return invoke<BundleWritten | null>("bundle_save_as", payload);
+  }
+
+  bundleWeigh(spec: BundleSpec): Promise<BundleWeighed> {
+    // Ordinary JSON arguments, and the one bundle call that is: the snapshot is
+    // what forces the framed payload above, and this question does not need it.
+    return invoke<BundleWeighed>("bundle_weigh", { spec });
   }
 
   async bundleOpen(): Promise<BundleOpened | null> {

@@ -79,6 +79,7 @@ import { Mesh } from "@/app/mesh";
 import { formatInvite, inviteSearch, openingPlan, parseInvite } from "@/app/invite";
 import * as prefs from "@/app/prefs";
 import { dialAddress, freshBoardId, identityFor } from "@/app/sync";
+import { fileSize } from "@/lib/filesize";
 import { DEFAULT_ERASER_SIZE, type InkSurface, type WetStroke } from "@/lib/ink";
 import {
   canBeOpened,
@@ -2266,16 +2267,50 @@ async function boot(): Promise<void> {
    */
   const exportBoard = async (): Promise<void> => {
     try {
-      const written = await native.bundleSaveAs(
-        {
-          schemaVersion: boardSchemaVersion(board),
-          title: boardTitle(board),
-          assets: referencedAssets(board),
-        },
-        snapshot(board),
-      );
-      if (written === null) return;
-      const size = `${Math.max(1, Math.round(written.bytes / 1024 / 1024))} MB`;
+      const spec = {
+        schemaVersion: boardSchemaVersion(board),
+        title: boardTitle(board),
+        assets: referencedAssets(board),
+      };
+      const doc = snapshot(board);
+      /**
+       * What it will weigh, said before the dialog rather than after the file —
+       * T-291, Q-314.
+       *
+       * A board with three interviews on it is several gigabytes, and D-64
+       * measured why that cannot be fixed by compressing it: film and
+       * recordings are already compressed. So the size is a fact about the
+       * board rather than a fault in the format, and the honest thing to do
+       * with a fact somebody is about to spend two minutes and six gigabytes of
+       * disk on is to say it while they can still decide.
+       *
+       * It holds rather than fades, so it is also the progress line the export
+       * never had — a six-gigabyte write is a long time for a window to sit
+       * there saying nothing, which is the state `flash.hold` exists for.
+       *
+       * A weighing that fails is not an export that fails. The shell may be a
+       * browser, or the store may have gone; either way the export below is the
+       * thing being asked for, and it says what it wrote when it is done.
+       */
+      let held = false;
+      try {
+        const forecast = await native.bundleWeigh(spec);
+        flash.hold(`Exporting about ${fileSize(forecast.bytes + doc.byteLength)}…`);
+        held = true;
+      } catch (error) {
+        console.warn("[bundle] the board could not be weighed before export", error);
+      }
+      const written = await native.bundleSaveAs(spec, doc);
+      if (written === null) {
+        // A cancelled dialog says nothing, which now means taking down the line
+        // that said what it would have weighed — it is a sentence about a file
+        // that is not going to exist. Only ours: with no forecast up there is
+        // nothing of this export's on screen, and clearing anyway would take
+        // down whatever the last thing to happen had said.
+        if (held) flash.clear();
+        return;
+      }
+      const size = fileSize(written.bytes);
       if (written.missing.length > 0) {
         flash.say(
           `Board exported (${size}) — without ${written.missing.length} ` +

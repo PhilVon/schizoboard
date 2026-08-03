@@ -63,7 +63,7 @@
 
 use std::collections::HashSet;
 use std::fs::{self, File};
-use std::io::{self, BufReader, BufWriter, Read, Write};
+use std::io::{self, BufReader, BufWriter, Read, Seek, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -200,6 +200,22 @@ pub struct Written {
     pub bytes: u64,
 }
 
+/// What an export would weigh, asked before there is a file to measure — see
+/// [`weigh`].
+///
+/// `missing` is a count where [`Written`]'s is a list, and the difference is
+/// what each is for: this one is a number in a sentence somebody reads while
+/// deciding whether to export at all, and that one is the record of what a file
+/// on the disk turned out not to contain.
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct Weighed {
+    pub embedded: usize,
+    pub missing: usize,
+    /// The sum of the originals. See [`weigh`] for what it does not include.
+    pub bytes: u64,
+}
+
 /// What came out of a bundle. The snapshot is opaque here and stays opaque —
 /// what to *do* with it is the frontend's, and Q-111's.
 #[derive(Debug, Clone, Serialize)]
@@ -255,18 +271,15 @@ pub fn join_payload(json: &[u8], bytes: &[u8]) -> Vec<u8> {
 
 // --- writing ----------------------------------------------------------------
 
-/// Zip up a board.
+/// Which of the board's assets this disk can actually put in the file, and
+/// which it cannot.
 ///
-/// `dest` is a path this module validates nothing about, on the same standing
-/// as [`AssetStore::export`]: it comes from a native save dialog, never from
-/// the webview (ARCHITECTURE section 4.4).
-///
-/// Written through a temporary beside the destination and renamed, which is not
-/// the same politeness [`assets`] shows itself. There the address is a hash and
-/// a truncated file would be trusted forever; here it is that the destination
-/// is very often the *previous* export of the same board, and a disk filling up
-/// halfway through should not cost the user the copy they already had.
-pub fn write(store: &AssetStore, spec: &Spec, snapshot: &[u8], dest: &Path) -> Result<Written> {
+/// **One walk, used by both the weighing and the writing**, which is the whole
+/// reason it is a function. A forecast derived from a different list than the
+/// one the writer embeds is a forecast that can be wrong in the direction
+/// nobody would ever check — it would say six gigabytes and write four, and the
+/// person would conclude the number is decorative.
+fn plan(store: &AssetStore, spec: &Spec) -> (Vec<String>, Vec<String>) {
     let mut wanted: Vec<String> = spec.assets.clone();
     wanted.sort();
     wanted.dedup();
@@ -284,6 +297,60 @@ pub fn write(store: &AssetStore, spec: &Spec, snapshot: &[u8], dest: &Path) -> R
             missing.push(hash);
         }
     }
+    (embedded, missing)
+}
+
+/// What a bundle of this board would weigh, before a byte of it is written —
+/// T-291, Q-314.
+///
+/// ## Why this exists, given that [`Written`] already reports a size
+///
+/// Because that one arrives too late to be a decision. A board with three
+/// interviews on it is several gigabytes, and D-64 measured why that cannot be
+/// fixed by compressing it: film and recordings are already compressed, and
+/// deflating them spends the whole export re-proving it. So the size is a fact
+/// about the board rather than a fault in the format — and the honest thing to
+/// do with a fact somebody is about to spend two minutes and six gigabytes of
+/// disk on is to say it first.
+///
+/// **An upper bound, not a measurement.** It is the sum of the originals, and
+/// three things move the real file off it: the snapshot, which the caller adds
+/// because it is the caller that holds it; the zip's own per-entry overhead,
+/// which is tens of bytes; and deflate, which takes a little off the manifest
+/// and off any transcript or WAV in the board (see [`fill`]). Everything that
+/// makes a bundle big is stored byte for byte, so the bound is tight where it
+/// matters and the word for it on the way out is "about".
+pub fn weigh(store: &AssetStore, spec: &Spec) -> Weighed {
+    let (embedded, missing) = plan(store, spec);
+    // A file that vanished between this walk and the `metadata` call counts as
+    // nothing rather than failing the forecast. Weighing is not the export and
+    // must never be the thing that stops one: `write` walks the store again and
+    // reports what it actually found.
+    let bytes = embedded
+        .iter()
+        .filter_map(|hash| fs::metadata(store.original_path(hash)).ok())
+        .map(|meta| meta.len())
+        .sum();
+    Weighed {
+        embedded: embedded.len(),
+        missing: missing.len(),
+        bytes,
+    }
+}
+
+/// Zip up a board.
+///
+/// `dest` is a path this module validates nothing about, on the same standing
+/// as [`AssetStore::export`]: it comes from a native save dialog, never from
+/// the webview (ARCHITECTURE section 4.4).
+///
+/// Written through a temporary beside the destination and renamed, which is not
+/// the same politeness [`assets`] shows itself. There the address is a hash and
+/// a truncated file would be trusted forever; here it is that the destination
+/// is very often the *previous* export of the same board, and a disk filling up
+/// halfway through should not cost the user the copy they already had.
+pub fn write(store: &AssetStore, spec: &Spec, snapshot: &[u8], dest: &Path) -> Result<Written> {
+    let (embedded, missing) = plan(store, spec);
 
     let manifest = Manifest {
         format: FORMAT.to_string(),
@@ -339,11 +406,16 @@ fn fill(
     zip.write_all(snapshot)?;
 
     for hash in embedded {
-        zip.start_file(format!("{ASSET_PREFIX}{hash}"), stored)?;
         // The original, byte for byte — the same variant `asset_export` saves,
         // and the only one that can be named by this hash. Variants are a
         // local derivative and are rebuilt on the far side.
         let mut source = File::open(store.original_path(hash))?;
+        let method = if worth_deflating(&mut source)? {
+            deflated
+        } else {
+            stored
+        };
+        zip.start_file(format!("{ASSET_PREFIX}{hash}"), method)?;
         io::copy(&mut source, &mut zip)?;
     }
 
@@ -353,6 +425,57 @@ fn fill(
     let bytes = file.metadata()?.len();
     file.sync_all()?;
     Ok(bytes)
+}
+
+/// Whether deflating this asset would buy anything — T-291, D-64.
+///
+/// **Measured rather than assumed, and the measurement is on the board's own
+/// corpus.** Deflate at the level a zip writes takes a 46 MiB mp4 to 100.0% of
+/// itself, a photograph to 99.6%, an mp3 to 95% and two real PDFs to 99.7% and
+/// 89.4% — so everything that makes a bundle heavy is stored byte for byte, and
+/// the export does not spend a second per fifty megabytes proving it again.
+///
+/// Two kinds pay, and they are the two that were never compressed to begin
+/// with. A transcript is the common one: an hour of subtitle cues is about 100
+/// KiB and comes out at 7% of that, which is small beside the recording it
+/// belongs to but is most of the sidecar. A WAV is the one that is big as well
+/// as compressible, at 45% off.
+///
+/// Judged on the *bytes*, like everything else on this board: sixty-four of
+/// them, through the same [`assets::sniff_mime`] the ingest gate uses, so a
+/// `.txt` holding a zip is a zip here and gets stored. A file whose head says
+/// nothing is stored, which is what every asset did before this existed.
+///
+/// What this deliberately does not do is *sample* — deflate the first 64 KiB
+/// and decide from the ratio. That would also catch a PDF written without
+/// stream compression, which is the one real case a mime cannot see (D-64
+/// measured one at 98% off), at the cost of a millisecond and a half per asset
+/// on a board that may hold five hundred. The mime rule is what Q-314 chose and
+/// it is the one that costs nothing; the sample is the thing to reach for if a
+/// real board ever turns up with uncompressed documents on it.
+fn worth_deflating(source: &mut File) -> Result<bool> {
+    let mut head = [0u8; assets::SNIFF_BYTES];
+    let read = read_head(source, &mut head)?;
+    // Back to the start, or the entry would be written without its own first
+    // sixty-four bytes — a corruption that no test asserting *sizes* would ever
+    // see, and which would arrive on the far side as a file that will not open.
+    source.rewind()?;
+    Ok(match assets::sniff_mime(&head[..read]) {
+        Some(mime) => mime.starts_with("text/") || mime == "audio/wav",
+        None => false,
+    })
+}
+
+/// Fill `head` from the start of `source`, tolerating a short file.
+fn read_head(source: &mut File, head: &mut [u8]) -> Result<usize> {
+    let mut read = 0;
+    while read < head.len() {
+        match source.read(&mut head[read..])? {
+            0 => break,
+            n => read += n,
+        }
+    }
+    Ok(read)
 }
 
 /// A sibling of the destination, so the rename is within one directory and
@@ -617,6 +740,116 @@ mod tests {
         assert_eq!(opened.ingested.len(), 2);
         assert!(there.has(&photo.sha256));
         assert!(there.has(&other.sha256));
+    }
+
+    /// T-291, D-64. A transcript is deflated and a photograph is not, and the
+    /// difference is measured on the archive rather than asserted about the
+    /// code.
+    #[test]
+    fn compresses_what_is_worth_compressing_and_stores_the_rest() {
+        let dir = tempfile::tempdir().unwrap();
+        let here = store(&dir, "here");
+        // Text that repeats, which is what a transcript is: an hour of subtitle
+        // cues came out at 7% of itself on the real corpus.
+        let cues =
+            "1\n00:00:01,000 --> 00:00:04,000\nHe came up from Wexford on the Tuesday train.\n\n"
+                .repeat(200);
+        let transcript = here.ingest_bytes(cues.as_bytes(), None).unwrap();
+        let photo = here.ingest_bytes(PIXEL, None).unwrap();
+
+        let dest = dir.path().join("board.schizo");
+        write(
+            &here,
+            &spec(vec![transcript.sha256.clone(), photo.sha256.clone()]),
+            b"doc",
+            &dest,
+        )
+        .unwrap();
+
+        let mut zip = ZipArchive::new(BufReader::new(File::open(&dest).unwrap())).unwrap();
+        let written = zip
+            .by_name(&format!("{ASSET_PREFIX}{}", transcript.sha256))
+            .unwrap();
+        assert_eq!(written.compression(), CompressionMethod::Deflated);
+        // And it actually paid — the reason the rule exists is the ratio, not
+        // the method.
+        assert!(
+            written.compressed_size() < written.size() / 4,
+            "{} of {}",
+            written.compressed_size(),
+            written.size()
+        );
+        drop(written);
+
+        let stored = zip
+            .by_name(&format!("{ASSET_PREFIX}{}", photo.sha256))
+            .unwrap();
+        // A PNG is already compressed. Deflating it spends the export proving
+        // that and the entry comes out the size it started, or a shade larger.
+        assert_eq!(stored.compression(), CompressionMethod::Stored);
+        assert_eq!(stored.compressed_size(), stored.size());
+    }
+
+    /// The half of the compression rule that is easy to lose: the entry has to
+    /// still be the file.
+    #[test]
+    fn a_deflated_asset_is_the_same_bytes_on_the_far_side() {
+        let dir = tempfile::tempdir().unwrap();
+        let here = store(&dir, "here");
+        let there = store(&dir, "there");
+        // Sixty-four bytes of it are read to decide the method, and a `rewind`
+        // that was not there would drop exactly those from the entry — which
+        // reading back is the only thing that catches, because the hash is
+        // computed from the bytes rather than from the name.
+        let words = "the same words, twice over, and again\n".repeat(50);
+        let transcript = here.ingest_bytes(words.as_bytes(), None).unwrap();
+
+        let dest = dir.path().join("board.schizo");
+        write(&here, &spec(vec![transcript.sha256.clone()]), b"doc", &dest).unwrap();
+        let opened = read(&there, &dest).unwrap();
+
+        assert_eq!(opened.ingested, vec![transcript.sha256.clone()]);
+        assert!(opened.missing.is_empty());
+        assert!(there.has(&transcript.sha256));
+    }
+
+    /// T-291, Q-314: what it will weigh, before there is a file to measure.
+    #[test]
+    fn weighs_a_board_before_it_is_written() {
+        let dir = tempfile::tempdir().unwrap();
+        let here = store(&dir, "here");
+        let photo = here.ingest_bytes(PIXEL, None).unwrap();
+        let other = here.ingest_bytes(b"a second file entirely", None).unwrap();
+
+        let absent = "b".repeat(64);
+        let forecast = weigh(
+            &here,
+            &spec(vec![
+                photo.sha256.clone(),
+                other.sha256.clone(),
+                absent.clone(),
+                // The same photograph twice is one entry, because `plan` sorts
+                // and dedups exactly as the writer does.
+                photo.sha256.clone(),
+            ]),
+        );
+        assert_eq!(forecast.embedded, 2);
+        assert_eq!(forecast.missing, 1);
+        assert_eq!(forecast.bytes, photo.size + other.size);
+
+        // And it is the bound it claims to be: the file that comes out carries
+        // the snapshot and the zip's own overhead on top, and nothing in it
+        // that was not weighed.
+        let dest = dir.path().join("board.schizo");
+        let written = write(
+            &here,
+            &spec(vec![photo.sha256.clone(), other.sha256.clone(), absent]),
+            b"opaque document state",
+            &dest,
+        )
+        .unwrap();
+        assert_eq!(written.embedded, forecast.embedded);
+        assert_eq!(written.missing.len(), forecast.missing);
     }
 
     /// The invariant that gives the format its one sentence in DATA-MODEL:
