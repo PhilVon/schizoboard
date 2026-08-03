@@ -236,7 +236,7 @@ describe("the writing on a compact cassette's label", () => {
     // Also moved up on T-338 and asserted for every kind there. Kept here as
     // well, because this is where the number was measured and this test is what
     // a change to it would be checked against.
-    const line = declarations(".item-case").get("--case-line");
+    const line = declarations(".item").get("--hand-line");
     expect(Number.parseFloat(line!)).toBeGreaterThanOrEqual(1.32);
   });
 

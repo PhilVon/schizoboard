@@ -614,6 +614,116 @@ export function fitLabel(text: string, box: number, size: number): number {
 }
 
 /**
+ * Rough advance width of the board's **hand**, as a fraction of its own size —
+ * `fitLabel`'s constant for the other face.
+ *
+ * Measured on Patrick Hand in the running webview rather than estimated, because
+ * the estimate that was already in the codebase (`NOTE_CHAR_WIDTH`, 0.482 at a
+ * 17 px body) is a different question — a note's *wrap*, where being wrong costs
+ * a line of blank paper — and this one decides whether an address survives.
+ *
+ * | what was written | advance |
+ * |---|---|
+ * | `abcdefghijklmnopqrstuvwxyz` | 0.402 |
+ * | a URL | 0.425 |
+ * | ordinary prose | 0.362 |
+ * | `ABCDEFGHIJKLMNOPQRSTUVWXYZ` | 0.491 |
+ *
+ * **0.5, which is above every one of them**, and the asymmetry is deliberate:
+ * being high undershoots the size and leaves a little air, being low clips the
+ * thing this exists to keep. `fitLabel` states the same rule for the typed face.
+ * `writeHand` at full detail sets each glyph as its own inline-block and lays
+ * out slightly *tighter* than one text node, so the probe erred the safe way
+ * too.
+ */
+const HAND_ADVANCE = 0.5;
+
+/**
+ * How small the hand will go before it gives up and truncates.
+ *
+ * Lower than `LABEL_FLOOR`, and the difference is what the two surfaces are for.
+ * A folder's tab is read across a room, so a tab nobody can read from there has
+ * failed at its job. A caption is read by leaning in — on this board, by zooming
+ * — and a caption that is small is still a caption, where a caption with the end
+ * missing is a different sentence.
+ */
+const WRITING_FLOOR = 0.4;
+
+/**
+ * The line box the board's hand needs, as a multiple of its own size — the same
+ * number `items.css` declares as `--hand-line`.
+ *
+ * T-306 measured it: `1.15` is tighter than Patrick Hand descends, so every `g`,
+ * `y` and `j` met the `overflow: hidden` its label carries and was shaved off
+ * flat. `1.32` is where the ink stops meeting the edge.
+ *
+ * Here as well as in the stylesheet because `fitWriting` has to know how tall a
+ * line is to know how many fit in a box, and CSS cannot hand a number to
+ * arithmetic. `tests/case-fitting-css.test.ts` asserts the two agree — the same
+ * arrangement `A4_UNITS` has with the folder's percentages, and for the same
+ * reason: one writer, one copy, and a test holding them together.
+ */
+export const HAND_LINE = 1.32;
+
+/**
+ * The size a **caption** has to come down to for all of `text` to fit a box
+ * `measure` wide and `height` tall — the second of T-338's two mechanisms.
+ *
+ * ## Why this exists beside `fitLabel` rather than replacing it
+ *
+ * They answer the same question for text that fails differently. A label may be
+ * shortened: nothing depends on the end of a filename, and a person writing past
+ * the end of a tab expects the tab to run out. **A printed still's caption may
+ * not.** That object exists *because* the film could not be brought onto the
+ * board, so the address is the whole of what it owes anybody — and
+ * `https://www.youtube.com/watch?v=dQw4w9WgXcQ` ellipsised after the host has
+ * lost the only part that identifies anything. So this one shrinks where
+ * `fitLabel` would eventually cut.
+ *
+ * ## Whole lines, and why it is a search rather than a formula
+ *
+ * A box does not hold a fraction of a line — the leftover draws a line sliced
+ * through, which is the defect the other half of T-338 is about. So the answer
+ * is always `height / (n * line)` for some whole `n`, and the only question is
+ * which `n`. Capacity grows as roughly `n²` (more lines, each holding more
+ * characters at the smaller size), so the smallest `n` that fits is the largest
+ * writing, and walking up from one is both correct and short.
+ *
+ * The rows a string needs are counted the way `noteSizeFor` counts them, hard
+ * line breaks included — a caption is a title and an address on two lines, and
+ * treating it as one run would say it fits when the break makes it not.
+ *
+ * Never larger than `size`: a short caption does not get big writing, because
+ * the band it sits in is a physical part of the print.
+ */
+export function fitWriting(
+  text: string,
+  measure: number,
+  height: number,
+  line: number,
+  size: number,
+): number {
+  const rows = text.split("\n");
+  if (text.length === 0 || measure <= 0 || height <= 0 || size <= 0) return size;
+
+  const floor = size * WRITING_FLOOR;
+  // Past this the writing is under the floor whatever it buys, so there is
+  // nothing further to try — and the caller gets the floor, at which the box
+  // clips and says so with an ellipsis.
+  const most = Math.max(1, Math.floor(height / (floor * line)));
+
+  for (let n = 1; n <= most; n++) {
+    const at = Math.min(size, height / (n * line));
+    if (at < floor) break;
+    const perLine = Math.max(1, Math.floor(measure / (at * HAND_ADVANCE)));
+    let needed = 0;
+    for (const row of rows) needed += Math.max(1, Math.ceil(row.length / perLine));
+    if (needed <= n) return at;
+  }
+  return floor;
+}
+
+/**
  * What goes on the tab, typed, as the case number.
  *
  * The filename without its extension. The extension is what a file *is*, and the

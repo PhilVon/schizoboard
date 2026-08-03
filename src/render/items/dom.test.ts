@@ -3219,3 +3219,64 @@ describe("a link card", () => {
     expect(card.querySelector(".card-shot")!.hasAttribute("src")).toBe(false);
   });
 });
+
+/**
+ * A printed still's caption is written smaller rather than losing its end —
+ * T-338's second mechanism, at the seam where the view asks for it.
+ *
+ * `lib/objects.test.ts` covers the arithmetic. What is here is the wiring, and
+ * the wiring is where it would silently stop working: the size depends on the
+ * *text*, and `transform` — the only place a caption's size was ever written —
+ * never sees the text change.
+ */
+describe("a caption that will not fit is written smaller", () => {
+  const ADDRESS = "https://www.youtube.com/watch?v=dQw4w9WgXcQ";
+  const LONG = `Rick Astley - Never Gonna Give You Up (Official Video) (4K Remaster)\n${ADDRESS}`;
+
+  function captionSize(text: string): number {
+    document.body.innerHTML = "";
+    host = document.createElement("div");
+    document.body.append(host);
+    scene = new Scene();
+    dirty = new DirtySets();
+    const made = new DomItemLayer(host, () => waiting(), () => NO_FACTS);
+    add("a", { text }, { w: 330, h: 300 });
+    made.sync(scene, dirty, null);
+    const cap = host.querySelector(".pol-caption") as HTMLElement;
+    return Number.parseFloat(cap.style.fontSize);
+  }
+
+  it("leaves a short caption at the size the band was cut for", () => {
+    expect(captionSize("A gull")).toBeCloseTo(330 * 0.055, 1);
+  });
+
+  it("comes down for one that would not fit", () => {
+    expect(captionSize(LONG)).toBeLessThan(330 * 0.055);
+  });
+
+  it("resizes when the words change and not only when the item does", () => {
+    // The failure this test exists for. A caption's size is a function of its
+    // text, and `transform` — where every other per-width number is written —
+    // runs on a resize. Type into a caption and the width has not moved.
+    document.body.innerHTML = "";
+    host = document.createElement("div");
+    document.body.append(host);
+    scene = new Scene();
+    dirty = new DirtySets();
+    const layer_ = new DomItemLayer(host, () => waiting(), () => NO_FACTS);
+    add("a", { text: "A gull" }, { w: 330, h: 300 });
+    layer_.sync(scene, dirty, null);
+    const cap = host.querySelector(".pol-caption") as HTMLElement;
+    const small = Number.parseFloat(cap.style.fontSize);
+
+    add("a", { text: LONG }, { w: 330, h: 300 });
+    layer_.sync(scene, dirty, null);
+    expect(Number.parseFloat(cap.style.fontSize)).toBeLessThan(small);
+  });
+
+  it("never writes the caption bigger than the band was cut for", () => {
+    // The band is a physical part of the print, so a short caption does not get
+    // big writing — only a long one gets small writing.
+    expect(captionSize("x")).toBeLessThanOrEqual(330 * 0.055 + 0.01);
+  });
+});

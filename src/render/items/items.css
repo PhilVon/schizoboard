@@ -459,7 +459,10 @@
   align-items: center;
   overflow: hidden;
   font-family: "Patrick Hand", "Segoe Script", "Bradley Hand", cursive;
-  line-height: 1.15;
+  /* The hand's own line box, shared with the labels — see `--hand-line`. This
+     was 1.15 and shaved the descenders off every caption on the board, which is
+     T-306's finding kept alive in the one place that task did not look. */
+  line-height: var(--hand-line);
   color: #3f3428;
   white-space: pre-wrap;
 }
@@ -1562,7 +1565,7 @@ textarea.item-field::-webkit-scrollbar {
  *
  * ## Two numbers, and both were measured
  *
- * `--case-line` is the line box the board's hand actually needs. T-306 measured
+ * `--hand-line` is the line box the board's hand actually needs. T-306 measured
  * it: `1.15` is tighter than Patrick Hand descends, so every `g`, `y` and `j`
  * was shaved off flat by the `overflow: hidden` these carry, and `1.32` is where
  * the ink stops meeting the edge. That fix was written as
@@ -1571,7 +1574,7 @@ textarea.item-field::-webkit-scrollbar {
  * this section is really correcting: **a rule that was applied to the object in
  * front of somebody rather than to every object it was true of.**
  *
- * `--case-lines` is how many **whole** lines the label can afford. Whole is the
+ * `--hand-lines` is how many **whole** lines the label can afford. Whole is the
  * whole point: a box holding one and two thirds of a line draws the second one
  * cut through the middle, top and bottom at once, which reads as a rendering
  * fault where an ellipsis reads as a label that ran out of room. Measured on the
@@ -1600,8 +1603,21 @@ textarea.item-field::-webkit-scrollbar {
  * being shorter than the lines in it. This makes the element hold a whole number
  * of lines by construction, whatever the grid does around it.
  */
+/*
+ * The hand's line box, on `.item` rather than on `.item-case`, because it is a
+ * fact about the FACE and every object that writes in it has the same
+ * descenders. `.pol-caption` is the other one, and it kept `1.15` — and so kept
+ * T-306's defect — for exactly the reason the tape did: the fix was written
+ * where the bug was noticed. `lib/objects.ts`'s `HAND_LINE` is the same number
+ * on the other side of the seam, because `fitWriting` has to know how tall a
+ * line is to know how many fit; `case-fitting-css.test.ts` holds the two
+ * together.
+ */
+.item {
+  --hand-line: 1.32;
+}
+
 .item-case {
-  --case-line: 1.32;
   --case-title-lines: 2;
   --case-caption-lines: 1;
 }
@@ -1609,7 +1625,7 @@ textarea.item-field::-webkit-scrollbar {
 .case-title,
 .case-caption:not(.item-field) {
   font-family: "Patrick Hand", "Segoe Script", "Bradley Hand", cursive;
-  line-height: var(--case-line);
+  line-height: var(--hand-line);
   white-space: pre-wrap;
   display: -webkit-box;
   -webkit-box-orient: vertical;
@@ -1621,7 +1637,7 @@ textarea.item-field::-webkit-scrollbar {
   grid-column: 1 / -1;
   color: #2f2820;
   -webkit-line-clamp: var(--case-title-lines);
-  max-height: calc(var(--case-title-lines) * var(--case-line) * 1em);
+  max-height: calc(var(--case-title-lines) * var(--hand-line) * 1em);
 }
 
 /* Whatever the person looking at it wrote on the object. People write on
@@ -1630,7 +1646,7 @@ textarea.item-field::-webkit-scrollbar {
   grid-row: 3;
   grid-column: 1 / -1;
   font-family: "Patrick Hand", "Segoe Script", "Bradley Hand", cursive;
-  line-height: var(--case-line);
+  line-height: var(--hand-line);
   color: #3f3428;
   white-space: pre-wrap;
   overflow: hidden;
@@ -1643,7 +1659,7 @@ textarea.item-field::-webkit-scrollbar {
  */
 .case-caption:not(.item-field) {
   -webkit-line-clamp: var(--case-caption-lines);
-  max-height: calc(var(--case-caption-lines) * var(--case-line) * 1em);
+  max-height: calc(var(--case-caption-lines) * var(--hand-line) * 1em);
 }
 
 /*

@@ -27,6 +27,8 @@
 
 import { describe, expect, it } from "vitest";
 
+import { HAND_LINE } from "../src/lib/objects";
+
 import { declarations } from "./css-declarations";
 
 /** Every object with a file behind it. A new one belongs in this list. */
@@ -58,7 +60,7 @@ describe("the rule is declared once, for every object", () => {
       [title, "title"],
       [caption, "caption"],
     ] as const) {
-      expect(rule.get("line-height"), `${which}'s line box`).toBe("var(--case-line)");
+      expect(rule.get("line-height"), `${which}'s line box`).toBe("var(--hand-line)");
       expect(rule.get("display"), `${which}'s clamp`).toBe("-webkit-box");
       expect(rule.get("-webkit-box-orient"), `${which}'s clamp`).toBe("vertical");
     }
@@ -70,8 +72,29 @@ describe("the rule is declared once, for every object", () => {
   });
 
   it("sets the hand on a line its descenders fit inside", () => {
-    // T-306's measurement, now true of every object rather than of a cassette.
-    expect(Number.parseFloat(base.get("--case-line")!)).toBeGreaterThanOrEqual(1.32);
+    // T-306's measurement, now true of every object that writes in the hand
+    // rather than of a cassette — so it is declared on `.item`, not on
+    // `.item-case`, and a polaroid's caption reads it too.
+    const line = declarations(".item").get("--hand-line");
+    expect(Number.parseFloat(line!)).toBeGreaterThanOrEqual(1.32);
+    expect(declarations(".item-case").has("--hand-line"), "scoped to the cases again").toBe(false);
+  });
+
+  /**
+   * And the same number on the other side of the seam. `fitWriting` has to know
+   * how tall a line is to know how many fit in a caption's band, and CSS cannot
+   * hand a number to arithmetic — so it exists twice and this is what stops the
+   * two drifting. The same arrangement `A4_UNITS` has with the folder's
+   * percentages.
+   */
+  it("agrees with the line box the arithmetic uses", () => {
+    expect(Number.parseFloat(declarations(".item").get("--hand-line")!)).toBe(HAND_LINE);
+  });
+
+  it("writes a polaroid's caption in the same line box as a label", () => {
+    // The place T-306 did not look. `.pol-caption` kept 1.15 and kept the shaved
+    // descenders, for the same reason the tape did.
+    expect(declarations(".pol-caption").get("line-height")).toBe("var(--hand-line)");
   });
 });
 
@@ -103,7 +126,7 @@ describe("every label holds a whole number of lines", () => {
       // N line boxes, in `em`, so it is exactly the lines the clamp allows and
       // cannot drift from them.
       expect(max).toContain(`var(--case-${which}-lines)`);
-      expect(max).toContain("var(--case-line)");
+      expect(max).toContain("var(--hand-line)");
       expect(max).toContain("1em");
     }
   });

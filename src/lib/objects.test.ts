@@ -7,6 +7,8 @@ import {
   carriesItsOwnName,
   CARD_UNITS,
   fileNoun,
+  fitWriting,
+  HAND_LINE,
   isCaseObject,
   siteLabel,
   caseNumber,
@@ -428,5 +430,67 @@ describe("the reference a card cites its source by", () => {
     // Zero is a measurement — the opening frame is a real place on a tape, and
     // the same distinction runtimeLabel already draws for a spine.
     expect(timeReference("interview.mp4", hash, 0)).toBe("interview.mp4 0:00");
+  });
+});
+
+describe("writing that has to fit its object", () => {
+  // The band a printed still writes in, as fractions of a 330-unit polaroid —
+  // `lib/polaroid.ts`'s CAPTION_MEASURE, CAPTION_HEIGHT and CAPTION_SIZE.
+  const W = 330;
+  const measure = W * 0.84;
+  const height = W * 0.1;
+  const nominal = W * 0.055;
+  const fit = (text: string): number => fitWriting(text, measure, height, HAND_LINE, nominal);
+
+  it("leaves a caption that already fits at the size the band was cut for", () => {
+    // A short caption does not get BIG writing either — the band is a physical
+    // part of the print, and the size it was cut for is the ceiling.
+    expect(fit("A gull")).toBe(nominal);
+  });
+
+  it("writes a caption smaller rather than losing the end of it", () => {
+    // The case this exists for: T-290's printed still, whose caption is a title
+    // and the address of the thing that could not be brought onto the board.
+    const caption =
+      "Rick Astley - Never Gonna Give You Up (Official Video) (4K Remaster)\nhttps://www.youtube.com/watch?v=dQw4w9WgXcQ";
+    const size = fit(caption);
+    expect(size).toBeLessThan(nominal);
+    // And it actually fits at that size, which is the whole claim. Counted the
+    // way the box counts: whole lines, hard breaks honoured.
+    const perLine = Math.floor(measure / (size * 0.5));
+    const rows = caption
+      .split("\n")
+      .reduce((n, line) => n + Math.max(1, Math.ceil(line.length / perLine)), 0);
+    expect(rows * size * HAND_LINE).toBeLessThanOrEqual(height);
+  });
+
+  it("counts a hard line break as a line", () => {
+    // A caption is a title and an address on two lines. Treating it as one run
+    // says it fits when the break is what makes it not.
+    const oneRun = "a".repeat(40);
+    const broken = `${"a".repeat(20)}\n${"a".repeat(20)}`;
+    expect(fit(broken)).toBeLessThanOrEqual(fit(oneRun));
+  });
+
+  it("stops at a floor rather than writing something nobody can read", () => {
+    // A person with a long name and a small tab writes smaller, and then stops.
+    // Past the floor the box clips and the ellipsis says so, which is honest
+    // where writing at a fiftieth of the size would not be.
+    const huge = "x".repeat(5000);
+    expect(fit(huge)).toBeGreaterThan(nominal * 0.3);
+  });
+
+  it("never returns a size that leaves a fraction of a line showing", () => {
+    // The other half of T-338: a box holding one and two thirds of a line draws
+    // the second one cut through. Every answer here is height over a WHOLE
+    // number of lines, or the ceiling, or the floor.
+    for (const n of [1, 12, 40, 80, 160, 400]) {
+      const size = fit("y".repeat(n));
+      const lines = height / (size * HAND_LINE);
+      const whole = Math.abs(lines - Math.round(lines)) < 1e-9;
+      expect(whole || size === nominal || size < nominal * 0.45, `${n} chars gave ${size}`).toBe(
+        true,
+      );
+    }
   });
 });

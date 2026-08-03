@@ -41,6 +41,29 @@ export const CAPTION_BOTTOM = 0.035;
 export const CAPTION_HEIGHT = 0.1;
 
 /**
+ * The size a caption is written at when it fits — a fraction of the width, like
+ * everything else in this band.
+ *
+ * A ceiling since T-338 rather than the answer: `fitWriting` comes down from it
+ * when the words need more room than the band has, because a printed still's
+ * address may not be shortened. It is never exceeded — a short caption does not
+ * get big writing, since the band is a physical part of the print.
+ */
+export const CAPTION_SIZE = 0.055;
+
+/**
+ * How wide the caption's line is, as a fraction of the item's width.
+ *
+ * `items.css` writes it as `left: 8%; right: 8%` because that is the only form a
+ * stylesheet can hold it in; this is the same measure as a number, for the
+ * arithmetic that decides how much text fits on a line. The stylesheet is the
+ * copy and this is the writer — the arrangement `A4_UNITS` already has with the
+ * folder's percentages, and `tests/polaroid-caption-css.test.ts` holds them
+ * together.
+ */
+export const CAPTION_MEASURE = 0.84;
+
+/**
  * "Polaroid at the paste point, at natural aspect ratio, capped to a
  * comfortable size" (DESIGN section 3.1).
  *

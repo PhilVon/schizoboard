@@ -40,12 +40,16 @@ import type { InkSample } from "@/lib/ink";
 import {
   CAPTION_BOTTOM,
   CAPTION_HEIGHT,
+  CAPTION_MEASURE,
+  CAPTION_SIZE,
   FRAME_BOTTOM,
   FRAME_SIDE,
 } from "@/lib/polaroid";
 import {
   addressLabel,
   caseNumber,
+  fitWriting,
+  HAND_LINE,
   fitLabel,
   PAGE_TEXT_SIZE,
   folderBulk,
@@ -1036,6 +1040,10 @@ class PolaroidView implements View {
     // has not changed on any of them.
     writeHand(this.caption, cold.text, cold.seed, plain);
     this.caption.classList.toggle("is-empty", cold.text.length === 0);
+    // What is written decides how big it is written (T-338), so this cannot wait
+    // for a resize — a caption typed into, or an item whose text arrived from a
+    // peer, changes the answer with the width standing still.
+    if (this.framedFor > 0) this.sizeCaption(this.framedFor);
     // Inline, so `items.css` cannot reach it — see the same four lines in
     // `PaperView.bind`.
     this.el.style.filter = plain ? "none" : tintOf(cold);
@@ -1185,7 +1193,6 @@ class PolaroidView implements View {
       const side = w * FRAME_SIDE;
       const bottom = w * FRAME_BOTTOM;
       this.frame.style.padding = `${side.toFixed(1)}px ${side.toFixed(1)}px ${bottom.toFixed(1)}px`;
-      this.caption.style.fontSize = `${Math.max(9, w * 0.055).toFixed(1)}px`;
       // The caption's *box*, for the reason set out above `CAPTION_BOTTOM`: it
       // sits in the bottom band, the band is a fraction of the width, and the
       // stylesheet could only have said so as a percentage of the height
@@ -1193,10 +1200,7 @@ class PolaroidView implements View {
       // has to stay inside.
       this.caption.style.bottom = `${(w * CAPTION_BOTTOM).toFixed(1)}px`;
       this.caption.style.height = `${(w * CAPTION_HEIGHT).toFixed(1)}px`;
-      // The caption's size and box are written per width rather than declared,
-      // so the field has to be told the same numbers or the caption moves and
-      // changes size the moment you click into it.
-      if (this.field) this.sizeField(this.field);
+      this.sizeCaption(w);
     }
     writeTransform(this.el, x, y, rot, w, h, lift);
     // Elevation before the offset: swapping sprites invalidates the written
@@ -1248,6 +1252,51 @@ class PolaroidView implements View {
   hold(_audio: HTMLAudioElement | null): void {}
 
   setReeled(_reeled: number): void {}
+
+  /**
+   * How big the caption is written — **which depends on what it says** (T-338).
+   *
+   * The other captions on this board may be shortened; this one may not. A
+   * printed still exists *because* the film could not be brought onto the board,
+   * so the address written under it is the whole of what it owes anybody, and
+   * `https://www.youtube.com/watch?v=dQw4w9WgXcQ` ellipsised after the host has
+   * lost the only part that identifies anything. Phil's rule, and the right way
+   * round: do not grow the object to fit the writing, shrink the writing to fit
+   * the object.
+   *
+   * So the size is a function of the text and not of the width alone, which is
+   * why this is called from `bind` as well — a caption somebody types into is a
+   * caption whose size may have to change, and `transform` never sees that.
+   * `fitWriting` does the arithmetic and says why it is a search rather than a
+   * formula.
+   *
+   * **The nine-pixel floor that used to sit under this is gone**, and removing
+   * it is part of the fix rather than tidying beside it. It was an absolute
+   * length in a file where "a length is a board unit" — the rule the selection
+   * outline was moved out of `items.css` for — so it meant one thing at 20% zoom
+   * and another at 400%. Worse, it could *override the fit*: on a narrow print
+   * the arithmetic would answer 8.3 and this would write 9, which is the caption
+   * not fitting again by way of the code that exists to make it fit.
+   * `fitWriting` has a floor of its own and it is the right kind, a proportion
+   * of the size the band was cut for.
+   */
+  private sizeCaption(w: number): void {
+    const nominal = w * CAPTION_SIZE;
+    const size = fitWriting(
+      this.boundCold?.text ?? "",
+      // The box `items.css` gives it — 8% in from each side of the frame —
+      // and the band `CAPTION_HEIGHT` cuts out of the bottom border.
+      w * CAPTION_MEASURE,
+      w * CAPTION_HEIGHT,
+      HAND_LINE,
+      nominal,
+    );
+    this.caption.style.fontSize = `${size.toFixed(2)}px`;
+    // The caption's size and box are written per width rather than declared, so
+    // the field has to be told the same numbers or the caption moves and changes
+    // size the moment you click into it.
+    if (this.field) this.sizeField(this.field);
+  }
 
   /**
    * Give the editor the box the static caption has.
