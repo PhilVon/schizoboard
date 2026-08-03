@@ -50,6 +50,27 @@ export function assetKind(mime: string): AssetKind {
   if (mime.startsWith("video/")) return "video";
   if (mime.startsWith("audio/")) return "audio";
   if (mime === "application/pdf") return "document";
+  // **A web page is not a document on this board** — D-66, Q-331. Above the
+  // prefix below, and it is the one exception to it.
+  //
+  // The sheet can set six things: a heading, a list item, a quotation, code,
+  // bold and italic. Those cover an article completely and cover a *page* not
+  // at all, because a page is a layout — nav, sidebar, columns, tables — and
+  // none of the six is a column. So a saved page read onto paper would be its
+  // nav bar and its footer with the writing in between, which is the file's
+  // packaging set in the board's own hand: the exact failure `cues.rs` and
+  // `rtf.rs` were each written to stop. And nothing can tell the two shapes
+  // apart, the way a transcript can be asked whether every block is a cue.
+  //
+  // Here rather than at the sniffer, because this is "the one place a mime
+  // becomes a kind" and refusing is a *judgement about the board*, not about
+  // the bytes. `text/html` on the record stays true, so the day this board
+  // grows a sheet that can set a layout, this line is what changes.
+  //
+  // Nothing about HTML on the **clipboard** is affected. That arrives as a
+  // flavour on the transfer and never goes near a mime or a store — it is how
+  // T-97's SourceURL, T-290's printed stills and T-342's cards all work.
+  if (mime === "text/html") return "unknown";
   // The other kind of document, and the same object on the wall (Q-255). The
   // shell has one mime for all of it — a `.md`, a `.csv` and a `.log` are told
   // apart by their names and a name is not evidence the store keeps — so this

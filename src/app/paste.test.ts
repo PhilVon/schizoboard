@@ -1676,6 +1676,42 @@ describe("a transcript sitting next to a recording", () => {
  * itself. The mime is still sniffed and still outranks the name; what the name
  * settles is how text the bytes already agreed was text should be read.
  */
+describe("a web page dragged in from disk", () => {
+  // D-66, Q-331. The sheet can set six things and a page is a layout, so an
+  // `.html` file is the one format T-322 names that gets no reader at all.
+  // What the bytes of one look like is asserted in Rust, where the sniffer
+  // lives: this mock shell answers a *path* with a mime and never reads a file,
+  // so a fixture here would only be agreeing with itself.
+
+  it("is refused for being a page and not for being a drop", async () => {
+    // The state this replaces, and why refusing is an improvement rather than a
+    // removal: an html file is ASCII, so before D-66 the text arm claimed it and
+    // it became a manilla case file whose page was set with its own tags. The
+    // control is the text file beside it — same route, same gesture, and it
+    // still lands — so what is being asserted is the mime and nothing else.
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    native.mimeFor.set("C:/saved.html", "text/html");
+    native.mimeFor.set("C:/notes.txt", "text/plain");
+    native.drop(["C:/saved.html", "C:/notes.txt"], 0, 0);
+    await settle();
+    expect(itemsOnBoard().length).toBe(1);
+    expect(said).toEqual([
+      "Nothing here can hold C:/saved.html — it is a web page, and this board sets writing on paper rather than layouts",
+    ]);
+    warn.mockRestore();
+  });
+
+  it("does not touch html arriving on the clipboard", async () => {
+    // AC-969, and the distinction that would be expensive to rediscover: a
+    // browser puts html on the transfer as a *flavour* beside the plain text,
+    // and it never goes near a mime or a store. T-97, T-290 and T-342 all read
+    // it from there.
+    await firePaste({ html: '<p>He came up from <b>Wexford</b>.</p>', text: "He came up from Wexford." });
+    await settle();
+    expect(itemsOnBoard().length).toBe(1);
+  });
+});
+
 describe("a markdown file", () => {
   function markdownOf(sha256: string): boolean {
     const map = board.assets.get(sha256);

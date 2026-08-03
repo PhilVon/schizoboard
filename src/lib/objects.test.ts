@@ -42,6 +42,22 @@ describe("what a file is", () => {
     // And it is still a face chosen from a mime rather than a second list: the
     // thing that decides is the same call every other object goes through.
     expect(carriesItsOwnName(assetKind("text/plain"))).toBe(true);
+    // Rich text is text with its own formatting, and it is a folder like the
+    // rest (T-350).
+    expect(assetKind("text/rtf")).toBe("document");
+  });
+
+  /** D-66, Q-331. The one exception to the prefix above. */
+  it("refuses a web page, because a page is a layout and the sheet is not", () => {
+    expect(assetKind("text/html")).toBe("unknown");
+    // Which is the *whole* of the refusal: nothing else on this board treats
+    // `text/html` specially, so the day it grows a sheet that can set a layout
+    // this expectation is the one that changes.
+    expect(carriesItsOwnName(assetKind("text/html"))).toBe(false);
+    // And it is html the *file* that is refused. Every other sort of text is
+    // untouched, including the two that look closest to it.
+    expect(assetKind("text/xml")).toBe("document");
+    expect(assetKind("text/plain")).toBe("document");
   });
 
   /** T-274, Q-257. */

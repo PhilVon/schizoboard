@@ -588,7 +588,16 @@ export class Paste {
     // extension is what somebody typed, and this gate is the one place the
     // board decides what it is holding.
     if (kind === "unknown") {
-      this.refuse(what, "is not a picture, a film, a recording or a document");
+      // A web page gets its own sentence, because it is the one file refused
+      // here for a reason that is about *this board* rather than about the
+      // bytes (D-66) — and "is not a document" would be a puzzling thing to
+      // read about a file that plainly is one.
+      this.refuse(
+        what,
+        meta.mime === "text/html"
+          ? "is a web page, and this board sets writing on paper rather than layouts"
+          : "is not a picture, a film, a recording or a document",
+      );
       return;
     }
     // A picture is the one kind judged on its box, because a picture that will

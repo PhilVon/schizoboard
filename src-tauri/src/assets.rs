@@ -1162,6 +1162,24 @@ pub fn sniff_mime(bytes: &[u8]) -> Option<&'static str> {
     if crate::rtf::is_rtf(bytes) {
         return Some("text/rtf");
     }
+    // A web page, and it is named here so that it can be **refused** — D-66.
+    // The sheet has six roles and a page is a layout, so an `.html` is the one
+    // format T-322 names that gets no extractor: `objects.ts`'s `assetKind`
+    // declines to call `text/html` a document, and `paste.ts` puts no item on
+    // the wall.
+    //
+    // Which is why the answer is a mime and not `None`. Both routes end in the
+    // same refusal, but `None` falls through to `application/octet-stream` and
+    // the record can then no longer tell a saved page from a `.bin` — so the
+    // person could only be told the generic sentence, and a build that changed
+    // its mind later would have nothing to change its mind about.
+    //
+    // Above the text arm for the reason the RTF one is: an html file is ASCII,
+    // so `reads_as_text` claims it and it becomes a manilla folder holding its
+    // own angle brackets.
+    if is_html(&bytes[..bytes.len().min(SNIFF_BYTES)]) {
+        return Some("text/html");
+    }
     // **Last, and it could not be anywhere else.** Every other arm here matches
     // a signature; text has none, so the only honest form the question can take
     // is *what is left*. Q-255 chose this over recognising a document by its
@@ -1194,6 +1212,58 @@ fn find(haystack: &[u8], needle: &[u8]) -> Option<usize> {
     haystack
         .windows(needle.len())
         .position(|window| window == needle)
+}
+
+/// Whether these bytes declare themselves an HTML *document* — T-355, D-66.
+///
+/// **Not "does this contain markup".** Angle brackets are how an SVG, an XML
+/// file, a Vue component and half the config formats in existence all begin,
+/// and none of those is a web page. So the test is the four things a document
+/// says about itself at its own start: a doctype, or an opening `html`, `head`
+/// or `body` tag. A fragment of markup pasted into a `.txt` stays a text file,
+/// which is right — it is text somebody is keeping, not a page.
+///
+/// Leading whitespace is skipped and nothing else is. A comment or a `<?xml`
+/// declaration ahead of the doctype is legal and is deliberately *not* stepped
+/// over: the second is how an XHTML file and an SVG both open, and stepping
+/// over the first means scanning for a terminator inside a window that may have
+/// cut it in half. A file that hides its doctype behind a licence comment reads
+/// as text, which is the same answer it gets today.
+///
+/// Asked of the sniff window, so the answer does not depend on whether the
+/// caller had the head or the whole file — the property `sniff_mime`'s EBML and
+/// text arms are both written to keep.
+fn is_html(bytes: &[u8]) -> bool {
+    let head = match bytes.strip_prefix(&[0xef, 0xbb, 0xbf]) {
+        Some(rest) => rest,
+        None => bytes,
+    };
+    let at = head
+        .iter()
+        .position(|b| !b.is_ascii_whitespace())
+        .unwrap_or(head.len());
+    let head = &head[at..];
+    if starts_ignoring_case(head, b"<!doctype html") {
+        return true;
+    }
+    // A tag and not a prefix: `<htmlish>` is not an `<html>`, and the character
+    // that follows the name is what says which of the two this is.
+    for name in [b"<html".as_slice(), b"<head", b"<body"] {
+        if starts_ignoring_case(head, name) {
+            return match head.get(name.len()) {
+                Some(b) => b.is_ascii_whitespace() || *b == b'>' || *b == b'/',
+                // Cut off by the window, and a file that is exactly `<html` and
+                // nothing else is one nobody has.
+                None => true,
+            };
+        }
+    }
+    false
+}
+
+fn starts_ignoring_case(haystack: &[u8], needle: &[u8]) -> bool {
+    haystack.len() >= needle.len()
+        && haystack[..needle.len()].eq_ignore_ascii_case(needle)
 }
 
 /// A plausible MPEG audio frame header, which is all an `.mp3` without an ID3
@@ -1247,6 +1317,11 @@ fn extension_for(mime: &str) -> &'static str {
         // under `.txt` would hand somebody a file their word processor opens as
         // control words (T-350).
         "text/rtf" => "rtf",
+        // Named even though a web page never becomes an item (D-66): the bytes
+        // still pass through the store on their way to being refused, and an
+        // export of a board that somehow holds one should not offer it as a
+        // `.bin`.
+        "text/html" => "html",
         // Reachable now in a way it was not: ingestion no longer decodes
         // everything it commits, so a format the sniffer does not know still
         // gets stored and can still be exported. A store directory is a
@@ -2644,6 +2719,75 @@ mod tests {
         // which is what a word processor needs to open it again.
         assert_eq!(extension_for("text/rtf"), "rtf");
         assert_eq!(extension_for("text/plain"), "txt");
+    }
+
+    /// AC-968. A web page says so at its own start, and everything else that
+    /// opens with an angle bracket does not — D-66, and the whole reason this
+    /// is a signature rather than "contains markup".
+    #[test]
+    fn a_web_page_says_so_and_nothing_else_that_uses_angle_brackets_does() {
+        for page in [
+            "<!DOCTYPE html>
+<html><head><title>A page</title></head>",
+            "<!doctype HTML PUBLIC \"-//W3C//DTD HTML 4.01//EN\">",
+            "
+
+  <html lang=\"en\">
+<body>Words.</body>",
+            "<HEAD><meta charset=utf-8></HEAD>",
+            "<body>Just a fragment of a page.</body>",
+        ] {
+            assert_eq!(sniff_mime(page.as_bytes()), Some("text/html"), "{page:?}");
+        }
+
+        for text in [
+            // An SVG and an XML document, which are angle brackets all the way
+            // down and are not web pages.
+            "<?xml version=\"1.0\"?><svg xmlns=\"http://www.w3.org/2000/svg\"/>",
+            "<svg viewBox=\"0 0 10 10\"><rect/></svg>",
+            "<configuration><appSettings/></configuration>",
+            // A tag and not a prefix.
+            "<htmlish>not a page</htmlish>",
+            // Markup somebody is keeping *as text*, which is a text file.
+            "Wrap it in <html> and see what happens.",
+            // A doctype behind a licence comment reads as text, deliberately:
+            // stepping over a comment means scanning for a terminator that the
+            // sniff window may have cut in half.
+            "<!-- Copyright 1998 -->
+<!DOCTYPE html>",
+        ] {
+            assert_eq!(sniff_mime(text.as_bytes()), Some("text/plain"), "{text:?}");
+        }
+
+        // And a byte order mark in front of one is still one — a page saved out
+        // of a Windows editor is exactly this.
+        let mut marked = vec![0xef, 0xbb, 0xbf];
+        marked.extend_from_slice(b"<!DOCTYPE html><html></html>");
+        assert_eq!(sniff_mime(&marked), Some("text/html"));
+
+        // The answer is the same from the head as from the whole file, which is
+        // the property every other arm here keeps.
+        let mut long = b"<!DOCTYPE html>
+<html>
+<body>
+".to_vec();
+        long.extend(std::iter::repeat_n(b'x', SNIFF_BYTES * 8));
+        assert_eq!(sniff_mime(&long[..SNIFF_BYTES]), Some("text/html"), "head");
+        assert_eq!(sniff_mime(&long), Some("text/html"), "whole");
+    }
+
+    /// D-66 is a refusal, so the two things that make it one are asserted here
+    /// rather than left to the frontend alone: the record says what the file is,
+    /// and no page count is taken over something nothing will read.
+    #[test]
+    fn a_web_page_is_named_but_never_counted() {
+        let page = b"<!DOCTYPE html><html><body><h1>A page</h1></body></html>";
+        assert_eq!(sniff_mime(page), Some("text/html"));
+        assert_eq!(crate::document::probe(page, "text/html", false), None);
+        // The same bytes under the text mime *would* count, so the arm above is
+        // doing the refusing rather than the decoder failing.
+        assert!(crate::document::probe(page, "text/plain", false).is_some());
+        assert_eq!(extension_for("text/html"), "html");
     }
 
     #[test]

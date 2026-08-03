@@ -800,6 +800,11 @@ pub fn probe(bytes: &[u8], mime: &str, markdown: bool) -> Option<Probe> {
         // A title is `None` and always will be. A PDF has an information
         // dictionary in which the file states its own name; a text file has
         // nothing but its filename, which is already typed on the tab.
+        // A web page is refused before it becomes an item (D-66), so counting
+        // its pages is work for a folder nobody will see — and a page count on
+        // the record would be the one part of the board still claiming it is a
+        // document.
+        "text/html" => None,
         mime if mime.starts_with("text/") => {
             let text = crate::text::decode(bytes)?;
             // Counted over the speech when the file is a transcript, for the

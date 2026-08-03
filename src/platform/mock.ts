@@ -118,6 +118,10 @@ function sniffMime(bytes: Uint8Array): string {
   // to end and would otherwise come out of here as `text/plain` — a case file
   // whose page is set with its own control words on it (T-350).
   if (starts(bytes, "{\\rtf")) return "text/rtf";
+  // And a web page, named so that `assetKind` can refuse it (D-66). Same arm,
+  // same place, same reason: an html file is ASCII and the text arm below would
+  // otherwise call it a document.
+  if (looksLikeHtml(bytes)) return "text/html";
   // Last, because text has no signature and the only honest form of the
   // question is what is left (Q-255). Mirrors `text::reads_as_text`: the same
   // window, the same three refusals, and the same tolerance for a character the
@@ -135,6 +139,29 @@ function at(bytes: Uint8Array, offset: number, ascii: string): boolean {
 
 function starts(bytes: Uint8Array, ascii: string): boolean {
   return at(bytes, 0, ascii);
+}
+
+/**
+ * Mirrors `assets::is_html`: a doctype or an opening `html`, `head` or `body`
+ * tag, after a byte order mark and leading space and nothing else.
+ *
+ * Not "does it contain markup" — an SVG and an XML file both open with angle
+ * brackets and neither is a web page.
+ */
+function looksLikeHtml(bytes: Uint8Array): boolean {
+  const bom = bytes[0] === 0xef && bytes[1] === 0xbb && bytes[2] === 0xbf;
+  let from = bom ? 3 : 0;
+  while (from < bytes.length && (bytes[from] ?? 0) <= 0x20) from += 1;
+  const head = String.fromCharCode(...bytes.slice(from, from + 16)).toLowerCase();
+  if (head.startsWith("<!doctype html")) return true;
+  for (const name of ["<html", "<head", "<body"]) {
+    if (!head.startsWith(name)) continue;
+    const after = head.charCodeAt(name.length);
+    // A tag and not a prefix: `<htmlish>` is not an `<html>`. `NaN` is the end
+    // of the window, and a file that is exactly `<html` is one nobody has.
+    return Number.isNaN(after) || after === 0x3e || after === 0x2f || after <= 0x20;
+  }
+  return false;
 }
 
 async function sha256Hex(bytes: Uint8Array): Promise<string> {
