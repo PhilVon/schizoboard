@@ -47,11 +47,20 @@ class FakeNative {
   /**
    * Models the store: the mime is sniffed from the bytes and falls back to the
    * caller's hint, and dimensions stay at zero when nothing decoded.
+   *
+   * Seeded on the path itself and put through {@link digest}, and both halves of
+   * that mattered before they were changed. The seed used to be the path's
+   * *length*, so **every path of the same length hashed the same** —
+   * `C:/interview.mp4` and `C:/interview.srt` are both sixteen — and a fixture
+   * modelling two different files silently modelled one file twice. And the
+   * result used to be padded with zeroes rather than hex, so anything reaching
+   * `readAsset`'s `hash()` guard came back null: a record written and then read
+   * as empty, which looks exactly like a write that never happened (T-287).
    */
   private meta(seed: string, mime = "image/png", size = 1): AssetMeta {
     const decoded = mime.startsWith("image/") && this.decodes;
     return {
-      sha256: seed.padEnd(64, "0").slice(0, 64),
+      sha256: digest(seed),
       w: decoded ? 1200 : 0,
       h: decoded ? 800 : 0,
       mime,
@@ -73,12 +82,12 @@ class FakeNative {
     const refusal = this.refusal.get(path);
     if (refusal) throw refusal;
     if (this.refuse.has(path)) throw new Error("no such file");
-    return this.meta(`p${path.length}`, this.mimeFor.get(path));
+    return this.meta(`p${path}`, this.mimeFor.get(path));
   }
   async assetIngestUrl(url: string): Promise<AssetMeta> {
     this.calls.push({ method: "url", arg: url });
     if (this.refuse.has(url)) throw new Error("could not fetch");
-    return this.meta(`u${url.length}`);
+    return this.meta(`u${url}`);
   }
   async clipboardReadManifest(): Promise<{ kinds: ("files" | "text")[] }> {
     return { kinds: this.nativeFiles.length > 0 ? ["files"] : [] };
@@ -111,6 +120,25 @@ class FakeNative {
   assetUrl(): string {
     return "";
   }
+}
+
+/**
+ * Sixty-four hex characters, one per distinct seed — what a content hash looks
+ * like to everything downstream, without hashing anything.
+ *
+ * Deterministic, so the same file ingested twice still dedupes to one asset,
+ * which is a property several tests here rest on.
+ */
+function digest(seed: string): string {
+  let a = 0x811c9dc5;
+  const out: string[] = [];
+  for (let round = 0; round < 16; round++) {
+    for (const char of `${seed}/${round}`) {
+      a = Math.imul(a ^ char.charCodeAt(0), 0x01000193) >>> 0;
+    }
+    out.push(a.toString(16).padStart(8, "0"));
+  }
+  return out.join("").slice(0, 64);
 }
 
 let board: BoardDoc;
@@ -250,7 +278,10 @@ describe("what wins", () => {
     const items = itemsOnBoard();
     expect(items).toHaveLength(1);
     expect(items[0]!.type).toBe("polaroid");
-    expect(items[0]!.assetId).toMatch(/^b2048/);
+    // A content hash and nothing to read into it beyond that — the fake's
+    // digest is opaque on purpose, so what is asserted is the shape everything
+    // downstream requires (`isHash`).
+    expect(items[0]!.assetId).toMatch(/^[0-9a-f]{64}$/);
   });
 
   it("prefers the picture when a web page copy hands over all three", async () => {
@@ -859,6 +890,14 @@ describe("what the board will take", () => {
   it("is the same gate on every route in", async () => {
     // 1. The web clipboard's files.
     await firePaste({ files: [named("one.pdf", "application/pdf")] });
+    // Neither recording has a transcript beside it, which is the ordinary case
+    // and has to be said out loud to this fake: its disk holds every path it is
+    // asked for, so without these the sidecar probe of T-287 finds one for each
+    // and this counts two assets nobody put down.
+    native.refuse.add("C:/two.srt");
+    native.refuse.add("C:/two.vtt");
+    native.refuse.add("C:/four.srt");
+    native.refuse.add("C:/four.vtt");
     // 2. The native clipboard, which is what an Explorer copy comes back as.
     native.nativeFiles = ["C:/two.mp3"];
     native.mimeFor.set("C:/two.mp3", "audio/mpeg");
@@ -878,5 +917,116 @@ describe("what the board will take", () => {
       "image/png",
       "video/x-matroska",
     ]);
+  });
+});
+
+/**
+ * The sidecar transcript — T-287, D-46 section 3: *"a sidecar `.srt` sitting
+ * next to the media file is worth ingesting"*.
+ *
+ * All of it is about the two routes that have a filesystem path, because there
+ * is no *beside* without one.
+ */
+describe("a transcript sitting next to a recording", () => {
+  /** What the recording's record says its transcript is. */
+  function transcriptOf(sha256: string): string | null {
+    const map = board.assets.get(sha256);
+    return map ? (readAsset(sha256, map)?.transcript ?? null) : null;
+  }
+
+  function assetOf(mime: string): string | undefined {
+    for (const [sha, map] of board.assets) if (map.get("mime") === mime) return sha;
+    return undefined;
+  }
+
+  /** A disk holding exactly the paths named, and nothing else. */
+  function onlyOnDisk(...paths: string[]): void {
+    for (const path of ["C:/interview.mp4", "C:/interview.srt", "C:/interview.vtt"]) {
+      if (!paths.includes(path)) native.refuse.add(path);
+    }
+  }
+
+  it("is ingested and named on the recording, without becoming a folder on the wall", async () => {
+    onlyOnDisk("C:/interview.mp4", "C:/interview.srt");
+    native.mimeFor.set("C:/interview.mp4", "video/mp4");
+    native.mimeFor.set("C:/interview.srt", "text/plain");
+    native.drop(["C:/interview.mp4"], 0, 0);
+    await settle();
+
+    // One item, and it is the tape. The transcript is a property of it rather
+    // than a thing on the board — a `.srt` sniffs as text and text is a case
+    // file (D-60), so without this it would arrive as a second manilla folder.
+    const probed = native.calls.filter((c) => c.method === "path").map((c) => c.arg);
+    expect(probed).toEqual(["C:/interview.mp4", "C:/interview.srt"]);
+    expect(itemsOnBoard()).toHaveLength(1);
+    const tape = assetOf("video/mp4")!;
+    expect(transcriptOf(tape)).toBe(assetOf("text/plain"));
+  });
+
+  it("has a record of its own, so a peer can be asked for the bytes", async () => {
+    onlyOnDisk("C:/interview.mp4", "C:/interview.srt");
+    native.mimeFor.set("C:/interview.mp4", "video/mp4");
+    native.mimeFor.set("C:/interview.srt", "text/plain");
+    native.drop(["C:/interview.mp4"], 0, 0);
+    await settle();
+
+    // The half that is easy to leave out: a hash on the recording with no record
+    // behind it names a file nothing can ask for and the sweep cannot keep.
+    const words = transcriptOf(assetOf("video/mp4")!);
+    expect(words).not.toBeNull();
+    expect(board.assets.has(words!)).toBe(true);
+  });
+
+  it("falls back to the .vtt spelling", async () => {
+    onlyOnDisk("C:/interview.mp4", "C:/interview.vtt");
+    native.mimeFor.set("C:/interview.mp4", "video/mp4");
+    native.mimeFor.set("C:/interview.vtt", "text/vtt");
+    native.drop(["C:/interview.mp4"], 0, 0);
+    await settle();
+
+    expect(itemsOnBoard()).toHaveLength(1);
+    expect(transcriptOf(assetOf("video/mp4")!)).toBe(assetOf("text/vtt"));
+  });
+
+  /**
+   * The ordinary case — most recordings have no transcript — and the one that
+   * would be loudest if it were wrong. A miss is not a file the person asked
+   * for, so it must not reach `refuse` and be read out as something the board
+   * could not hold.
+   */
+  it("says nothing at all when there is no transcript there", async () => {
+    onlyOnDisk("C:/interview.mp4");
+    native.mimeFor.set("C:/interview.mp4", "video/mp4");
+    native.drop(["C:/interview.mp4"], 0, 0);
+    await settle();
+
+    expect(itemsOnBoard()).toHaveLength(1);
+    expect(said).toEqual([]);
+    expect(transcriptOf(assetOf("video/mp4")!)).toBeNull();
+    expect(board.assets.size).toBe(1);
+  });
+
+  /**
+   * The cost, asserted rather than assumed: every recording anybody drops pays
+   * for this in disk probes, and nothing else should pay at all.
+   */
+  it("does not go looking beside a photograph or a document", async () => {
+    native.mimeFor.set("C:/holiday.png", "image/png");
+    native.mimeFor.set("C:/filing.pdf", "application/pdf");
+    native.drop(["C:/holiday.png", "C:/filing.pdf"], 0, 0);
+    await settle();
+
+    const probed = native.calls.filter((call) => call.method === "path").map((call) => call.arg);
+    expect(probed).toEqual(["C:/holiday.png", "C:/filing.pdf"]);
+  });
+
+  /** A transcript dropped on its own is a text file, and a text file is a case
+   *  file (D-60). Nothing about T-287 changes that. */
+  it("is still a document when it is the thing that was dropped", async () => {
+    native.mimeFor.set("C:/interview.srt", "text/plain");
+    native.drop(["C:/interview.srt"], 0, 0);
+    await settle();
+
+    expect(itemsOnBoard()).toHaveLength(1);
   });
 });

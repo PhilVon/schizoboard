@@ -77,6 +77,13 @@ export interface AssetInput {
    * a second time off the same frame to the same hash.
    */
   poster?: string | null;
+  /**
+   * The hash of the sidecar transcript that came in beside a recording (T-287).
+   * Same rule again, and the difference runs the other way from `poster`'s: a
+   * paste on the two routes that have a filesystem path *does* find one, because
+   * the sidecar is a file sitting next to the one being read.
+   */
+  transcript?: string | null;
 }
 
 export interface CreatedItem {
@@ -130,6 +137,7 @@ export function registerAsset(
   if (typeof input.duration === "number") asset.set("duration", input.duration);
   if (typeof input.pages === "number") asset.set("pages", input.pages);
   if (typeof input.poster === "string") asset.set("poster", input.poster);
+  if (typeof input.transcript === "string") asset.set("transcript", input.transcript);
   asset.set("addedBy", board.doc.clientID);
   asset.set("addedAt", now);
   board.assets.set(sha256, asset);
@@ -174,6 +182,57 @@ export function attachPoster(
   mutate(board, Origin.POSTER, () => {
     registerAsset(board, poster, input, Date.now());
     record.set("poster", poster);
+  });
+}
+
+/**
+ * Register a sidecar transcript and say which recording it belongs to — T-287.
+ *
+ * `attachPoster`'s shape, and deliberately so rather than a second idea: two
+ * writes in one transaction, because the sidecar needs a record of its own or no
+ * peer can be asked for the bytes, and the recording needs to point at it or
+ * nothing knows the file is a transcript rather than a text document somebody
+ * dropped. Silent on a recording that is not there, and a no-op when the field
+ * already says this, on that op's arguments unchanged.
+ *
+ * ## Why it is not just a field on the paste
+ *
+ * The sidecar *is* known at ingest, so on the face of it `registerAsset` could
+ * write it the way it writes `pages` — and `AssetInput.transcript` exists for
+ * the one caller that genuinely does hand it over whole, which is `pasteClip`
+ * carrying a recording to another board. But the paste cannot: the sidecar is a
+ * second file that has to be read, hashed and stored, and by the time that has
+ * come back the recording's own record has been written for some time. So this
+ * is `registerAsset`'s documented per-property fill-in, arriving milliseconds
+ * later rather than minutes.
+ *
+ * **The transcript's text is not here and must never be.** What this stores is a
+ * hash; the lines are read off the bytes into the local index that already holds
+ * a case file's pages (D-46 section 2). The distinction the field's own comment
+ * makes is the one to hold on to — a page is derived and a transcript is not, so
+ * the *bytes* have to travel where a page's never do.
+ */
+export function attachTranscript(
+  board: BoardDoc,
+  recording: string,
+  transcript: string,
+  input: AssetInput,
+): void {
+  const record = board.assets.get(recording);
+  if (record === undefined) return;
+  if (record.get("transcript") === transcript) return;
+  // Refused rather than stored, and this is the one guard `attachPoster` has no
+  // use for. A poster is made by us out of a film we are holding, so it cannot
+  // be the film; a sidecar is a path somebody's shell handed over, and a shell
+  // that answers the same path twice — a `.srt` dropped on its own, or a
+  // filesystem where `interview.srt` and `interview.mp4` are one link — would
+  // otherwise write a record naming itself as its own transcript. `readAsset`
+  // already refuses to read that back (`hash` rejects a self-reference), so
+  // this is the write side of a rule that already exists on the read side.
+  if (recording === transcript) return;
+  mutate(board, Origin.SIDECAR, () => {
+    registerAsset(board, transcript, input, Date.now());
+    record.set("transcript", transcript);
   });
 }
 

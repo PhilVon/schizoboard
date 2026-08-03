@@ -54,6 +54,18 @@ export const Origin = {
    * — which is one press of a key to undo one action, twice.
    */
   POSTER: "schizo/poster",
+  /**
+   * Naming the sidecar transcript that came in beside a recording (T-287).
+   *
+   * Off the undo stack for `POSTER`'s reason, arrived at from the other
+   * direction. A sidecar is known at *ingest* rather than grabbed minutes later,
+   * so this lands within milliseconds of the paste rather than seconds — which
+   * makes it worse rather than better as an undo entry, not least: the two would
+   * be adjacent, indistinguishable to anybody pressing Ctrl+Z, and the first
+   * press after dropping an interview on the board would silently unhook its
+   * transcript while leaving the tape exactly where it was.
+   */
+  SIDECAR: "schizo/sidecar",
 } as const;
 
 export type OriginTag = (typeof Origin)[keyof typeof Origin];

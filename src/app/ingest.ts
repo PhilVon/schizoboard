@@ -35,7 +35,25 @@ import { newSeed, valueAt } from "@/lib/seed";
  * record describing them — rather than for the one kind it used to be.
  */
 export type Ingested =
-  | { kind: "asset"; sha256: string; asset: AssetInput }
+  | {
+      kind: "asset";
+      sha256: string;
+      asset: AssetInput;
+      /**
+       * The transcript found beside a recording — T-287.
+       *
+       * On the payload rather than folded into `asset.transcript` because the
+       * sidecar is a *second asset* and needs a record of its own: a hash on the
+       * recording with nothing behind it names a file no peer can be asked for.
+       * So the pairing travels here and `attachTranscript` makes both writes.
+       *
+       * Deliberately not a payload of its own in this list. Everything in it
+       * becomes an item, and a transcript is not a thing on the wall — it is a
+       * property of the tape somebody dropped. One entry per file the person
+       * meant to put down is what keeps `layout`'s fan counting what they see.
+       */
+      sidecar?: { sha256: string; asset: AssetInput };
+    }
   | { kind: "text"; text: string };
 
 export interface BoardPoint {
