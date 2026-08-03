@@ -41,6 +41,12 @@ interface Calls {
   alphas: number[];
   /** Peer names, which are the only text this canvas draws. */
   text: string[];
+  /** The boxes of the words a clip drag has hold of — T-283, the one painter
+   *  here that draws a path of rectangles rather than one shape. */
+  rects: [number, number, number, number][];
+  /** Which painting calls happened, in order. "under the dashes" is a claim
+   *  about sequence and nothing else on this canvas can express it. */
+  order: string[];
 }
 
 let calls: Calls;
@@ -88,6 +94,13 @@ function stubCanvas(): HTMLCanvasElement {
       calls.lineWidths.push(ctx.lineWidth);
       calls.alphas.push(ctx.globalAlpha);
     },
+    rect: (...args: [number, number, number, number]) => {
+      calls.rects.push(args);
+      calls.order.push("rect");
+    },
+    // The clipping rectangle is dashed and sets the pattern back on the way
+    // out — nothing else on this canvas draws anything but a solid line.
+    setLineDash: vi.fn(),
     beginPath: vi.fn(),
     closePath: vi.fn(),
     strokeText: (value: string) => calls.text.push(value),
@@ -98,10 +111,12 @@ function stubCanvas(): HTMLCanvasElement {
     stroke: () => {
       calls.strokeWidths.push(ctx.lineWidth);
       calls.alphas.push(ctx.globalAlpha);
+      calls.order.push("stroke");
     },
     fill: () => {
       calls.fills++;
       calls.inks.push({ style: String(ctx.fillStyle), op: String(ctx.globalCompositeOperation) });
+      calls.order.push("fill");
     },
     /** The wet stroke clips to the paper it is being drawn on (T-136). */
     clip: vi.fn(),
@@ -153,6 +168,8 @@ beforeEach(() => {
     inks: [],
     alphas: [],
     text: [],
+    rects: [],
+    order: [],
   };
   camera = new Camera();
   camera.resize(1000, 800);
@@ -1500,5 +1517,81 @@ describe("Overlay, the search borders", () => {
     draw(matches([], 2));
     expect(calls.clearRect).toBe(drawn + 1);
     expect(calls.strokeRect).toHaveLength(boxes);
+  });
+});
+
+/**
+ * The words a clip drag has hold of, washed over — T-283, Q-294.
+ *
+ * The rectangle says where you are cutting and this says what you have caught,
+ * so the two are drawn together and neither is drawn without a drag. What the
+ * boxes *are* is `app/clipping.ts`'s question and is tested there; what is here
+ * is that they reach the paper, in screen space, under the cut line.
+ */
+describe("Overlay, the words under a clipping rectangle", () => {
+  const QUAD = [
+    { x: -50, y: -40 },
+    { x: 50, y: -40 },
+    { x: 50, y: 40 },
+    { x: -50, y: 40 },
+  ];
+  const WORDS = [
+    { left: 100, top: 200, right: 260, bottom: 218 },
+    { left: 100, top: 218, right: 190, bottom: 236 },
+  ];
+
+  const clipFrame = (words: Parameters<Overlay["draw"]>[16] = null): void => {
+    overlay.draw(
+      camera, scene, selection, null, dirty,
+      null, null, null, null, null, undefined, null, null, null, null,
+      QUAD,
+      words,
+    );
+  };
+
+  it("washes every box, in the coordinates the boxes arrived in", () => {
+    // Screen space and no camera: these are `getClientRects` off the very
+    // layout this canvas is sized to, so converting them would convert them
+    // back. The camera is deliberately not at the origin here — through it,
+    // 100 would not still be 100.
+    camera.setView(400, 300, 2);
+    clipFrame(WORDS);
+
+    expect(calls.rects).toEqual([
+      [100, 200, 160, 18],
+      [100, 218, 90, 18],
+    ]);
+  });
+
+  it("is one fill over all of them, so overlapping lines do not darken", () => {
+    // A translucent wash applied twice is twice as dark, and the rects of
+    // consecutive lines overlap by the leading. One path, one fill.
+    clipFrame(WORDS);
+    expect(calls.fills).toBe(1);
+    expect(calls.inks[0]!.style).toContain("rgba(255, 206, 84");
+  });
+
+  it("goes under the cut line rather than over it", () => {
+    // The rectangle is the gesture. A wash painted over the dashes would take
+    // the corner of the line you are dragging.
+    clipFrame(WORDS);
+    expect(calls.order.indexOf("fill")).toBeLessThan(calls.order.indexOf("stroke"));
+  });
+
+  it("marks nothing on a page with nothing to quote, and still draws the rectangle", () => {
+    // A scan is quotable by rectangle alone, so there are no words — and the
+    // gesture must look exactly as it did before any of this existed.
+    clipFrame(null);
+    expect(calls.fills).toBe(0);
+    expect(calls.rects).toEqual([]);
+    expect(calls.order).toContain("stroke");
+  });
+
+  it("draws no wash at all with no rectangle being dragged", () => {
+    // The words are only ever asked for during a drag, but the painter must not
+    // depend on that: an empty list is not a reason to touch the canvas.
+    overlay.draw(camera, scene, selection, null, dirty);
+    expect(calls.fills).toBe(0);
+    expect(calls.clearRect).toBe(0);
   });
 });

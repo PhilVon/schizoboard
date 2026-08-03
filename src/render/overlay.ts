@@ -43,7 +43,7 @@ import { PeerPainter } from "@/render/presence/draw";
 import type { PeerSource } from "@/render/presence/peers";
 import { pinHitRadius } from "@/render/pins/dom";
 import { bodyWidth } from "@/render/ropes/paint";
-import type { Bounds, Camera, Vec2 } from "@/state/camera";
+import type { Bounds, Camera, ScreenBox, Vec2 } from "@/state/camera";
 import type { DirtySets } from "@/state/dirty";
 import {
   chromeFrame,
@@ -86,6 +86,22 @@ const CLIP_STROKE = "rgba(31, 27, 23, 0.85)";
 const CLIP_BACKING = "rgba(255, 244, 214, 0.75)";
 /** Screen pixels, so the cut reads the same at every zoom. */
 const CLIP_DASH: readonly number[] = [5, 4];
+
+/**
+ * The words the rectangle has hold of — T-283, Q-294.
+ *
+ * A wash under the type rather than a box round it, because it is a *marking*
+ * and not a second selection: the rectangle is still the gesture, and this says
+ * which of the words inside it are going onto the card. Drawn under the dashes
+ * for the same reason.
+ *
+ * Warm and translucent rather than the system blue everybody's text selection
+ * is. This board's own quotation is not the operating system's — and the ink
+ * under it has to stay readable while the rectangle is still moving, which is
+ * the entire point of drawing it at all. Multiplied over paper it reads as a
+ * highlighter pen, which is what somebody marking up a filing would reach for.
+ */
+const CLIP_WORDS = "rgba(255, 206, 84, 0.34)";
 
 /**
  * Dark rather than light, and that is not a taste call: a pale line is invisible
@@ -572,6 +588,20 @@ export class Overlay {
      * what this layer is owed is where to draw.
      */
     clip: readonly Vec2[] | null = null,
+    /**
+     * The words that rectangle currently has hold of — T-283, Q-294.
+     *
+     * **Screen** boxes, and the one thing on this canvas that arrives already
+     * in screen space. They are `getClientRects` of the very range the card
+     * will be built from, so converting them through the camera would be
+     * converting them back: the layout they came out of is the same layout
+     * this canvas is sized to.
+     *
+     * Null on a scan and on blank paper, which is not an omission — a cut off
+     * a scanned page takes pixels, so marking words there would promise a
+     * quotation that is not coming.
+     */
+    clipWords: readonly ScreenBox[] | null = null,
   ): void {
     const ctx = this.ctx;
     if (!ctx) return;
@@ -756,6 +786,10 @@ export class Overlay {
       drew = true;
     }
     if (wantsClip) {
+      // Under the dashes: the rectangle is the gesture and the wash is what it
+      // has caught, so a corner of the cut line crossing a marked word must
+      // stay the line you are dragging.
+      if (clipWords !== null) this.drawClipWords(ctx, clipWords);
       this.drawClip(ctx, camera, clip);
       drew = true;
     }
@@ -1588,6 +1622,33 @@ export class Overlay {
     ctx.lineWidth = 1;
     ctx.stroke();
     ctx.setLineDash([]);
+  }
+
+  /**
+   * The wash over the words the rectangle has hold of — T-283, Q-294.
+   *
+   * No camera and no scale. A client rect is in CSS pixels, and CSS pixels are
+   * what every coordinate in this file is already in — the context is
+   * pre-scaled by `devicePixelRatio` in `world.resizeCanvases`. Every other
+   * painter here converts because every other painter is given board space.
+   *
+   * One `fill` over a path of every box rather than a `fillRect` each, and that
+   * is the difference between a highlighter and a stack of gels: the rects of
+   * consecutive lines overlap by the leading, and a translucent fill applied
+   * twice is twice as dark. A single path fills the union once, so a four-line
+   * quotation is one flat mark instead of four bands with darker seams.
+   */
+  private drawClipWords(ctx: CanvasRenderingContext2D, boxes: readonly ScreenBox[]): void {
+    if (boxes.length === 0) return;
+    this.clear(ctx);
+    ctx.save();
+    ctx.beginPath();
+    for (const box of boxes) {
+      ctx.rect(box.left, box.top, box.right - box.left, box.bottom - box.top);
+    }
+    ctx.fillStyle = CLIP_WORDS;
+    ctx.fill();
+    ctx.restore();
   }
 
   private drawMarquee(ctx: CanvasRenderingContext2D, camera: Camera, marquee: Bounds): void {

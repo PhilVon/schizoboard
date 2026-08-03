@@ -604,6 +604,32 @@ export class SelectTool implements Tool {
     return this.clipRect === null ? null : this.clipQuad;
   }
 
+  /**
+   * The page being dragged over and the rectangle on it, or null — T-283.
+   *
+   * The same two values `ctx.clip` is handed at the release, offered while the
+   * gesture is still running so that the words under the rectangle can be
+   * marked as it moves. In the page's own frame, like everything else about
+   * this gesture: what turns it into words is a DOM question and belongs to
+   * `app/main.ts`, which is where the release's copy of it goes too.
+   *
+   * A live object rather than a mint per frame — this is read on every frame of
+   * a drag and the buffer is the gesture's own, exactly like {@link clipping}
+   * above. Read it and let it go.
+   */
+  get clipTarget(): { readonly itemId: string; readonly rect: Bounds } | null {
+    if (this.clipItem === null || this.clipRect === null) return null;
+    this.clipAt.itemId = this.clipItem;
+    this.clipAt.rect = this.clipRect;
+    return this.clipAt;
+  }
+
+  /** The object {@link clipTarget} hands back; see the note there. */
+  private readonly clipAt: { itemId: string; rect: Bounds } = {
+    itemId: "",
+    rect: { minX: 0, minY: 0, maxX: 0, maxY: 0 },
+  };
+
   /** True while a gesture is in progress — the pointer is captured and the
    *  board is being changed. */
   get gesturing(): boolean {
