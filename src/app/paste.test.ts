@@ -212,6 +212,7 @@ function itemsOnBoard(): {
   type: string;
   assetId: string | null;
   source: string | null;
+  sourceAbout: string;
   text: string;
   x: number;
   w: number;
@@ -226,6 +227,7 @@ function itemsOnBoard(): {
       type: fields.type,
       assetId: fields.assetId,
       source: fields.source,
+      sourceAbout: fields.sourceAbout,
       text: String(text ?? ""),
       x: fields.x,
       // The box, for T-339: a link card is cut to a card and not to its banner,
@@ -452,28 +454,77 @@ describe("what wins", () => {
   });
 
   /**
-   * The other outcome, and T-290's whole object. A watch page declares an
-   * `og:video` that is a player rather than a film, so Rust hands over no media
-   * at all — see `opengraph.rs`. What is left is a picture and an address.
+   * The other outcome, and T-290's whole object — restored by T-342 after this
+   * assertion had been turned round the wrong way.
+   *
+   * A watch page declares an `og:video` that is a player rather than a film, so
+   * Rust hands over no media at all. It *does* report that the page said it was
+   * about a video (`aboutMedia`), and that is what keeps this a printed still:
+   * the picture is a frame of the film, so it stays the subject and the address
+   * is written under it. For a while this test asserted the opposite, because
+   * "non-media link" had been read as "a link we could get no file from".
    */
-  it("makes a card of a page whose video is not a film", async () => {
+  it("makes a printed still of a page whose video is not a film", async () => {
     native.cardFor.set("https://www.youtube.com/watch?v=abc", {
       title: "The Wexford Interview",
       siteName: "YouTube",
       image: "https://i.ytimg.com/vi/abc/hq.jpg",
       media: null,
+      aboutMedia: true,
     });
 
     await firePaste({ text: "https://www.youtube.com/watch?v=abc" });
 
     const made = itemsOnBoard()[0]!;
     expect(made.assetId).not.toBeNull();
-    // The title alone since T-339. The address is still the load-bearing half of
-    // this object — it exists *because* the thing itself could not be brought
-    // onto the board — but it is on `source` now and the card prints it from
-    // there, so putting it in the text as well would print it twice.
-    expect(made.text).toBe("The Wexford Interview");
+    // The title and the address, under the picture. The address is the
+    // load-bearing half: this object exists because the film could not be
+    // brought onto the board, so it has to be legible and not merely stored.
+    expect(made.text).toBe("The Wexford Interview\nhttps://www.youtube.com/watch?v=abc");
+    // And still on the field, which is what actually gets opened (Q-305).
     expect(made.source).toBe("https://www.youtube.com/watch?v=abc");
+    expect(made.sourceAbout).toBe("media");
+    // Sized as a print of its still and not as a card: the shape is a fact
+    // about the bytes, which is what a photograph is and a card is not.
+    expect(made.w).not.toBe(CARD_UNITS.w);
+  });
+
+  it("makes a printed still of a track page too, not only a watch page", async () => {
+    // The Spotify half of T-290's title. `og:audio` pointing at a player counts
+    // exactly as `og:video` does — the rule is about the claim, not the property.
+    native.cardFor.set("https://open.spotify.com/track/abc", {
+      title: "Never Gonna Give You Up",
+      siteName: "Spotify",
+      image: "https://i.scdn.co/image/abc",
+      media: null,
+      aboutMedia: true,
+    });
+
+    await firePaste({ text: "https://open.spotify.com/track/abc" });
+
+    const made = itemsOnBoard()[0]!;
+    expect(made.sourceAbout).toBe("media");
+    expect(made.text).toContain("https://open.spotify.com/track/abc");
+  });
+
+  it("keeps a page about itself a card, on the same picture", async () => {
+    // The control, and the whole of the distinction: identical fixtures bar one
+    // bit. An article's picture is a banner and becomes the card's paper; a
+    // watch page's is a still of the film and stays the subject.
+    native.cardFor.set("https://e.org/cork", {
+      title: "Cork (material)",
+      siteName: null,
+      image: "https://e.org/banner.jpg",
+      media: null,
+      aboutMedia: false,
+    });
+
+    await firePaste({ text: "https://e.org/cork" });
+
+    const made = itemsOnBoard()[0]!;
+    expect(made.sourceAbout).toBe("page");
+    expect(made.text).toBe("Cork (material)");
+    expect(made.w).toBe(CARD_UNITS.w);
   });
 
   /**

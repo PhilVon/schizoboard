@@ -33,6 +33,7 @@
 import { shortest } from "@/lib/angle";
 import { CellGrid } from "@/lib/cellgrid";
 import type { InkSample, InkSurface } from "@/lib/ink";
+import type { SourceAbout } from "@/lib/objects";
 import { rotateIn, rotateOut, type Point } from "@/lib/rotate";
 import { NO_STYLE, type ItemStyle } from "@/lib/style";
 
@@ -146,6 +147,19 @@ export interface ItemCold {
    */
   source: string | null;
   /**
+   * What the page at `source` was about — `lib/objects.ts`'s `SourceAbout`.
+   *
+   * Cold beside `source` and for the same reason, and it is the *second* half of
+   * the same question (T-342): `source` says the item came from somewhere, and
+   * this says what that somewhere was, which is what separates a business card
+   * from a printed still. Both are an item with a source and a picture, so the
+   * renderer cannot choose between them without this.
+   *
+   * `page` for everything that has no source at all, which costs nothing —
+   * nothing asks this of an item that did not come from a page.
+   */
+  sourceAbout: SourceAbout;
+  /**
    * What has been overridden of what `seed` would decide — `lib/style.ts`.
    *
    * Cold rather than hot, and it belongs here for the reason everything else in
@@ -169,9 +183,10 @@ export interface ItemCold {
  * whether an absent `source` means "no source" or "not read yet". The answer is
  * always the first, and this is where it is given.
  */
-export type ItemColdInput = Omit<ItemCold, "style" | "source"> & {
+export type ItemColdInput = Omit<ItemCold, "style" | "source" | "sourceAbout"> & {
   style?: ItemStyle;
   source?: string | null;
+  sourceAbout?: SourceAbout;
 };
 
 /**
@@ -1080,18 +1095,24 @@ export class Scene {
   /**
    * Insert or replace. Returns the slot.
    *
-   * `style` may be left off and is filled in with `NO_STYLE`, and `source` with
-   * `null`. The invariant that a stored `ItemCold` always carries both is worth
-   * having — it is what lets every reader write `cold.style.paperStock ??
-   * seedAnswer` and `if (cold.source)` without asking whether the field was
-   * absent or merely unset — but it is worth having *here*, at the one door into
-   * the mirror, rather than restated by every literal that builds one.
+   * `style` may be left off and is filled in with `NO_STYLE`, `source` with
+   * `null`, and `sourceAbout` with `page`. The invariant that a stored
+   * `ItemCold` always carries all three is worth having — it is what lets every
+   * reader write `cold.style.paperStock ?? seedAnswer` and `if (cold.source)`
+   * without asking whether the field was absent or merely unset — but it is
+   * worth having *here*, at the one door into the mirror, rather than restated
+   * by every literal that builds one.
    */
   putItem(input: ItemColdInput, pose: ItemPose): number {
     const cold: ItemCold =
-      input.style !== undefined && input.source !== undefined
+      input.style !== undefined && input.source !== undefined && input.sourceAbout !== undefined
         ? (input as ItemCold)
-        : { ...input, source: input.source ?? null, style: input.style ?? NO_STYLE };
+        : {
+            ...input,
+            source: input.source ?? null,
+            sourceAbout: input.sourceAbout ?? "page",
+            style: input.style ?? NO_STYLE,
+          };
     // Geometry in, so what is over what may have changed.
     this.overStale = true;
     let slot = this.slots.get(cold.id);

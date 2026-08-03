@@ -23,6 +23,7 @@ function cold(over: Partial<ItemCold> = {}): ItemCold {
     seed: 12345,
     assetId: null,
     source: null,
+    sourceAbout: "page",
     createdBy: 1,
     createdAt: 0,
     text: "",

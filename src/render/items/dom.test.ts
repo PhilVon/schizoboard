@@ -3057,6 +3057,45 @@ describe("a link card", () => {
     expect(mount(facts(), { source: null }).className).toContain("item-polaroid");
   });
 
+  it("stays a photograph when the page it came from was about a film", () => {
+    // T-342, and the correction that task exists for. These two items are
+    // identical — same asset, same kind, same source — bar one field, and that
+    // field is what the page was *about*. A watch page's picture is a frame of
+    // the film, so it stays the subject and the object is a printed still; an
+    // article's is a banner, and a banner is the card's paper.
+    again();
+    expect(mount(facts(), { source: PAGE, sourceAbout: "media" }).className).toContain(
+      "item-polaroid",
+    );
+    again();
+    expect(mount(facts(), { source: PAGE, sourceAbout: "page" }).className).toContain("item-card");
+  });
+
+  it("reads an item that never heard of the question as a page", () => {
+    // Absent is `page`, which is the common case and the honest reading of an
+    // item written before the field existed. `Scene.putItem` fills it in, so a
+    // caller that omits it gets a card rather than an undefined comparison.
+    again();
+    const layer = new DomItemLayer(host, (sha) => ready(`asset://sha256/${sha}`), facts());
+    scene.putItem(
+      {
+        id: "a",
+        type: "polaroid",
+        z: "a0",
+        seed: 1,
+        assetId: HASH,
+        source: PAGE,
+        createdBy: 1,
+        createdAt: 0,
+        text: "",
+      },
+      { x: 0, y: 0, rot: 0, w: 132, h: 85 },
+    );
+    dirty.item("a");
+    layer.sync(scene, dirty, null);
+    expect((host.firstElementChild as HTMLElement).className).toContain("item-card");
+  });
+
   it("still becomes the file when a page handed one over", () => {
     // Phil's rule, and the half a reordering of `archetypeOf` would silently
     // break: an archive.org item is a VHS and a podcast feed is a cassette, and

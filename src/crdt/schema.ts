@@ -28,7 +28,7 @@
 import * as Y from "yjs";
 
 import { isHash } from "@/crdt/sync/assets";
-import { assetKind, type AssetKind } from "@/lib/objects";
+import { assetKind, type AssetKind, type SourceAbout } from "@/lib/objects";
 import {
   isItemFace,
   isPaperStock,
@@ -136,6 +136,17 @@ export interface ItemFields {
    * that is what makes it a field rather than something local.
    */
   source: string | null;
+  /**
+   * What the page at `source` was about — `lib/objects.ts`'s `SourceAbout`,
+   * which is where the decision is written down (T-342).
+   *
+   * Never null and never absent to a reader: an item with no `source` at all
+   * reads `page`, which costs nothing because nothing asks this of an item that
+   * did not come from somewhere. Written to the map only when it is `media`, the
+   * way `source` itself is written only when there is one — a key holding the
+   * default on every item ever created is a key nobody can read anything from.
+   */
+  sourceAbout: SourceAbout;
   /**
    * What has been overridden of what the seed would decide — `lib/style.ts`.
    *
@@ -442,6 +453,11 @@ export function readItem(id: string, map: YMap): ItemFields | null {
     // Read the way `assetId` is, and absent on every item written before this
     // existed — which is the ordinary case and reads as null.
     source: typeof map.get("source") === "string" ? (map.get("source") as string) : null,
+    // Only `media` is ever written, and anything else — absent, a value a later
+    // build invented, a peer's nonsense — reads as `page`. That is the default
+    // rather than a repair: the question is "did this page say it was about a
+    // film", and every answer short of yes is no.
+    sourceAbout: map.get("sourceAbout") === "media" ? "media" : "page",
     style: readStyle(map.get("style")),
     createdBy: num(map.get("createdBy"), 0),
     createdAt: num(map.get("createdAt"), 0),

@@ -275,6 +275,42 @@ export function objectSizeFor(kind: AssetKind): ObjectSize | null {
 export const CARD_UNITS: ObjectSize = units({ w: 85, h: 55 });
 
 /**
+ * What the page an item stands in for was **about** — T-342, and the one bit
+ * that separates the two objects a link can become.
+ *
+ * A business card and a printed still are both an item with a `source` and a
+ * picture, so `source` alone cannot choose between them and D-63's rule needed
+ * one more fact. This is it, and the direction it is written in is the whole
+ * decision:
+ *
+ * - It names **what the page was**, never what the object should look like. A
+ *   value spelling `card` or `still` would be storing a *face*, which D-46
+ *   section 2 forbids for a reason that has not changed — a face an older build
+ *   has never heard of is an item it cannot draw.
+ * - `page` is the page talking about itself: an article, a repository, a recipe.
+ *   The picture it offers is a banner, so it becomes the card's paper.
+ * - `media` is a page about a film or a recording it would not hand over — a
+ *   watch page, a track page. The picture it offers is a *still of the thing*,
+ *   so it stays the subject, and the object is a photograph with the address
+ *   written under it. T-290's title, restored.
+ *
+ * A string rather than a boolean because there are already three outcomes — the
+ * third being a page that hands the file over, which never gets here because it
+ * became the file — and a fourth is easy to imagine. Two booleans is how a
+ * field grows a state that cannot happen.
+ *
+ * **Absent reads as `page`**, which is both the common case and the honest
+ * reading of an item written before this existed: nobody asked. The cost is that
+ * a watch page pasted before this stays a card until it is pasted again.
+ *
+ * Declared here rather than in `crdt/schema.ts` so there is exactly one of it.
+ * `state/scene.ts` may not import from `crdt/`, and a union restated on both
+ * sides of that boundary is the shape `tests/pin-kinds.test.ts` exists to guard
+ * — `lib/` is below both, so nothing has to be held together by a test.
+ */
+export type SourceAbout = "page" | "media";
+
+/**
  * The sheet inside an open case file, **in the folder's own unrotated frame** —
  * which is the frame ink is stored in, and the reason this exists (T-278).
  *

@@ -51,7 +51,7 @@ import {
   type BoardPoint,
   type Ingested,
 } from "@/app/ingest";
-import { assetKind } from "@/lib/objects";
+import { assetKind, type SourceAbout } from "@/lib/objects";
 import type { AssetMeta, PageCard, Platform } from "@/platform/types";
 import { refusalOf } from "@/platform/types";
 import type { Camera } from "@/state/camera";
@@ -537,6 +537,7 @@ export class Paste {
     origName?: string,
     caption?: string,
     from?: string,
+    about?: SourceAbout,
   ): void {
     const kind = assetKind(meta.mime);
     // Decided from the sniffed bytes and never from the name. `meta.mime` is
@@ -591,6 +592,10 @@ export class Paste {
       // The page this stands in for, kept where rewriting the caption cannot
       // reach it (T-290, Q-305).
       ...(from !== undefined && from !== "" ? { source: from } : {}),
+      // And what that page was about, which is what the renderer chooses the
+      // face from (T-342). Only ever `media` here: `page` is the default and
+      // writing it would be a key saying the default on every card.
+      ...(about === "media" ? { sourceAbout: about } : {}),
     });
   }
 
@@ -793,8 +798,16 @@ export class Paste {
       // Declared and then would not come. Falls through to the still, which is
       // a weaker object rather than a broken one.
     }
+    // What the page turned out to be about, which decides the object from here
+    // down (T-342). `media` is a page that named a film or a recording and gave
+    // us a player instead — a watch page, a track page. Its picture is a *still
+    // of the thing*, so the picture stays the subject and the address is written
+    // under it; a page about itself offers a banner, and a banner is a card's
+    // paper. The `about` travels with the payload because the renderer chooses
+    // the face from it and nothing downstream can work it out again.
+    const about: SourceAbout = card.aboutMedia ? "media" : "page";
     if (card.image !== null) {
-      await this.fetchFile(out, card.image, captionFor(card), url);
+      await this.fetchFile(out, card.image, captionFor(card, about, url), url, about);
       if (out.length > 0) return out;
       // Declared a picture and it would not come. Falls through to the card
       // below, which is the same object with blank stock rather than nothing.
@@ -809,7 +822,11 @@ export class Paste {
     // the address somebody copied, and a note with the link in it is the honest
     // object for that — so `pageCard` rejecting, or returning a bare card, both
     // still end in a note.
-    const title = captionFor(card);
+    // A card, always, whatever the page was about. There is no picture, so there
+    // is no still to make — a printed still with nothing printed on it is a
+    // frame around nothing — and a page that named a film we could neither fetch
+    // nor illustrate is at least a card that says where the film is.
+    const title = titleOf(card);
     if (title !== "") out.push({ kind: "page", title, source: url });
     return out;
   }
@@ -828,6 +845,7 @@ export class Paste {
     source: string,
     caption?: string,
     from?: string,
+    about?: SourceAbout,
   ): Promise<void> {
     const { native } = this.options;
     try {
@@ -837,7 +855,15 @@ export class Paste {
         return;
       }
       if (!isHttpUrl(source)) return;
-      this.accept(out, await native.assetIngestUrl(source), source, baseName(source), caption, from);
+      this.accept(
+        out,
+        await native.assetIngestUrl(source),
+        source,
+        baseName(source),
+        caption,
+        from,
+        about,
+      );
     } catch (error) {
       // Not fatal, and not silent. A photograph that would not come is a note
       // with its address on it, which is more use than nothing.
@@ -853,29 +879,45 @@ export class Paste {
 }
 
 /**
- * What is written on a link card — T-290, and rewritten by T-339.
+ * What is written on the object a link becomes — T-290, T-339, T-342.
  *
- * **The title alone, now that the object draws its own address.** It used to be
- * the title and the URL on two lines, because the object was a printed still and
- * a caption under a photograph was the only surface there was to write on. A
- * business card has three lines and knows where they go: the name from here, and
- * the company and the address off the item's `source` (`lib/objects.ts`'s
- * `siteLabel` and `addressLabel`). Leaving the URL in here as well would print it
- * on the card twice.
+ * **Two answers, because there are two objects, and which one is asked for is
+ * the argument.** This has been rewritten twice and both rewrites are in it:
  *
- * That the address is no longer in the item's *text* is the one thing worth
- * naming, because text is what a person can edit and `source` is not. It is the
- * right way round: T-290 already found that a caption is not good enough to open
- * — rewriting the words around a link would destroy it — which is why Q-305 put
- * the address on a field of its own. This finishes the move rather than starting
- * one.
+ * - **A page about itself becomes a business card, and gets the title alone.**
+ *   The card has three lines and knows where they go — the name from here, the
+ *   company and the address off the item's `source` (`lib/objects.ts`'s
+ *   `siteLabel` and `addressLabel`) — so leaving the URL here would print it on
+ *   the card twice. That the address is not in the item's *text* is the point:
+ *   text is what a person can edit and `source` is not, which is the split
+ *   Q-305 made.
+ * - **A page about a film it would not hand over becomes a printed still, and
+ *   gets the title and the address on two lines.** The same split still holds —
+ *   `source` is what gets opened — but a photograph has one surface to write on
+ *   and the address has to be *legible*, not merely present, because the whole
+ *   reason the object exists is that the film could not come.
  *
- * `""` for a page with no title, and the card is a card without it: the host
- * carries the top line instead, which is what a card for an untitled page should
- * say. It is also what leaves the text *empty and editable* — click into it and
- * name the thing yourself.
+ * `""` for a card whose page gave no title, and the card is a card without it:
+ * the host carries the top line instead, and the empty text is an invitation to
+ * name the thing yourself. A still with no title falls back to the address,
+ * which is the one thing it must not be silent about.
  */
-function captionFor(card: PageCard): string {
+function captionFor(card: PageCard, about: SourceAbout, url: string): string {
+  const title = titleOf(card);
+  if (about === "page") return title;
+  // A printed still, and this is T-290's original caption restored. The address
+  // is the load-bearing half of it: the object exists *because* the film could
+  // not be brought onto the board, so the one thing it owes anybody is the way
+  // back to it — written where a person can read it, not only in a field.
+  //
+  // The address is on `source` as well, and that is not a duplicate serving two
+  // masters: this is what the object *says*, and that is what the board *opens*.
+  // Q-305 separated them precisely because a caption is a thing a person edits.
+  return title === "" ? url : `${title}\n${url}`;
+}
+
+/** A page's own name for itself, trimmed. `""` for a page that gave none. */
+function titleOf(card: PageCard): string {
   return (card.title ?? "").trim();
 }
 

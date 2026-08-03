@@ -334,32 +334,48 @@ const MAX_RASTERS_PER_FRAME = 3;
  * has not arrived, and a mime this build has never heard of. All three are a
  * frame around nothing, which is what a photograph with no bytes already is.
  *
- * ## The third argument, which is the exception D-46 did not have (T-339)
+ * ## The exception D-46 did not have (T-339, D-63)
  *
  * "The face is chosen from the asset's mime" was written without exception, and
  * the link card is one. Its asset is the page's picture and a picture is a jpeg,
  * so every reading of the mime says *photograph* — and the object is not a
  * photograph. It is a business card: a thing **about** a page, whose picture is
- * washed into its stock rather than being its subject. What makes it one is that
- * the item has a `source`, which is a field on the *item* and not a fact about
- * any file. So this takes three arguments, the third is that field, and the
- * exception is written here in the one function that chooses a face rather than
- * happening quietly in a branch of a renderer.
+ * washed into its stock rather than being its subject. What makes it one is a
+ * field on the *item*, not a fact about any file, and the exception is written
+ * here in the one function that chooses a face rather than happening quietly in
+ * a branch of a renderer.
  *
- * **After the three cases and not before them**, which is the other half of
- * Phil's rule and the half a reordering would silently break: *a page that hands
- * over a real file still becomes the file*. An archive.org item is a VHS and a
- * podcast feed is a cassette, and neither stops being one for having come from
- * somewhere. Today `app/paste.ts` cannot produce that combination at all — the
- * media arm of `fromPage` passes no `from` — so this ordering is a guard against
- * a future paste route rather than a live fork, and it costs one line to be
- * right in advance.
+ * ## And why a source is not enough on its own (T-342)
+ *
+ * A pasted YouTube link came out as a business card, which is the opposite of
+ * what T-290 asked for. Both objects are an item with a `source` and a picture,
+ * so `source` alone chooses the wrong one half the time — what separates them is
+ * what the *page* was:
+ *
+ * - **A page about itself** — an article, a repository — offers a banner, and a
+ *   banner is the card's paper. A business card.
+ * - **A page about a film or a recording it would not hand over** — a watch page,
+ *   a track page — offers a *still of the thing*, so the picture is the subject
+ *   and the object is a photograph with the address written under it. Which is
+ *   the default face, and the reason `sourceAbout` marks the card rather than
+ *   the still: the still is what an item with a picture already is.
+ *
+ * **After the three cases and not before them**, which is the other half of the
+ * rule and the half a reordering would silently break: *a page that hands over a
+ * real file still becomes the file*. An archive.org item is a VHS and a podcast
+ * feed is a cassette, and neither stops being one for having come from
+ * somewhere.
  *
  * A source with no asset at all is a card too, and deliberately: a page that
  * declared a title and no picture is still a card, printed on blank stock.
+ *
+ * It takes the record rather than three strings, and that is not tidiness. Three
+ * positional arguments of which two are strings is a call that can be got wrong
+ * silently — a mistake this board has made before and paid two driven runs for —
+ * and the record is what every caller already has in its hand.
  */
-function archetypeOf(type: string, kind: AssetKind, source: string | null): Archetype {
-  if (type !== "polaroid") return "paper";
+function archetypeOf(cold: ItemCold, kind: AssetKind): Archetype {
+  if (cold.type !== "polaroid") return "paper";
   switch (kind) {
     case "document":
       return "folder";
@@ -368,7 +384,7 @@ function archetypeOf(type: string, kind: AssetKind, source: string | null): Arch
     case "audio":
       return "cassette";
     default:
-      return source ? "card" : "polaroid";
+      return cold.source && cold.sourceAbout !== "media" ? "card" : "polaroid";
   }
 }
 
@@ -4019,7 +4035,7 @@ export class DomItemLayer implements ItemLayer {
     // what is written on that face is a fact about the rest of the record, which
     // is the same lookup and would otherwise be a second one.
     const facts = cold.assetId ? this.assetFacts(cold.assetId) : NO_FACTS;
-    const archetype = archetypeOf(cold.type, facts.kind, cold.source);
+    const archetype = archetypeOf(cold, facts.kind);
 
     if (view && view.archetype !== archetype) {
       // A type is immutable after creation, so this used to mean a peer had
@@ -4289,8 +4305,9 @@ export class DomItemLayer implements ItemLayer {
     // question is the *type* on its own and never the asset, which is why this
     // is the one caller that does not need a lookup: nothing with a file behind
     // it is cut to a ragged edge, and `archetypeOf` maps every non-`polaroid`
-    // type to paper whatever kind and whatever source are passed.
-    if (cold === null || archetypeOf(cold.type, "unknown", null) !== "paper") return null;
+    // type to paper whatever kind is passed and whatever the record says about
+    // where it came from.
+    if (cold === null || archetypeOf(cold, "unknown") !== "paper") return null;
     const worn = Math.round(wearOf(cold.seed, this.ageDays(cold)) * 100) / 100;
     const w = scene.w[slot]!;
     const h = scene.h[slot]!;

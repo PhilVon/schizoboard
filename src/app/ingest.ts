@@ -22,7 +22,7 @@
  */
 
 import type { AssetInput, CreateItemInput } from "@/crdt/ops";
-import { assetKind, CARD_UNITS, objectSizeFor } from "@/lib/objects";
+import { assetKind, CARD_UNITS, objectSizeFor, type SourceAbout } from "@/lib/objects";
 import { polaroidFor } from "@/lib/polaroid";
 import { newSeed, valueAt } from "@/lib/seed";
 
@@ -73,6 +73,15 @@ export type Ingested =
        * board opens.
        */
       source?: string;
+      /**
+       * What the page at `source` was about — T-342, `lib/objects.ts`.
+       *
+       * Absent is `page`, which is every card. `media` is the one that changes
+       * the object: a page that named a film and handed over a player instead,
+       * whose picture is a *still of the thing* rather than a banner, so the
+       * picture stays the subject and the object is a photograph.
+       */
+      sourceAbout?: SourceAbout;
     }
   | {
       /**
@@ -373,13 +382,18 @@ export function layout(payloads: readonly Ingested[], at: BoardPoint): CreateIte
     // which is the point of a card being 85 by 55 mm whatever is on it: a page
     // that had a banner and a page that had none are the same thing on the wall
     // and must not be two sizes.
+    //
+    // And a printed still is **not** a card and is not cut to one (T-342). Its
+    // picture is a still of a film rather than the card's paper, so it is a
+    // photograph and takes a photograph's shape — which is a fact about the
+    // bytes, the one thing on this board that is.
     const size =
       payload.kind === "text"
         ? noteSizeFor(payload.text)
         : payload.kind === "page"
           ? CARD_UNITS
           : (objectSizeFor(assetKind(payload.asset.mime)) ??
-            (payload.source !== undefined
+            (payload.source !== undefined && payload.sourceAbout !== "media"
               ? CARD_UNITS
               : polaroidFor(payload.asset.w, payload.asset.h)));
 
@@ -426,6 +440,13 @@ export function layout(payloads: readonly Ingested[], at: BoardPoint): CreateIte
         : payload.kind === "asset" && payload.source !== undefined
           ? { source: payload.source }
           : {}),
+      // What the page was about, carried through to the document because the
+      // face is chosen from it and nothing downstream could work it out again
+      // (T-342). A `page` payload is never `media` — there was no picture to
+      // make a still out of, so it is a card whatever the page named.
+      ...(payload.kind === "asset" && payload.sourceAbout !== undefined
+        ? { sourceAbout: payload.sourceAbout }
+        : {}),
     };
   });
 }

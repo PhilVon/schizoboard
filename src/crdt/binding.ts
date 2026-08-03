@@ -200,6 +200,10 @@ export class Binding {
         // reads the *document* for the open-in-browser row, deliberately — that
         // one is a claim on the shell and belongs against the source of truth.
         source: fields.source,
+        // The other half of the same question (T-342): whether the page this
+        // stands in for was about itself or about a film it would not hand over,
+        // which is what separates a business card from a printed still.
+        sourceAbout: fields.sourceAbout,
         // A write inside the style map already routes here — the nested-event
         // branch below ends in `syncItem` — so choosing a paper stock rebuilds
         // the item's view with no new observer and no new dirty flag.

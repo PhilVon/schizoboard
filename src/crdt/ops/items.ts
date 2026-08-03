@@ -14,6 +14,7 @@ import { Origin } from "@/crdt/origins";
 import { boardToLocal, localToBoard, pinsOfItems, removePinsFromStrings } from "@/crdt/ops/cascade";
 import { buildPin, DEFAULT_PIN_INSET } from "@/crdt/ops/pins";
 import { MIN_ITEM_SIZE, readItem, readPin, type ItemType, type YMap } from "@/crdt/schema";
+import type { SourceAbout } from "@/lib/objects";
 import { keyAbove } from "@/crdt/zindex";
 import { highestZ } from "@/crdt/ops/z";
 import { newSeed, scatterAngle } from "@/lib/seed";
@@ -36,6 +37,15 @@ export interface CreateItemInput {
    * null, which is what a photograph out of a clipboard honestly has.
    */
   source?: string | null;
+  /**
+   * What the page at `source` was about — T-342, and see `lib/objects.ts`.
+   *
+   * Left off by everything that is not a paste of a link, and by most of those:
+   * only a page that declared a film or a recording it would not hand over gets
+   * `media`, and that is what makes the object a printed still rather than a
+   * business card.
+   */
+  sourceAbout?: SourceAbout;
   /**
    * Metadata for `assetId`, registered in the same transaction.
    *
@@ -298,6 +308,10 @@ export function createItems(
       // through `readItem`, and the document is smaller for the millions of
       // items that will never have a source.
       if (input.source) item.set("source", input.source);
+      // Likewise, and more so: `page` is the answer for every item that has a
+      // source at all bar a handful, so writing it would be a key saying the
+      // default on nearly every object on the board.
+      if (input.sourceAbout === "media") item.set("sourceAbout", "media");
       // Y.Text and Y.Map because two people can type into the same note, and
       // adjust different style properties, without clobbering each other.
       item.set("text", new Y.Text(input.text ?? ""));
