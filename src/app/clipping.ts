@@ -43,7 +43,7 @@
  * see `SelectTool.applyClip`. Nothing below converts a screen coordinate.
  */
 
-import { createQuoteCard } from "@/crdt/ops/quote";
+import { createQuoteCard, quoteCardText } from "@/crdt/ops/quote";
 import type { BoardDoc } from "@/crdt/doc";
 import type { AssetInput } from "@/crdt/ops/items";
 import { noteSizeFor } from "@/app/ingest";
@@ -317,9 +317,22 @@ export class Clipper {
       return;
     }
     const { scene, board } = this.options;
-    // Sized the way a pasted note is sized, off its own words. A quote card is
-    // a note on index stock and there is no second rule for how big one is.
-    const size = noteSizeFor(said);
+    const reference = pageReference(page.origName, page.sha256, page.index);
+    // Sized the way a pasted note is sized, off its own words — and off *all*
+    // of them. A quote card is a note on index stock and there is no second
+    // rule for how big one is, but the words on it are not the quote: they are
+    // `quoteCardText`'s composition of the quote, a blank line and the citation.
+    //
+    // Sizing off `said` alone was two rows short of the card it then made, and
+    // `.paper-text` is `overflow: hidden` — so on any quote past about three
+    // lines the page reference was not merely at the bottom, it was off the
+    // paper and unreachable at every zoom. Which is the one thing the card
+    // exists to carry. `NOTE_MIN_H` hid it on short quotes, which is why it
+    // came out of a driven run on a four-line one rather than out of a test.
+    //
+    // Composed here through the same function the write uses rather than
+    // approximated, so the two cannot describe different strings.
+    const size = noteSizeFor(quoteCardText(said, reference));
     const where = landing(scene, itemId, rect, size.w);
     if (where === null) return;
 
@@ -327,7 +340,7 @@ export class Clipper {
       board,
       {
         quote: said,
-        reference: pageReference(page.origName, page.sha256, page.index),
+        reference,
         x: where.x,
         y: where.y,
         w: size.w,

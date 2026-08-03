@@ -21,6 +21,7 @@ import {
 import type { PageContent } from "@/platform/types";
 import type { RasterCamera, RasterReport } from "@/render/items/raster";
 import type { Bounds } from "@/state/camera";
+import { noteSizeFor } from "@/app/ingest";
 import { OPEN_PAGE_TURN } from "@/lib/objects";
 import { Camera } from "@/state/camera";
 import { Scene } from "@/state/scene";
@@ -212,6 +213,88 @@ describe("what a rectangle yields, by what is on the page", () => {
 — scan.pdf p. 4`,
     );
     expect(readItem(made, board.items.get(made)!)!.style.paperStock).toBe("index");
+  });
+
+  /**
+   * T-333, off a driven run rather than off a test: a four-line quote from
+   * `filing.pdf` came out on a card whose paper ended at the last word, with
+   * `— filing.pdf p. 1` past the bottom edge. `.paper-text` is
+   * `overflow: hidden`, so that citation is not at the bottom of the card — it
+   * is nowhere, at every zoom, and it is the one thing quoting exists to carry.
+   *
+   * The card was sized from the quote and then written with the quote, a blank
+   * line and the citation. `NOTE_MIN_H` absorbs those two rows on anything
+   * short, which is why every test and every earlier run agreed it was fine.
+   */
+  describe("and the card is as big as what is written on it", () => {
+    /** The size a note holding this exact string would be given — the question
+     *  asked of the text read back out of the document, so nothing here can
+     *  agree with the code by sharing its input. */
+    const needs = (made: string) => noteSizeFor(itemText(board, made)!.toString());
+    const box = (made: string) => {
+      const fields = readItem(made, board.items.get(made)!)!;
+      return { w: fields.w, h: fields.h };
+    };
+
+    it("fits the citation on the paper, not past the bottom of it", async () => {
+      const id = folder();
+      page = { sha256: SHA, index: 1, content: TYPED, origName: "filing.pdf" };
+      passage = [
+        "MATTER OF HARTLEY",
+        "and in the matter of an application under section 12",
+        "The witness states that on the evening in question he",
+        "observed the vehicle parked outside the premises.",
+      ].join("\n");
+      clipper().cut(id, rect(-100, -80, 60, 70));
+      await settled();
+
+      const made = card(id)!;
+      expect(box(made).h).toBeGreaterThanOrEqual(needs(made).h);
+      expect(box(made).w).toBeGreaterThanOrEqual(needs(made).w);
+      // And the citation genuinely costs something: sized off the quote alone
+      // this card was two rows short, which is the whole defect in one number.
+      expect(box(made).h).toBeGreaterThan(noteSizeFor(passage).h);
+    });
+
+    it("widens for a citation longer than anything in the quote", async () => {
+      // The other half of the same call, and the half a height-only repair
+      // leaves behind: the reference is a line of the card's text like any
+      // other, so a long filename wraps and costs a row it was not given.
+      const id = folder();
+      page = {
+        sha256: SHA,
+        index: 12,
+        content: TYPED,
+        origName: "witness-statement-second-supplemental-exhibit-B.pdf",
+      };
+      passage = "he did not";
+      clipper().cut(id, rect(-100, -80, 60, 70));
+      await settled();
+
+      const made = card(id)!;
+      expect(box(made).w).toBeGreaterThan(noteSizeFor(passage).w);
+      expect(box(made).h).toBeGreaterThanOrEqual(needs(made).h);
+    });
+
+    it("grows the ordinary card downwards and not sideways", async () => {
+      // The common cut, and the shape of what the repair costs. The citation is
+      // shorter than the sentence above it, so the card is exactly as wide as
+      // it always was; it is *taller* by the blank line and the citation, which
+      // is the room they need and were not being given. Written as three
+      // separate facts because "unchanged" was the guess and it was wrong by
+      // six units — `NOTE_MIN_H` hid the two rows on this card but not quite.
+      const id = folder();
+      page = { sha256: SHA, index: 4, content: TYPED, origName: "scan.pdf" };
+      passage = "the third invoice has no counter-signature";
+      clipper().cut(id, rect(-100, -80, 60, 70));
+      await settled();
+
+      const made = card(id)!;
+      expect(itemText(board, made)!.toString()).toContain("— scan.pdf p. 4");
+      expect(box(made).w).toBe(noteSizeFor(passage).w);
+      expect(box(made).h).toBeGreaterThan(noteSizeFor(passage).h);
+      expect(box(made).h).toBeGreaterThanOrEqual(needs(made).h);
+    });
   });
 
   it("threads a written card exactly as it threads a picture", async () => {
