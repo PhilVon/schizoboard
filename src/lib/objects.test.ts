@@ -7,6 +7,7 @@ import {
   carriesItsOwnName,
   CARD_UNITS,
   fileNoun,
+  filesLabel,
   fitHost,
   fitWriting,
   HAND_LINE,
@@ -21,6 +22,7 @@ import {
   runtimeLabel,
   timeReference,
   titleWorthWriting,
+  type AssetKind,
 } from "@/lib/objects";
 
 describe("what a file is", () => {
@@ -431,6 +433,37 @@ describe("the reference a card cites its source by", () => {
     // Zero is a measurement — the opening frame is a real place on a tape, and
     // the same distinction runtimeLabel already draws for a spine.
     expect(timeReference("interview.mp4", hash, 0)).toBe("interview.mp4 0:00");
+  });
+});
+
+describe("how many files, and what they are", () => {
+  it("calls a board of one kind by that kind's name", () => {
+    // The commonest board there is, and the sentence it had before T-344.
+    expect(filesLabel(12, Array<AssetKind>(12).fill("image"))).toBe("12 photographs");
+    expect(filesLabel(3, ["video", "video", "video"])).toBe("3 films");
+    expect(filesLabel(1, ["audio"])).toBe("1 recording");
+    expect(filesLabel(1, ["document"])).toBe("1 document");
+  });
+
+  it("generalises a mixture rather than letting one kind stand for the rest", () => {
+    // The board this task was filed from: a film, a photograph and a
+    // transcript, which reported four photographs.
+    expect(filesLabel(4, ["video", "image", "image", "document"])).toBe("4 files");
+  });
+
+  it("takes the count from the caller and the noun from the kinds", () => {
+    // They come from different sides — the shell says how many assets it wrote,
+    // the document says what they are — and the count is the one about the file.
+    expect(filesLabel(2, ["image"])).toBe("2 photographs");
+    expect(filesLabel(0, [])).toBe("0 files");
+  });
+
+  it("treats a record it cannot read as a kind that mixes with everything", () => {
+    // A hash with no record, or one from a build this does not understand. It
+    // must not be dropped: a list that lost an entry would make a mixed board
+    // read as a board of one kind.
+    expect(filesLabel(2, ["image", "unknown"])).toBe("2 files");
+    expect(filesLabel(1, ["unknown"])).toBe("1 file");
   });
 });
 

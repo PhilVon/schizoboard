@@ -10,6 +10,7 @@
 import * as Y from "yjs";
 
 import { newId } from "@/lib/ids";
+import type { AssetKind } from "@/lib/objects";
 import { Origin, type OriginTag } from "@/crdt/origins";
 import { SCHEMA_VERSION, readAsset, readItem, type YMap } from "@/crdt/schema";
 
@@ -260,6 +261,31 @@ export function referencedAssets(board: BoardDoc): string[] {
     if (named?.transcript) referenced.add(named.transcript);
   }
   return [...referenced];
+}
+
+/**
+ * What each of `hashes` is, as far as the document knows — T-344.
+ *
+ * For the sentences about a *set* of files: an export saying what went in it, a
+ * bundle saying what did not. Only the document can answer, and it can answer
+ * for a hash whose bytes are not on this disk at all — the record is written
+ * when the item is created and the photograph may still be arriving from a peer
+ * — which is exactly the case the missing half of that sentence is about.
+ *
+ * A hash with no record, or one `readAsset` refuses, comes back `unknown`
+ * rather than being dropped: the count and the kinds are read together, and a
+ * list that silently lost an entry would make a mixed board look like a board
+ * of one kind. `unknown` is a kind that mixes with everything, which is the
+ * honest thing for a record this build cannot read.
+ */
+export function assetKindsOf(board: BoardDoc, hashes: Iterable<string>): AssetKind[] {
+  const kinds: AssetKind[] = [];
+  for (const sha256 of hashes) {
+    const map = board.assets.get(sha256);
+    const record = map ? readAsset(sha256, map) : null;
+    kinds.push(record?.kind ?? "unknown");
+  }
+  return kinds;
 }
 
 /**

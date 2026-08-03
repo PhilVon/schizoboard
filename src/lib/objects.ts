@@ -127,6 +127,43 @@ export function isCaseObject(kind: AssetKind): boolean {
  * under a name from the store — so this is what it should have been calling
  * them, in the idiom D-46 section 1 already uses for the objects themselves.
  */
+/**
+ * How many files, and what they are — for a sentence about a whole set of them
+ * (T-344).
+ *
+ * ## Precise where it can be, general where it cannot
+ *
+ * A board of holiday photographs exports and says *twelve photographs*, which
+ * is what it said before this existed and is the commonest board there is. A
+ * board with a film, two photographs and a transcript on it cannot say any of
+ * those four words truthfully, so it says *four files* — the word `fileNoun`
+ * already falls back to, rather than one of the four kinds standing in for the
+ * other three.
+ *
+ * Enumerating them — *a film and three photographs* — was the other candidate
+ * and is not this, on two counts: the line it goes in is 46 characters wide,
+ * and a count of things somebody is about to hand over is a different question
+ * from an inventory of them.
+ *
+ * **`count` is the caller's rather than `kinds.length`**, because the two come
+ * from different sides and the caller's is the one about the file. The shell
+ * says how many assets it actually wrote; the document says what they are. A
+ * kind the document cannot answer for is `unknown`, which is a mixture of one,
+ * so the sentence generalises rather than guessing.
+ */
+export function filesLabel(count: number, kinds: readonly AssetKind[]): string {
+  const noun = onlyKind(kinds);
+  const word = noun === null ? "file" : fileNoun(noun);
+  return `${count} ${word}${count === 1 ? "" : "s"}`;
+}
+
+/** The one kind in `kinds`, or `null` for none and for a mixture. */
+function onlyKind(kinds: readonly AssetKind[]): AssetKind | null {
+  const [first] = kinds;
+  if (first === undefined) return null;
+  return kinds.every((kind) => kind === first) ? first : null;
+}
+
 export function fileNoun(kind: AssetKind): string {
   switch (kind) {
     case "image":

@@ -11,6 +11,7 @@ import { describe, expect, it } from "vitest";
 import * as Y from "yjs";
 
 import {
+  assetKindsOf,
   assetOrigName,
   boardSchemaVersion,
   boardSealed,
@@ -83,6 +84,53 @@ describe("what a board is called", () => {
     expect(boardSchemaVersion(doc)).toBe(99);
     doc.meta.set("schemaVersion", "next");
     expect(boardSchemaVersion(doc)).toBe(SCHEMA_VERSION);
+  });
+});
+
+describe("what a board's assets are, for a sentence about a set of them", () => {
+  /** An item wearing a file of a given kind, so a board can be mixed. */
+  const wearing = (assetId: string, mime: string) => ({
+    type: "polaroid" as const,
+    x: 0,
+    y: 0,
+    w: 100,
+    h: 100,
+    assetId,
+    asset: { ...meta(assetId), mime },
+  });
+
+  it("reads each hash's kind off the document", () => {
+    const doc = board();
+    createItems(doc, [wearing(PHOTO, "image/png"), wearing(OTHER, "video/mp4")]);
+    expect(assetKindsOf(doc, [PHOTO, OTHER])).toEqual(["image", "video"]);
+  });
+
+  it("answers for a photograph whose bytes this machine does not hold", () => {
+    // The half the missing sentence is about. The record is written when the
+    // item is created and the file may still be arriving from a peer — or may
+    // never arrive — and the document can say what it is either way.
+    const doc = board();
+    createItems(doc, [wearing(PHOTO, "audio/mpeg")]);
+    expect(assetKindsOf(doc, [PHOTO])).toEqual(["audio"]);
+  });
+
+  it("says unknown for a hash it has no record of, rather than dropping it", () => {
+    // A list that silently lost an entry would make a mixed board read as a
+    // board of one kind, which is exactly the wrong answer for the sentence
+    // this feeds.
+    const doc = board();
+    createItems(doc, [wearing(PHOTO, "image/png")]);
+    expect(assetKindsOf(doc, [PHOTO, STILL])).toEqual(["image", "unknown"]);
+    expect(assetKindsOf(doc, [])).toEqual([]);
+  });
+
+  it("keeps one entry per hash asked about, in the order asked", () => {
+    // The count comes from the shell and the kinds from here, so this list is
+    // read positionally by nothing — but a caller passing the same hash twice
+    // is asking about two files as far as it knows.
+    const doc = board();
+    createItems(doc, [wearing(PHOTO, "application/pdf")]);
+    expect(assetKindsOf(doc, [PHOTO, PHOTO])).toEqual(["document", "document"]);
   });
 });
 

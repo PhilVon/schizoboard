@@ -21,6 +21,7 @@ import {
   futureSchema,
   initialiseBoard,
   openBoardDoc,
+  assetKindsOf,
   referencedAssets,
   sealBoard,
   snapshot,
@@ -85,6 +86,7 @@ import {
   canBeOpened,
   carriesItsOwnName,
   caseNumber,
+  filesLabel,
   PAGE_TEXT_SIZE,
   titleWorthWriting,
   type AssetKind,
@@ -2311,14 +2313,30 @@ async function boot(): Promise<void> {
         return;
       }
       const size = fileSize(written.bytes);
-      if (written.missing.length > 0) {
+      /**
+       * What went in it, called what it is — T-344.
+       *
+       * These two lines said *photographs* until a board could hold anything
+       * else, and then went on saying it: a board with a film, a photograph and
+       * a transcript on it exported and reported four photographs. The count
+       * stays the shell's, because that is the one about the file; the noun
+       * comes from the document, because only this side can read what an asset
+       * is. A mixed board says `files` rather than picking one of the four
+       * kinds to stand in for the other three.
+       */
+      const missing = new Set(written.missing);
+      if (missing.size > 0) {
         flash.say(
-          `Board exported (${size}) — without ${written.missing.length} ` +
-            `photograph${written.missing.length === 1 ? "" : "s"} this machine does not have`,
+          `Board exported (${size}) — without ` +
+            `${filesLabel(missing.size, assetKindsOf(board, missing))} this machine does not have`,
         );
         return;
       }
-      flash.say(`Board exported (${size}) — ${written.embedded} photographs are inside it`);
+      const inside = spec.assets.filter((hash) => !missing.has(hash));
+      flash.say(
+        `Board exported (${size}) — ` +
+          `${filesLabel(written.embedded, assetKindsOf(board, inside))} ${written.embedded === 1 ? "is" : "are"} inside it`,
+      );
     } catch (error) {
       // Names the console for the same reason `copyInvite` does: there is
       // genuinely somewhere to go, and a line that only apologises leaves
@@ -2751,7 +2769,10 @@ async function boot(): Promise<void> {
     if (opened.missing.length > 0) {
       // Survives the reload as a query the next boot reads, because this window
       // is about to stop existing and a flash lasts 2.4 seconds.
-      console.warn(`[bundle] ${opened.missing.length} photographs were not in that bundle`);
+      // `files` rather than a kind, and here it is the only honest word going:
+      // these hashes are the *incoming* board's, and the document that could
+      // say what they are is the one about to replace this window (T-344).
+      console.warn(`[bundle] ${opened.missing.length} files were not in that bundle`);
     }
     // The whole query string, not just `board=`: every parameter this
     // application reads off one names a board or somewhere to look for it
