@@ -2854,7 +2854,14 @@ async function boot(): Promise<void> {
               const kind = kindOfItem(id);
               return (kind === "video" || kind === "audio") && readable(id);
             },
-            run: (id: string) => readItem(id),
+            showing: (id: string) => opening.itemId === id,
+            // The toggle, not `openItem`'s: that one plays a recording that is
+            // not open, which is right for `Enter` and wrong for a row that
+            // says *Read the transcript*. Same row, same verb, both directions.
+            run: (id: string) => {
+              if (opening.itemId === id) void closeOpen();
+              else readItem(id);
+            },
           },
         ),
         held ? undefined : () => selection.replace([itemId]),

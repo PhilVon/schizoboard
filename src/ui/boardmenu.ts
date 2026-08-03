@@ -331,6 +331,9 @@ export function itemMenuRows(
    */
   read?: {
     can(itemId: string): boolean;
+    /** Whether this object is standing open on its transcript right now, which
+     *  is what decides the label rather than a second row. */
+    showing(itemId: string): boolean;
     run(itemId: string): void;
   },
 ): MenuEntry[] {
@@ -386,7 +389,23 @@ export function itemMenuRows(
    */
   if (read?.can(clicked) === true) {
     const target = clicked;
-    rows.push({ label: "Read the transcript", run: () => read.run(target) });
+    /**
+     * **The same row closes it, and that is the point of it being one row.**
+     * Escape shuts a transcript and always did, but a verb you reached through
+     * the menu and can only leave by a key is a way in with no matching way out
+     * — the menu is where somebody who has just opened one will look for how to
+     * undo it, and finding nothing there reads as "it cannot be closed" however
+     * many keys would have worked.
+     *
+     * A label that changes rather than a second row beside the first: two rows,
+     * one of which does nothing most of the time, is the greying-out this file
+     * refuses everywhere else.
+     */
+    const showing = read.showing(clicked);
+    rows.push({
+      label: showing ? "Close the transcript" : "Read the transcript",
+      run: () => read.run(target),
+    });
   }
 
   if (edit) {
