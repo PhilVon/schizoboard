@@ -74,6 +74,32 @@ export type Ingested =
        */
       source?: string;
     }
+  | {
+      /**
+       * A page that told us what it is and had no picture to give — T-340.
+       *
+       * **Its own arm rather than a text payload carrying a source**, because
+       * the three arms of this union are named for *what a thing is* and this is
+       * a third thing: `asset` is bytes in the store, `text` is words somebody
+       * copied, and this is what a page says about itself. A text payload that
+       * quietly became a business card would be the one arm whose name did not
+       * describe its contents, and `layout` would have to ask a second question
+       * to tell two of them apart.
+       *
+       * It is the same distinction `render/items/dom.ts` draws one seam down and
+       * for the same reason (D-63): what makes this a card is not the file
+       * behind it — there is no file — it is that the item is *about* somewhere.
+       * The renderer already reads a card off `source` alone and draws one with
+       * no banner as blank stock, so nothing here has to be invented for it.
+       *
+       * A page with nothing to say still makes a note. `title` is what earns the
+       * card: an address on its own is a link somebody copied, and a note with
+       * the link in it is the honest object for that.
+       */
+      kind: "page";
+      title: string;
+      source: string;
+    }
   | { kind: "text"; text: string };
 
 export interface BoardPoint {
@@ -343,11 +369,19 @@ export function layout(payloads: readonly Ingested[], at: BoardPoint): CreateIte
     // is `source`: the item is *about* somewhere. Same test as the renderer's
     // `archetypeOf`, and it has to be, or the card would arrive the wrong shape
     // and stay that way — a size is written into the document once.
+    // A card with no picture at all is the same object at the same size (T-340),
+    // which is the point of a card being 85 by 55 mm whatever is on it: a page
+    // that had a banner and a page that had none are the same thing on the wall
+    // and must not be two sizes.
     const size =
-      payload.kind === "asset"
-        ? (objectSizeFor(assetKind(payload.asset.mime)) ??
-          (payload.source !== undefined ? CARD_UNITS : polaroidFor(payload.asset.w, payload.asset.h)))
-        : noteSizeFor(payload.text);
+      payload.kind === "text"
+        ? noteSizeFor(payload.text)
+        : payload.kind === "page"
+          ? CARD_UNITS
+          : (objectSizeFor(assetKind(payload.asset.mime)) ??
+            (payload.source !== undefined
+              ? CARD_UNITS
+              : polaroidFor(payload.asset.w, payload.asset.h)));
 
     // Position along the fan, in [-1, 1] rather than in item indices: the
     // arrangement is then the same shape whatever the count, and only gets
@@ -364,7 +398,14 @@ export function layout(payloads: readonly Ingested[], at: BoardPoint): CreateIte
       // returns null for a type an older build has never heard of, so such an
       // item is both invisible *and* absent from the keep set — an older build
       // would collect the bytes of a document it cannot see.
-      type: payload.kind === "asset" ? "polaroid" : "note",
+      //
+      // A page payload is a `polaroid` too, and that reads oddly until you read
+      // the line above again: the type separates *a sheet of paper* from *a
+      // thing with an object on it*, and it has never named the object. A card
+      // with no picture is the second of those — it just happens to have nothing
+      // behind it yet, which is a state a photograph waiting for its bytes has
+      // been in since the beginning.
+      type: payload.kind === "text" ? "note" : "polaroid",
       x: at.x + t * step + jitterX,
       // A shallow sag, so a row of photographs reads as dropped rather than
       // set out. Zero for a single item, which is the common case.
@@ -374,10 +415,17 @@ export function layout(payloads: readonly Ingested[], at: BoardPoint): CreateIte
       seed,
       assetId: payload.kind === "asset" ? payload.sha256 : null,
       ...(payload.kind === "asset" ? { asset: payload.asset } : {}),
-      text: payload.kind === "text" ? payload.text : (payload.caption ?? ""),
-      ...(payload.kind === "asset" && payload.source !== undefined
+      text:
+        payload.kind === "text"
+          ? payload.text
+          : payload.kind === "page"
+            ? payload.title
+            : (payload.caption ?? ""),
+      ...(payload.kind === "page"
         ? { source: payload.source }
-        : {}),
+        : payload.kind === "asset" && payload.source !== undefined
+          ? { source: payload.source }
+          : {}),
     };
   });
 }

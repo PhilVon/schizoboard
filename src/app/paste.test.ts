@@ -559,7 +559,15 @@ describe("what wins", () => {
     expect(itemsOnBoard()[0]!.text).toBe("");
   });
 
-  it("makes a note of a page with nothing to say", async () => {
+  /**
+   * T-340, and the half of "cover links in general" that T-339 left open.
+   *
+   * This test used to assert the opposite — that a page with a title and no
+   * picture came out as a note with the URL in it. That was the metadata being
+   * thrown away because there was nothing to fetch, and most of the web is
+   * exactly this page: a title, a site name, and no `og:image` at all.
+   */
+  it("makes a card of a page that has a title and no picture", async () => {
     native.cardFor.set("https://e.com/an-essay", {
       title: "An essay",
       siteName: null,
@@ -569,10 +577,53 @@ describe("what wins", () => {
     await firePaste({ text: "https://e.com/an-essay" });
 
     const made = itemsOnBoard()[0]!;
+    // No bytes, and that is the whole state: `archetypeOf` reads a card off the
+    // source alone, and the renderer draws one with no banner as blank stock.
     expect(made.assetId).toBeNull();
-    // The URL, not the title: nothing was fetched, so this is the note the
-    // paste would always have made and it says what was on the clipboard.
-    expect(made.text).toBe("https://e.com/an-essay");
+    expect(made.type).toBe("polaroid");
+    expect(made.text).toBe("An essay");
+    expect(made.source).toBe("https://e.com/an-essay");
+    // The same object at the same size as one that *did* have a banner — a card
+    // is 85 by 55 mm whatever is on it, and two sizes would make them two things.
+    expect(made.w).toBe(CARD_UNITS.w);
+    expect(made.h).toBe(CARD_UNITS.h);
+  });
+
+  it("makes a note of a page that says nothing at all", async () => {
+    // The address on its own is a link somebody copied, not an object about
+    // somewhere, and a note with the link in it is the honest answer. This is
+    // what stops the card becoming the fallback for every URL on the web.
+    native.cardFor.set("https://e.com/silent", {
+      title: null,
+      siteName: null,
+      image: null,
+      media: null,
+    });
+    await firePaste({ text: "https://e.com/silent" });
+
+    const made = itemsOnBoard()[0]!;
+    expect(made.type).toBe("note");
+    expect(made.source).toBeNull();
+    expect(made.text).toBe("https://e.com/silent");
+  });
+
+  it("still makes a card when the picture a page declared will not come", async () => {
+    // Declared and then would not fetch. The card is the same object with blank
+    // stock, which is a better answer than the note this used to fall back to —
+    // the page told us what it was and the failure was ours.
+    native.cardFor.set("https://e.com/broken", {
+      title: "A page whose banner is gone",
+      siteName: null,
+      image: "https://e.com/404.jpg",
+      media: null,
+    });
+    native.refuse.add("https://e.com/404.jpg");
+    await firePaste({ text: "https://e.com/broken" });
+
+    const made = itemsOnBoard()[0]!;
+    expect(made.assetId).toBeNull();
+    expect(made.text).toBe("A page whose banner is gone");
+    expect(made.source).toBe("https://e.com/broken");
   });
 
   it("leaves a URL that is not a picture as a note", async () => {

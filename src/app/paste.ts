@@ -795,7 +795,22 @@ export class Paste {
     }
     if (card.image !== null) {
       await this.fetchFile(out, card.image, captionFor(card), url);
+      if (out.length > 0) return out;
+      // Declared a picture and it would not come. Falls through to the card
+      // below, which is the same object with blank stock rather than nothing.
     }
+    // No picture, or none that arrived — and the page still told us what it is
+    // (T-340). That metadata used to be thrown away and the caller made the note
+    // it would always have made, which is wrong under "cover links in general":
+    // a card with a title and a site name and no picture is still a card, and
+    // most of the web is exactly that.
+    //
+    // The title is what earns it. A page that says nothing has nothing on it but
+    // the address somebody copied, and a note with the link in it is the honest
+    // object for that — so `pageCard` rejecting, or returning a bare card, both
+    // still end in a note.
+    const title = captionFor(card);
+    if (title !== "") out.push({ kind: "page", title, source: url });
     return out;
   }
 
