@@ -3040,11 +3040,19 @@ async function boot(): Promise<void> {
      * showing; the reader holds the page itself; the document holds what the
      * file was called. This is the one place all three are in scope, which is
      * the same argument `shownPage` itself makes one level down.
+     *
+     * **Through `readableHash`, and that is the third caller to need it** —
+     * T-287. The item's own hash is the *tape*, so asking the reader for page
+     * one of it hands back nothing (the reader is open on the transcript), and
+     * `Clipper.cut` treats nothing as "not a case file" and returns without a
+     * word. The whole quoting half of a recording was unreachable that way, and
+     * silently: the same class of failure `sayWhatWasRefused` exists to prevent,
+     * reached by a resolver rather than by a refusal.
      */
     shownPage: (itemId) => {
       const index = shownPage(itemId);
       if (index === null) return null;
-      const sha256 = scene.cold(itemId)?.assetId ?? null;
+      const sha256 = readableHash(itemId);
       if (sha256 === null) return null;
       const page = reader.page(sha256, index).page;
       if (page === null) return null;
