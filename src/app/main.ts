@@ -449,6 +449,29 @@ async function boot(): Promise<void> {
    * opinion about it. Asked once per hash — `titles.set` before the await, so a
    * board of forty folders is forty probes and not forty a frame.
    */
+  /**
+   * The hash whose *words* an object is read for — T-287, Q-299.
+   *
+   * The identity for a case file and the sidecar for a recording. It is asked at
+   * the hash rather than at the item because two of its three callers only ever
+   * have a hash: the page resolver the renderer holds, which `dom.ts` calls with
+   * whatever the item is wearing, and the index that is filled when a record
+   * appears. `readableHash` is the same question from an item id.
+   *
+   * **The renderer's call is the one that made this necessary**, and it is worth
+   * saying why rather than leaving it as symmetry. The layer draws a page by
+   * asking `pageOf(cold.assetId)`, which for a tape is the tape — so without
+   * this, turning a cassette up on its transcript asks `PageReader` for page one
+   * *of the recording*, which does not refuse it: it queues a document read of a
+   * four hundred megabyte film and draws a sheet saying it could not be read.
+   */
+  const readableAsset = (sha256: string): string | null => {
+    const map = board.assets.get(sha256);
+    const record = map ? readAsset(sha256, map) : null;
+    if (record === null) return null;
+    return record.kind === "video" || record.kind === "audio" ? record.transcript : sha256;
+  };
+
   const assetFacts = (sha256: string): AssetFacts => {
     const map = board.assets.get(sha256);
     const record = map ? readAsset(sha256, map) : null;
@@ -575,7 +598,14 @@ async function boot(): Promise<void> {
   // page is a fact about the file: two folders of one document are one set of
   // pages. Which page the reader is on is T-321's, so this answers for
   // whichever that is.
-  (sha256) => reader.page(sha256),
+  // Through `readableAsset`, so a tape turned up on its transcript is asked for
+  // a page of the *transcript* (T-287). Without it the hash the item wears is
+  // handed straight to the reader, which does not refuse a film — it starts
+  // reading one as a document and draws a sheet saying it could not.
+  (sha256) => {
+    const words = readableAsset(sha256);
+    return words === null ? null : reader.page(words);
+  },
   // And which face each item is showing (T-278) — the same function the pen is
   // handed, deliberately: what a mark is filed against and what is drawn have to
   // be one answer. Declared below, hoisted to here.
@@ -1349,11 +1379,7 @@ async function boot(): Promise<void> {
    */
   const readableHash = (itemId: string): string | null => {
     const sha256 = scene.cold(itemId)?.assetId ?? null;
-    if (sha256 === null) return null;
-    const map = board.assets.get(sha256);
-    const record = map ? readAsset(sha256, map) : null;
-    if (record === null) return null;
-    return record.kind === "video" || record.kind === "audio" ? record.transcript : sha256;
+    return sha256 === null ? null : readableAsset(sha256);
   };
 
   /**
