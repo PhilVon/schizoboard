@@ -329,6 +329,18 @@ export function itemMenuRows(
    * key are one function, so the pointer and the keyboard cannot come to differ
    * about what can be read.
    */
+  /**
+   * Follow a pasted link back to the page it stands in for — T-290, Q-305.
+   *
+   * Its own pair for `read`'s reason: it is a different verb on a different
+   * object, and folding it into *Open* would give one row two meanings. *Open* a
+   * link card and there is nothing on this board to open — the whole point of
+   * the object is that what it is about could not be brought here.
+   */
+  visit?: {
+    can(itemId: string): boolean;
+    run(itemId: string): void;
+  },
   read?: {
     can(itemId: string): boolean;
     /** Whether this object is standing open on its transcript right now, which
@@ -387,6 +399,20 @@ export function itemMenuRows(
    * to the tape and wrote down. D-46 section 6 refuses transcription outright,
    * and a row reading *Transcribe* would promise exactly that.
    */
+  /**
+   * Above *Read the transcript* and below *Open*, which is where a verb that
+   * takes you somewhere belongs — T-290.
+   *
+   * **"Open in browser" and not "Open"**, because the two are different acts and
+   * the label has to say which. Everything else this menu opens, opens *on the
+   * board*; this one leaves it. Somebody who clicks the wrong one of those has
+   * lost their place in a way no other row on this menu can cause.
+   */
+  if (visit?.can(clicked) === true) {
+    const target = clicked;
+    rows.push({ label: "Open in browser", run: () => visit.run(target) });
+  }
+
   if (read?.can(clicked) === true) {
     const target = clicked;
     /**
