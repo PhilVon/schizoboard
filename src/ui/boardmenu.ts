@@ -315,6 +315,24 @@ export function itemMenuRows(
    * know what anything is wearing.
    */
   kindOf?: (itemId: string) => AssetKind,
+  /**
+   * Turn this object up on the words inside it — T-287, Q-299.
+   *
+   * A second pair rather than a widening of `open` above, because they are
+   * genuinely two verbs on the one object that has both. *Open* a tape and it
+   * plays; *read* it and a sheet of transcript stands up out of it and the room
+   * stays quiet. Folding them together would mean one row whose meaning depended
+   * on which kind of file was behind it, which is the thing `kindOf` exists to
+   * avoid rather than to enable.
+   *
+   * It is the same shape as `open` for `open`'s stated reason: the row and the
+   * key are one function, so the pointer and the keyboard cannot come to differ
+   * about what can be read.
+   */
+  read?: {
+    can(itemId: string): boolean;
+    run(itemId: string): void;
+  },
 ): MenuEntry[] {
   const live = targets.filter((id) => scene.slotOf(id) !== undefined);
   if (live.length === 0) return [];
@@ -349,6 +367,26 @@ export function itemMenuRows(
   if (open?.can(clicked) === true) {
     const target = clicked;
     rows.push({ label: "Open", run: () => open.run(target) });
+  }
+
+  /**
+   * Directly under *Open*, and only on a recording — T-287, Q-299.
+   *
+   * A case file has this row too in principle and must not show it: *Open*
+   * already turns a folder up on its pages, so a second row saying the same
+   * thing in different words would be two verbs for one act. So the caller's
+   * `can` is the narrower question — is there a transcript here that *Open*
+   * would not reach — rather than "is there anything readable".
+   *
+   * The words are the label's whole job. "Read the transcript" says what will
+   * happen and, by saying *transcript*, says where the words came from: they are
+   * a file somebody had beside the recording, not something this board listened
+   * to the tape and wrote down. D-46 section 6 refuses transcription outright,
+   * and a row reading *Transcribe* would promise exactly that.
+   */
+  if (read?.can(clicked) === true) {
+    const target = clicked;
+    rows.push({ label: "Read the transcript", run: () => read.run(target) });
   }
 
   if (edit) {

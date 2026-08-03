@@ -2183,6 +2183,28 @@ textarea.item-field::-webkit-scrollbar {
  * copy a stylesheet can express; `folder-open-css.test.ts` asserts they agree,
  * which is the arrangement `--bulk` and `folderBulk` already have.
  */
+/*
+ * The sheet, on whichever object is carrying one — T-287, Q-299.
+ *
+ * `inset` is the whole of the geometry and it is arithmetic rather than taste.
+ * The vertical figure is shared: it is what decides how far a sheet stands proud
+ * of its object, and the same overhang on all three is what makes them one
+ * reading surface rather than three that resemble each other. The horizontal
+ * figure then falls out of the shape of a piece of paper:
+ *
+ *     height = h x 1.33721        (the shared overhang)
+ *     width  = height / 1.411043  (A4_UNITS.h / A4_UNITS.w)
+ *     inset  = (1 - width / w) / 2
+ *
+ * **In board units, not millimetres**, and that is not pedantry — `objects.ts`
+ * rounds each object to whole units, so the two disagree by enough to fail the
+ * test that checks this. Derived from millimetres a VHS came out at a ratio of
+ * 1.4166 against A4's 1.4110, which `folder-open-css.test.ts` caught.
+ *
+ * The folder's own figure is the proof the method is right: 481 x 344 units
+ * gives a sheet of 326 x 460, which is `A4_UNITS` exactly, and an inset of
+ * 16.1123% — the number this file has carried since T-319, to four places.
+ */
 .folder-page {
   position: absolute;
   inset: -16.8605% 16.1123%;
@@ -2241,6 +2263,25 @@ textarea.item-field::-webkit-scrollbar {
  * layout is downstream of pagination and has to stay that way, or a stylesheet
  * edit moves every citation anybody stored.
  */
+/*
+ * A VHS is 290 x 160 units, so the sheet is 214 tall and 151.6 across it, and
+ * 151.6 of 290 leaves 23.8571% either side. A cassette is 155 x 99, giving a
+ * sheet of 132.4 by 93.8 — over half the width of the object, where a folder's
+ * is barely two thirds, which is why these two numbers are so far apart.
+ *
+ * A sheet standing this far out of a small object is the object being small
+ * rather than the sheet being wrong: a transcript propped against a compact
+ * cassette *is* bigger than the cassette. Worth looking at rather than reasoning
+ * about, which is what the driven screenshot on T-287 is for.
+ */
+.item-case[data-kind="vhs"] .folder-page {
+  inset: -16.8605% 23.8571%;
+}
+
+.item-case[data-kind="cassette"] .folder-page {
+  inset: -16.8605% 19.7351%;
+}
+
 .folder-leaf {
   position: absolute;
   inset: 0;

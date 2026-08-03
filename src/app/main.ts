@@ -1356,6 +1356,20 @@ async function boot(): Promise<void> {
     return record.kind === "video" || record.kind === "audio" ? record.transcript : sha256;
   };
 
+  /**
+   * Is there something to turn this item up and *read* — T-287, Q-299.
+   *
+   * Not the same question as {@link openable}, and the two have to stay apart.
+   * `openable` is about the gesture: `Enter` and the menu's *Open* start
+   * whatever this object does, which for a tape is playing it. This is about the
+   * reading surface, and it is true of exactly the things that have words —
+   * every case file, and a recording that arrived with a transcript beside it.
+   *
+   * A record that has not arrived answers false rather than throwing, which is
+   * the same answer it gives every other predicate in this file.
+   */
+  const readable = (itemId: string): boolean => readableHash(itemId) !== null;
+
   const openable = (itemId: string): boolean => {
     const sha256 = scene.cold(itemId)?.assetId ?? null;
     if (sha256 === null) return false;
@@ -1430,7 +1444,12 @@ async function boot(): Promise<void> {
     // Say which file is being read, so the shell holds that one open and lets
     // go of whatever it was holding. Not the *page* — asking for one is what
     // fetches it, and the layer does that when it draws.
-    const reading = scene.cold(itemId)?.assetId ?? null;
+    // `readableHash` and not the item's own asset, so a recording opens on its
+    // transcript (T-287, Q-299). The page count comes off that same hash for the
+    // same reason — a tape's record says how many *seconds* it is and a
+    // transcript's says how many pages, and reading the wrong one would put "1
+    // of 92" at the head of a two page sheaf.
+    const reading = readableHash(itemId);
     if (reading !== null) {
       const record = board.assets.get(reading);
       reader.open(reading, (record ? readAsset(reading, record)?.pages : null) ?? null);
@@ -1447,13 +1466,18 @@ async function boot(): Promise<void> {
    *
    * False for anything without a readable inside, which is the whole of the
    * caller's fallback: the flight it would have made is the flight it makes.
-   * A tape is refused here rather than put on, and deliberately — a recording
-   * has no page, its transcript is a sidecar nobody has written yet (T-287),
-   * and a search that started the film would be the loudest thing on this board
-   * happening because somebody typed a third character.
+   *
+   * **A recording is now let through, and only because of what it opens onto**
+   * (T-287, Q-299). The line this replaced refused a tape outright, on the
+   * argument that "a search that started the film would be the loudest thing on
+   * this board happening because somebody typed a third character" — and that
+   * argument is untouched, because this does not start the film. It turns the
+   * tape up on its transcript, which is a sheet of paper and is silent. A
+   * recording with no transcript still fails, one line down, on having nothing
+   * readable rather than on being a recording.
    */
   const readInside = (itemId: string, page: number): boolean => {
-    if (!openable(itemId) || kindOfItem(itemId) === "video") return false;
+    if (!readable(itemId)) return false;
     readItem(itemId);
     // After the open rather than inside it: `reader.open` is idempotent on the
     // document already being read and leaves its page where it is, which is
@@ -2769,6 +2793,17 @@ async function boot(): Promise<void> {
           // (T-317). The same three hops `openable` makes, and the same reason
           // the menu cannot make them itself: a kind comes off an asset record.
           kindOfItem,
+          // Reading a recording's transcript (T-287, Q-299). Narrower than
+          // `readable` on purpose: a case file is readable and must not get this
+          // row, because *Open* above already turns it up on its own pages and
+          // two rows for one act is worse than one row nobody can find.
+          {
+            can: (id: string) => {
+              const kind = kindOfItem(id);
+              return (kind === "video" || kind === "audio") && readable(id);
+            },
+            run: (id: string) => readItem(id),
+          },
         ),
         held ? undefined : () => selection.replace([itemId]),
       );

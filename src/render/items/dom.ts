@@ -1722,6 +1722,47 @@ class PaperView implements View {
  *   - the **caption**, in the same hand, which is the item's own text and the
  *     only one of the four anybody can edit. People write on tapes.
  */
+/**
+ * The reading surface — one sheet of paper, built the same way for all three
+ * case objects (T-287, Q-299).
+ *
+ * A function rather than three copies because it *was* three copies waiting to
+ * happen: the folder had this inline, and the answer to "where does a recording
+ * show its transcript" was "on a case file's reading surface", which is only
+ * true if there is one surface. Everything that differs between the objects is
+ * in `items.css` and is geometry — where the sheet sits and how big A4 is
+ * against that particular box — rather than structure.
+ *
+ * The three content nodes are three because the three answers are different
+ * *materials*: text set on the sheet, a scan laid on it, and a sentence about
+ * why there is neither. Built once and switched by class, so a page turn writes
+ * content rather than restructuring the sheet.
+ */
+function buildLeaf(): {
+  page: HTMLDivElement;
+  leaf: HTMLDivElement;
+  number: HTMLDivElement;
+  meta: HTMLDivElement;
+  body: HTMLDivElement;
+  scan: HTMLImageElement;
+  note: HTMLDivElement;
+} {
+  const leaf = div("folder-leaf");
+  const number = div("leaf-number");
+  const meta = div("leaf-meta");
+  const header = div("leaf-header");
+  header.append(number, meta);
+  const body = div("leaf-body");
+  const scan = document.createElement("img");
+  scan.className = "leaf-scan";
+  scan.alt = "";
+  const note = div("leaf-note");
+  leaf.append(header, body, scan, note);
+  const page = div("folder-page");
+  page.append(leaf);
+  return { page, leaf, number, meta, body, scan, note };
+}
+
 class CaseView implements View {
   readonly archetype: CaseArchetype;
   readonly el: HTMLDivElement;
@@ -1792,8 +1833,15 @@ class CaseView implements View {
   /** The sheet's own frame, upright, and the one thing on this object whose
    *  type is sized to a page rather than to the label on a box. */
   private readonly leaf: HTMLDivElement | null = null;
-  /** The page's text, its lifted scan, and the sentence for a page that has
-   *  neither — a folder's only, and null on the two cassettes. */
+  /**
+   * The page's text, its lifted scan, and the sentence for a page that has
+   * neither.
+   *
+   * On all three objects since T-287, where it was a folder's only. A recording
+   * that arrived with a transcript beside it is read on the same sheet, by
+   * Q-299 — the sheet is what a reading surface *is*, and building a second one
+   * for the two plastic objects would have been two answers to one question.
+   */
   private readonly leafBody: HTMLDivElement | null = null;
   private readonly leafScan: HTMLImageElement | null = null;
   private readonly leafNote: HTMLDivElement | null = null;
@@ -1903,26 +1951,14 @@ class CaseView implements View {
       // screen, `text.rs`'s 66 by 46 grid is the right way round, and no number
       // anywhere had to move. `.folder-leaf` is the sheet in its own upright
       // frame and `items.css` puts it back into the folder's.
-      const leaf = div("folder-leaf");
-      this.leaf = leaf;
-      this.pageNumber = div("leaf-number");
-      this.pageMeta = div("leaf-meta");
-      const header = div("leaf-header");
-      header.append(this.pageNumber, this.pageMeta);
-      // What is on the page, and it is three elements rather than one because
-      // the three answers are different *materials*: text set on the sheet, a
-      // scan laid on it, and a sentence about why there is neither. Built once
-      // and switched by class, so a page turn writes content rather than
-      // restructuring the sheet.
-      this.leafBody = div("leaf-body");
-      this.leafScan = document.createElement("img");
-      this.leafScan.className = "leaf-scan";
-      this.leafScan.alt = "";
-      this.leafNote = div("leaf-note");
-      leaf.append(header, this.leafBody, this.leafScan, this.leafNote);
-      const page = div("folder-page");
-      page.append(leaf);
-      this.body.append(back, sheets, page, front);
+      const sheet = buildLeaf();
+      this.leaf = sheet.leaf;
+      this.pageNumber = sheet.number;
+      this.pageMeta = sheet.meta;
+      this.leafBody = sheet.body;
+      this.leafScan = sheet.scan;
+      this.leafNote = sheet.note;
+      this.body.append(back, sheets, sheet.page, front);
     } else if (archetype === "vhs") {
       // A VHS is read from Phil's reference: a ribbed shell, a white label in
       // the MIDDLE of the face, and a window either side of it showing one reel
@@ -1975,7 +2011,21 @@ class CaseView implements View {
       print.append(still, div("case-clip"));
       this.print = print;
       this.still = still;
-      this.body.append(shell, left, right, label, counter, print);
+      const sheet = buildLeaf();
+      this.leaf = sheet.leaf;
+      this.pageNumber = sheet.number;
+      this.pageMeta = sheet.meta;
+      this.leafBody = sheet.body;
+      this.leafScan = sheet.scan;
+      this.leafNote = sheet.note;
+      // **Last, where the folder's is in the middle**, and the difference is the
+      // objects rather than an inconsistency. A folder's sheet is inside it and
+      // is revealed by the cover folding back, so it sits between the pile and
+      // the front panel; a tape has no cover to fold, and its transcript is a
+      // sheaf that came *with* it rather than anything held inside the shell. So
+      // the sheet stands in front of the object, which is where a stack of paper
+      // propped against a cassette actually is (T-287).
+      this.body.append(shell, left, right, label, counter, print, sheet.page);
     } else {
       // A compact cassette, likewise from the reference, and its window is the
       // structural surprise: it is a hole *through the label*, with writing
@@ -1995,7 +2045,14 @@ class CaseView implements View {
       label.append(this.number, this.meta, window_, this.title, this.caption);
       this.print = null;
       this.still = null;
-      this.body.append(shell, label, div("case-holes"));
+      const sheet = buildLeaf();
+      this.leaf = sheet.leaf;
+      this.pageNumber = sheet.number;
+      this.pageMeta = sheet.meta;
+      this.leafBody = sheet.body;
+      this.leafScan = sheet.scan;
+      this.leafNote = sheet.note;
+      this.body.append(shell, label, div("case-holes"), sheet.page);
     }
 
     // Tape last, over the front of the object, exactly as on the other two.
