@@ -165,6 +165,22 @@ pub struct Page {
     pub width: f32,
     pub height: f32,
     pub content: PageContent,
+    /// When each cue on this page was said, for a page of a transcript — T-287,
+    /// Q-301. Empty for every other kind of page, which is most of them.
+    ///
+    /// **Beside the content rather than inside it**, and that is a claim about
+    /// what a transcript is. On paper it is plain text: the same hand, the same
+    /// measure, the same grid, cut the same way — so a variant of its own would
+    /// have every reader of a page asking a question none of them has any use
+    /// for, and the ones that ask by comparison rather than by match would
+    /// quietly stop recognising a transcript at all. What is *not* plain about
+    /// it is where it came from, and where a page came from is already the kind
+    /// of fact that lives out here beside `index`.
+    ///
+    /// Offsets are into this page's own text, not into the file: a page is what
+    /// crossed, and an offset into something the far side never received is not
+    /// a fact it can use.
+    pub cues: Vec<crate::cues::Mark>,
 }
 
 /// What a page turned out to be. See the module header for why `Unsupported` is
@@ -365,6 +381,10 @@ enum Inner {
     Plain {
         text: String,
         pages: Vec<std::ops::Range<usize>>,
+        /// When each cue in `text` was said — empty unless this file turned out
+        /// to be a transcript (T-287). Offsets are into `text`, which for a
+        /// transcript is the *speech* and not the file: see [`Reader::of_text`].
+        marks: Vec<crate::cues::Mark>,
     },
 }
 
@@ -410,6 +430,21 @@ impl Reader {
     }
 
     fn of_text(text: String) -> Result<Reader> {
+        // **A transcript is read as what was said, and never as the file** —
+        // T-287, Q-301. A `.srt` beside a recording is stored as an ordinary
+        // text asset, so without this the reading surface sets cue numbers and
+        // arrow timestamps on paper in our own hand, and a rectangle dragged
+        // over the words cuts a card carrying them.
+        //
+        // It goes *here*, in front of the pagination, because everything that
+        // follows is defined over the text this line chooses: the tiling, the
+        // page count on the asset record, the search index, and the passage a
+        // quote is cut from. One substitution and none of them knows.
+        let spoken = crate::cues::speech(&text);
+        let (text, marks) = match spoken {
+            Some(speech) => (speech.text, speech.marks),
+            None => (text, Vec::new()),
+        };
         let pages = crate::text::paginate(&text);
         // The same bound as a PDF's, for the same reason and in the same words:
         // a page tree — or a log file — claiming to be endless is refused
@@ -421,7 +456,7 @@ impl Reader {
             )));
         }
         Ok(Reader {
-            inner: Inner::Plain { text, pages },
+            inner: Inner::Plain { text, pages, marks },
             read: std::sync::atomic::AtomicUsize::new(0),
         })
     }
@@ -504,9 +539,9 @@ impl Reader {
                 let (index, page_id) = ids.iter().copied().find(|(n, _)| *n == index)?;
                 Some(self.produce(doc, index, page_id))
             }
-            Inner::Plain { text, pages } => {
+            Inner::Plain { text, pages, marks } => {
                 let at = usize::try_from(index).ok()?.checked_sub(1)?;
-                Some(self.cut(text, pages.get(at)?.clone(), index))
+                Some(self.cut(text, marks, pages.get(at)?.clone(), index))
             }
         }
     }
@@ -519,10 +554,10 @@ impl Reader {
                 .iter()
                 .map(|&(index, page_id)| self.produce(doc, index, page_id))
                 .collect(),
-            Inner::Plain { text, pages } => pages
+            Inner::Plain { text, pages, marks } => pages
                 .iter()
                 .enumerate()
-                .map(|(at, range)| self.cut(text, range.clone(), at as u32 + 1))
+                .map(|(at, range)| self.cut(text, marks, range.clone(), at as u32 + 1))
                 .collect(),
         };
         Reading { pages }
@@ -557,7 +592,7 @@ impl Reader {
                     read_page_text(doc, page_id)
                 })
                 .collect(),
-            Inner::Plain { text, pages } => pages
+            Inner::Plain { text, pages, .. } => pages
                 .iter()
                 .map(|range| PageText::Text(text[range.clone()].to_string()))
                 .collect(),
@@ -578,13 +613,41 @@ impl Reader {
     /// file's — which is [`crate::text`]'s whole argument arriving here: the
     /// reading surface's page is sized to the grid, so a number invented on
     /// this side could only be one the other side then had to ignore.
-    fn cut(&self, text: &str, range: std::ops::Range<usize>, index: u32) -> Page {
+    fn cut(
+        &self,
+        text: &str,
+        marks: &[crate::cues::Mark],
+        range: std::ops::Range<usize>,
+        index: u32,
+    ) -> Page {
         self.read.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let shown = &text[range.clone()];
+        // Rebased into the page, because the page is what crosses — see
+        // [`Page::cues`]. A cue that opens exactly at the page's last byte is
+        // the next page's first line, which is why the end is exclusive.
+        //
+        // **And counted in UTF-16 code units, not bytes.** The only thing that
+        // ever compares one of these against a position is a DOM caret, and a
+        // DOM offset is an index into a JavaScript string. The two agree for as
+        // long as the transcript is ASCII and part company at the first accent
+        // — so a quote from a French interview would be cited from whichever
+        // line happened to be a few bytes back. Converted here, where the page
+        // text is in hand, rather than trusted to a reader that has only the
+        // number.
+        let cues = marks
+            .iter()
+            .filter(|mark| mark.offset >= range.start && mark.offset < range.end)
+            .map(|mark| crate::cues::Mark {
+                offset: shown[..mark.offset - range.start].encode_utf16().count(),
+                at: mark.at,
+            })
+            .collect();
         Page {
             index,
             width: 0.0,
             height: 0.0,
             content: PageContent::Plain(text[range].to_owned()),
+            cues,
         }
     }
 }
@@ -649,7 +712,14 @@ pub fn probe(bytes: &[u8], mime: &str) -> Option<Probe> {
         // nothing but its filename, which is already typed on the tab.
         mime if mime.starts_with("text/") => {
             let text = crate::text::decode(bytes)?;
-            let pages = crate::text::page_count(&text);
+            // Counted over the speech when the file is a transcript, for the
+            // same reason `Reader::of_text` paginates the speech: these two
+            // numbers are the same number. The record's count is what the open
+            // sheet's header prints and what the folder's thickness is drawn
+            // from, so a count taken over the markup would put "1 of 5" at the
+            // head of a two page transcript.
+            let spoken = crate::cues::speech(&text);
+            let pages = crate::text::page_count(spoken.as_ref().map_or(&text, |s| &s.text));
             // Refused rather than trimmed, and by the same bound for the same
             // reason: a folder claiming more pages than this build will read is
             // a folder nobody can open, and one with no thickness is honest
@@ -791,6 +861,10 @@ fn read_page(doc: &Document, index: u32, page_id: ObjectId) -> Page {
         width,
         height,
         content,
+        // A PDF has no cues. It could carry them one day — a film's chapters,
+        // a scan of a numbered transcript — and the empty vec is what says this
+        // page was asked and had none, rather than that nobody asked.
+        cues: Vec::new(),
     }
 }
 
@@ -3645,6 +3719,88 @@ mod tests {
             PageContent::Unsupported(_)
         ));
         assert_eq!(reader.read_text()[3], PageText::None(NoText::Scan));
+    }
+
+    /// T-287, Q-301. The reader is where the substitution has to hold: a
+    /// transcript that paginated as its markup would put cue numbers and arrow
+    /// timestamps on the sheet, into the search index, and onto a quote card.
+    #[test]
+    fn a_transcript_is_read_as_its_speech_and_carries_when_each_line_was_said() {
+        let srt = "1
+00:00:00,000 --> 00:00:03,200
+He came up from Wexford.
+
+                   2
+00:00:03,200 --> 00:00:07,400
+I asked him twice.
+";
+        let reader = Reader::open_text(srt.to_owned()).expect("a transcript should read");
+
+        let page = reader.page(1).expect("page one");
+        let PageContent::Plain(shown) = &page.content else {
+            panic!("a transcript is plain text on paper");
+        };
+        assert_eq!(shown, "He came up from Wexford.
+I asked him twice.");
+        assert!(!shown.contains("-->"), "the packaging is not the speech");
+
+        // And the moment each line was said crosses beside it, rebased into
+        // the page — which is what a citation is built from.
+        assert_eq!(page.cues.len(), 2);
+        assert_eq!(page.cues[0].offset, 0);
+        assert_eq!(page.cues[0].at, 0.0);
+        assert_eq!(&shown[page.cues[1].offset..][..7], "I asked");
+        assert_eq!(page.cues[1].at, 3.2);
+
+        // The index reads the same words, so searching a recording cannot
+        // match on a timestamp nobody said.
+        assert_eq!(
+            reader.read_text()[0],
+            PageText::Text("He came up from Wexford.
+I asked him twice.".into())
+        );
+    }
+
+    /// The units the offset is in, which is the one thing a byte count and a
+    /// DOM caret disagree about the moment a transcript stops being ASCII.
+    #[test]
+    fn a_cue_offset_is_counted_the_way_the_caret_that_reads_it_counts() {
+        // Four accented characters ahead of the second cue: two bytes each in
+        // UTF-8 and one code unit each in a JavaScript string.
+        let srt = "1\n00:00:01,000 --> 00:00:02,000\nr\u{e9}pondit-il tr\u{e8}s t\u{f4}t \u{e0}\n\n\
+                   2\n00:00:05,000 --> 00:00:06,000\nand then in English\n";
+        let reader = Reader::open_text(srt.to_owned()).expect("a transcript should read");
+        let page = reader.page(1).expect("page one");
+        let PageContent::Plain(shown) = &page.content else {
+            panic!("a transcript is plain text on paper");
+        };
+
+        let second = page.cues[1].offset;
+        let utf16: Vec<u16> = shown.encode_utf16().collect();
+        let from_there = String::from_utf16(&utf16[second..]).expect("valid");
+        assert!(
+            from_there.starts_with("and then"),
+            "cited from {from_there:?}"
+        );
+        // And the byte offset would not have been, which is what makes the
+        // conversion load-bearing rather than tidy.
+        assert_ne!(second, shown.find("and then").expect("present"));
+    }
+
+    /// The other half of the same rule, and the one that protects everything
+    /// else: an ordinary text file must not lose a line to the cue parser.
+    #[test]
+    fn a_text_file_that_merely_mentions_an_arrow_is_read_whole() {
+        let notes = "the flow is A --> B
+and back again
+";
+        let reader = Reader::open_text(notes.to_owned()).expect("a text file should read");
+        let page = reader.page(1).expect("page one");
+        let PageContent::Plain(shown) = &page.content else {
+            panic!("a text file is plain text");
+        };
+        assert_eq!(shown, notes);
+        assert!(page.cues.is_empty());
     }
 
     #[test]
