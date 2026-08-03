@@ -48,6 +48,7 @@ import {
   looksLikeFileUrl,
   readHtml,
   resolveAgainst,
+  tooMuchForANote,
   type BoardPoint,
   type Ingested,
 } from "@/app/ingest";
@@ -760,7 +761,49 @@ export class Paste {
       const out = await this.fromPage(text);
       if (out.length > 0) return out;
     }
+    if (tooMuchForANote(text)) {
+      const out: Ingested[] = [];
+      await this.asManuscript(out, text);
+      if (out.length > 0) return out;
+    }
     return [{ kind: "text", text }];
+  }
+
+  /**
+   * Text that will not fit on a note, as the document it already is — T-294.
+   *
+   * A note is a thing you take in at a glance, and four thousand words is not
+   * one. It is also, until this, four thousand words *lost*: `.paper-text` is
+   * `overflow: hidden` and a note stops growing, so everything past the paper
+   * was held in the document and shown nowhere, with nothing on screen saying
+   * so. `tooMuchForANote` is that exact bound rather than a number chosen
+   * beside it.
+   *
+   * **Through the store, like every other document on this board.** The bytes
+   * are offered to `assetIngestBytes` as `text/plain` and `accept` picks the
+   * object from what the shell sniffs, so a manuscript arrives as the same
+   * manilla folder a `.txt` dragged in from Explorer becomes — paginated by the
+   * same reader (D-60), searchable by the same index (T-280), quotable by the
+   * same rectangle (T-282). Nothing here knows it is making a folder, which is
+   * why it cannot make a *different* folder from the one the file road makes.
+   *
+   * It arrives with no name, and that is honest: nobody named it. `caseNumber`
+   * writes the hash's first eight characters on the tab, which is what the
+   * store already calls the file and is the same case number on every machine
+   * holding it.
+   *
+   * A refusal falls back to the note. The one that can really happen is the
+   * paste ceiling — a clipboard holding a hundred megabytes of text — and a
+   * clipped note is a worse object than a folder but a better one than nothing.
+   * `accept` has already said why, if the reason was the board's.
+   */
+  private async asManuscript(out: Ingested[], text: string): Promise<void> {
+    try {
+      const bytes = new TextEncoder().encode(text);
+      this.accept(out, await this.options.native.assetIngestBytes(bytes, "text/plain"), "that text");
+    } catch (error) {
+      console.warn("[paste] a long paste could not be kept as a document", error);
+    }
   }
 
   /**

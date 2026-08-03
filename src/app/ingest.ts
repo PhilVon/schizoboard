@@ -152,6 +152,46 @@ function clamp(value: number, low: number, high: number): number {
   return Math.min(high, Math.max(low, value));
 }
 
+/**
+ * A note is a thing you take in at a glance, and this is the size of a glance —
+ * T-294, Q-316.
+ *
+ * Two hundred words, which is about a third of what a note's paper will
+ * actually hold. Deliberately: the paper's own bound is where a note starts
+ * *losing* text, and by then it has long since stopped being a scrap somebody
+ * takes in — it is eighty lines of prose pinned to a corkboard, which is a
+ * document that has not been recognised as one.
+ */
+const A_GLANCE_WORDS = 200;
+
+/**
+ * Is this too much text to be a note? — T-294.
+ *
+ * **Two bounds, and a paste past either one is a document.**
+ *
+ * The first is the glance, above, and it is the rule: a note is something you
+ * read without deciding to. The second is the note's own paper — `.paper-text`
+ * is `overflow: hidden` and a note stops growing at [`NOTE_MAX_H`], past which
+ * the text is not merely off the bottom but unreachable, held in the document
+ * in a view that will never show it.
+ *
+ * The paper bound is not redundant, because words and lines do not measure the
+ * same thing. Two hundred words of prose is a third of a full note; a hundred
+ * "words" of base64 or of one enormous unbroken line is over the paper and
+ * under the glance, and would clip silently with the word count perfectly
+ * happy. So the two are asked together, and neither is a number the other can
+ * be derived from.
+ */
+export function tooMuchForANote(text: string): boolean {
+  return wordsIn(text) > A_GLANCE_WORDS || noteSizeFor(text).h >= NOTE_MAX_H;
+}
+
+/** Whitespace-separated runs, which is what a person means by "words" here. */
+function wordsIn(text: string): number {
+  const trimmed = text.trim();
+  return trimmed === "" ? 0 : trimmed.split(/\s+/).length;
+}
+
 /** "Note, sized to the text, up to a max width then wrapping" — DESIGN 3.1. */
 export function noteSizeFor(text: string): { w: number; h: number } {
   const lines = text.split("\n");

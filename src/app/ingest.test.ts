@@ -16,6 +16,7 @@ import {
   looksLikeFileUrl,
   looksLikeImageUrl,
   noteSizeFor,
+  tooMuchForANote,
   type Ingested,
 } from "@/app/ingest";
 import { FRAME_BOTTOM, FRAME_SIDE, PHOTO_MAX_EDGE, polaroidFor } from "@/lib/polaroid";
@@ -105,6 +106,40 @@ describe("noteSizeFor", () => {
     const blank = noteSizeFor("");
     expect(blank.w).toBeGreaterThan(0);
     expect(blank.h).toBeGreaterThan(0);
+  });
+});
+
+/** T-294, Q-316. Where a note stops being a note. */
+describe("tooMuchForANote", () => {
+  it("leaves anything you could take in at a glance alone", () => {
+    expect(tooMuchForANote("")).toBe(false);
+    expect(tooMuchForANote("a scrap")).toBe(false);
+    // Forty lines of three words is an ordinary paste of notes.
+    expect(tooMuchForANote("a line of notes\n".repeat(40))).toBe(false);
+    expect(tooMuchForANote("word ".repeat(200))).toBe(false);
+  });
+
+  it("calls two hundred words the edge of a glance", () => {
+    // Q-316's answer. It is about a third of what the paper would hold, and
+    // deliberately: by the time a note is losing text it stopped being a scrap
+    // somebody takes in a long way back.
+    expect(tooMuchForANote("word ".repeat(201))).toBe(true);
+    // And that really is well inside the paper, so it is the glance deciding
+    // and not the clipping.
+    expect(noteSizeFor("word ".repeat(201)).h).toBeLessThan(2000);
+  });
+
+  it("also refuses what the paper cannot hold, however few words it is", () => {
+    // Words and lines do not measure the same thing. A hundred "words" of
+    // base64 is under the glance and over the paper, and would clip silently
+    // with the word count perfectly happy.
+    const base64ish = `${"QUJDREVGR0hJSktMTU5PUFFSU1RVVldYWVph".repeat(4)} `.repeat(100);
+    expect(base64ish.trim().split(/\s+/).length).toBeLessThan(200);
+    expect(tooMuchForANote(base64ish)).toBe(true);
+
+    // The same thing with no spaces at all, which a rule counting `\n` or words
+    // would call a one-word note.
+    expect(tooMuchForANote("x".repeat(6000))).toBe(true);
   });
 });
 

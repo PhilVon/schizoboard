@@ -81,8 +81,11 @@ class FakeNative {
   /** Flip off to model bytes that claim to be an image and are not. */
   decodes = true;
 
+  /** A shell that will not take bytes — the paste ceiling, in practice. */
+  bytesThrow = false;
   async assetIngestBytes(bytes: Uint8Array, mime?: string): Promise<AssetMeta> {
     this.calls.push({ method: "bytes", arg: { length: bytes.length, mime } });
+    if (this.bytesThrow) throw new Error("too big to hand over in one piece");
     return this.meta(`b${bytes.length}`, mime, bytes.length);
   }
   async assetIngestPath(path: string): Promise<AssetMeta> {
@@ -372,6 +375,63 @@ describe("what wins", () => {
     expect(items).toHaveLength(1);
     expect(items[0]).toMatchObject({ type: "note", assetId: null });
     expect(items[0]!.text).toBe("the string is the product");
+  });
+
+  /**
+   * T-294. A note is a thing you take in at a glance, and four thousand words
+   * is not one — it is a document that arrived without a file.
+   */
+  describe("a paste too long to be a note", () => {
+    /** Past the note's own paper, which is where `tooMuchForANote` draws it. */
+    const manuscript = "a line of the manuscript\n".repeat(200);
+
+    it("makes a document of it, through the store like every other document", async () => {
+      await firePaste({ text: manuscript });
+
+      const made = itemsOnBoard()[0]!;
+      // An asset, so it is the same manilla folder a `.txt` dragged in from
+      // Explorer becomes — paginated, searchable and quotable by the machinery
+      // that already exists rather than by a second copy of it.
+      expect(made.assetId).not.toBeNull();
+      expect(made.text).toBe("");
+      // Offered to the shell as text, and the object is chosen from what the
+      // *shell* sniffs — nothing on this side decides it is a folder.
+      const ingested = native.calls.find((c) => c.method === "bytes");
+      expect(ingested?.arg).toMatchObject({ mime: "text/plain" });
+    });
+
+    it("leaves a paste the paper can hold as a note", async () => {
+      // The guard, and it is the one that would fail silently: a threshold of
+      // zero would turn every note on this board into a case file.
+      await firePaste({ text: "a line of the manuscript\n".repeat(20) });
+      const made = itemsOnBoard()[0]!;
+      expect(made.type).toBe("note");
+      expect(made.assetId).toBeNull();
+    });
+
+    it("falls back to the note when the shell will not hold it", async () => {
+      const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+      // The one that really happens: a clipboard holding a hundred megabytes of
+      // text, past the paste ceiling. A clipped note is a worse object than a
+      // folder and a better one than nothing.
+      native.bytesThrow = true;
+      await firePaste({ text: manuscript });
+
+      const made = itemsOnBoard()[0]!;
+      expect(made.type).toBe("note");
+      expect(made.text).toBe(manuscript.trim());
+      expect(warn).toHaveBeenCalled();
+      warn.mockRestore();
+    });
+
+    it("still reads a long paste for a URL first", async () => {
+      // Order matters: a manuscript is what text becomes when it is *not* one of
+      // the things above it, and a very long URL is still a URL.
+      const long = `https://e.com/${"a".repeat(4000)}.png`;
+      await firePaste({ text: long });
+      expect(itemsOnBoard()[0]!.type).toBe("polaroid");
+      expect(native.calls.some((c) => c.method === "url")).toBe(true);
+    });
   });
 
   it("fetches a bare image URL, and keeps the address when it cannot", async () => {
