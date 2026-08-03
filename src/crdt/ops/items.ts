@@ -29,6 +29,14 @@ export interface CreateItemInput {
   h: number;
   assetId?: string | null;
   /**
+   * Where this came from on the web — T-290, Q-305, and see `ItemFields`.
+   *
+   * Set only by the paste that makes an object standing in for a page it could
+   * not bring onto the board. Everything else leaves it undefined and gets a
+   * null, which is what a photograph out of a clipboard honestly has.
+   */
+  source?: string | null;
+  /**
    * Metadata for `assetId`, registered in the same transaction.
    *
    * DATA-MODEL section 10 keeps `{w, h, mime, size, origName}` in the document
@@ -285,6 +293,11 @@ export function createItems(
       item.set("z", z);
       item.set("seed", seed);
       item.set("assetId", input.assetId ?? null);
+      // Written only when there is one, rather than a null on every item ever
+      // created: a key that is absent and a key holding null read identically
+      // through `readItem`, and the document is smaller for the millions of
+      // items that will never have a source.
+      if (input.source) item.set("source", input.source);
       // Y.Text and Y.Map because two people can type into the same note, and
       // adjust different style properties, without clobbering each other.
       item.set("text", new Y.Text(input.text ?? ""));

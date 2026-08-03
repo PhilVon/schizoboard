@@ -47,7 +47,7 @@ doc.getMap('boardInk')  // tileKey  → Y.Map<strokeId, Y.Map>
 items: {
   [itemId]: Y.Map {
     type, x, y, rot, w, h, z, seed,
-    assetId,
+    assetId, source,
     text:    Y.Text,
     style:   Y.Map,
     strokes: Y.Map<strokeId, Y.Map>,
@@ -65,6 +65,7 @@ items: {
 | `z` | plain string | Fractional index (§7). |
 | `seed` | plain number | Drives all deterministic per-item variation: scatter rotation, paper grain offset, edge raggedness, ageing, handwriting jitter. Assigned once at creation, never changed. |
 | `assetId` | plain string \| null | SHA-256 hex. |
+| `source` | plain string \| null | Where a pasted link came from — T-290, Q-305. **Written only on an object standing in for a page it could not bring onto the board**, and absent on everything else: a photograph came from a clipboard, a note from somebody's hands, a case file from a disk, and none of those has a source in this sense. The address is in the caption too, and the caption is not good enough to open — that is text the person can edit, so the link would be destroyed by rewriting the words around it. On the wire rather than local, because a peer opening the same link is the whole point of a shared board. The key is **omitted rather than set to null** when there is none; `readItem` reads absent and null identically, and a document of a million items should not carry a million nulls. |
 | `text` | **`Y.Text`** | Note body or polaroid caption. Character-level concurrent editing. |
 | `style` | **`Y.Map`** | `paperStock`, `tint`, `tapeStyle`, `fontFamily`, `torn` — the five `lib/style.ts` defines and `setItemStyle` can write. A `Y.Map` so two people adjusting different properties don't clobber each other. This row also listed `fontSize` and `agingEnabled` until a re-survey found neither had ever existed: no reader, no writer, and nothing in DESIGN asking for a per-item text size or a per-item ageing switch. They are struck rather than left as a promise. |
 | `strokes` | **`Y.Map`** | Nested deliberately — see below. |
