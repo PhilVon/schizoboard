@@ -396,9 +396,25 @@ export interface BundleManifest {
   title: string;
   /** What is *in the archive* — never what the board wished were in it. */
   assets: string[];
+  /**
+   * Which file this is, when it has been written at least once (T-359).
+   *
+   * Absent on every `.schizo` written before T-356, and absent is a perfectly
+   * good answer: it means nothing here has claimed this file yet.
+   */
+  packId?: string;
 }
 
 export interface BundleWritten {
+  /**
+   * Which file this now is (T-359).
+   *
+   * Minted by Rust when the caller had none, which for `bundleSaveAs` is
+   * always: a copy is a different board, and two files sharing a pack id are
+   * two files the register cannot tell apart. This side never supplies one —
+   * see `BundleSpec`.
+   */
+  packId: string;
   embedded: number;
   /** Referenced by the board and not on this disk, so not in the file. */
   missing: string[];
@@ -426,8 +442,16 @@ export interface BundleOpened {
   manifest: BundleManifest;
   /** The document the bundle holds, opaque — applying it is the caller's. */
   snapshot: Uint8Array;
-  /** Hashes now in this machine's store. */
+  /** Hashes that arrived out of this archive just now. */
   ingested: string[];
+  /**
+   * Hashes this machine already held, whose entries were never read (T-359).
+   *
+   * Separate from `ingested` because Rust acts on the difference — variants are
+   * rebuilt for what came in, and rebuilding them for these would decode every
+   * picture on the board on every open.
+   */
+  already: string[];
   /** Listed by the manifest and not actually in the archive. */
   missing: string[];
 }
