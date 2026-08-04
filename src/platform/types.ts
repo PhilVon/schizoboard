@@ -987,6 +987,25 @@ export interface Platform {
    * same decision written down twice. `false` on a board with no file.
    */
   boardWorthTidying(): Promise<boolean>;
+  /**
+   * Whether the workshop has moved since this board's file was last written
+   * (T-370).
+   *
+   * **The question a boot could not ask.** A quit lands the document — the log
+   * takes it within 200 ms and `Persistence` flushes on `pagehide` too — but the
+   * *pack* is only written on an idle interval, a switch or the way out, and an
+   * edit made inside that last batch never reaches it. That was accepted (D-67
+   * risk 5: "a quit loses at most one idle interval of the pack, never of the
+   * document") and it stops being acceptable one step later: the next launch
+   * reads the workshop, which is right, and then nothing rewrites the file until
+   * somebody edits the board again. A board quit on and never touched again has
+   * a file that is a session behind, and the file is the thing you hand over.
+   *
+   * The shell has recorded the answer since T-370 — it sees every workshop write
+   * and every pack write — so this costs no disk, and [`Pack.catchUp`] is the one
+   * caller. `false` on a board with no file of its own.
+   */
+  boardWorkshopAhead(): Promise<boolean>;
 
   // --- export (T-207, T-206) ----------------------------------------------
   /**

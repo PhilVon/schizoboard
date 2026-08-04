@@ -485,6 +485,14 @@ export class MockPlatform implements Platform {
     return false;
   }
 
+  // And nothing for a workshop to be ahead of, for the same reason. Answers
+  // rather than refusing on the same standing as the row above: its caller runs
+  // at every boot, and a throw here would put an error in the console of every
+  // browser session about a file that does not exist.
+  async boardWorkshopAhead(): Promise<boolean> {
+    return false;
+  }
+
   /**
    * The name the next image export will be offered under.
    *

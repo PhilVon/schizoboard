@@ -278,6 +278,58 @@ export class Pack {
   }
 
   /**
+   * Catch up a file the last session left behind (T-370).
+   *
+   * ## What this closes
+   *
+   * `wrote()` is the only thing that arms this tier, and it only ever fires
+   * within a session. So a board whose last edit landed inside `Persistence`'s
+   * 200 ms batch and was then quit on reaches the *workshop* and not the pack —
+   * D-67 risk 5 anticipated exactly that and called it acceptable, "a quit loses
+   * at most one idle interval of the pack, never of the document".
+   *
+   * It stops being acceptable at the next launch. The workshop is read, which is
+   * right, and then **nothing rewrites the file until somebody edits the board
+   * again** — so a board quit on and never touched again keeps a file that is a
+   * session behind, indefinitely, with nothing on screen saying so. That file is
+   * the one somebody copies onto a stick.
+   *
+   * ## Why the shell is asked rather than the document inspected
+   *
+   * The honest question is "has the workshop moved since the pack was last
+   * written", and this side cannot answer it: the document in memory knows what
+   * it holds and not what the file holds, and reading the pack back to find out
+   * costs the read this is trying to avoid. The shell sees both events, so it
+   * has recorded the answer since T-370 and this is one boolean.
+   *
+   * A content digest carried in the pack was the other road and was rejected on
+   * the way out of the building: computing one means `crypto.subtle`, which is
+   * async, and the flush that matters most here is the `pagehide` one — whose
+   * whole survival argument is being *issued* rather than awaited. An await that
+   * may hop a task boundary in front of that invoke would make the quit less
+   * likely to land the flush, which is the bug.
+   *
+   * ## Arming rather than flushing
+   *
+   * It goes through `wrote()`, so the catch-up lands on the ordinary idle timer
+   * and takes the ordinary road. Boot is the most contended moment in the
+   * session and this is housekeeping for a file nobody is waiting on.
+   *
+   * Never throws: a shell that cannot answer leaves the file exactly as stale as
+   * it already was, and the first edit of this session arms the tier anyway.
+   */
+  async catchUp(): Promise<void> {
+    // Something has already moved the document this session, so the flush is
+    // owed for a better reason than this one and asking would tell us nothing.
+    if (this.stopped || this.behind) return;
+    try {
+      if (await this.native.boardWorkshopAhead()) this.wrote();
+    } catch (error) {
+      console.warn("[pack] whether that board's file is up to date could not be established", error);
+    }
+  }
+
+  /**
    * Write the file now and settle when it has been written.
    *
    * The one to await before a switch. D-67 fixes the order and it is

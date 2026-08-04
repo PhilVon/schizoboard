@@ -727,4 +727,109 @@ describe("when the board's own file is rewritten", () => {
     await vi.advanceTimersByTimeAsync(IDLE);
     expect(shell.calls()).toBe(2);
   });
+
+  /**
+   * T-370. Every other test in this block is about a session that is running;
+   * this one is about the session before it.
+   *
+   * `wrote()` is the only thing that arms this tier, and it only fires within a
+   * session — so a board whose last edit reached the workshop and not the pack
+   * came back with nothing to arm anything, and the file stayed a session behind
+   * for as long as nobody touched the board. D-67 risk 5 accepted losing "at
+   * most one idle interval of the pack"; what it did not anticipate is that the
+   * next launch had no way to notice, so the loss was permanent rather than
+   * momentary.
+   */
+  describe("and catching up a file the last session left behind", () => {
+    /** A shell that has already been asked, or refuses to say. */
+    function launching(ahead: boolean | Error) {
+      const boardFlush = vi.fn(async () => WROTE);
+      const boardWorkshopAhead = vi.fn(async () => {
+        if (ahead instanceof Error) throw ahead;
+        return ahead;
+      });
+      return {
+        native: { boardFlush, boardWorkshopAhead } as unknown as Platform,
+        flushes: () => boardFlush.mock.calls.length,
+        asked: () => boardWorkshopAhead.mock.calls.length,
+      };
+    }
+
+    /** AC-1039, on this side of the boundary: the launch is what catches it up. */
+    it("writes the file when the last session left the workshop ahead of it", async () => {
+      const shell = launching(true);
+      const pack = new Pack(board(PHOTO), shell.native, { idleMs: IDLE });
+
+      await pack.catchUp();
+
+      // Armed rather than written — boot is the most contended moment in the
+      // session, and this is housekeeping for a file nobody is waiting on.
+      expect(pack.pending).toBe(true);
+      expect(shell.flushes()).toBe(0);
+      await vi.advanceTimersByTimeAsync(IDLE);
+      expect(shell.flushes()).toBe(1);
+    });
+
+    /**
+     * AC-1040, and the whole reason there is a recorded answer rather than an
+     * unconditional flush at boot. Appending a generation every launch would
+     * grow the file forever for a board nobody had touched.
+     */
+    it("leaves the file alone when the launch changed nothing", async () => {
+      const shell = launching(false);
+      const pack = new Pack(board(PHOTO), shell.native, { idleMs: IDLE });
+
+      await pack.catchUp();
+
+      expect(shell.asked()).toBe(1);
+      expect(pack.pending).toBe(false);
+      await vi.advanceTimersByTimeAsync(IDLE * 3);
+      expect(shell.flushes()).toBe(0);
+    });
+
+    it("does not ask when this session has already moved the document", async () => {
+      const shell = launching(true);
+      const pack = new Pack(board(), shell.native, { idleMs: IDLE });
+      pack.wrote();
+
+      await pack.catchUp();
+
+      // The flush is owed for a better reason than this one, and the answer
+      // could not change what happens next.
+      expect(shell.asked()).toBe(0);
+      await vi.advanceTimersByTimeAsync(IDLE);
+      expect(shell.flushes()).toBe(1);
+    });
+
+    /**
+     * A board written by a newer build. `packSpec` walks its assets through a
+     * reader that cannot see a future item, so a file written from here would be
+     * missing photographs that are plainly on the board — and catching one up is
+     * writing it.
+     */
+    it("does not catch up a board this build may not write", async () => {
+      const shell = launching(true);
+      const pack = new Pack(board(PHOTO), shell.native, { idleMs: IDLE });
+      pack.seal();
+
+      await pack.catchUp();
+
+      expect(shell.asked()).toBe(0);
+      await vi.advanceTimersByTimeAsync(IDLE * 3);
+      expect(shell.flushes()).toBe(0);
+    });
+
+    it("leaves the file exactly as stale as it was when the shell cannot answer", async () => {
+      const shell = launching(new Error("the register would not open"));
+      const pack = new Pack(board(), shell.native, { idleMs: IDLE });
+
+      // Does not throw into boot, which is its one hard requirement: what failed
+      // is a question about a copy of a copy.
+      await expect(pack.catchUp()).resolves.toBeUndefined();
+
+      expect(pack.pending).toBe(false);
+      await vi.advanceTimersByTimeAsync(IDLE * 3);
+      expect(shell.flushes()).toBe(0);
+    });
+  });
 });
