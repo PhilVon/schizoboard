@@ -150,6 +150,29 @@ lopdf = { version = "0.44", default-features = false }
 # What is left is three small crates: `bitflags`, `memchr` and `unicase`.
 pulldown-cmark = { version = "0.13", default-features = false }
 
+# --- reading a docx and an epub (T-353, T-354) ------------------------------
+# Both formats are XML inside a zip, and the `zip` half is already above. This
+# is the other half, and it is an *import* rather than a build: quick-xml is
+# already in the tree at this version, pulled in by `plist` behind `tauri`, so
+# naming it here adds a line to this file and nothing to the binary.
+#
+# Hand-rolling was never the option it looks like. WordprocessingML is real XML
+# with namespaces, entities and attribute order that carries meaning, and an
+# epub adds a container descriptor and a package manifest on top — which is
+# `bundle.rs`'s argument for depending on `zip` rather than writing one, in a
+# second format.
+#
+# A pull parser and not a tree, for `pulldown-cmark`'s reason exactly (T-346):
+# what comes out of these readers is `prose::Reading`, which is a flat string
+# built by walking events in order, and a DOM would mean building a document
+# only to walk it once and throw it away.
+#
+# `default-features = false` drops `encoding`, which reads the eight-bit
+# codepages an XML declaration can name. Both of these formats are UTF-8 by
+# specification — OPC requires it and EPUB requires UTF-8 or UTF-16 — so that
+# feature is a character-set zoo for files neither format permits.
+quick-xml = { version = "0.41", default-features = false }
+
 # --- the embedded relay (T-69) ----------------------------------------------
 # The relay holds a real document, because a y-websocket server has to answer a
 # state vector with the difference — and because ARCHITECTURE section 5.1 wants

@@ -2974,26 +2974,40 @@ mod tests {
         assert_eq!(sniff_mime(&zipped(&[])), None);
     }
 
-    /// AC-975. The gate is open and the extractors are T-353 and T-354, so
-    /// until then a folder has nothing written where its thickness goes — and
-    /// the reader says which of the two kinds of bad news it is.
+    /// AC-975, narrowed by T-353. The gate opened for both containers and the
+    /// extractors landed one at a time, so this now asserts the *seam*: a docx
+    /// reads, an epub does not yet, and the one that does not says which kind
+    /// of bad news it is rather than reporting a broken file.
+    ///
+    /// T-354 deletes the epub half of this, and when it does, `Error::Unreadable`
+    /// has no producer left and should go with it.
     #[test]
-    fn a_container_this_build_cannot_read_yet_is_a_folder_with_no_thickness() {
-        let docx = ooxml("word/document.xml");
-        assert_eq!(crate::document::probe(&docx, DOCX, false), None);
-        assert_eq!(crate::document::probe(&epub(), EPUB, false), None);
-        assert_eq!(extension_for(DOCX), "docx");
-        assert_eq!(extension_for(EPUB), "epub");
-
-        // And the reader refuses it by name rather than handing a zip to lopdf,
-        // which would report a broken file about a file that is not broken.
+    fn the_container_without_an_extractor_yet_says_so_rather_than_breaking() {
         let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("memo");
-        std::fs::write(&path, &docx).unwrap();
+        let both = dir.path();
+
+        // Named the way a store names them, which is to say not at all: these
+        // go through `sniff_path`, so the extension is irrelevant and that is
+        // the point.
+        std::fs::write(both.join("memo"), ooxml("word/document.xml")).unwrap();
+        std::fs::write(both.join("book"), epub()).unwrap();
+
+        // The half T-353 landed.
+        let reader = crate::document::Reader::open(&both.join("memo"), false);
+        assert!(reader.is_ok(), "a docx reads now");
+
+        // The half still to come, and it is `Unreadable` rather than
+        // `Malformed`: the file is a perfectly good document that a later build
+        // will read, and saying it is broken would be the wrong news.
         assert!(matches!(
-            crate::document::Reader::open(&path, false),
+            crate::document::Reader::open(&both.join("book"), false),
             Err(crate::document::Error::Unreadable)
         ));
+        assert_eq!(crate::document::probe(&epub(), EPUB, false), None);
+
+        // Both leave the store under a name their own application opens.
+        assert_eq!(extension_for(DOCX), "docx");
+        assert_eq!(extension_for(EPUB), "epub");
     }
 
     /// AC-968. A web page says so at its own start, and everything else that

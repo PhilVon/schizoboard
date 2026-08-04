@@ -433,10 +433,13 @@ impl Reader {
         // then the folder is on the wall with nothing written where its
         // thickness goes, which is the answer a PDF this build cannot parse has
         // always given.
-        if crate::assets::sniff_path(path)
-            .is_some_and(|mime| matches!(mime, crate::assets::EPUB | crate::assets::DOCX))
-        {
-            return Err(Error::Unreadable);
+        match crate::assets::sniff_path(path) {
+            Some(crate::assets::DOCX) => {
+                let bytes = std::fs::read(path).map_err(|e| Error::Malformed(e.to_string()))?;
+                return Reader::of_docx(&bytes);
+            }
+            Some(crate::assets::EPUB) => return Err(Error::Unreadable),
+            _ => {}
         }
         if crate::assets::sniff_path(path).is_some_and(|mime| mime.starts_with("text/")) {
             let bytes = std::fs::read(path).map_err(|e| Error::Malformed(e.to_string()))?;
@@ -467,6 +470,46 @@ impl Reader {
     /// Open text already decoded. The in-memory door for the other kind.
     pub fn open_text(text: String, markdown: bool) -> Result<Reader> {
         Reader::of_text(text, markdown)
+    }
+
+    /// Open a docx already in memory — T-353.
+    ///
+    /// Not the dispatching door either, for [`Reader::open_bytes`]'s reason:
+    /// its callers have already decided what they are holding.
+    pub fn open_docx(bytes: &[u8]) -> Result<Reader> {
+        Reader::of_docx(bytes)
+    }
+
+    /// **A container is read, and then it is a text file like any other.**
+    ///
+    /// The whole of what a docx costs this module. `docx::read` hands back the
+    /// same [`crate::prose::Reading`] a markdown file or an `.rtf` does — a
+    /// flat string with role spans over it — so from the line below there is no
+    /// docx any more: `text::paginate` tiles it on the same grid, a page
+    /// reference means the same thing, and `Reader::cut` works unchanged.
+    ///
+    /// Which is D-65 paying for itself a fourth time, and it is why the
+    /// extractor for the hardest format on this board is a hundred lines rather
+    /// than a subsystem.
+    fn of_docx(bytes: &[u8]) -> Result<Reader> {
+        let read = crate::docx::read(bytes)
+            .ok_or_else(|| Error::Malformed("no word/document.xml in the package".into()))?;
+        let pages = crate::text::paginate(&read.text);
+        if pages.len() > MAX_PAGES {
+            return Err(Error::TooLarge(format!(
+                "{} pages is more than this build will read",
+                pages.len()
+            )));
+        }
+        Ok(Reader {
+            inner: Inner::Plain {
+                text: read.text,
+                pages,
+                marks: Vec::new(),
+                roles: read.roles,
+            },
+            read: std::sync::atomic::AtomicUsize::new(0),
+        })
     }
 
     fn of_text(text: String, markdown: bool) -> Result<Reader> {
@@ -824,6 +867,23 @@ pub fn probe(bytes: &[u8], mime: &str, markdown: bool) -> Option<Probe> {
         // A title is `None` and always will be. A PDF has an information
         // dictionary in which the file states its own name; a text file has
         // nothing but its filename, which is already typed on the tab.
+        // A docx, counted over the words it will show — T-353. Same bargain
+        // every text substitution in this module makes: the record's count and
+        // the reader's pagination are the same number, or a folder is drawn
+        // thicker than what is written in it. Here the difference is not
+        // subtle, since the source is XML and the markup outweighs the writing.
+        crate::assets::DOCX => {
+            let read = crate::docx::read(bytes)?;
+            let pages = crate::text::page_count(&read.text);
+            (pages <= MAX_PAGES).then_some(Probe {
+                pages: pages as u32,
+                // A docx does state a title, in `docProps/core.xml`. Left for
+                // now rather than guessed at: `probe` is handed the bytes and
+                // `probe_path` is the route a title actually takes (Q-211), so
+                // adding it here would put the answer on the wrong road.
+                title: None,
+            })
+        }
         // A web page is refused before it becomes an item (D-66), so counting
         // its pages is work for a folder nobody will see — and a page count on
         // the record would be the one part of the board still claiming it is a
@@ -3700,6 +3760,63 @@ mod tests {
             reading.pages.iter().map(|p| p.index).collect::<Vec<_>>(),
             vec![1, 2, 3]
         );
+    }
+
+    // --- T-353: a docx read as its words --------------------------------------
+
+    /// The reader's own view, since `docx.rs` tests the parser and this tests
+    /// the container being opened *in the pipeline* — the half T-352 left as an
+    /// `Unreadable`.
+    #[test]
+    fn reads_a_docx_through_the_same_door_as_every_other_document() {
+        let docx = crate::docx::tests::package(concat!(
+            r#"<w:p><w:pPr><w:pStyle w:val="Heading1"/></w:pPr>"#,
+            r#"<w:r><w:t>The statement</w:t></w:r></w:p>"#,
+            r#"<w:p><w:r><w:t xml:space="preserve">He came on the </w:t></w:r>"#,
+            r#"<w:r><w:rPr><w:b/></w:rPr><w:t>Tuesday</w:t></w:r>"#,
+            // `preserve`, because the space is part of what was typed — a run
+            // without it says its edges are insignificant, which is XML's rule
+            // and which this fixture got wrong first time round.
+            r#"<w:r><w:t xml:space="preserve"> train.</w:t></w:r></w:p>"#,
+        ));
+
+        let reader = Reader::open_docx(&docx).expect("open");
+        let page = reader.page(1).unwrap();
+        let PageContent::Plain(text) = &page.content else {
+            panic!("a docx is a plain page carrying roles — D-65");
+        };
+        assert_eq!(text.trim(), "The statement
+
+He came on the Tuesday train.");
+        assert_eq!(page.roles.first().map(|s| s.role), Some(crate::prose::Role::Heading(1)));
+        assert!(page.roles.iter().any(|s| s.role == crate::prose::Role::Strong));
+    }
+
+    /// AC-980. The record's count and the reader's pagination are the same
+    /// number, and for a docx the gap is enormous: the source is XML, so the
+    /// markup outweighs the writing several times over.
+    #[test]
+    fn counts_a_docxs_pages_over_the_words_it_will_show() {
+        let body: String = (0..300)
+            .map(|n| format!(r"<w:p><w:r><w:t>Line {n} of the document.</w:t></w:r></w:p>"))
+            .collect();
+        let docx = crate::docx::tests::package(&body);
+
+        let probed = probe(&docx, crate::assets::DOCX, false).expect("a docx probes");
+        let reader = Reader::open_docx(&docx).expect("open");
+        assert_eq!(probed.pages as usize, reader.page_count());
+        assert!(probed.pages > 0);
+    }
+
+    /// AC-981. A package that is not a word processing document is bad news of
+    /// a kind the caller can act on, rather than a panic or an empty page.
+    #[test]
+    fn a_package_this_build_cannot_parse_says_so() {
+        assert!(matches!(
+            Reader::open_docx(b"not a zip"),
+            Err(Error::Malformed(_))
+        ));
+        assert_eq!(probe(b"not a zip", crate::assets::DOCX, false), None);
     }
 
     // --- T-350: an rtf read as its words -------------------------------------

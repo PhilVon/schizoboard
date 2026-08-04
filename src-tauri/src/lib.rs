@@ -42,6 +42,8 @@ pub mod markdown;
 pub mod prose;
 // An rtf read as its words rather than its control words (T-350).
 pub mod rtf;
+// A docx read as its words, out of the zip it arrives in (T-353).
+pub mod docx;
 mod media;
 // What a page says it is (T-289, Q-304). `pub` so the fetch that feeds it and
 // the command that answers with it can both name the type; the parser itself
