@@ -9,7 +9,13 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import * as Y from "yjs";
 
-import { boardSeed, initialiseBoard, openBoardDoc, snapshot, type BoardDoc } from "@/crdt/doc";
+import {
+  boardSeed,
+  initialiseBoard,
+  openBoardDoc,
+  snapshot,
+  type BoardDoc,
+} from "@/crdt/doc";
 import { createItems, setItemPoses } from "@/crdt/ops";
 import { TRACKED_ORIGINS } from "@/crdt/origins";
 import { Persistence } from "@/crdt/persistence";
@@ -22,10 +28,13 @@ class Store extends MockPlatform {
   appends = 0;
   compactions = 0;
   failing = false;
+  /** Runs while an append is in flight — the gap a late frame lands in. */
+  duringAppend: (() => void) | null = null;
 
   override async docAppendUpdate(bytes: Uint8Array): Promise<void> {
     this.appends += 1;
     if (this.failing) throw new Error("the disk said no");
+    this.duringAppend?.();
     return super.docAppendUpdate(bytes);
   }
 
@@ -42,11 +51,14 @@ class Store extends MockPlatform {
 }
 
 function polaroid(board: BoardDoc, x: number, y: number): string {
-  return createItems(board, [{ type: "polaroid", x, y, w: 300, h: 360 }])[0]!.itemId;
+  return createItems(board, [{ type: "polaroid", x, y, w: 300, h: 360 }])[0]!
+    .itemId;
 }
 
 /** A session: an empty document, opened against `store`. */
-async function session(store: Store): Promise<{ board: BoardDoc; persistence: Persistence }> {
+async function session(
+  store: Store,
+): Promise<{ board: BoardDoc; persistence: Persistence }> {
   const board = openBoardDoc();
   const persistence = new Persistence(board, store);
   await persistence.open();
@@ -91,7 +103,10 @@ describe("Persistence", () => {
     await new Persistence(second, store).open();
 
     expect(boardSeed(second)).toBe(boardSeed(first.board));
-    expect(readItem(id, second.items.get(id)!)).toMatchObject({ x: 120, y: -40 });
+    expect(readItem(id, second.items.get(id)!)).toMatchObject({
+      x: 120,
+      y: -40,
+    });
   });
 
   it("never writes back the frames it just read", async () => {
@@ -150,7 +165,9 @@ describe("Persistence", () => {
       const store = new Store();
       const errors: unknown[] = [];
       const board = openBoardDoc();
-      const persistence = new Persistence(board, store, { onError: (e) => errors.push(e) });
+      const persistence = new Persistence(board, store, {
+        onError: (e) => errors.push(e),
+      });
       await persistence.open();
       initialiseBoard(board);
 
@@ -173,7 +190,9 @@ describe("Persistence", () => {
       const store = new Store();
       const errors: unknown[] = [];
       const board = openBoardDoc();
-      const persistence = new Persistence(board, store, { onError: (e) => errors.push(e) });
+      const persistence = new Persistence(board, store, {
+        onError: (e) => errors.push(e),
+      });
       await persistence.open();
       store.failing = true;
 
@@ -281,7 +300,9 @@ describe("Persistence", () => {
       const store = new Unreadable();
       const errors: unknown[] = [];
       const board = openBoardDoc();
-      const persistence = new Persistence(board, store, { onError: (e) => errors.push(e) });
+      const persistence = new Persistence(board, store, {
+        onError: (e) => errors.push(e),
+      });
       await persistence.open();
 
       expect(persistence.readOnly).toBe(true);
@@ -368,6 +389,93 @@ describe("Persistence", () => {
   });
 
   /**
+   * The property a board switch is built on (T-358).
+   *
+   * `src-tauri/src/workshop.rs` swaps the store behind `doc_append_update` while
+   * the shell is running, so an append that arrives *after* the swap and belongs
+   * to the board *before* it would be written into the wrong board's log — a
+   * failure nothing would notice until the next launch, on a board that was
+   * never told.
+   *
+   * Nothing in Rust closes that, and nothing in Rust should: a lock there would
+   * serialise the append against the switch and then let the append win. It is
+   * closed here, by `close()` unsubscribing **before** it awaits `flush()` — and
+   * that order is the whole of it, which took a mutation to establish rather
+   * than a reading. `replaceWith` has leant on it since T-84; the switch is the
+   * second caller.
+   */
+  describe("closing", () => {
+    beforeEach(() => vi.useFakeTimers());
+    afterEach(() => vi.useRealTimers());
+
+    it("cannot be made to append after close resolves (T-358)", async () => {
+      const store = new Store();
+      const { board, persistence } = await session(store);
+      polaroid(board, 0, 0);
+      await persistence.close();
+
+      const afterClose = store.appends;
+      const inTheLog = await store.logLength();
+
+      // Everything a board still on screen can do between the switch and the
+      // reload: edits, and the timers that would have carried an earlier one.
+      polaroid(board, 100, 100);
+      setItemPoses(
+        board,
+        new Map([[polaroid(board, 5, 5), { x: 6, y: 6, rot: 0 }]]),
+      );
+      await persistence.flush();
+      await vi.advanceTimersByTimeAsync(10_000);
+
+      expect(store.appends).toBe(afterClose);
+      expect(await store.logLength()).toBe(inTheLog);
+    });
+
+    /**
+     * The edit that lands **while `close()` is awaiting its own flush**, which
+     * is the case the test above does not reach and the only one where the
+     * order inside `close()` is load-bearing.
+     *
+     * Unsubscribing second, that edit is still being listened for: it goes into
+     * `pending` and *arms a timer*. `close()` then returns, the board switches,
+     * the window has not reloaded yet — and the timer fires against a store
+     * that is now some other board's log. That is the wrong-log append in full,
+     * and it is why the two lines inside `close()` are in the order they are
+     * rather than in the order that reads better.
+     *
+     * Unsubscribing first, the edit is dropped from persistence's view before
+     * it can queue. It is lost either way — the board is going — and the
+     * difference is that one of them loses it quietly here and the other writes
+     * it down somewhere it does not belong.
+     */
+    it("an edit landing during close is not left armed behind it (T-358)", async () => {
+      const store = new Store();
+      const { board, persistence } = await session(store);
+      polaroid(board, 0, 0);
+
+      // The frame that lands mid-IPC. A real one arrives from the render loop
+      // or from a peer while the disk write is in flight; here it rides the
+      // await inside `flush()`, which is the same gap.
+      let landed = false;
+      store.duringAppend = () => {
+        if (landed) return;
+        landed = true;
+        polaroid(board, 900, 900);
+      };
+
+      await persistence.close();
+      expect(landed).toBe(true);
+
+      const afterClose = store.appends;
+      await vi.advanceTimersByTimeAsync(10_000);
+
+      // Nothing was left armed. Past this line the shell may point
+      // `doc_append_update` at another board's log.
+      expect(store.appends).toBe(afterClose);
+    });
+  });
+
+  /**
    * T-84's replace (Q-111): somebody else's document goes on the disk, and the
    * board still on screen must not get a word in edgeways on the way out.
    */
@@ -395,7 +503,10 @@ describe("Persistence", () => {
       Y.applyUpdate(next.doc, state.snapshot!);
       expect(next.meta.get("title")).toBe("Somebody else's board");
       expect(next.items.size).toBe(1);
-      expect(readItem([...next.items.keys()][0]!, [...next.items.values()][0]!)?.type).toBe("note");
+      expect(
+        readItem([...next.items.keys()][0]!, [...next.items.values()][0]!)
+          ?.type,
+      ).toBe("note");
     });
 
     /**
@@ -448,11 +559,15 @@ describe("Persistence", () => {
       const board = openBoardDoc();
       const persistence = new Persistence(board, store, { onError: () => {} });
       store.failing = true;
-      vi.spyOn(store, "docLoad").mockRejectedValueOnce(new Error("the disk said no"));
+      vi.spyOn(store, "docLoad").mockRejectedValueOnce(
+        new Error("the disk said no"),
+      );
       await persistence.open();
       expect(persistence.readOnly).toBe(true);
 
-      await expect(persistence.replaceWith(await elsewhere())).rejects.toThrow(/read-only/);
+      await expect(persistence.replaceWith(await elsewhere())).rejects.toThrow(
+        /read-only/,
+      );
       expect(store.compactions).toBe(0);
     });
   });

@@ -66,9 +66,11 @@ pub mod sync;
 // (T-298). `pub` because ingest asks it for a count and the reading surface
 // (T-275) will ask it for a page.
 pub mod text;
+mod workshop;
 
 use std::collections::HashSet;
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use serde::Serialize;
 use tauri::ipc::InvokeBody;
@@ -78,6 +80,7 @@ use tauri_plugin_window_state::StateFlags;
 
 use assets::{AssetMeta, AssetStore};
 use docstore::DocStore;
+use workshop::Workshop;
 
 // --- sync (T-69) -----------------------------------------------------------
 
@@ -1059,9 +1062,17 @@ async fn asset_gc(app: AppHandle, keep: Vec<String>) -> Result<GcReport, String>
 
 // --- the document log -------------------------------------------------------
 
-fn docstore_of(app: &AppHandle) -> docstore::Result<tauri::State<'_, DocStore>> {
-    app.try_state::<DocStore>()
-        .ok_or_else(|| docstore::Error::Unavailable("the document log failed to open".into()))
+/// The open board's log.
+///
+/// One indirection more than it used to be, and the indirection is the point:
+/// until T-356 there was one document per installation and this could hand out a
+/// `tauri::State<DocStore>` that was the same store for the life of the window.
+/// A board is a file now, and another one can be opened while the shell is
+/// running, so what is managed is the *workshop* and the store comes out of it.
+fn docstore_of(app: &AppHandle) -> docstore::Result<Arc<DocStore>> {
+    app.try_state::<Workshop>()
+        .ok_or_else(|| docstore::Error::Unavailable("the document log failed to open".into()))?
+        .store()
 }
 
 /// Fire-and-forget from the frontend's side, and already a batch by the time it
@@ -1395,7 +1406,6 @@ pub fn run() {
         .setup(|app| {
             let data = data_root(app.path().app_data_dir()?);
             app.manage(AssetStore::new(data.join("assets"))?);
-            app.manage(DocStore::new(data.join("doc"))?);
             // Beside the document rather than inside it, which is what Q-75
             // settled: the secret is about who may reach this board, not about
             // what is on it, and a document handed to somebody as a bundle
@@ -1414,12 +1424,21 @@ pub fn run() {
             // and an older binary would still find the same log. See `board.rs`.
             let boards = board::BoardStore::new(data.join("boards.json"))?;
             if let Err(error) = boards.adopt_legacy(&data) {
-                // Not fatal, and deliberately: the board still opens, out of the
-                // same `doc/` it always did, in whatever room `app/sync.ts`
-                // resolves without an answer from here. What is lost is the
-                // register, which the next launch will try to build again.
+                // Not fatal, and deliberately: `ensure_current` below still
+                // gives this window a board to be on. What is lost is the room
+                // the old `board-id` file named, which the next launch will try
+                // to take up again — the document itself has not moved and is
+                // not at risk either way.
                 eprintln!("board: this installation's board could not be taken up: {error}");
             }
+            // Which document this window writes to. Fallible, and fatal if it
+            // fails: a window with no workshop is a window whose every edit
+            // would be refused, and `setup` returning the error is how that
+            // becomes a shell that does not start rather than a board that
+            // silently is not being saved.
+            let workshop = Workshop::new(data.clone());
+            workshop.switch(&boards.ensure_current()?)?;
+            app.manage(workshop);
             app.manage(boards);
             app.manage(Hosting::default());
             app.manage(PendingInvite::default());
