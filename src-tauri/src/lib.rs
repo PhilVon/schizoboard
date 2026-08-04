@@ -1894,7 +1894,33 @@ pub fn run() {
             // becomes a shell that does not start rather than a board that
             // silently is not being saved.
             let workshop = Workshop::new(data.clone());
-            workshop.switch(&boards.ensure_current()?)?;
+            let entry = boards.ensure_current()?;
+            // **The same road a switch takes, and that is the whole of T-371.**
+            //
+            // This was `workshop.switch(&entry)?` and nothing else, which left
+            // two ways of opening a board that disagreed about where one comes
+            // from. `board_open` seeds an *empty* workshop from the board's
+            // pack; boot did not. So an installation whose register still named
+            // a board, whose pack was intact, and whose workshop directory had
+            // gone — a cleanup tool, a quarantine, a partial restore — opened an
+            // empty board and then wrote the emptiness back, because
+            // `initialiseBoard`'s own meta write reaches the disk and the flush
+            // five seconds later put an empty document in the file.
+            //
+            // `take_up` is already exactly right and always was: the workshop
+            // wins when it has anything in it, the pack seeds it when it does
+            // not. What was wrong is that this line was not going through it.
+            if let Err(error) = take_up(&workshop, store_of(app.handle())?.inner(), &entry) {
+                // The seed may fail; the switch may not. A pack that will not
+                // read leaves an empty workshop, which is a board somebody can
+                // work on — where a shell that refuses to start is not. The
+                // retry below is what keeps the fatal half fatal: a window with
+                // no workshop is a window whose every edit would be refused, and
+                // `setup` returning the error is how that becomes a shell that
+                // does not start rather than a board silently not being saved.
+                eprintln!("board: that board's file could not be taken up at boot: {error}");
+                workshop.switch(&entry)?;
+            }
             app.manage(workshop);
             app.manage(boards);
             app.manage(Hosting::default());
@@ -2238,6 +2264,88 @@ mod tests {
             title: "Case one".to_string(),
             assets: Vec::new(),
         }
+    }
+
+    /// T-371, AC-1041, at the level a unit test can reach.
+    ///
+    /// The defect was not in `take_up` — it was that boot did not go through
+    /// it, so this asserts the composition boot now performs: a register entry,
+    /// an intact pack, and no workshop at all yields a board with the pack's
+    /// document in it rather than an empty one. The wiring in `setup` itself is
+    /// a Tauri closure and is verified by driving.
+    ///
+    /// With generations, because that is what a pack that has been *lived in*
+    /// looks like (T-366) and it is the newest one that has to come back.
+    #[test]
+    fn a_board_whose_workshop_has_gone_comes_back_from_its_pack() {
+        let dir = tempfile::tempdir().unwrap();
+        let data = dir.path();
+        let assets = AssetStore::new(data.join("assets")).unwrap();
+        let pack = data.join("case one.schizo");
+        let id = board::mint_pack_id();
+
+        bundle::write(&assets, &pack_spec(), Some(&id), b"as of the export", &pack).unwrap();
+        bundle::append(&assets, &pack_spec(), &id, b"an afternoon of work", &pack).unwrap();
+
+        // The register survived and the workshop directory did not — a cleanup
+        // tool, a quarantine, half a restore.
+        let entry = board::Entry {
+            pack_id: id,
+            board_id: board::mint_board_id(),
+            path: Some(pack),
+            workshop: PathBuf::from("boards/board-one"),
+            title: "Case one".into(),
+            last_opened: 0,
+        };
+        assert!(!data.join("boards/board-one").exists());
+
+        let workshop = Workshop::new(data.to_path_buf());
+        let taken = take_up(&workshop, &assets, &entry).unwrap();
+
+        assert!(taken.seeded, "the pack was not read");
+        let state = workshop.store().unwrap().load().unwrap();
+        // The newest generation, not the base snapshot. Before T-371 this whole
+        // path was skipped at boot and the board opened empty — and then wrote
+        // the emptiness back over the file.
+        assert_eq!(state.snapshot.as_deref(), Some(&b"an afternoon of work"[..]));
+    }
+
+    /// AC-1042, which is the half that must not be broken by fixing the other.
+    ///
+    /// The rule is not "read the pack at boot"; it is "the workshop wins when it
+    /// has anything in it". A session that ended before its pack was flushed is
+    /// newer than the pack by construction, and reading the pack over it at boot
+    /// would throw away exactly the work the workshop exists to keep — which is
+    /// the same loss the other way round.
+    #[test]
+    fn a_workshop_with_work_in_it_is_not_read_over_at_boot_either() {
+        let dir = tempfile::tempdir().unwrap();
+        let data = dir.path();
+        let assets = AssetStore::new(data.join("assets")).unwrap();
+        let pack = data.join("case one.schizo");
+        let id = board::mint_pack_id();
+        bundle::write(&assets, &pack_spec(), Some(&id), b"as of the last flush", &pack).unwrap();
+
+        DocStore::new(data.join("boards/board-one"))
+            .unwrap()
+            .append(b"an hour after that flush")
+            .unwrap();
+
+        let entry = board::Entry {
+            pack_id: id,
+            board_id: board::mint_board_id(),
+            path: Some(pack),
+            workshop: PathBuf::from("boards/board-one"),
+            title: "Case one".into(),
+            last_opened: 0,
+        };
+        let workshop = Workshop::new(data.to_path_buf());
+        let taken = take_up(&workshop, &assets, &entry).unwrap();
+
+        assert!(!taken.seeded);
+        let state = workshop.store().unwrap().load().unwrap();
+        assert_eq!(state.snapshot, None);
+        assert_eq!(state.updates, vec![b"an hour after that flush".to_vec()]);
     }
 
     /// AC-1026, and it is the test D-70's whole crash argument rests on.
