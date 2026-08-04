@@ -924,6 +924,8 @@ Assets move as a side channel on the same connection: peers advertise what they 
 
 The consequence worth stating: **the file can be a few seconds behind the board, and that is by design.** If the two ever disagree, the workshop wins — a document log with anything in it is a session that ended before its file was written, so it is the newer of the two by construction. That one rule covers a power cut mid-write, a quit with no close hook, and a board on a USB stick that was pulled.
 
+A few seconds, and not longer than the next launch. A quit can land the board without landing the file — and until T-370 nothing afterwards noticed, so a board you closed and never opened again kept a file a session behind for good. Opening it is now enough: a launch that finds the board ahead of its file writes the file, and one that finds nothing owed leaves the file alone.
+
 **Opening one leaves the board you had, intact, in its own file.** This is the sentence that changed. Until T-356 opening a `.schizo` *replaced* the board in that window — it wrote the incoming snapshot over the only document there was — and everything about the gesture was shaped by that: a native "Replace this board?", a menu row kept deliberately at the bottom, and no recents list, because a recents list was a list of one-click ways to destroy what you were looking at. None of that is true now. Board B opens; board A is still board A, in its own file, exactly as you left it.
 
 **The fresh-board-id rule survives, in a narrower and truer form** (Q-114). A `.schizo` somebody sends you is a file this installation has never seen, so opening it mints a fresh board id: you are not in their room, anybody connected to them stays where they are, and the invite that reached them does not reach here. What is new is the other half. A file this installation *has* seen keeps the room it had — however often that file is renamed, or dragged into another folder, or moved between disks — because the key is a **pack id carried inside the file** rather than the path it happens to sit at. Keyed on the path, renaming a board would silently drop it out of its sync room and nothing on screen would say why.
@@ -942,9 +944,12 @@ Open a board…
   <up to five recent boards, by title>
 ─────
 Save a copy…
+Tidy up this board's file…        (only when there is enough in it to be worth it)
 ```
 
 *Open a board…* is no longer last and no longer confirms, because there is nothing left to confirm. The recents are the register — the list of boards this installation knows about — capped at five, named by title, with a folder name after any two that would otherwise read the same.
+
+*Tidy up this board's file…* is the one row that is usually not there. Saving appends rather than rewrites, so a file grows by a little every few minutes of work and the older copies in it are dead weight; tidying folds them away. The row appears only once a fifth of the file is reclaimable, because a row offering to save nothing is a row you stop reading — and leaving a board tidies it anyway, on the same threshold, so the row is for somebody about to hand the file over rather than a chore anybody has to remember.
 
 *Save a copy…* is the row that used to say *Export board…*. Now that the board is a file, this one writes a **second** file, frozen at this moment, to hand to somebody. Its pack id is minted fresh, so the copy is its own board and never the same one twice.
 
