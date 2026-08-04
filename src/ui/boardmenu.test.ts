@@ -1064,6 +1064,8 @@ describe("the board menu on bare cork", () => {
         // The ordinary board: it has a file of its own, so there is nothing to
         // give it and no row (T-361).
         home: null,
+        // And nothing superseded in that file yet, so nothing to tidy (T-367).
+        tidy: null,
       },
       asked,
     };
@@ -1086,6 +1088,7 @@ describe("the board menu on bare cork", () => {
   const IMAGE_SELECTION = "Export the selection as an image…";
   const OPEN = "Open a board…";
   const HOME = "Give this board a home";
+  const TIDY = "Tidy up this board's file";
 
   it("offers the invite on empty cork, which used to open nothing at all", () => {
     // The whole of Q-76: a right-click here reached for something and found
@@ -1465,6 +1468,85 @@ describe("the board menu on bare cork", () => {
     rows.find((r) => r.label === NEW)!.run();
 
     expect(shell.asked).toEqual(["new"]);
+  });
+
+  /**
+   * T-367. A pack grows by an entry per flush and every one but the newest is
+   * superseded the moment the next lands. Leaving a board tidies it
+   * automatically past a threshold the shell holds, so this row is for the
+   * board you are *staying* on.
+   */
+  it("offers to tidy the file only when there is enough in it to be worth it", () => {
+    const { invite } = sharing(null);
+    const plain = boardMenuRows(
+      scene,
+      write,
+      [],
+      [],
+      invite,
+      switching(true).ageing,
+      exporting().board,
+    ) as MenuRow[];
+    expect(plain.map((r) => r.label)).not.toContain(TIDY);
+
+    const shell = exporting();
+    const grown = boardMenuRows(
+      scene,
+      write,
+      [],
+      [],
+      invite,
+      switching(true).ageing,
+      { ...shell.board, tidy: () => void shell.asked.push("tidy") },
+    ) as MenuRow[];
+
+    // Above the copies, because it is about the file this board already has
+    // rather than about making a new one.
+    expect(grown.map((r) => r.label)).toEqual([AGE_ON, NEW, OPEN, TIDY, SAVE_COPY, PDF, IMAGE]);
+    grown.find((r) => r.label === TIDY)!.run();
+    expect(shell.asked).toEqual(["tidy"]);
+  });
+
+  /**
+   * Absent rather than a no-op, which is a stronger claim than the usual
+   * absent-not-disabled: on a file with nothing to reclaim this row would
+   * rewrite gigabytes to save nothing, and do exactly what it said while doing
+   * it.
+   */
+  it("promises no dialog, because tidying a file opens none", () => {
+    const { invite } = sharing(null);
+    const rows = boardMenuRows(
+      scene,
+      write,
+      [],
+      [],
+      invite,
+      switching(true).ageing,
+      { ...exporting().board, tidy: () => {} },
+    ) as MenuRow[];
+    expect(rows.find((r) => r.label === TIDY)!.label).not.toContain("…");
+  });
+
+  /** One rule above the file group, whichever of the three is first. */
+  it("rules off the files from the boards exactly once", () => {
+    const { invite } = sharing(null);
+    const shell = exporting();
+    const divisions = (over: Record<string, unknown>) =>
+      (
+        boardMenuRows(scene, write, [], [], invite, switching(true).ageing, {
+          ...shell.board,
+          ...over,
+        }) as MenuRow[]
+      )
+        .filter((r) => r.divided)
+        // The ageing row divides the string rows above it and is not this.
+        .map((r) => r.label)
+        .filter((l) => l !== AGE_ON);
+
+    expect(divisions({})).toEqual([NEW, SAVE_COPY]);
+    expect(divisions({ tidy: () => {} })).toEqual([NEW, TIDY]);
+    expect(divisions({ home: () => {} })).toEqual([NEW, HOME]);
+    expect(divisions({ home: () => {}, tidy: () => {} })).toEqual([NEW, HOME]);
   });
 
   it("drops the export in a plain browser, where nothing can write a file", () => {

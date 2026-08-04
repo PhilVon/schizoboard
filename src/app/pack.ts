@@ -79,6 +79,18 @@ export function packSpec(board: BoardDoc): BundleSpec {
  * already has a file" is not news — it is every launch after the first, and a
  * caller that had to match on it would be matching on nothing happening.
  */
+/**
+ * What came of folding a board's file back into one — see [`Pack.compact`].
+ */
+export type Compacted =
+  | {
+      readonly bytes: number;
+      /** How much of the file went away, as a fraction of what it was. */
+      readonly reclaimed: number;
+      readonly missing: readonly string[];
+    }
+  | { readonly error: unknown };
+
 export type Homing =
   | {
       readonly kind: "homed";
@@ -169,6 +181,18 @@ export interface PackOptions {
    */
   onError?: (error: unknown) => void;
   onRecovered?: () => void;
+  /**
+   * The board's own file has just been written — told after every flush and
+   * every compaction that succeeded.
+   *
+   * Its one caller re-reads whether the file is worth tidying, and it exists
+   * because getting that wrong is invisible: the answer changes on every
+   * *flush* rather than only on a compaction, and a caller that read it once at
+   * boot would offer the row approximately never. Which is what happened, and
+   * only driving it showed it — every test passed, and the shell answered the
+   * question correctly to nobody.
+   */
+  onFlushed?: () => void;
 }
 
 const PACK_DEFAULTS = {
@@ -217,6 +241,7 @@ export class Pack {
   private readonly idleMs: number;
   private readonly onError: (error: unknown) => void;
   private readonly onRecovered: () => void;
+  private readonly onFlushed: () => void;
 
   private timer: ReturnType<typeof setTimeout> | null = null;
   /** The document has moved on since the last successful flush. */
@@ -236,6 +261,7 @@ export class Pack {
       options.onError ??
       ((error) => console.error("[pack] the board's own file could not be written", error));
     this.onRecovered = options.onRecovered ?? (() => console.info("[pack] the board's file is being written again"));
+    this.onFlushed = options.onFlushed ?? (() => {});
   }
 
   /**
@@ -285,6 +311,61 @@ export class Pack {
    */
   flushBestEffort(): void {
     void this.flushNow();
+  }
+
+  /**
+   * Leave this board with its file tidied, if there is enough in it to be worth
+   * the rewrite (T-367, Q-350).
+   *
+   * Awaited by a switch, after [`flushNow`] and before `persistence.close()`.
+   * Two calls rather than one because they are two different costs: the flush
+   * is O(the snapshot) and always happens, and this is O(the pack) and usually
+   * does not. Whether it does is the shell's decision — the threshold lives
+   * there so that it lives in one place.
+   *
+   * Never on the idle timer, which is the whole of AC-1030: a rewrite that
+   * fired every time somebody paused would be exactly the stall T-366 spent
+   * itself removing, arriving at a different moment.
+   */
+  async settle(): Promise<void> {
+    if (this.stopped) return;
+    await this.flushNow();
+    try {
+      await this.native.boardCompactOnLeaving(packSpec(this.board), snapshot(this.board));
+    } catch (error) {
+      // Housekeeping on the way out of a board nobody is looking at any more.
+      // The file is already up to date — `flushNow` above saw to that — and
+      // what failed is only the tidying, so this must not stop a switch.
+      console.warn("[pack] that board's file could not be tidied on the way out", error);
+    }
+  }
+
+  /**
+   * Fold this board's file back into one, because somebody asked for it.
+   *
+   * Always compacts, however little there is to reclaim. The row says it will,
+   * and a row that decided for itself whether to do the thing it names would be
+   * a row you cannot trust — which is why the threshold is on `settle` above
+   * and not here.
+   */
+  async compact(): Promise<Compacted | null> {
+    if (this.stopped) return null;
+    // Whatever is owed goes in first, or the rewrite would fold the file up
+    // around a document one idle interval old.
+    await this.flushNow();
+    try {
+      const written = await this.native.boardCompact(packSpec(this.board), snapshot(this.board));
+      if (written === null) return null;
+      this.clean = written.missing.length === 0;
+      this.onFlushed();
+      return {
+        bytes: written.bytes,
+        reclaimed: written.reclaimed,
+        missing: [...written.missing],
+      };
+    } catch (error) {
+      return { error };
+    }
   }
 
   /**
@@ -385,6 +466,7 @@ export class Pack {
       // a list rather than a count.
       this.clean = written.missing.length === 0;
       this.recovered();
+      this.onFlushed();
     } catch (error) {
       // Put back, exactly as `Persistence` puts a batch back. The document is
       // not at risk — this tier is a copy of a copy — but a file left silently

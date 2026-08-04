@@ -23,6 +23,7 @@ import type {
   BoardPicked,
   BundleSpec,
   BundleWeighed,
+  BundleTidied,
   BundleWritten,
   ClipboardKind,
   ClipboardManifest,
@@ -310,6 +311,18 @@ export class TauriPlatform implements Platform {
 
   boardHome(spec: BundleSpec, snapshot: Uint8Array): Promise<BundleWritten> {
     return invoke<BundleWritten>("board_home", framed(spec, snapshot));
+  }
+
+  boardCompact(spec: BundleSpec, snapshot: Uint8Array): Promise<BundleTidied | null> {
+    return invoke<BundleTidied | null>("board_compact", framed(spec, snapshot));
+  }
+
+  boardCompactOnLeaving(spec: BundleSpec, snapshot: Uint8Array): Promise<BundleWritten | null> {
+    return invoke<BundleWritten | null>("board_compact_on_leaving", framed(spec, snapshot));
+  }
+
+  boardWorthTidying(): Promise<boolean> {
+    return invoke<boolean>("board_worth_tidying");
   }
 
   // A name and then a page, and no destination in either direction — the third

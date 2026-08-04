@@ -596,6 +596,163 @@ pub fn append(
     })
 }
 
+/// Fold a pack's generations back into one file (T-367).
+///
+/// A pack grows by an entry per flush and never shrinks, and every generation
+/// but the newest is superseded the moment the next one lands. Compaction is
+/// what reclaims them: read the newest, write the whole file again from it, and
+/// the superseded generations — and any photograph nothing on the board
+/// references any more — do not go into the new one.
+///
+/// **It is [`write`] and nothing else**, which is the property D-70 leaned on
+/// and is worth saying out loud: the shape a compaction emits is exactly the
+/// shape T-84 wrote in the first place, so a compacted pack is a pack with zero
+/// generations and every test in this file that predates T-366 is a test of a
+/// compacted pack. *Save a copy…* is this same call to a different path, which
+/// is why exporting and saving stopped being two things.
+///
+/// ## The store is topped up first, and it is not an optimisation
+///
+/// [`write`] embeds what it finds in the *asset store* and reports the rest as
+/// missing. So compacting a pack whose photographs this machine has swept —
+/// which is exactly what happens to every board you are not currently on — would
+/// read them out of no store, write a file without them, and report it as a
+/// success. The pack is the only copy of those bytes by then, so that is the
+/// whole board's photographs gone in one call that looks like housekeeping.
+///
+/// [`top_up`] puts them back first, at the cost of an index scan on a pack whose
+/// bytes this machine already holds (T-359).
+///
+/// ## What stage 3 will need from this
+///
+/// Named now while it costs a sentence, rather than found later. If `asset://`
+/// ever serves ranges straight out of the pack (T-369), a compaction rewrites
+/// every offset in the file underneath a reader that is holding it open — so it
+/// will have to take a lock against reads, and `protocol.rs` will have to answer
+/// 503 for the length of one. Nothing here does that yet, because nothing reads
+/// out of the pack yet.
+pub fn compact(store: &AssetStore, pack_id: &str, dest: &Path) -> Result<Tidied> {
+    let before = fs::metadata(dest)?.len();
+    // Everything the pack holds and this machine does not, back into the store
+    // before anything reads the store to decide what goes in the new file.
+    top_up(store, dest)?;
+
+    let (manifest, snapshot) = {
+        let mut zip = ZipArchive::new(BufReader::new(File::open(dest)?))?;
+        current(&mut zip)?
+    };
+    let spec = Spec {
+        schema_version: manifest.schema_version,
+        title: manifest.title,
+        assets: manifest.assets,
+    };
+    // The register's pack id, not the manifest's, for `write`'s reason: a
+    // compaction is the same file being written again, so it keeps its id where
+    // a copy mints one.
+    let written = write(store, &spec, Some(pack_id), &snapshot, dest)?;
+    Ok(Tidied {
+        // A *fraction* rather than a count of bytes reclaimed, and that is a
+        // wording decision rather than a technical one. `lib/filesize.ts`
+        // floors at 1 MB on purpose — "0 MB" reads as nothing having been
+        // written — which is right for a sentence about a file somebody is
+        // about to hand over and wrong for this one: tidying a board of notes
+        // takes eight kilobytes down to one and a half, and "1 MB" is both
+        // uninformative and, read quickly, alarming. A proportion says what
+        // happened at every scale.
+        reclaimed: if before == 0 {
+            0.0
+        } else {
+            (before.saturating_sub(written.bytes)) as f64 / before as f64
+        },
+        written,
+    })
+}
+
+/// What came of folding a pack back into one.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Tidied {
+    #[serde(flatten)]
+    pub written: Written,
+    /// How much of the file went away, as a fraction of what it was. `0.0` when
+    /// a compaction found nothing to reclaim, which is the honest answer to
+    /// somebody who asked for one anyway.
+    pub reclaimed: f64,
+}
+
+/// What fraction of a pack a compaction would reclaim (T-367, Q-350).
+///
+/// Every generation but the newest is superseded the moment the next one lands,
+/// and the central directory already knows what each one weighs — so this costs
+/// an open and reads no entry at all.
+///
+/// **It deliberately undercounts.** A photograph the board has stopped
+/// referencing is also reclaimable and is not in this number, because working
+/// that out means reading the newest manifest and comparing it against every
+/// `assets/` entry. Undercounting is the safe direction for what this is *for*:
+/// deciding whether a rewrite is worth stalling somebody for. A number that
+/// erred the other way would promise a saving the compaction then did not make.
+///
+/// `0.0` for a pack with no generations, which is every pack that has not been
+/// flushed since it was written — and every pack that has just been compacted.
+pub fn reclaimable(dest: &Path) -> Result<f64> {
+    let mut zip = ZipArchive::new(BufReader::new(File::open(dest)?))?;
+    let Some(newest) = newest_generation(&zip) else {
+        return Ok(0.0);
+    };
+
+    let mut total = 0u64;
+    let mut superseded = 0u64;
+    for i in 0..zip.len() {
+        let file = zip.by_index_raw(i)?;
+        let size = file.compressed_size();
+        total += size;
+        let is_superseded = file
+            .name()
+            .strip_prefix(GEN_PREFIX)
+            .and_then(|n| n.parse::<u32>().ok())
+            .is_some_and(|n| n != newest);
+        if is_superseded {
+            superseded += size;
+        }
+    }
+    if total == 0 {
+        return Ok(0.0);
+    }
+    Ok(superseded as f64 / total as f64)
+}
+
+/// Past this, leaving a board compacts it on the way out (Q-350).
+///
+/// A fifth, and the shape of the rule matters more than the number. Compaction
+/// is O(the pack) where a flush is O(the snapshot), so a rule that fired on
+/// *every* switch would put back the stall T-366 spent itself removing, at the
+/// one moment somebody is already waiting for a window to come back. Tying it to
+/// the waste instead makes the cost proportional to the thing being reclaimed
+/// rather than to the board.
+///
+/// It also lands the right way round on both kinds of board without being told
+/// about either. A board of films is mostly `assets/`, so its superseded
+/// generations are a rounding error and it is almost never compacted on a
+/// switch — which is exactly the board where a rewrite hurts. A board of notes
+/// is mostly documents, so it crosses this quickly and is cheap to rewrite when
+/// it does.
+pub const COMPACT_AT: f64 = 0.2;
+
+/// Whether this pack has enough superseded in it to be worth rewriting.
+///
+/// One function rather than the comparison written at each of its two callers —
+/// `board_compact_on_leaving`, which acts on it, and `board_worth_tidying`,
+/// which decides whether the row exists. Those two disagreeing means a row that
+/// offers to reclaim what leaving already reclaimed, or worse, one that never
+/// appears because leaving always beats it to it.
+///
+/// A pack that is not there, or will not open, is not worth compacting — this
+/// is housekeeping and a file it cannot measure is a file it should not rewrite.
+pub fn worth_compacting(dest: &Path) -> bool {
+    dest.is_file() && reclaimable(dest).is_ok_and(|waste| waste >= COMPACT_AT)
+}
+
 /// The zip itself. Split out so that every failure between `File::create` and
 /// the last byte lands in one place, where the half-written temporary can be
 /// swept up.
@@ -2160,5 +2317,178 @@ mod tests {
         }
 
         assert!(matches!(read(&store, &pack), Err(Error::Corrupt(_))));
+    }
+
+    // --- compaction (T-367) --------------------------------------------------
+
+    /// AC-1029. The file shrinks, has no generations left, and reads the same
+    /// board — which is the whole of what a compaction promises.
+    #[test]
+    fn compaction_reclaims_the_generations_and_keeps_the_board() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = store(&dir, "mine");
+        let pack = dir.path().join("case one.schizo");
+        let id = crate::board::mint_pack_id();
+        super::write(&store, &spec(vec![]), Some(&id), b"the export", &pack).unwrap();
+
+        // A working afternoon: ten flushes, each superseding the one before.
+        for n in 1..=10 {
+            let doc = format!("an afternoon, at {n}").repeat(200);
+            append(&store, &spec(vec![]), &id, doc.as_bytes(), &pack).unwrap();
+        }
+        let grown = std::fs::metadata(&pack).unwrap().len();
+        let newest = read(&store, &pack).unwrap().snapshot;
+
+        let tidied = compact(&store, &id, &pack).unwrap();
+
+        let after = std::fs::metadata(&pack).unwrap().len();
+        assert!(after < grown, "{after} is not smaller than {grown}");
+        assert_eq!(tidied.written.bytes, after);
+        // What the row says, and it is a fraction rather than a byte count
+        // because `lib/filesize.ts` floors at 1 MB — right for a file somebody
+        // is handing over, and uninformative about eight kilobytes becoming one.
+        assert!(tidied.reclaimed > 0.5, "reclaimed {}", tidied.reclaimed);
+        // Not one generation left, so what a compaction emits is the shape T-84
+        // wrote in the first place — and every test above this one is therefore
+        // a test of a compacted pack.
+        let zip = ZipArchive::new(BufReader::new(File::open(&pack).unwrap())).unwrap();
+        assert!(
+            !zip.file_names().any(|n| n.starts_with(GEN_PREFIX)),
+            "{:?}",
+            zip.file_names().collect::<Vec<_>>()
+        );
+        drop(zip);
+
+        // The same board, and the same file.
+        let reopened = read(&store, &pack).unwrap();
+        assert_eq!(reopened.snapshot, newest);
+        assert_eq!(reopened.manifest.pack_id.as_deref(), Some(id.as_str()));
+        // And it is a pack again rather than a finished thing: the next flush
+        // starts a fresh generation 1.
+        append(&store, &spec(vec![]), &id, b"the evening", &pack).unwrap();
+        assert_eq!(read(&store, &pack).unwrap().snapshot, b"the evening");
+    }
+
+    /// **The line that makes a compaction safe rather than a way to lose a
+    /// board.** `write` embeds what it finds in the *store*, so compacting a
+    /// pack whose photographs this machine has swept — which is what happens to
+    /// every board you are not currently on — would write a file without them
+    /// and report success. The pack is the only copy by then.
+    #[test]
+    fn compaction_does_not_drop_a_photograph_this_machine_has_swept() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = store(&dir, "mine");
+        let pack = dir.path().join("case one.schizo");
+        let id = crate::board::mint_pack_id();
+        let photo = store.ingest_bytes(PIXEL, None).unwrap().sha256;
+        super::write(&store, &spec(vec![photo.clone()]), Some(&id), b"first", &pack).unwrap();
+        append(&store, &spec(vec![photo.clone()]), &id, b"second", &pack).unwrap();
+
+        // The sweep, while this window was on some other board.
+        store.gc(&HashSet::new()).unwrap();
+        assert!(!store.has(&photo), "the sweep should have trashed it");
+
+        let tidied = compact(&store, &id, &pack).unwrap();
+
+        assert_eq!(tidied.written.embedded, 1);
+        assert!(tidied.written.missing.is_empty(), "{:?}", tidied.written.missing);
+        // And it is genuinely in the file, on a machine that has never held it.
+        let theirs = AssetStore::new(dir.path().join("theirs")).unwrap();
+        let opened = read(&theirs, &pack).unwrap();
+        assert_eq!(opened.ingested, vec![photo]);
+        assert_eq!(opened.snapshot, b"second");
+    }
+
+    /// The other half of reclaiming: a photograph the board has stopped
+    /// referring to does not go into the new file.
+    #[test]
+    fn compaction_leaves_behind_a_photograph_the_board_no_longer_refers_to() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = store(&dir, "mine");
+        let pack = dir.path().join("case one.schizo");
+        let id = crate::board::mint_pack_id();
+        let kept = store.ingest_bytes(PIXEL, None).unwrap().sha256;
+        let dropped = store.ingest_bytes(&[3u8; 30_000], None).unwrap().sha256;
+
+        super::write(
+            &store,
+            &spec(vec![kept.clone(), dropped.clone()]),
+            Some(&id),
+            b"both",
+            &pack,
+        )
+        .unwrap();
+        // Somebody took it off the board, so the newest generation stops listing it.
+        append(&store, &spec(vec![kept.clone()]), &id, b"one of them", &pack).unwrap();
+
+        compact(&store, &id, &pack).unwrap();
+
+        let zip = ZipArchive::new(BufReader::new(File::open(&pack).unwrap())).unwrap();
+        let names: Vec<&str> = zip.file_names().collect();
+        assert!(names.contains(&format!("{ASSET_PREFIX}{kept}").as_str()), "{names:?}");
+        assert!(!names.contains(&format!("{ASSET_PREFIX}{dropped}").as_str()), "{names:?}");
+    }
+
+    /// Q-350's number, and what it is measured against.
+    #[test]
+    fn what_a_compaction_would_reclaim_is_the_superseded_generations() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = store(&dir, "mine");
+        let pack = dir.path().join("case one.schizo");
+        let id = crate::board::mint_pack_id();
+        super::write(&store, &spec(vec![]), Some(&id), b"the export", &pack).unwrap();
+
+        // Nothing superseded yet, so nothing to reclaim — which is also what a
+        // pack that has just been compacted reads as.
+        assert_eq!(reclaimable(&pack).unwrap(), 0.0);
+        append(&store, &spec(vec![]), &id, &vec![b'a'; 40_000], &pack).unwrap();
+        assert_eq!(reclaimable(&pack).unwrap(), 0.0, "one generation supersedes nothing");
+
+        for _ in 0..8 {
+            append(&store, &spec(vec![]), &id, &vec![b'b'; 40_000], &pack).unwrap();
+        }
+        let waste = reclaimable(&pack).unwrap();
+        assert!(waste > COMPACT_AT, "a board of documents should cross it: {waste}");
+        assert!(worth_compacting(&pack));
+
+        compact(&store, &id, &pack).unwrap();
+        assert_eq!(reclaimable(&pack).unwrap(), 0.0);
+        // And straight away it is not worth doing again, which is what stops a
+        // switch rewriting a file it has just rewritten.
+        assert!(!worth_compacting(&pack));
+    }
+
+    /// The board the threshold exists for. A pack that is mostly photographs
+    /// barely moves however long somebody works on it — which is exactly the
+    /// board where rewriting the whole file on the way out would hurt.
+    #[test]
+    fn a_pack_that_is_mostly_photographs_does_not_cross_the_threshold() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = store(&dir, "mine");
+        let pack = dir.path().join("case one.schizo");
+        let id = crate::board::mint_pack_id();
+        // Incompressible, so it is genuinely stored rather than deflated away.
+        let big: Vec<u8> = (0..4 * 1024 * 1024u32)
+            .map(|i| (i.wrapping_mul(2654435761) >> 24) as u8)
+            .collect();
+        let photo = store.ingest_bytes(&big, None).unwrap().sha256;
+        super::write(&store, &spec(vec![photo.clone()]), Some(&id), b"first", &pack).unwrap();
+
+        for _ in 0..20 {
+            append(&store, &spec(vec![photo.clone()]), &id, &vec![b'c'; 20_000], &pack).unwrap();
+        }
+
+        let waste = reclaimable(&pack).unwrap();
+        assert!(waste < COMPACT_AT, "a board of photographs crossed it at {waste}");
+        // So leaving it does not rewrite four megabytes to reclaim a few
+        // hundred kilobytes of superseded document.
+        assert!(!worth_compacting(&pack));
+
+        // And a file that is not there, or will not open, is not worth
+        // rewriting either - housekeeping does not get to guess.
+        assert!(!worth_compacting(&dir.path().join("nothing.schizo")));
+        let rubbish = dir.path().join("rubbish.schizo");
+        std::fs::write(&rubbish, b"not a zip").unwrap();
+        assert!(!worth_compacting(&rubbish));
     }
 }

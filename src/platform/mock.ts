@@ -32,6 +32,7 @@ import {
   type BoardOpened,
   type BoardPicked,
   type BundleWeighed,
+  type BundleTidied,
   type BundleWritten,
   type ClipboardKind,
   type ClipboardManifest,
@@ -466,6 +467,22 @@ export class MockPlatform implements Platform {
 
   boardHome(): Promise<BundleWritten> {
     return unavailable("Giving a board a home");
+  }
+
+  boardCompact(): Promise<BundleTidied | null> {
+    return unavailable("Tidying a board's file");
+  }
+
+  boardCompactOnLeaving(): Promise<BundleWritten | null> {
+    return unavailable("Tidying a board's file");
+  }
+
+  // A board is not a file here, so there is never anything to tidy — and this
+  // one answers rather than refusing, because its caller is a menu row deciding
+  // whether to exist, and a throw would be a row that never appears for a
+  // reason that has nothing to do with the board.
+  async boardWorthTidying(): Promise<boolean> {
+    return false;
   }
 
   /**

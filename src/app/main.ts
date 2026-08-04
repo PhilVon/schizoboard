@@ -246,6 +246,10 @@ async function boot(): Promise<void> {
       );
     },
     onRecovered: () => trouble("pack", null),
+    // Read again whenever the file changes, which is what makes the row
+    // appear at all: the answer moves on every flush, not only on a
+    // compaction. `readTidy` is set below, when there is a shell to ask.
+    onFlushed: () => readTidy?.(),
   });
   const persistence = new Persistence(board, native, {
     onError: (error) => {
@@ -320,6 +324,14 @@ async function boot(): Promise<void> {
    * long before the boot step that can set it.
    */
   let homeRetry: (() => void) | null = null;
+  /**
+   * Read again whether this board's file is worth tidying (T-367).
+   *
+   * Up here for `homeRetry`'s reason: the coarse tier is built a few lines
+   * below and calls this on every flush, and the thing that answers the
+   * question is put together a long way down.
+   */
+  let readTidy: (() => void) | null = null;
   const sealIfFuture = (): void => {
     if (readOnly || !futureSchema(board)) return;
     readOnly = true;
@@ -2786,7 +2798,7 @@ async function boot(): Promise<void> {
    */
   const newBoard = async (): Promise<void> => {
     try {
-      await pack.flushNow();
+      await pack.settle();
       await persistence.close();
       await native.boardNew();
     } catch (error) {
@@ -2800,6 +2812,97 @@ async function boot(): Promise<void> {
     }
     window.location.search = "";
   };
+
+  /**
+   * Fold this board's file back into one — the row (T-367).
+   *
+   * Held rather than said, because on a board of any size this is seconds of
+   * disk and a line that had already faded would leave somebody wondering
+   * whether anything happened. `ui/flash.ts` reserves `hold` for a thing that
+   * is happening and stays true until it stops, which is exactly this.
+   */
+  const tidyBoard = async (): Promise<void> => {
+    flash.hold("Tidying up this board's file…");
+    const outcome = await pack.compact();
+    if (outcome === null) {
+      // A board with no file of its own, which the row should not have been
+      // offered on — so this is a race with `board_home` rather than a state,
+      // and taking the line down is the whole of what it needs.
+      flash.clear();
+      return;
+    }
+    if ("error" in outcome) {
+      console.warn("[pack] this board's file could not be tidied up", outcome.error);
+      flash.say("This board's file could not be tidied up — the reason is in the console");
+      return;
+    }
+    const missing = new Set(outcome.missing);
+    if (missing.size > 0) {
+      // The same news `exportBoard` gives, and it matters more here: this
+      // rewrote the file, so a photograph that was not in the new one is a
+      // photograph that has just left it.
+      flash.say(
+        `This board's file is tidied up — without ` +
+          `${filesLabel(missing.size, assetKindsOf(board, missing))} this machine does not have`,
+      );
+      return;
+    }
+    /**
+     * A proportion, not a size. `lib/filesize.ts` floors at 1 MB on purpose —
+     * "0 MB" reads as nothing having been written — which is right for the
+     * sentence about a file somebody is handing over and wrong for this one: an
+     * eight-kilobyte board tidies to one and a half, and *1 MB* is both
+     * uninformative and, read quickly, alarming. It said exactly that until a
+     * run put it on screen.
+     *
+     * And nothing at all when there was nothing to reclaim, rather than
+     * "0% smaller", which is a sentence about arithmetic instead of about the
+     * board.
+     */
+    const saved = Math.round(outcome.reclaimed * 100);
+    flash.say(
+      saved > 0
+        ? `This board's file is tidied up — ${saved}% smaller`
+        : "This board's file is tidied up",
+    );
+  };
+
+  /**
+   * Whether the row is worth offering, read the way the recents are.
+   *
+   * A boolean rather than a fraction, so the threshold stays in the one place
+   * that also acts on it. A number here would be the same decision written down
+   * in two languages, which is a decision that will eventually disagree with
+   * itself.
+   *
+   * The answer only changes when this window writes the file, so it is read
+   * after every flush rather than when the menu opens — `boardMenuRows` is
+   * synchronous because every other row on it is, and an awaited row would pop
+   * the menu a frame or two after the click.
+   *
+   * **After every flush, and that is not a detail.** Reading it once at boot is
+   * what this was first written as, and the row then never appeared: at boot a
+   * pack has nothing superseded in it, and everything that supersedes anything
+   * happens later. Every test passed and the shell answered correctly to
+   * nobody; only driving it found that.
+   *
+   * That leaves it a beat stale between a flush landing and this resolving,
+   * which is the right way round to be wrong — the row appears a moment late
+   * rather than offering to reclaim what has already been reclaimed.
+   */
+  let worthTidying = false;
+  readTidy = () => {
+    void native
+      .boardWorthTidying()
+      .then((worth) => {
+        worthTidying = worth;
+      })
+      .catch((error) => {
+        console.warn("[pack] this board's file could not be measured", error);
+        worthTidying = false;
+      });
+  };
+  readTidy();
 
   const openBoard = async (): Promise<void> => {
     let picked;
@@ -2829,8 +2932,10 @@ async function boot(): Promise<void> {
       // The pack first, and D-67 fixes this order rather than leaving it to
       // taste: this reads the *document*, and `close()` is the one-way door
       // past which this window may no longer be writing to the board it thinks
-      // it is. A board left behind is left with its file up to date.
-      await pack.flushNow();
+      // it is. A board left behind is left with its file up to date — and
+      // tidied, if enough of it has been superseded to be worth the rewrite
+      // (T-367, Q-350). The shell holds that threshold.
+      await pack.settle();
       await persistence.close();
       const opened = await native.boardOpen(packId);
       if (opened.missing.length > 0) {
@@ -2954,6 +3059,10 @@ async function boot(): Promise<void> {
                 // same grounds: this build can only partly read this document,
                 // so the file it wrote would be missing whatever it cannot see.
                 home: null,
+                // And the same, one step further: a compaction rewrites the
+                // file out of `packSpec`, so on a sealed board it would drop
+                // every photograph this build cannot see (T-367).
+                tidy: null,
               }
             : null,
         ),
@@ -3123,6 +3232,7 @@ async function boot(): Promise<void> {
               // is harmless: `homeBoard` asks the register first and does
               // nothing at all for a board that already has a file.
               home: homeRetry,
+              tidy: worthTidying ? () => void tidyBoard() : null,
             }
           : null,
       ),

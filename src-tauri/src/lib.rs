@@ -1571,7 +1571,7 @@ async fn board_flush(
         let Some(dest) = entry.path.clone() else {
             return Ok(None);
         };
-        write_pack(&app, &boards, &entry, &spec, &snapshot, &dest).map(Some)
+        write_pack(&app, &boards, &entry, &spec, &snapshot, &dest, Writing::Flush).map(Some)
     })
     .await
 }
@@ -1604,7 +1604,10 @@ async fn board_home(
             return Err("that board already has a file of its own".to_string());
         }
         let dest = a_home_for(&app, &spec.title)?;
-        let written = write_pack(&app, &boards, &entry, &spec, &snapshot, &dest)?;
+        // A board that has never had a file gets a whole one, which `save_pack`
+        // does anyway for a destination that is not there — said here as the
+        // intention rather than left to fall out of the path check.
+        let written = write_pack(&app, &boards, &entry, &spec, &snapshot, &dest, Writing::Compact)?;
         boards
             .set_home(&entry.pack_id, &dest)
             .map_err(|e| e.to_string())?;
@@ -1624,6 +1627,122 @@ fn board_payload(
     let (json, snapshot) = bundle::split_payload(body).map_err(|e| e.to_string())?;
     let spec: bundle::Spec = serde_json::from_slice(json).map_err(|e| e.to_string())?;
     Ok((spec, snapshot.to_vec()))
+}
+
+/// Fold a board's file back into one — the row on the cork menu (T-367).
+///
+/// Always compacts, however little there is to reclaim, because somebody asked.
+/// The automatic half is on the switch (see [`save_pack`]) and is the one with
+/// a threshold; a row that decided for itself whether to do the thing it says
+/// would be a row you cannot trust.
+///
+/// Takes the *whole* document rather than reading the pack for it, on
+/// `board_flush`'s standing: this window has the newest board there is, and the
+/// pack is at best as new as the last flush.
+#[tauri::command]
+async fn board_compact(
+    app: AppHandle,
+    request: tauri::ipc::Request<'_>,
+) -> Result<Option<bundle::Tidied>, String> {
+    let (spec, snapshot) = board_payload("board_compact", &request)?;
+    blocking(move || -> Result<Option<bundle::Tidied>, String> {
+        let boards = boards_of(&app)?;
+        let entry = boards
+            .current()
+            .ok_or_else(|| "no board is open in this window".to_string())?;
+        // A board with no file of its own has nothing to compact, which is the
+        // same `Ok(None)` a flush gives and means the same thing.
+        let Some(dest) = entry.path.clone() else {
+            return Ok(None);
+        };
+        // The agreement check `write_pack` makes, before anything rewrites a
+        // whole file: the register says which *file* and the workshop says which
+        // *document*, and a disagreement would fold one board's work into
+        // another board's pack.
+        if workshop_of(&app)?.current().as_deref() != Some(entry.workshop.as_path()) {
+            return Err("that board's document is not the one this window has open".to_string());
+        }
+        let store = store_of(&app)?;
+        let tidied = bundle::compact(&store, &entry.pack_id, &dest).map_err(|e| e.to_string())?;
+        if let Err(error) = boards.set_title(&entry.pack_id, &spec.title) {
+            eprintln!("board: that board's title could not be kept: {error}");
+        }
+        Ok(Some(tidied))
+    })
+    .await
+}
+
+/// Leave this board with its file tidied, if there is enough in it to be worth
+/// the rewrite (T-367, Q-350).
+///
+/// The automatic half of compaction, and the threshold lives **here** rather
+/// than in the caller for one reason: a number that decides when to spend
+/// seconds of somebody's disk, written down in two languages, is a number that
+/// will disagree with itself. The frontend asks whether to leave tidily; Rust
+/// answers with what it did.
+///
+/// `Ok(None)` for a board with no file, and for one whose file has too little
+/// in it to be worth rewriting — the ordinary case on the ordinary switch, and
+/// not news.
+#[tauri::command]
+async fn board_compact_on_leaving(
+    app: AppHandle,
+    request: tauri::ipc::Request<'_>,
+) -> Result<Option<bundle::Written>, String> {
+    let (spec, snapshot) = board_payload("board_compact_on_leaving", &request)?;
+    blocking(move || -> Result<Option<bundle::Written>, String> {
+        let boards = boards_of(&app)?;
+        let entry = boards
+            .current()
+            .ok_or_else(|| "no board is open in this window".to_string())?;
+        let Some(dest) = entry.path.clone() else {
+            return Ok(None);
+        };
+        // Cheap enough to ask on every switch: the central directory already
+        // knows what each generation weighs, so this reads no entry at all.
+        if !bundle::worth_compacting(&dest) {
+            return Ok(None);
+        }
+        write_pack(&app, &boards, &entry, &spec, &snapshot, &dest, Writing::Compact).map(Some)
+    })
+    .await
+}
+
+/// Whether this board's file has enough superseded in it to be worth offering
+/// to tidy — for deciding whether the row exists at all.
+///
+/// **A boolean rather than the fraction**, so that the threshold stays in the
+/// one place that also acts on it (`board_compact_on_leaving`). Handing the
+/// number across and comparing it on the other side would be the same decision
+/// written down in two languages, which is a decision that will eventually
+/// disagree with itself — and the two halves disagreeing means a row that
+/// offers to reclaim what leaving already reclaimed.
+///
+/// Costs an open and no reads: the central directory already knows what every
+/// generation weighs. `false` on a board with no file, and on one whose file
+/// has gone.
+#[tauri::command]
+async fn board_worth_tidying(app: AppHandle) -> Result<bool, String> {
+    blocking(move || -> Result<bool, String> {
+        let Some(entry) = boards_of(&app)?.current() else {
+            return Ok(false);
+        };
+        let Some(dest) = entry.path else {
+            return Ok(false);
+        };
+        Ok(bundle::worth_compacting(&dest))
+    })
+    .await
+}
+
+/// Which of the two writes a caller is asking for.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Writing {
+    /// The ordinary flush: append a generation, and compact on the way past a
+    /// board that has accumulated enough of them to be worth it.
+    Flush,
+    /// Somebody pressed the row. Always the whole file.
+    Compact,
 }
 
 /// Append a generation, or write the whole file when appending is not on.
@@ -1660,7 +1779,16 @@ fn save_pack(
     pack_id: &str,
     snapshot: &[u8],
     dest: &Path,
+    writing: Writing,
 ) -> Result<bundle::Written, String> {
+    if writing == Writing::Compact && dest.is_file() {
+        // Everything the pack holds goes back into the store before anything
+        // reads the store to decide what the new file gets — `bundle::compact`
+        // says why that is not an optimisation.
+        return bundle::compact(store, pack_id, dest)
+            .map(|tidied| tidied.written)
+            .map_err(|e| e.to_string());
+    }
     if dest.is_file() {
         match bundle::append(store, spec, pack_id, snapshot, dest) {
             Ok(written) => return Ok(written),
@@ -1686,6 +1814,7 @@ fn write_pack(
     spec: &bundle::Spec,
     snapshot: &[u8],
     dest: &Path,
+    writing: Writing,
 ) -> Result<bundle::Written, String> {
     // The register says which *file*, and the workshop says which *document*.
     // This is the one place they have to agree: a flush writes a whole document
@@ -1698,7 +1827,7 @@ fn write_pack(
         return Err("that board's document is not the one this window has open".to_string());
     }
     let store = store_of(app)?;
-    let written = save_pack(&store, spec, &entry.pack_id, snapshot, dest)?;
+    let written = save_pack(&store, spec, &entry.pack_id, snapshot, dest, writing)?;
     // Not fatal. A title the register missed is a stale row in a menu; the file
     // it names is written and correct either way.
     if let Err(error) = boards.set_title(&entry.pack_id, &spec.title) {
@@ -2012,6 +2141,9 @@ pub fn run() {
             board_new,
             board_flush,
             board_home,
+            board_compact,
+            board_compact_on_leaving,
+            board_worth_tidying,
             asset_ingest_bytes,
             asset_ingest_path,
             asset_ingest_url,
@@ -2409,7 +2541,7 @@ mod tests {
             // And the next flush leaves a file that reads. `save_pack` finds a
             // pack it cannot append to and writes the whole thing instead,
             // which is the repair in one line.
-            save_pack(&assets, &pack_spec(), &id, b"an hour of work later", &pack)
+            save_pack(&assets, &pack_spec(), &id, b"an hour of work later", &pack, Writing::Flush)
                 .unwrap_or_else(|e| panic!("truncated at {cut}: the repair failed: {e}"));
             let reopened = bundle::read(&assets, &pack)
                 .unwrap_or_else(|e| panic!("truncated at {cut}: the repaired pack will not read: {e}"));
@@ -2431,7 +2563,7 @@ mod tests {
         let id = board::mint_pack_id();
         bundle::write(&assets, &pack_spec(), Some(&id), b"first", &pack).unwrap();
 
-        save_pack(&assets, &pack_spec(), &id, b"second", &pack).unwrap();
+        save_pack(&assets, &pack_spec(), &id, b"second", &pack, Writing::Flush).unwrap();
 
         // Appended, not rewritten — the base entries are still where they were,
         // and the newest generation is what a reader gets.
@@ -2452,7 +2584,7 @@ mod tests {
         let pack = dir.path().join("brand new.schizo");
         let id = board::mint_pack_id();
 
-        save_pack(&assets, &pack_spec(), &id, b"the first one", &pack).unwrap();
+        save_pack(&assets, &pack_spec(), &id, b"the first one", &pack, Writing::Flush).unwrap();
 
         assert_eq!(bundle::read(&assets, &pack).unwrap().snapshot, b"the first one");
     }

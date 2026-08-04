@@ -431,6 +431,20 @@ export interface BundleWritten {
  * bundle heavy is stored byte for byte (D-64 measured why), so it is a tight
  * upper bound — and the word for it on the way out is "about".
  */
+/** What came of folding a board's file back into one — see `boardCompact`. */
+export interface BundleTidied extends BundleWritten {
+  /**
+   * How much of the file went away, as a fraction of what it was.
+   *
+   * A proportion rather than a count of bytes, and that is a wording decision:
+   * `lib/filesize.ts` floors at 1 MB on purpose, which is right for a file
+   * somebody is about to hand over and wrong here — tidying a board of notes
+   * takes eight kilobytes down to one and a half, and "1 MB" is uninformative
+   * and, read quickly, alarming.
+   */
+  reclaimed: number;
+}
+
 export interface BundleWeighed {
   embedded: number;
   /** Referenced by the board and not on this disk, so it will not be in it. */
@@ -946,6 +960,33 @@ export interface Platform {
    * T-356 has already been decided on.
    */
   boardHome(spec: BundleSpec, snapshot: Uint8Array): Promise<BundleWritten>;
+  /**
+   * Fold this board's file back into one, dropping the superseded generations
+   * and any photograph nothing on the board refers to any more (T-367).
+   *
+   * O(the pack) where a flush is O(the snapshot), which is the whole reason
+   * there are two of these. `null` for a board with no file of its own.
+   */
+  boardCompact(spec: BundleSpec, snapshot: Uint8Array): Promise<BundleTidied | null>;
+  /**
+   * The same, on the way out of a board, and **only when there is enough in the
+   * file to be worth the rewrite** (Q-350).
+   *
+   * The threshold is the shell's and is deliberately not repeated here: a
+   * number deciding when to spend seconds of somebody's disk, written down in
+   * two languages, is a number that will disagree with itself. `null` is "there
+   * was not enough to bother", which is the ordinary switch and is not news.
+   */
+  boardCompactOnLeaving(spec: BundleSpec, snapshot: Uint8Array): Promise<BundleWritten | null>;
+  /**
+   * Whether this board's file has enough superseded in it to be worth offering
+   * to tidy — for deciding whether the row exists at all.
+   *
+   * A boolean rather than a fraction on purpose: the threshold belongs to the
+   * side that also acts on it, and a number compared on this side would be the
+   * same decision written down twice. `false` on a board with no file.
+   */
+  boardWorthTidying(): Promise<boolean>;
 
   // --- export (T-207, T-206) ----------------------------------------------
   /**
