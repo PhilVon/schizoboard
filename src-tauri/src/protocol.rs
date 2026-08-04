@@ -16,6 +16,19 @@
 //! hold. A board with two hundred photographs open costs the JS heap two
 //! hundred `<img>` elements.
 //!
+//! ## And it never serves out of the pack, which was decided rather than missed
+//!
+//! Every byte this handler answers with comes from the asset store. A `.schizo`
+//! pack holds the same originals, and serving ranges straight out of its
+//! `Stored` entries is the obvious idea for the disk it would save — it was
+//! named (stage 3, D-67), investigated, and decided against (D-71, T-369). The
+//! argument lives with D-71 and in `bundle::compact`'s docblock; the short form
+//! is that the saving requires deleting originals the open board still
+//! references, and a compaction rewrites the file a reader would be holding
+//! open. If the idea arrives again, it deserves that record rather than a
+//! fresh evaluation — this section exists so the file you would build it in
+//! says so.
+//!
 //! ## What it does *not* do is stream, and it cannot (T-263)
 //!
 //! Tauri 2.11's asynchronous scheme responder takes a `Response<Vec<u8>>`.
