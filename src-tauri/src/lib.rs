@@ -1074,7 +1074,38 @@ async fn doc_append_update(app: AppHandle, request: tauri::ipc::Request<'_>) -> 
         return Err("doc_append_update expects a raw body".into());
     };
     let bytes = bytes.clone();
-    blocking(move || docstore_of(&app)?.append(&bytes)).await
+    blocking(move || {
+        mark_ahead(&app);
+        docstore_of(&app)?.append(&bytes)
+    })
+    .await
+}
+
+/// The workshop is about to move past this board's file (T-370).
+///
+/// **Before the append rather than after it**, and the asymmetry is the point.
+/// Marked first, a failed append costs one redundant flush later. Marked after,
+/// an append that succeeds while this fails leaves a workshop ahead of a file the
+/// register calls level — which is the bug T-370 exists to close, reintroduced
+/// in the line that closes it.
+///
+/// Never fatal for the same reason. What failed is a note about a copy of a copy;
+/// the document itself is going to the log either way.
+///
+/// `doc_compact` deliberately does **not** call this. A workshop compaction
+/// rewrites the snapshot from the document it already had, so it does not move
+/// the board — marking it would buy one whole pack append per megabyte of log,
+/// for a document that has not changed.
+fn mark_ahead(app: &AppHandle) {
+    let Ok(boards) = boards_of(app) else {
+        return;
+    };
+    let Some(entry) = boards.current() else {
+        return;
+    };
+    if let Err(error) = boards.set_ahead(&entry.pack_id, true) {
+        eprintln!("board: that board's file could not be noted as behind its workshop: {error}");
+    }
 }
 
 /// The snapshot and every frame since, as one raw response body rather than as
@@ -1735,6 +1766,30 @@ async fn board_worth_tidying(app: AppHandle) -> Result<bool, String> {
     .await
 }
 
+/// Whether this board's workshop has moved since its file was last written
+/// (T-370).
+///
+/// The one question a boot has to ask and could not, and the answer costs no
+/// disk at all — it was written down the last time either side of it moved.
+///
+/// **The frontend asks rather than being told**, because the catch-up is a flush
+/// and only that side can produce a snapshot to flush. What crosses is one
+/// boolean; the register, the paths and the generation numbers all stay here.
+///
+/// `false` on a board with no file, which reads oddly and is right: a flush
+/// would return `None` for it anyway, and `homeBoard` is what gives such a board
+/// a file a second and a half into the session.
+#[tauri::command]
+async fn board_workshop_ahead(app: AppHandle) -> Result<bool, String> {
+    blocking(move || -> Result<bool, String> {
+        let Some(entry) = boards_of(&app)?.current() else {
+            return Ok(false);
+        };
+        Ok(entry.ahead && entry.homed())
+    })
+    .await
+}
+
 /// Which of the two writes a caller is asking for.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Writing {
@@ -1801,6 +1856,39 @@ fn save_pack(
     bundle::write(store, spec, Some(pack_id), snapshot, dest).map_err(|e| e.to_string())
 }
 
+/// Write a board's file with the register's note of whether the workshop is
+/// ahead of it kept honest either side (T-370).
+///
+/// **Cleared before the write and put back if it fails**, which is
+/// `app/pack.ts`'s discipline one tier down and is load-bearing for the same
+/// reason. An edit landing while this write is in flight marks the board ahead
+/// again — `doc_append_update` does that, and it does it *before* its own append
+/// — and clearing afterwards would overwrite exactly that mark. What it would
+/// leave is a register saying "level" over a workshop that is not, for edits
+/// made during the slowest writes, which are the ones on the largest boards.
+///
+/// Neither note is fatal. A note that could not be cleared costs one redundant
+/// append at the next boot; refusing to write the file over it would cost the
+/// flush. What is being kept here is a fact about a copy of a copy.
+fn noting<T>(
+    boards: &board::BoardStore,
+    pack_id: &str,
+    write: impl FnOnce() -> Result<T, String>,
+) -> Result<T, String> {
+    if let Err(error) = boards.set_ahead(pack_id, false) {
+        eprintln!("board: that board's file could not be noted as written: {error}");
+    }
+    match write() {
+        Ok(written) => Ok(written),
+        Err(error) => {
+            if let Err(error) = boards.set_ahead(pack_id, true) {
+                eprintln!("board: that board's file could not be noted as behind: {error}");
+            }
+            Err(error)
+        }
+    }
+}
+
 /// The pack, and the register's note of what the board is now called.
 ///
 /// The title is only ever *remembered* here — Rust holds no schema and cannot
@@ -1827,7 +1915,9 @@ fn write_pack(
         return Err("that board's document is not the one this window has open".to_string());
     }
     let store = store_of(app)?;
-    let written = save_pack(&store, spec, &entry.pack_id, snapshot, dest, writing)?;
+    let written = noting(boards, &entry.pack_id, || {
+        save_pack(&store, spec, &entry.pack_id, snapshot, dest, writing)
+    })?;
     // Not fatal. A title the register missed is a stale row in a menu; the file
     // it names is written and correct either way.
     if let Err(error) = boards.set_title(&entry.pack_id, &spec.title) {
@@ -2144,6 +2234,7 @@ pub fn run() {
             board_compact,
             board_compact_on_leaving,
             board_worth_tidying,
+            board_workshop_ahead,
             asset_ingest_bytes,
             asset_ingest_path,
             asset_ingest_url,
@@ -2252,6 +2343,7 @@ mod tests {
             workshop: PathBuf::from(workshop),
             title: "Case one".to_string(),
             last_opened: 0,
+            ahead: false,
         }
     }
 
@@ -2290,6 +2382,69 @@ mod tests {
         };
         bundle::write(assets, &spec, None, document, dest).unwrap();
         sha256
+    }
+
+    // --- the note either side of a pack write (T-370) -----------------------
+
+    /// A register with one board on it, currently open.
+    fn a_register(dir: &tempfile::TempDir) -> (board::BoardStore, String) {
+        let boards = board::BoardStore::new(dir.path().join("boards.json")).unwrap();
+        let id = board::mint_pack_id();
+        boards
+            .admit(&id, &dir.path().join("one.schizo"), "One")
+            .unwrap();
+        boards.open(&id).unwrap();
+        (boards, id)
+    }
+
+    #[test]
+    fn a_written_file_is_no_longer_behind_its_workshop() {
+        let dir = tempfile::tempdir().unwrap();
+        let (boards, id) = a_register(&dir);
+        boards.set_ahead(&id, true).unwrap();
+
+        noting(&boards, &id, || Ok::<_, String>(())).unwrap();
+
+        assert!(!boards.current().unwrap().ahead);
+    }
+
+    /// A disk that said no. The document is not at risk — the workshop is the
+    /// crash-safe copy — but a file left silently a session behind is the one
+    /// somebody hands over, so the note has to go back up or the next boot will
+    /// believe the write that failed.
+    #[test]
+    fn a_file_that_could_not_be_written_is_still_behind_its_workshop() {
+        let dir = tempfile::tempdir().unwrap();
+        let (boards, id) = a_register(&dir);
+        boards.set_ahead(&id, true).unwrap();
+
+        let refused = noting(&boards, &id, || {
+            Err::<(), String>("the disk said no".to_string())
+        });
+
+        assert_eq!(refused.unwrap_err(), "the disk said no");
+        assert!(boards.current().unwrap().ahead);
+    }
+
+    /// The whole reason the note is cleared *before* the write rather than
+    /// after. `doc_append_update` marks the board ahead as an edit arrives, and
+    /// an edit can arrive while a large board is still being written — so a
+    /// clear that ran afterwards would erase the mark belonging to work that is
+    /// not in the file being written. Quit inside the next idle interval and
+    /// that is T-370 again, in the code that closes it.
+    #[test]
+    fn an_edit_that_landed_while_the_file_was_being_written_is_still_owed() {
+        let dir = tempfile::tempdir().unwrap();
+        let (boards, id) = a_register(&dir);
+
+        noting(&boards, &id, || {
+            // The append that `doc_append_update` is about to make.
+            boards.set_ahead(&id, true).unwrap();
+            Ok::<_, String>(())
+        })
+        .unwrap();
+
+        assert!(boards.current().unwrap().ahead);
     }
 
     /// **T-363, and it is stage 1's worst hole rather than a nicety.**
@@ -2428,6 +2583,7 @@ mod tests {
             workshop: PathBuf::from("boards/board-one"),
             title: "Case one".into(),
             last_opened: 0,
+            ahead: false,
         };
         assert!(!data.join("boards/board-one").exists());
 
@@ -2470,6 +2626,7 @@ mod tests {
             workshop: PathBuf::from("boards/board-one"),
             title: "Case one".into(),
             last_opened: 0,
+            ahead: false,
         };
         let workshop = Workshop::new(data.to_path_buf());
         let taken = take_up(&workshop, &assets, &entry).unwrap();
@@ -2520,6 +2677,7 @@ mod tests {
                 workshop: PathBuf::from("boards/board-one"),
                 title: "Case one".into(),
                 last_opened: 0,
+                ahead: false,
             };
             DocStore::new(data.join("boards/board-one"))
                 .unwrap()

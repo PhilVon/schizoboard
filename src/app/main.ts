@@ -275,6 +275,12 @@ async function boot(): Promise<void> {
   // not to" is not the same promise as "it does not".
   if (persistence.readOnly) pack.seal();
   initialiseBoard(board);
+  // After `pack.seal()`, so a board this build may not write is not caught up
+  // either, and after `initialiseBoard`, whose own write already arms the tier
+  // on the one board that needs it — a brand new one. Not awaited: it asks the
+  // shell one boolean about a file nobody is waiting on, and the answer only
+  // ever starts the idle timer that the first edit would have started anyway.
+  void pack.catchUp();
 
   /**
    * A document written by a build newer than this one, open to be looked at

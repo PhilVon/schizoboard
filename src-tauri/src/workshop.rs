@@ -191,6 +191,7 @@ mod tests {
             workshop: PathBuf::from(workshop),
             title: String::new(),
             last_opened: 0,
+            ahead: false,
         }
     }
 

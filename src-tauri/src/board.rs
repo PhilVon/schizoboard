@@ -123,6 +123,26 @@ pub struct Entry {
     pub title: String,
     /// Epoch seconds. Only ever used to order the list.
     pub last_opened: u64,
+    /// Whether the workshop has moved since this board's file was last written
+    /// successfully (T-370).
+    ///
+    /// This is `app/pack.ts`'s `behind` flag one tier down, where it survives a
+    /// quit — and surviving the quit is the whole of what it is for. A board
+    /// flushed on the way out is fine; a board whose last edit landed inside
+    /// `Persistence`'s 200 ms batch and never reached the pack comes back a
+    /// session behind, and *nothing at the next boot knew to look*, because the
+    /// question "is the workshop ahead of the pack" had no recorded answer.
+    ///
+    /// **Not a log position or a counter**, which is what this was first sketched
+    /// as. `docstore.rs` exposes neither, a workshop compaction truncates the log
+    /// so its length is not monotonic anyway, and a boolean answers the only
+    /// question anybody asks of it.
+    ///
+    /// `false` on an entry written before T-370, which is right: such a register
+    /// has no idea, and one redundant append is the safe direction to be wrong
+    /// in.
+    #[serde(default)]
+    pub ahead: bool,
 }
 
 impl Entry {
@@ -247,6 +267,10 @@ impl BoardStore {
                     path: Some(path.to_path_buf()),
                     title: title.to_string(),
                     last_opened: 0,
+                    // A file this installation has just met, and a workshop that
+                    // is either empty or about to be seeded from that very file.
+                    // Either way the two agree, and the first edit says so.
+                    ahead: false,
                 };
                 state.boards.push(entry.clone());
                 entry
@@ -280,6 +304,33 @@ impl BoardStore {
     /// What the board calls itself, for the menu.
     pub fn set_title(&self, pack_id: &str, title: &str) -> io::Result<()> {
         self.amend(pack_id, |entry| entry.title = title.to_string())
+    }
+
+    /// Record whether the workshop has moved past this board's file (T-370).
+    ///
+    /// `true` from `doc_append_update` and `false` from `write_pack`, which are
+    /// the only two events that can change the answer.
+    ///
+    /// **Written only when it changes**, and that is what makes it affordable on
+    /// a path that runs every 200 ms of typing. A working session sets it once
+    /// when the first edit lands and clears it once when the idle flush does, so
+    /// a register of a few hundred bytes is rewritten twice per idle interval
+    /// rather than five times a second.
+    ///
+    /// A pack id the register does not have is **silence rather than an error**,
+    /// unlike [`Self::amend`]. Its callers are bookkeeping either side of work
+    /// that has already succeeded, and a board this register has forgotten has no
+    /// file for the workshop to be ahead of.
+    pub fn set_ahead(&self, pack_id: &str, ahead: bool) -> io::Result<()> {
+        let mut state = self.lock();
+        let Some(entry) = state.boards.iter_mut().find(|e| e.pack_id == pack_id) else {
+            return Ok(());
+        };
+        if entry.ahead == ahead {
+            return Ok(());
+        }
+        entry.ahead = ahead;
+        write_register(&self.path, &state)
     }
 
     /// Drop a board from the register.
@@ -328,6 +379,10 @@ impl BoardStore {
             // document open, which is before anybody sees a menu.
             title: String::new(),
             last_opened: now(),
+            // A whole document and no file at all, which is as far ahead as it
+            // is possible to be. `homeBoard` writes the first pack a second and
+            // a half from now; until it does, this says so.
+            ahead: true,
         };
         let mut state = self.lock();
         state.current = Some(entry.pack_id.clone());
@@ -355,6 +410,10 @@ impl BoardStore {
             path: None,
             title: String::new(),
             last_opened: now(),
+            // Nothing in the workshop and nothing in a file: the two agree on
+            // emptiness. `initialiseBoard`'s first write is what makes this
+            // true, and it goes through the same road every other edit does.
+            ahead: false,
         };
         let mut state = self.lock();
         state.boards.push(entry.clone());
@@ -924,6 +983,124 @@ mod tests {
         assert_eq!(entry.title, "Untitled board");
         // The workshop does not follow the home. It never moves.
         assert_eq!(entry.workshop, PathBuf::from(LEGACY_WORKSHOP));
+    }
+
+    // --- whether the workshop is ahead of the file (T-370) -------------------
+
+    /// The fact a boot needs and could not have: the last session's answer,
+    /// still there after the process that wrote it has gone.
+    #[test]
+    fn whether_the_workshop_is_ahead_survives_a_relaunch() {
+        let dir = tempfile::tempdir().unwrap();
+        let register = dir.path().join("boards.json");
+        let id = mint_pack_id();
+        {
+            let store = BoardStore::new(register.clone()).unwrap();
+            store
+                .admit(&id, &dir.path().join("one.schizo"), "One")
+                .unwrap();
+            store.open(&id).unwrap();
+            assert!(!store.current().unwrap().ahead);
+            store.set_ahead(&id, true).unwrap();
+        }
+
+        let store = BoardStore::new(register).unwrap();
+        assert!(store.current().unwrap().ahead);
+    }
+
+    /// AC-1040 at the register: a launch that changed nothing has nothing owed,
+    /// so nothing appends a generation to a file nobody has touched.
+    #[test]
+    fn a_file_written_after_the_last_edit_is_not_ahead_of_anything() {
+        let (dir, store) = store();
+        let id = mint_pack_id();
+        store.admit(&id, &pack(&dir, "one.schizo"), "One").unwrap();
+        store.open(&id).unwrap();
+
+        store.set_ahead(&id, true).unwrap();
+        store.set_ahead(&id, false).unwrap();
+
+        assert!(!store.current().unwrap().ahead);
+    }
+
+    /// The property that makes this affordable on a path that runs every 200 ms
+    /// of typing: the register is touched on the *transition* and not on the
+    /// event. Measured by the file's own mtime rather than by counting calls,
+    /// because what costs something is the write.
+    #[test]
+    fn a_board_already_known_to_be_ahead_is_not_written_down_again() {
+        let dir = tempfile::tempdir().unwrap();
+        let register = dir.path().join("boards.json");
+        let store = BoardStore::new(register.clone()).unwrap();
+        let id = mint_pack_id();
+        store.admit(&id, &dir.path().join("one.schizo"), "One").unwrap();
+        store.open(&id).unwrap();
+        store.set_ahead(&id, true).unwrap();
+
+        let after_the_first = fs::metadata(&register).unwrap().modified().unwrap();
+        // Far enough apart that a file system with a coarse timestamp still
+        // separates them, so a failure here is a write and never a tick.
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        for _ in 0..20 {
+            store.set_ahead(&id, true).unwrap();
+        }
+
+        assert_eq!(
+            fs::metadata(&register).unwrap().modified().unwrap(),
+            after_the_first
+        );
+        assert!(store.current().unwrap().ahead);
+    }
+
+    /// Unlike [`BoardStore::amend`], and deliberately. Its callers are
+    /// bookkeeping either side of work that has already succeeded, and a board
+    /// this register has forgotten has no file for a workshop to be ahead of.
+    #[test]
+    fn noting_a_board_nobody_has_heard_of_is_silence_rather_than_an_error() {
+        let (_dir, store) = store();
+        store.set_ahead(&mint_pack_id(), true).unwrap();
+    }
+
+    /// A register written before T-370 has no idea, and `false` is the answer
+    /// that costs nothing — the first edit of the session says otherwise, and a
+    /// board genuinely left behind by the previous build is caught up by that
+    /// edit rather than by this launch.
+    #[test]
+    fn a_register_from_before_this_change_reads_as_level() {
+        let dir = tempfile::tempdir().unwrap();
+        let register = dir.path().join("boards.json");
+        let id = mint_pack_id();
+        fs::write(
+            &register,
+            format!(
+                r#"{{"version":1,"current":"{id}","boards":[{{"packId":"{id}",
+                   "boardId":"board-aaaaaaaaaaaaaaaa","workshop":"boards/board-aaaaaaaaaaaaaaaa",
+                   "title":"One","lastOpened":7}}]}}"#
+            ),
+        )
+        .unwrap();
+
+        let store = BoardStore::new(register).unwrap();
+        let entry = store.current().expect("the entry still reads");
+        assert!(!entry.ahead);
+        assert_eq!(entry.title, "One");
+    }
+
+    /// A board adopted from before T-356 has a whole document and no file at
+    /// all, which is as far ahead as it is possible to be. A brand new one has
+    /// neither, so the two agree on emptiness.
+    #[test]
+    fn a_board_with_a_document_and_no_file_is_ahead_and_an_empty_one_is_not() {
+        let dir = tempfile::tempdir().unwrap();
+        let data = dir.path();
+        fs::create_dir_all(data.join("doc")).unwrap();
+        let store = BoardStore::new(data.join("boards.json")).unwrap();
+
+        let adopted = store.adopt_legacy(data).unwrap().unwrap();
+        assert!(adopted.ahead);
+        assert!(!adopted.homed());
+
+        assert!(!store.mint().unwrap().ahead);
     }
 
     #[test]
