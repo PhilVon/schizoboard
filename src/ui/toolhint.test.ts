@@ -22,6 +22,7 @@ import {
   revealed,
   rows,
   toolLine,
+  TAKEN_LINE,
   UNSAVED_LINE,
 } from "@/ui/toolhint";
 
@@ -238,6 +239,44 @@ describe("the tool line", () => {
     const line = toolLine(TOY, { sealed: { boardVersion: 4, buildVersion: 3 }, unsaved: true });
     expect(line.lead).not.toContain(UNSAVED_LINE);
     expect(line.rows).toEqual([]);
+  });
+
+  /**
+   * T-368. Prefixes like `unsaved` — the board still takes every gesture and
+   * still keeps them, and it is only the *file* that has stopped being written.
+   */
+  it("prefixes the file-not-being-updated sentence and keeps the rows", () => {
+    const line = toolLine(TOY, { taken: true });
+    expect(line.lead.startsWith(TAKEN_LINE)).toBe(true);
+    expect(line.lead).toContain("do the toy thing");
+    expect(line.warning).toBe(true);
+    expect(line.rows).toHaveLength(TOY.rows.length + AMBIENT.length);
+  });
+
+  /**
+   * The sentence has to say what is still true before it says what stopped. The
+   * alarming reading of "this board's file is not being updated" is the wrong
+   * one — the work is safe and it is on this disk.
+   */
+  it("says the work is still being saved before it says the file is not", () => {
+    const stops = TAKEN_LINE.indexOf("has the file");
+    const saves = TAKEN_LINE.indexOf("being saved here");
+    expect(saves).toBeGreaterThan(-1);
+    expect(saves).toBeLessThan(stops);
+    // And it says what to do about it, because closing the other window is
+    // something only the person at the machine can do.
+    expect(TAKEN_LINE).toContain("Close the other one");
+  });
+
+  /**
+   * Both is not a state anything produces today, and the order still has to be
+   * decided rather than fall out: one says the file is stale, the other says the
+   * work is not reaching this disk at all.
+   */
+  it("prefers not-being-saved over the taken file when a board is both", () => {
+    const line = toolLine(TOY, { unsaved: true, taken: true });
+    expect(line.lead.startsWith(UNSAVED_LINE)).toBe(true);
+    expect(line.lead).not.toContain(TAKEN_LINE);
   });
 
   /** The real one, not the toy — the eight tools' copy reaching the bar. */

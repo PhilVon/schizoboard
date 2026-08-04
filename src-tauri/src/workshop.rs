@@ -192,6 +192,8 @@ mod tests {
             title: String::new(),
             last_opened: 0,
             ahead: false,
+            generation: 0,
+            taken: false,
         }
     }
 

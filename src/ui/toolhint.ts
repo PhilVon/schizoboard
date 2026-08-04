@@ -174,6 +174,16 @@ export interface BoardStatus {
   readonly sealed?: { readonly boardVersion: number; readonly buildVersion: number };
   /** The document on disk could not be read and is being left alone. */
   readonly unsaved?: boolean;
+  /**
+   * Another window is writing this board's file, so this one has stopped
+   * (T-368).
+   *
+   * Prefixes, like `unsaved` and for the same reason — every gesture in the list
+   * still works and is still kept. What it says is narrower than `unsaved`, and
+   * the difference is the whole point of it being a third field: the *document*
+   * is still being saved here, and only the file has stopped being updated.
+   */
+  readonly taken?: boolean;
 }
 
 export function sealedLine(boardVersion: number, buildVersion: number): string {
@@ -187,6 +197,17 @@ export function sealedLine(boardVersion: number, buildVersion: number): string {
 export const UNSAVED_LINE =
   "THIS BOARD IS NOT BEING SAVED — the document on disk could not be read, " +
   "and is being left alone rather than written over. See the console.";
+
+/**
+ * T-368. Deliberately says what is *still* true before it says what stopped,
+ * because the alarming reading of "this board's file is not being updated" is
+ * the wrong one: the work is safe, it is on this disk, and what has stopped is
+ * one of the two places it is kept.
+ */
+export const TAKEN_LINE =
+  "THIS BOARD'S FILE IS NOT BEING UPDATED — your work is being saved here, but " +
+  "another window has the file, so this one has stopped writing it rather than " +
+  "write over what that window is doing. Close the other one and reopen this board.";
 
 /** What the tool line reads, given the tool and the board's condition. */
 export interface ToolLine {
@@ -208,9 +229,13 @@ export function toolLine(hint: ToolHint, status: BoardStatus = {}): ToolLine {
     };
   }
   const lead = `${hint.name} (${hint.key}) — ${hint.verb}`;
+  // `unsaved` outranks `taken` when both are somehow true, because it is the
+  // worse news by a long way: one says the file is stale and the other says the
+  // work is not reaching this disk at all.
+  const warn = status.unsaved ? UNSAVED_LINE : status.taken ? TAKEN_LINE : null;
   return {
-    lead: status.unsaved ? `${UNSAVED_LINE} · ${lead}` : lead,
-    warning: status.unsaved === true,
+    lead: warn === null ? lead : `${warn} · ${lead}`,
+    warning: warn !== null,
     rows: rows(hint),
   };
 }

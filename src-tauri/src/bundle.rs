@@ -120,6 +120,23 @@ pub enum Error {
     Corrupt(String),
     Asset(assets::Error),
     Json(String),
+    /// Somebody else has written this pack since we last did (T-368).
+    ///
+    /// **Its own variant because of what must not happen next.** Every other
+    /// error out of [`append`] means "there is nothing here to append to", and
+    /// `save_pack`'s answer is to write the whole file again from the document
+    /// this machine still holds — which is right for a torn append and is the
+    /// worst possible answer to this one: it would rename our file over theirs
+    /// and take every generation they wrote with it. So this is the one append
+    /// failure that must not fall back, and a `Corrupt(String)` nobody could
+    /// tell apart from the others would have been exactly that bug.
+    Interleaved {
+        /// The generation this installation last wrote, and therefore expected
+        /// to still be the newest.
+        ours: u32,
+        /// What is actually the newest in the file now.
+        theirs: u32,
+    },
 }
 
 impl std::fmt::Display for Error {
@@ -131,6 +148,11 @@ impl std::fmt::Display for Error {
             Error::Corrupt(why) => write!(f, "this bundle is damaged: {why}"),
             Error::Asset(e) => write!(f, "{e}"),
             Error::Json(why) => write!(f, "the manifest could not be read: {why}"),
+            Error::Interleaved { ours, theirs } => write!(
+                f,
+                "another window has written this board's file since this one did \
+                 (it is at generation {theirs}, and this window last wrote {ours})"
+            ),
         }
     }
 }
@@ -473,6 +495,24 @@ fn newest_generation<R: Read + io::Seek>(zip: &ZipArchive<R>) -> Option<u32> {
         .max()
 }
 
+/// What generation a pack is at, for a caller taking it up (T-368).
+///
+/// `0` for a pack with no generations, which is every `.schizo` written before
+/// T-366 and every one just compacted — the same zero [`append`] expects to be
+/// told when the file has none.
+///
+/// **Opening somebody else's pack sets this to whatever it is already at**,
+/// which is the difference between a belief about the file and a count of our
+/// own writes. A pack sent to you at generation five is not one you are five
+/// behind on; it is one you have just caught up with, and calling it zero would
+/// make your first flush read as somebody else's interleave.
+///
+/// Costs the central directory and reads no entry.
+pub fn generation_of(src: &Path) -> Result<u32> {
+    let zip = ZipArchive::new(BufReader::new(File::open(src)?))?;
+    Ok(newest_generation(&zip).unwrap_or(0))
+}
+
 /// Write the board into a pack that already exists, as one appended entry.
 ///
 /// **This is the whole of stage 2** (T-366, D-70). A flush used to be
@@ -524,6 +564,7 @@ pub fn append(
     pack_id: &str,
     snapshot: &[u8],
     dest: &Path,
+    ours: u32,
 ) -> Result<Written> {
     let (embedded, missing) = plan(store, spec);
 
@@ -532,12 +573,35 @@ pub fn append(
     // questions the append needs: which generation this becomes, and which
     // photographs are already in the file. `insert_file_data` refuses a
     // duplicate name, so writing an asset twice is an error rather than waste.
-    let (generation, present) = {
+    let (newest, present) = {
         let zip = ZipArchive::new(BufReader::new(File::open(dest)?))?;
-        let generation = newest_generation(&zip).unwrap_or(0) + 1;
+        let newest = newest_generation(&zip).unwrap_or(0);
         let present: HashSet<String> = zip.file_names().map(str::to_string).collect();
-        (generation, present)
+        (newest, present)
     };
+    // **Detected here rather than prevented anywhere** (T-368, D-67 risk 4). Two
+    // processes cannot be stopped from opening one file, so what this refuses is
+    // writing into a file that has moved under us — the same shape as
+    // `docstore.rs`'s `ours`, which establishes once that a log is not this
+    // application's and declines every operation afterwards rather than trying to
+    // share it.
+    //
+    // Checked out of the read that was already being made, so the window between
+    // looking and appending is as small as one process can make it. It is not
+    // zero and cannot be: the honest claim is that an interleave is *caught*, not
+    // that it cannot begin.
+    //
+    // `!=` rather than `<`, though behind is the case that happens. A file whose
+    // newest generation is lower than ours has been compacted or replaced by
+    // somebody else, which is the same fact — this is not the file we last wrote
+    // — arriving from the other direction.
+    if newest != ours {
+        return Err(Error::Interleaved {
+            ours,
+            theirs: newest,
+        });
+    }
+    let generation = newest + 1;
     if generation > MAX_GENERATIONS {
         return Err(Error::Corrupt(format!(
             "that board's file already holds {MAX_GENERATIONS} generations"
@@ -1229,6 +1293,25 @@ mod tests {
             title: "A board".into(),
             assets,
         }
+    }
+
+    /// Append the way the shell does: read where the file has got to, then
+    /// append onto that.
+    ///
+    /// Every test in this module except the interleave ones is about something
+    /// other than T-368's check, and threading a generation number through each
+    /// of them by hand would be twenty chances to write the wrong one — and a
+    /// wrong one would fail as an interleave, which is a confusing way to be told
+    /// your fixture is off. The tests that *are* about the check call [`append`]
+    /// directly, with the number stated.
+    fn appended(
+        store: &AssetStore,
+        spec: &Spec,
+        pack_id: &str,
+        snapshot: &[u8],
+        dest: &Path,
+    ) -> Result<Written> {
+        append(store, spec, pack_id, snapshot, dest, generation_of(dest)?)
     }
 
     /// The round trip ARCHITECTURE section 6 asks for: out of one machine's
@@ -2043,8 +2126,8 @@ mod tests {
         let id = crate::board::mint_pack_id();
         super::write(&store, &spec(vec![]), Some(&id), b"as of the export", &pack).unwrap();
 
-        append(&store, &spec(vec![]), &id, b"an hour later", &pack).unwrap();
-        append(&store, &spec(vec![]), &id, b"an hour after that", &pack).unwrap();
+        appended(&store, &spec(vec![]), &id, b"an hour later", &pack).unwrap();
+        appended(&store, &spec(vec![]), &id, b"an hour after that", &pack).unwrap();
 
         let opened = read(&store, &pack).unwrap();
         assert_eq!(opened.snapshot, b"an hour after that");
@@ -2065,10 +2148,117 @@ mod tests {
         super::write(&store, &spec(vec![]), Some(&id), b"gen 0", &pack).unwrap();
 
         for n in 1..=11 {
-            append(&store, &spec(vec![]), &id, format!("gen {n}").as_bytes(), &pack).unwrap();
+            appended(&store, &spec(vec![]), &id, format!("gen {n}").as_bytes(), &pack).unwrap();
         }
 
         assert_eq!(read(&store, &pack).unwrap().snapshot, b"gen 11");
+    }
+
+    // --- two windows on one file (T-368) ------------------------------------
+
+    /// AC-1032. A second instance is not stopped from opening the file — nothing
+    /// can stop that — so what has to happen is that its append is *caught*
+    /// rather than laid on top of work it never read.
+    #[test]
+    fn an_append_onto_somebody_else_s_writing_is_refused() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = store(&dir, "mine");
+        let pack = dir.path().join("case one.schizo");
+        let id = crate::board::mint_pack_id();
+        super::write(&store, &spec(vec![]), Some(&id), b"the export", &pack).unwrap();
+
+        // This window flushes, and believes the file is at generation 1.
+        appended(&store, &spec(vec![]), &id, b"our afternoon", &pack).unwrap();
+        // The other window flushes twice while we were not looking.
+        appended(&store, &spec(vec![]), &id, b"their afternoon", &pack).unwrap();
+        appended(&store, &spec(vec![]), &id, b"their evening", &pack).unwrap();
+
+        let refused = append(&store, &spec(vec![]), &id, b"ours again", &pack, 1);
+
+        assert!(
+            matches!(refused, Err(Error::Interleaved { ours: 1, theirs: 3 })),
+            "{refused:?}"
+        );
+    }
+
+    /// The refusal has to happen **before** anything is written, or catching an
+    /// interleave would be a way of causing one.
+    #[test]
+    fn a_refused_append_leaves_the_file_exactly_as_it_was() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = store(&dir, "mine");
+        let pack = dir.path().join("case one.schizo");
+        let id = crate::board::mint_pack_id();
+        super::write(&store, &spec(vec![]), Some(&id), b"the export", &pack).unwrap();
+        appended(&store, &spec(vec![]), &id, b"theirs", &pack).unwrap();
+        let before = fs::read(&pack).unwrap();
+
+        assert!(append(&store, &spec(vec![]), &id, b"ours", &pack, 0).is_err());
+
+        assert_eq!(fs::read(&pack).unwrap(), before);
+        assert_eq!(read(&store, &pack).unwrap().snapshot, b"theirs");
+    }
+
+    /// A file whose newest generation is *lower* than ours — somebody else
+    /// compacted it, or replaced it. The same fact arriving from the other
+    /// direction, and refused on the same terms.
+    #[test]
+    fn an_append_onto_a_file_that_has_been_folded_up_under_us_is_refused_too() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = store(&dir, "mine");
+        let pack = dir.path().join("case one.schizo");
+        let id = crate::board::mint_pack_id();
+        super::write(&store, &spec(vec![]), Some(&id), b"the export", &pack).unwrap();
+        appended(&store, &spec(vec![]), &id, b"one", &pack).unwrap();
+        appended(&store, &spec(vec![]), &id, b"two", &pack).unwrap();
+        // Their compaction: the generations fold away and the file is at zero.
+        compact(&store, &id, &pack).unwrap();
+
+        let refused = append(&store, &spec(vec![]), &id, b"ours", &pack, 2);
+
+        assert!(
+            matches!(refused, Err(Error::Interleaved { ours: 2, theirs: 0 })),
+            "{refused:?}"
+        );
+    }
+
+    /// **Opening somebody's `.schizo` is not an interleave**, which is the case
+    /// that would have made this whole check unusable: a pack at generation five
+    /// is one you have just caught up with, not one you are five behind on.
+    #[test]
+    fn taking_up_a_pack_somebody_else_wrote_is_catching_up_and_not_colliding() {
+        let dir = tempfile::tempdir().unwrap();
+        let theirs = store(&dir, "theirs");
+        let pack = dir.path().join("case one.schizo");
+        let id = crate::board::mint_pack_id();
+        super::write(&theirs, &spec(vec![]), Some(&id), b"their export", &pack).unwrap();
+        for n in 1..=5 {
+            appended(&theirs, &spec(vec![]), &id, format!("their {n}").as_bytes(), &pack).unwrap();
+        }
+
+        // What `note_generation` does the moment the board is taken up.
+        let mine = store(&dir, "mine");
+        let caught_up = generation_of(&pack).unwrap();
+        assert_eq!(caught_up, 5);
+
+        append(&mine, &spec(vec![]), &id, b"mine", &pack, caught_up).unwrap();
+        assert_eq!(read(&mine, &pack).unwrap().snapshot, b"mine");
+    }
+
+    /// Zero for a pack with none, which is every `.schizo` written before T-366
+    /// and every one just compacted — the same zero `append` expects to be told.
+    #[test]
+    fn a_pack_with_no_generations_is_at_generation_zero() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = store(&dir, "mine");
+        let pack = dir.path().join("case one.schizo");
+        let id = crate::board::mint_pack_id();
+        super::write(&store, &spec(vec![]), Some(&id), b"the export", &pack).unwrap();
+
+        assert_eq!(generation_of(&pack).unwrap(), 0);
+
+        appended(&store, &spec(vec![]), &id, b"one", &pack).unwrap();
+        assert_eq!(generation_of(&pack).unwrap(), 1);
     }
 
     /// AC-1024. The point of appending rather than rewriting is that the bytes
@@ -2093,7 +2283,7 @@ mod tests {
         let photo = mine.ingest_bytes(&big, None).unwrap().sha256;
 
         super::write(&mine, &spec(vec![photo.clone()]), Some(&id), b"first", &pack).unwrap();
-        append(&mine, &spec(vec![photo.clone()]), &id, b"second", &pack).unwrap();
+        appended(&mine, &spec(vec![photo.clone()]), &id, b"second", &pack).unwrap();
 
         // Still a zip, still readable, and on a machine that has never seen
         // those bytes — which is the only way to prove they came out of the file
@@ -2122,7 +2312,7 @@ mod tests {
         let before = std::fs::metadata(&pack).unwrap().len();
 
         // The same board again: nothing new to carry.
-        append(&mine, &spec(vec![first.clone()]), &id, b"two", &pack).unwrap();
+        appended(&mine, &spec(vec![first.clone()]), &id, b"two", &pack).unwrap();
         let after_nothing_new = std::fs::metadata(&pack).unwrap().len();
         assert!(
             after_nothing_new - before < 4096,
@@ -2132,7 +2322,7 @@ mod tests {
 
         // And a photograph that arrived since.
         let second = mine.ingest_bytes(&[0u8; 40_000], None).unwrap().sha256;
-        append(&mine, &spec(vec![first.clone(), second.clone()]), &id, b"three", &pack).unwrap();
+        appended(&mine, &spec(vec![first.clone(), second.clone()]), &id, b"three", &pack).unwrap();
 
         let theirs = store(&dir, "theirs");
         let opened = read(&theirs, &pack).unwrap();
@@ -2190,13 +2380,13 @@ mod tests {
         nasty.extend_from_slice(b"after");
 
         super::write(&store, &spec(vec![]), Some(&id), b"first", &pack).unwrap();
-        append(&store, &spec(vec![]), &id, &nasty, &pack).unwrap();
+        appended(&store, &spec(vec![]), &id, &nasty, &pack).unwrap();
 
         assert_eq!(read(&store, &pack).unwrap().snapshot, nasty);
 
         // And once more, so the nasty generation is in the middle of the file
         // rather than at the end of it.
-        append(&store, &spec(vec![]), &id, b"third", &pack).unwrap();
+        appended(&store, &spec(vec![]), &id, b"third", &pack).unwrap();
         assert_eq!(read(&store, &pack).unwrap().snapshot, b"third");
     }
 
@@ -2210,7 +2400,7 @@ mod tests {
         let pack = dir.path().join("case one.schizo");
         let id = crate::board::mint_pack_id();
         super::write(&store, &spec(vec![]), Some(&id), b"base", &pack).unwrap();
-        append(&store, &spec(vec![]), &id, b"the real one", &pack).unwrap();
+        appended(&store, &spec(vec![]), &id, b"the real one", &pack).unwrap();
 
         {
             let file = File::options().read(true).write(true).open(&pack).unwrap();
@@ -2246,7 +2436,7 @@ mod tests {
         // Arrived from a peer after the pack was written, and went in with the
         // generation that first referenced it.
         let fresh = mine.ingest_bytes(&[7u8; 20_000], None).unwrap().sha256;
-        append(&mine, &spec(vec![old.clone(), fresh.clone()]), &id, b"second", &pack).unwrap();
+        appended(&mine, &spec(vec![old.clone(), fresh.clone()]), &id, b"second", &pack).unwrap();
 
         let theirs = store(&dir, "theirs");
         let restored = top_up(&theirs, &pack).unwrap();
@@ -2334,7 +2524,7 @@ mod tests {
         // A working afternoon: ten flushes, each superseding the one before.
         for n in 1..=10 {
             let doc = format!("an afternoon, at {n}").repeat(200);
-            append(&store, &spec(vec![]), &id, doc.as_bytes(), &pack).unwrap();
+            appended(&store, &spec(vec![]), &id, doc.as_bytes(), &pack).unwrap();
         }
         let grown = std::fs::metadata(&pack).unwrap().len();
         let newest = read(&store, &pack).unwrap().snapshot;
@@ -2365,7 +2555,7 @@ mod tests {
         assert_eq!(reopened.manifest.pack_id.as_deref(), Some(id.as_str()));
         // And it is a pack again rather than a finished thing: the next flush
         // starts a fresh generation 1.
-        append(&store, &spec(vec![]), &id, b"the evening", &pack).unwrap();
+        appended(&store, &spec(vec![]), &id, b"the evening", &pack).unwrap();
         assert_eq!(read(&store, &pack).unwrap().snapshot, b"the evening");
     }
 
@@ -2382,7 +2572,7 @@ mod tests {
         let id = crate::board::mint_pack_id();
         let photo = store.ingest_bytes(PIXEL, None).unwrap().sha256;
         super::write(&store, &spec(vec![photo.clone()]), Some(&id), b"first", &pack).unwrap();
-        append(&store, &spec(vec![photo.clone()]), &id, b"second", &pack).unwrap();
+        appended(&store, &spec(vec![photo.clone()]), &id, b"second", &pack).unwrap();
 
         // The sweep, while this window was on some other board.
         store.gc(&HashSet::new()).unwrap();
@@ -2419,7 +2609,7 @@ mod tests {
         )
         .unwrap();
         // Somebody took it off the board, so the newest generation stops listing it.
-        append(&store, &spec(vec![kept.clone()]), &id, b"one of them", &pack).unwrap();
+        appended(&store, &spec(vec![kept.clone()]), &id, b"one of them", &pack).unwrap();
 
         compact(&store, &id, &pack).unwrap();
 
@@ -2441,11 +2631,11 @@ mod tests {
         // Nothing superseded yet, so nothing to reclaim — which is also what a
         // pack that has just been compacted reads as.
         assert_eq!(reclaimable(&pack).unwrap(), 0.0);
-        append(&store, &spec(vec![]), &id, &vec![b'a'; 40_000], &pack).unwrap();
+        appended(&store, &spec(vec![]), &id, &vec![b'a'; 40_000], &pack).unwrap();
         assert_eq!(reclaimable(&pack).unwrap(), 0.0, "one generation supersedes nothing");
 
         for _ in 0..8 {
-            append(&store, &spec(vec![]), &id, &vec![b'b'; 40_000], &pack).unwrap();
+            appended(&store, &spec(vec![]), &id, &vec![b'b'; 40_000], &pack).unwrap();
         }
         let waste = reclaimable(&pack).unwrap();
         assert!(waste > COMPACT_AT, "a board of documents should cross it: {waste}");
@@ -2475,7 +2665,7 @@ mod tests {
         super::write(&store, &spec(vec![photo.clone()]), Some(&id), b"first", &pack).unwrap();
 
         for _ in 0..20 {
-            append(&store, &spec(vec![photo.clone()]), &id, &vec![b'c'; 20_000], &pack).unwrap();
+            appended(&store, &spec(vec![photo.clone()]), &id, &vec![b'c'; 20_000], &pack).unwrap();
         }
 
         let waste = reclaimable(&pack).unwrap();

@@ -832,4 +832,159 @@ describe("when the board's own file is rewritten", () => {
       expect(shell.flushes()).toBe(0);
     });
   });
+
+  /**
+   * T-368. Two instances cannot be stopped from opening one `.schizo`, and a
+   * pack is appended to rather than rewritten — so two of them appending would
+   * interleave two generations neither had read. The shell refuses the append;
+   * this is what this side does about being refused.
+   */
+  describe("and a file another window has taken", () => {
+    /** A shell that refuses every flush, and says why when asked. */
+    function contested(taken: boolean) {
+      const boardFlush = vi.fn(async () => {
+        throw new Error("that board's file could not be written");
+      });
+      const boardPackTaken = vi.fn(async () => taken);
+      return {
+        native: { boardFlush, boardPackTaken } as unknown as Platform,
+        flushes: () => boardFlush.mock.calls.length,
+        asked: () => boardPackTaken.mock.calls.length,
+      };
+    }
+
+    it("stops writing the file for the rest of the session", async () => {
+      const shell = contested(true);
+      let taken = 0;
+      const pack = new Pack(board(), shell.native, {
+        idleMs: IDLE,
+        onError: () => {},
+        onTaken: () => {
+          taken += 1;
+        },
+      });
+
+      pack.wrote();
+      await vi.advanceTimersByTimeAsync(IDLE);
+
+      expect(taken).toBe(1);
+      // And it does not go on being refused every idle interval: each attempt
+      // reads the file and builds a whole snapshot to be told the same thing.
+      pack.wrote();
+      await vi.advanceTimersByTimeAsync(IDLE * 3);
+      expect(shell.flushes()).toBe(1);
+    });
+
+    /**
+     * The sweep collects against a board's *file*, so a window that has stopped
+     * writing that file must not be collecting against it — this is the same
+     * standing `packedCleanly` is on, arriving from a new direction.
+     */
+    it("stands the asset sweep down for good, and not just for the flush that failed", async () => {
+      // Refuses once and would then succeed — so a tier that noticed and did not
+      // *seal* would flush again on the next edit and call the file clean, and
+      // the sweep would start collecting against a file this window has stopped
+      // writing. Any failing flush sets `clean` false for a moment; only the
+      // seal keeps it false.
+      let first = true;
+      const boardFlush = vi.fn(async () => {
+        if (first) {
+          first = false;
+          throw new Error("that board's file could not be written");
+        }
+        return WROTE;
+      });
+      const boardPackTaken = vi.fn(async () => true);
+      const pack = new Pack(board(PHOTO), { boardFlush, boardPackTaken } as unknown as Platform, {
+        idleMs: IDLE,
+        onError: () => {},
+        onTaken: () => {},
+      });
+
+      pack.wrote();
+      await vi.advanceTimersByTimeAsync(IDLE);
+      expect(pack.packedCleanly).toBe(false);
+
+      pack.wrote();
+      await vi.advanceTimersByTimeAsync(IDLE * 3);
+
+      expect(boardFlush.mock.calls.length).toBe(1);
+      expect(pack.packedCleanly).toBe(false);
+    });
+
+    /**
+     * The distinction the whole extra question is for. An ordinary failure is a
+     * disk that may come back, and giving up on it for the session would turn a
+     * network drive reconnecting into a file left a session behind.
+     */
+    it("keeps trying an ordinary failure, and says so on the recoverable channel", async () => {
+      const shell = contested(false);
+      let taken = 0;
+      let errors = 0;
+      const pack = new Pack(board(), shell.native, {
+        idleMs: IDLE,
+        onError: () => {
+          errors += 1;
+        },
+        onTaken: () => {
+          taken += 1;
+        },
+      });
+
+      pack.wrote();
+      await vi.advanceTimersByTimeAsync(IDLE);
+      expect(shell.asked()).toBe(1);
+      expect(taken).toBe(0);
+      expect(errors).toBe(1);
+
+      pack.wrote();
+      await vi.advanceTimersByTimeAsync(IDLE);
+      expect(shell.flushes()).toBe(2);
+    });
+
+    /**
+     * A shell too broken to answer means the failure was an ordinary one. The
+     * safe direction: at worst the tier keeps trying a file it keeps being
+     * refused, which is what it did before any of this existed.
+     */
+    it("treats a shell that cannot answer as an ordinary failure", async () => {
+      const boardFlush = vi.fn(async () => {
+        throw new Error("the disk said no");
+      });
+      const boardPackTaken = vi.fn(async () => {
+        throw new Error("and so did the register");
+      });
+      let taken = 0;
+      let errors = 0;
+      const pack = new Pack(board(), { boardFlush, boardPackTaken } as unknown as Platform, {
+        idleMs: IDLE,
+        onError: () => {
+          errors += 1;
+        },
+        onTaken: () => {
+          taken += 1;
+        },
+      });
+
+      pack.wrote();
+      await vi.advanceTimersByTimeAsync(IDLE);
+
+      expect(taken).toBe(0);
+      expect(errors).toBe(1);
+    });
+
+    it("does not ask on a flush that succeeded", async () => {
+      const boardFlush = vi.fn(async () => WROTE);
+      const boardPackTaken = vi.fn(async () => true);
+      const pack = new Pack(board(), { boardFlush, boardPackTaken } as unknown as Platform, {
+        idleMs: IDLE,
+      });
+
+      pack.wrote();
+      await vi.advanceTimersByTimeAsync(IDLE);
+
+      expect(boardPackTaken.mock.calls.length).toBe(0);
+    });
+  });
+
 });

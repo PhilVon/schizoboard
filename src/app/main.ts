@@ -231,6 +231,16 @@ async function boot(): Promise<void> {
    * the document was also failing must not take down the sentence about the
    * document, and a pack recovering must not either.
    */
+  /**
+   * Another window has this board's file (T-368) — settled for the session, so
+   * this is a plain flag rather than a slot in `held` below.
+   *
+   * `sayTaken` is the same shape as `sayTrouble`: null until there is a UI to
+   * say it to, because the first flush of a session can be refused before the
+   * board has been drawn.
+   */
+  let packTaken = false;
+  let sayTaken: (() => void) | null = null;
   const held: { doc: string | null; pack: string | null } = { doc: null, pack: null };
   let sayTrouble: ((message: string | null) => void) | null = null;
   const trouble = (tier: "doc" | "pack", message: string | null): void => {
@@ -250,6 +260,15 @@ async function boot(): Promise<void> {
     // appear at all: the answer moves on every flush, not only on a
     // compaction. `readTidy` is set below, when there is a shell to ask.
     onFlushed: () => readTidy?.(),
+    // T-368. Not `trouble`, which is the standing-and-recoverable channel: this
+    // is settled for the session, so it goes on the one surface built for a
+    // condition that cannot be taken down again. `sayTaken` is set below,
+    // beside the rest of the UI; before that line it is a boot-time condition
+    // and `restateBoard` picks it up on its own.
+    onTaken: () => {
+      packTaken = true;
+      sayTaken?.();
+    },
   });
   const persistence = new Persistence(board, native, {
     onError: (error) => {
@@ -3543,7 +3562,8 @@ async function boot(): Promise<void> {
    * is an object, `sync` runs sixty times a second, and a fresh one per frame
    * would be an allocation for a value that is the same for whole sessions.
    * `readOnly` is a `let` because a peer can seal this board mid-session
-   * (T-224), which is the one thing that moves it after boot.
+   * (T-224), and `packTaken` because another window can take this board's file
+   * mid-session (T-368). Those are the two things that move it after boot.
    */
   let boardStatus: BoardStatus = {};
   const restateBoard = (): void => {
@@ -3551,7 +3571,9 @@ async function boot(): Promise<void> {
       ? { sealed: { boardVersion: boardSchemaVersion(board), buildVersion: SCHEMA_VERSION } }
       : persistence.readOnly
         ? { unsaved: true }
-        : {};
+        : packTaken
+          ? { taken: true }
+          : {};
   };
   restateBoard();
   /**
@@ -3570,6 +3592,29 @@ async function boot(): Promise<void> {
   };
   // A store that failed to open did so before this line existed.
   if ((held.doc ?? held.pack) !== null) sayTrouble(held.doc ?? held.pack);
+
+  /**
+   * T-368, and it is `onSealed`'s shape rather than `sayTrouble`'s.
+   *
+   * A held flash **and** the standing line, because the two answer different
+   * questions: the line is there for somebody who looks down in an hour and
+   * wonders why the file has not changed, and the flash is for the moment it
+   * happens, which is otherwise completely silent — nothing on the board moves
+   * when a window stops writing a file.
+   *
+   * The flash is the one thing here that can be replaced by the next message, and
+   * that is correct: it is news, and the line behind it is the record.
+   */
+  sayTaken = () => {
+    restateBoard();
+    flash.hold(
+      "Another window has this board's file — your work is still being saved here, " +
+        "but the file has stopped being updated",
+    );
+  };
+  // Refused before there was anywhere to say so: the first flush of a session
+  // lands five seconds in, and a slow boot can still be behind it.
+  if (packTaken) sayTaken();
 
   /**
    * And now `Ctrl+C`, `Ctrl+X` and `Ctrl+D` have somewhere to say what they did

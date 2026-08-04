@@ -1006,6 +1006,27 @@ export interface Platform {
    * caller. `false` on a board with no file of its own.
    */
   boardWorkshopAhead(): Promise<boolean>;
+  /**
+   * Whether this window has stopped writing this board's file because another
+   * window is writing it (T-368).
+   *
+   * Two instances cannot be stopped from opening one `.schizo` — a second copy
+   * of the application, a board in a synced folder — and a pack is appended to
+   * rather than rewritten, so two of them appending would interleave two
+   * generations neither had read. The shell records what generation it last
+   * wrote and refuses an append onto anything else, which is D-67's risk 4:
+   * detected, not prevented.
+   *
+   * **Asked after a flush fails rather than carried back by the failure.** The
+   * alternative is this side matching on the text of an error message to decide
+   * whether to give up, which stops working the day somebody improves the
+   * wording. `boardFlush` says only that it did not write; this says whether
+   * that is the one kind of not-writing there is no point retrying.
+   *
+   * Session-long and one-way — a relaunch starts clean, and is also the relaunch
+   * that re-reads the file to find out where it actually got to.
+   */
+  boardPackTaken(): Promise<boolean>;
 
   // --- export (T-207, T-206) ----------------------------------------------
   /**

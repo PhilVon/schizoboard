@@ -193,6 +193,18 @@ export interface PackOptions {
    * question correctly to nobody.
    */
   onFlushed?: () => void;
+  /**
+   * Another window has this board's file, so this one has stopped writing it
+   * (T-368).
+   *
+   * **Not `onError`, though it arrives out of the same failure.** `onError` is
+   * one half of a pair with `onRecovered` and says "this is going wrong at the
+   * moment"; this says the opposite kind of thing — a condition that is settled,
+   * cannot recover within the session, and has already sealed this tier by the
+   * time the caller hears about it. Handing it to `onError` would put it on the
+   * flash, where the sentence taking it down again is never coming.
+   */
+  onTaken?: () => void;
 }
 
 const PACK_DEFAULTS = {
@@ -242,6 +254,7 @@ export class Pack {
   private readonly onError: (error: unknown) => void;
   private readonly onRecovered: () => void;
   private readonly onFlushed: () => void;
+  private readonly onTaken: () => void;
 
   private timer: ReturnType<typeof setTimeout> | null = null;
   /** The document has moved on since the last successful flush. */
@@ -262,6 +275,9 @@ export class Pack {
       ((error) => console.error("[pack] the board's own file could not be written", error));
     this.onRecovered = options.onRecovered ?? (() => console.info("[pack] the board's file is being written again"));
     this.onFlushed = options.onFlushed ?? (() => {});
+    this.onTaken =
+      options.onTaken ??
+      (() => console.warn("[pack] another window has this board's file; this one has stopped"));
   }
 
   /**
@@ -525,8 +541,37 @@ export class Pack {
       // a session behind is the thing somebody hands to somebody else.
       this.behind = true;
       this.clean = false;
+      // One kind of failure is not worth putting back, and asking is how this
+      // side tells it apart — see [`Platform.boardWorkshopAhead`]'s neighbour
+      // for why it is a question rather than a message to parse.
+      if (await this.taken()) return;
       this.report(error);
     }
+  }
+
+  /**
+   * Has this board's file been taken by another window (T-368)?
+   *
+   * Seals this tier when it has, which is what stops the idle timer being
+   * rearmed by the next edit — the refusal is settled for the session, and a
+   * board that went on flushing every five seconds to be refused every five
+   * seconds would be reading the file and building a whole snapshot each time to
+   * be told the same thing.
+   *
+   * A shell that cannot answer means the failure was an ordinary one, so this
+   * says no and the caller reports it as such. That is the safe direction: at
+   * worst the tier keeps trying a file it will keep being refused, which is what
+   * it did before any of this existed.
+   */
+  private async taken(): Promise<boolean> {
+    try {
+      if (!(await this.native.boardPackTaken())) return false;
+    } catch {
+      return false;
+    }
+    this.seal();
+    this.onTaken();
+    return true;
   }
 
   /** One report per run of failures, so a disconnected disk is not a loop. */

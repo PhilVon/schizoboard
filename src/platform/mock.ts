@@ -493,6 +493,13 @@ export class MockPlatform implements Platform {
     return false;
   }
 
+  // No file, so no second window can be writing it. Answers rather than
+  // refusing on the same standing as the two above: its caller runs after a
+  // failed flush, and a throw there would replace a real error with this one.
+  async boardPackTaken(): Promise<boolean> {
+    return false;
+  }
+
   /**
    * The name the next image export will be offered under.
    *

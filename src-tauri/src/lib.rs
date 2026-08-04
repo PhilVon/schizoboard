@@ -1369,6 +1369,7 @@ fn open_board(app: &AppHandle, pack_id: &str) -> Result<BoardOpened, String> {
             let _ = workshop.switch(previous);
         }
     })?;
+    note_generation(&boards, &entry);
 
     // Thumbnails and display variants are a local derivative, never carried in
     // the file — a pack holds originals, named by the only hash that can name
@@ -1431,6 +1432,33 @@ struct TakenUp {
 /// A top-up that fails is **not** an open that fails, which is the other half
 /// of the same rule: the workshop is the board, and a pack that has been
 /// deleted or unplugged is a bonus this open does not get.
+/// Catch the register up with where that board's file has actually got to
+/// (T-368), so the next append can tell somebody else's writing from its own.
+///
+/// Called after every [`take_up`], because taking a board up is the moment this
+/// window's belief about its file is formed — a pack somebody sent you at
+/// generation five is one you have just caught up with, not one you are behind
+/// on.
+///
+/// **Never fatal, and a file that will not open leaves the belief alone.** Not
+/// knowing has to err toward refusing a later append rather than toward making
+/// one, and a stale belief does exactly that.
+fn note_generation(boards: &board::BoardStore, entry: &board::Entry) {
+    let Some(path) = entry.path.as_deref() else {
+        return;
+    };
+    match bundle::generation_of(path) {
+        Ok(generation) => {
+            if let Err(error) = boards.set_generation(&entry.pack_id, generation) {
+                eprintln!("board: that board's generation could not be kept: {error}");
+            }
+        }
+        Err(error) => {
+            eprintln!("board: where that board's file had got to could not be read: {error}");
+        }
+    }
+}
+
 fn take_up(
     workshop: &Workshop,
     assets: &AssetStore,
@@ -1790,6 +1818,61 @@ async fn board_workshop_ahead(app: AppHandle) -> Result<bool, String> {
     .await
 }
 
+/// Whether this window has stopped writing this board's file because another
+/// one is writing it (T-368).
+///
+/// **Asked after a flush fails rather than carried back by the failure**, and
+/// the reason is the same one `Refused` exists for: the alternative is the
+/// frontend matching on the text of an error message, which stops working the
+/// day somebody improves the wording. `board_flush` says only that it did not
+/// write; this says whether that is the one kind of not-writing there is no
+/// point retrying.
+///
+/// Session-long and one-way — `Entry::taken` is `#[serde(skip)]`, so a relaunch
+/// starts clean, which is also the relaunch that re-reads the file and finds out
+/// where it actually got to.
+#[tauri::command]
+async fn board_pack_taken(app: AppHandle) -> Result<bool, String> {
+    blocking(move || -> Result<bool, String> {
+        Ok(boards_of(&app)?.current().is_some_and(|entry| entry.taken))
+    })
+    .await
+}
+
+/// Why a pack was not written, when the caller has to tell two kinds apart.
+///
+/// Everything in this application that fails a pack write is a thing to report
+/// and try again on — a disk that filled, a network drive that went away, a file
+/// somebody had open. **One is not**, and it is the reason this is an enum
+/// rather than the `String` it used to be: a file another window is writing must
+/// stop being written by this one, and a caller matching on the text of an error
+/// message to decide that would be a caller that stops deciding it the day
+/// somebody improves the wording.
+#[derive(Debug)]
+enum Refused {
+    /// Another window has written this board's file since this one did (T-368).
+    Taken,
+    /// Anything else.
+    Failed(String),
+}
+
+impl Refused {
+    /// What the person looking at the board is told. Names the other window
+    /// rather than the mechanism, because the generation number is true and is
+    /// not what anybody needs.
+    const TAKEN: &'static str =
+        "another window is writing this board's file, so this one has stopped";
+}
+
+impl std::fmt::Display for Refused {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Refused::Taken => write!(f, "{}", Refused::TAKEN),
+            Refused::Failed(why) => write!(f, "{why}"),
+        }
+    }
+}
+
 /// Which of the two writes a caller is asking for.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Writing {
@@ -1835,25 +1918,43 @@ fn save_pack(
     snapshot: &[u8],
     dest: &Path,
     writing: Writing,
-) -> Result<bundle::Written, String> {
+    ours: u32,
+) -> Result<(bundle::Written, u32), Refused> {
     if writing == Writing::Compact && dest.is_file() {
         // Everything the pack holds goes back into the store before anything
         // reads the store to decide what the new file gets — `bundle::compact`
         // says why that is not an optimisation.
         return bundle::compact(store, pack_id, dest)
-            .map(|tidied| tidied.written)
-            .map_err(|e| e.to_string());
+            // A compaction is `write`, so what it leaves is a pack with no
+            // generations at all — and the register has to be told that, or the
+            // next append would expect a generation the file no longer has and
+            // read its own tidying as somebody else's writing.
+            .map(|tidied| (tidied.written, 0))
+            .map_err(|e| Refused::Failed(e.to_string()));
     }
     if dest.is_file() {
-        match bundle::append(store, spec, pack_id, snapshot, dest) {
-            Ok(written) => return Ok(written),
+        match bundle::append(store, spec, pack_id, snapshot, dest, ours) {
+            Ok(written) => return Ok((written, ours + 1)),
+            // **The one append failure that must not fall back** (T-368). Every
+            // other error here means there is nothing to append to, and writing
+            // the whole file again is the honest recovery; this one means there
+            // is somebody else's work in the file, and the rename underneath
+            // that recovery would take all of it.
+            Err(error @ bundle::Error::Interleaved { .. }) => {
+                eprintln!("board: {} is being written by another window: {error}", dest.display());
+                return Err(Refused::Taken);
+            }
             Err(error) => eprintln!(
                 "board: {} could not be appended to and is being written again: {error}",
                 dest.display()
             ),
         }
     }
-    bundle::write(store, spec, Some(pack_id), snapshot, dest).map_err(|e| e.to_string())
+    // A whole file, so no generations in it — the same zero a compaction leaves,
+    // and for the same reason: this *is* the compaction's writer.
+    bundle::write(store, spec, Some(pack_id), snapshot, dest)
+        .map(|written| (written, 0))
+        .map_err(|e| Refused::Failed(e.to_string()))
 }
 
 /// Write a board's file with the register's note of whether the workshop is
@@ -1870,11 +1971,11 @@ fn save_pack(
 /// Neither note is fatal. A note that could not be cleared costs one redundant
 /// append at the next boot; refusing to write the file over it would cost the
 /// flush. What is being kept here is a fact about a copy of a copy.
-fn noting<T>(
+fn noting<T, E>(
     boards: &board::BoardStore,
     pack_id: &str,
-    write: impl FnOnce() -> Result<T, String>,
-) -> Result<T, String> {
+    write: impl FnOnce() -> Result<T, E>,
+) -> Result<T, E> {
     if let Err(error) = boards.set_ahead(pack_id, false) {
         eprintln!("board: that board's file could not be noted as written: {error}");
     }
@@ -1914,10 +2015,41 @@ fn write_pack(
     if workshop_of(app)?.current().as_deref() != Some(entry.workshop.as_path()) {
         return Err("that board's document is not the one this window has open".to_string());
     }
+    // Already lost this file to another window, so this window does not go on
+    // trying (T-368). Re-detecting would work — our belief stays behind, so every
+    // append would be refused on its own merits — but it would also read the file
+    // and build a whole snapshot to be told the same thing again every idle
+    // interval, and the frontend has already been told once and sealed.
+    if entry.taken {
+        return Err(Refused::TAKEN.to_string());
+    }
     let store = store_of(app)?;
-    let written = noting(boards, &entry.pack_id, || {
-        save_pack(&store, spec, &entry.pack_id, snapshot, dest, writing)
+    let (written, generation) = noting(boards, &entry.pack_id, || {
+        save_pack(
+            &store,
+            spec,
+            &entry.pack_id,
+            snapshot,
+            dest,
+            writing,
+            entry.generation,
+        )
+    })
+    .map_err(|refused| {
+        // The refusal latches here rather than in `save_pack`, because this is
+        // the layer holding the register. One way, and only for this session.
+        if matches!(refused, Refused::Taken) {
+            if let Err(error) = boards.set_taken(&entry.pack_id) {
+                eprintln!("board: that board could not be marked as taken: {error}");
+            }
+        }
+        refused.to_string()
     })?;
+    // What the file is at now, so the next append knows what it is appending to
+    // and can tell somebody else's write from its own.
+    if let Err(error) = boards.set_generation(&entry.pack_id, generation) {
+        eprintln!("board: that board's generation could not be kept: {error}");
+    }
     // Not fatal. A title the register missed is a stale row in a menu; the file
     // it names is written and correct either way.
     if let Err(error) = boards.set_title(&entry.pack_id, &spec.title) {
@@ -2140,6 +2272,9 @@ pub fn run() {
                 eprintln!("board: that board's file could not be taken up at boot: {error}");
                 workshop.switch(&entry)?;
             }
+            // Where this window believes that file is, before anything writes to
+            // it — including a launch that finds another window already has it.
+            note_generation(&boards, &entry);
             app.manage(workshop);
             app.manage(boards);
             app.manage(Hosting::default());
@@ -2235,6 +2370,7 @@ pub fn run() {
             board_compact_on_leaving,
             board_worth_tidying,
             board_workshop_ahead,
+            board_pack_taken,
             asset_ingest_bytes,
             asset_ingest_path,
             asset_ingest_url,
@@ -2344,6 +2480,8 @@ mod tests {
             title: "Case one".to_string(),
             last_opened: 0,
             ahead: false,
+            generation: 0,
+            taken: false,
         }
     }
 
@@ -2572,7 +2710,7 @@ mod tests {
         let id = board::mint_pack_id();
 
         bundle::write(&assets, &pack_spec(), Some(&id), b"as of the export", &pack).unwrap();
-        bundle::append(&assets, &pack_spec(), &id, b"an afternoon of work", &pack).unwrap();
+        bundle::append(&assets, &pack_spec(), &id, b"an afternoon of work", &pack, bundle::generation_of(&pack).unwrap()).unwrap();
 
         // The register survived and the workshop directory did not — a cleanup
         // tool, a quarantine, half a restore.
@@ -2584,6 +2722,8 @@ mod tests {
             title: "Case one".into(),
             last_opened: 0,
             ahead: false,
+            generation: 0,
+            taken: false,
         };
         assert!(!data.join("boards/board-one").exists());
 
@@ -2627,6 +2767,8 @@ mod tests {
             title: "Case one".into(),
             last_opened: 0,
             ahead: false,
+            generation: 0,
+            taken: false,
         };
         let workshop = Workshop::new(data.to_path_buf());
         let taken = take_up(&workshop, &assets, &entry).unwrap();
@@ -2660,7 +2802,7 @@ mod tests {
 
         bundle::write(&assets, &pack_spec(), Some(&id), b"as of the last flush", &pack).unwrap();
         let intact = std::fs::read(&pack).unwrap();
-        bundle::append(&assets, &pack_spec(), &id, b"an hour of work later", &pack).unwrap();
+        bundle::append(&assets, &pack_spec(), &id, b"an hour of work later", &pack, bundle::generation_of(&pack).unwrap()).unwrap();
         let appended = std::fs::read(&pack).unwrap();
         assert!(appended.len() > intact.len());
 
@@ -2678,6 +2820,8 @@ mod tests {
                 title: "Case one".into(),
                 last_opened: 0,
                 ahead: false,
+                generation: 0,
+                taken: false,
             };
             DocStore::new(data.join("boards/board-one"))
                 .unwrap()
@@ -2699,7 +2843,7 @@ mod tests {
             // And the next flush leaves a file that reads. `save_pack` finds a
             // pack it cannot append to and writes the whole thing instead,
             // which is the repair in one line.
-            save_pack(&assets, &pack_spec(), &id, b"an hour of work later", &pack, Writing::Flush)
+            save_pack(&assets, &pack_spec(), &id, b"an hour of work later", &pack, Writing::Flush, 0)
                 .unwrap_or_else(|e| panic!("truncated at {cut}: the repair failed: {e}"));
             let reopened = bundle::read(&assets, &pack)
                 .unwrap_or_else(|e| panic!("truncated at {cut}: the repaired pack will not read: {e}"));
@@ -2721,7 +2865,7 @@ mod tests {
         let id = board::mint_pack_id();
         bundle::write(&assets, &pack_spec(), Some(&id), b"first", &pack).unwrap();
 
-        save_pack(&assets, &pack_spec(), &id, b"second", &pack, Writing::Flush).unwrap();
+        save_pack(&assets, &pack_spec(), &id, b"second", &pack, Writing::Flush, 0).unwrap();
 
         // Appended, not rewritten — the base entries are still where they were,
         // and the newest generation is what a reader gets.
@@ -2733,6 +2877,50 @@ mod tests {
         assert!(names.contains(&"snapshot.bin"), "{names:?}");
     }
 
+    /// **The most expensive line in T-368, and it is a line that does not run.**
+    ///
+    /// `save_pack`'s answer to an append it could not make is to write the whole
+    /// file again from the document this machine still holds. That is right for
+    /// a torn append — D-70 chose it over a zip repair — and it is the worst
+    /// possible answer to an interleave: `bundle::write` renames a fresh file
+    /// over the destination, so the fallback would take every generation the
+    /// other window wrote with it, in the name of recovering from having noticed
+    /// them.
+    ///
+    /// So the assertion is not that it returns an error. It is that their work
+    /// is still in the file afterwards.
+    #[test]
+    fn an_interleave_is_refused_and_never_falls_back_to_rewriting_the_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let assets = AssetStore::new(dir.path().join("assets")).unwrap();
+        let pack = dir.path().join("case one.schizo");
+        let id = board::mint_pack_id();
+        bundle::write(&assets, &pack_spec(), Some(&id), b"the export", &pack).unwrap();
+        // The other window's afternoon, which this one has never read.
+        bundle::append(&assets, &pack_spec(), &id, b"theirs", &pack, 0).unwrap();
+
+        // This window still believes the file has no generations in it.
+        let refused = save_pack(&assets, &pack_spec(), &id, b"ours", &pack, Writing::Flush, 0);
+
+        assert!(matches!(refused, Err(Refused::Taken)), "{refused:?}");
+        assert_eq!(bundle::read(&assets, &pack).unwrap().snapshot, b"theirs");
+    }
+
+    /// The failure it *does* fall back on, kept beside the one it does not, so
+    /// that a change collapsing the two has to delete one of these to pass.
+    #[test]
+    fn a_pack_that_is_not_a_zip_at_all_is_still_written_again() {
+        let dir = tempfile::tempdir().unwrap();
+        let assets = AssetStore::new(dir.path().join("assets")).unwrap();
+        let pack = dir.path().join("case one.schizo");
+        let id = board::mint_pack_id();
+        std::fs::write(&pack, b"not a zip, and not recoverable from").unwrap();
+
+        save_pack(&assets, &pack_spec(), &id, b"ours", &pack, Writing::Flush, 0).unwrap();
+
+        assert_eq!(bundle::read(&assets, &pack).unwrap().snapshot, b"ours");
+    }
+
     /// A board that has never been written has no file to append to, and that
     /// is the first flush of every board rather than an error.
     #[test]
@@ -2742,7 +2930,7 @@ mod tests {
         let pack = dir.path().join("brand new.schizo");
         let id = board::mint_pack_id();
 
-        save_pack(&assets, &pack_spec(), &id, b"the first one", &pack, Writing::Flush).unwrap();
+        save_pack(&assets, &pack_spec(), &id, b"the first one", &pack, Writing::Flush, 0).unwrap();
 
         assert_eq!(bundle::read(&assets, &pack).unwrap().snapshot, b"the first one");
     }

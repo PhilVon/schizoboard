@@ -143,6 +143,30 @@ pub struct Entry {
     /// in.
     #[serde(default)]
     pub ahead: bool,
+    /// The generation this installation last wrote into this board's file, and
+    /// therefore expects to still be the newest one in it (T-368).
+    ///
+    /// `0` means "no generations", which is what a whole write leaves — a board
+    /// just given a home, a torn append repaired, or a file just compacted.
+    ///
+    /// **It is a belief about the file, not a count of our own writes**, which is
+    /// why opening somebody else's `.schizo` sets it to whatever that file is
+    /// already at rather than to zero. A pack somebody sends you at generation
+    /// five is not a pack you are five writes behind on; it is a pack you have
+    /// just caught up with.
+    #[serde(default)]
+    pub generation: u32,
+    /// Set for the rest of this session once an append has been refused because
+    /// another window got there first (T-368).
+    ///
+    /// **Not written to the register**, and that is the whole of its meaning.
+    /// `docstore.rs`'s `ours` is established once at open and never persisted
+    /// either: both say "this process may not write this file *any more*", which
+    /// is a fact about a running window and not about a board. Persisting it
+    /// would make one collision sour the file until somebody found a way to
+    /// clear it, when relaunching is the honest and obvious repair.
+    #[serde(skip)]
+    pub taken: bool,
 }
 
 impl Entry {
@@ -271,6 +295,10 @@ impl BoardStore {
                     // is either empty or about to be seeded from that very file.
                     // Either way the two agree, and the first edit says so.
                     ahead: false,
+                    // Read out of the file itself by `note_generation`, the
+                    // moment this board is taken up.
+                    generation: 0,
+                    taken: false,
                 };
                 state.boards.push(entry.clone());
                 entry
@@ -333,6 +361,38 @@ impl BoardStore {
         write_register(&self.path, &state)
     }
 
+    /// What generation this installation now believes that board's file is at
+    /// (T-368) — recorded after every write of it, and after taking one up.
+    ///
+    /// Silent about a pack id it does not hold, on [`Self::set_ahead`]'s
+    /// standing and for the same reason.
+    pub fn set_generation(&self, pack_id: &str, generation: u32) -> io::Result<()> {
+        let mut state = self.lock();
+        let Some(entry) = state.boards.iter_mut().find(|e| e.pack_id == pack_id) else {
+            return Ok(());
+        };
+        if entry.generation == generation {
+            return Ok(());
+        }
+        entry.generation = generation;
+        write_register(&self.path, &state)
+    }
+
+    /// Another window has written this board's file, so this one stops writing
+    /// it (T-368).
+    ///
+    /// **One way only, and only for this session.** `taken` is `#[serde(skip)]`,
+    /// so nothing here reaches the register and a relaunch starts clean — which
+    /// is the honest repair, because a relaunch is also what re-reads the file
+    /// and finds out where it actually got to.
+    pub fn set_taken(&self, pack_id: &str) -> io::Result<()> {
+        let mut state = self.lock();
+        if let Some(entry) = state.boards.iter_mut().find(|e| e.pack_id == pack_id) {
+            entry.taken = true;
+        }
+        Ok(())
+    }
+
     /// Drop a board from the register.
     ///
     /// **Its room goes with it**, which is the cost worth stating: reopening
@@ -383,6 +443,10 @@ impl BoardStore {
             // is possible to be. `homeBoard` writes the first pack a second and
             // a half from now; until it does, this says so.
             ahead: true,
+            // No file, so nothing to be at a generation of. `board_home` writes
+            // a whole one, which leaves it at zero anyway.
+            generation: 0,
+            taken: false,
         };
         let mut state = self.lock();
         state.current = Some(entry.pack_id.clone());
@@ -414,6 +478,8 @@ impl BoardStore {
             // emptiness. `initialiseBoard`'s first write is what makes this
             // true, and it goes through the same road every other edit does.
             ahead: false,
+            generation: 0,
+            taken: false,
         };
         let mut state = self.lock();
         state.boards.push(entry.clone());

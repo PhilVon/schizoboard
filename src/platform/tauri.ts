@@ -329,6 +329,10 @@ export class TauriPlatform implements Platform {
     return invoke<boolean>("board_workshop_ahead");
   }
 
+  boardPackTaken(): Promise<boolean> {
+    return invoke<boolean>("board_pack_taken");
+  }
+
   // A name and then a page, and no destination in either direction — the third
   // place on that standing (T-207). The path the user picks stays in the shell
   // between the two calls. Nothing of the board itself crosses: it prints its
