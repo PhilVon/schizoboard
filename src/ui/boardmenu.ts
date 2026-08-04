@@ -858,6 +858,22 @@ export function boardMenuRows(
      * file missing photographs that are plainly on the board.
      */
     home: (() => void) | null;
+    /**
+     * Fold this board's file back into one — **absent unless there is enough in
+     * it to be worth the rewrite** (T-367).
+     *
+     * A pack grows by an entry per flush and every one but the newest is
+     * superseded the moment the next lands. Leaving a board tidies it
+     * automatically past the same threshold, so this row is for the board you
+     * are *staying* on: somebody who has just done an afternoon's work and is
+     * about to hand the file over.
+     *
+     * Absent rather than disabled, and absent rather than a no-op: on a file
+     * with nothing to reclaim this row would rewrite gigabytes to save nothing,
+     * which is the worst kind of row — one that does exactly what it says and
+     * should not have been offered.
+     */
+    tidy: (() => void) | null;
   } | null,
 ): MenuEntry[] {
   const rows = stringMenuRows(scene, write, strings);
@@ -1004,6 +1020,25 @@ export function boardMenuRows(
         run: home,
       });
     }
+    const tidy = board.tidy;
+    if (tidy !== null) {
+      below.push({
+        /**
+         * Under *Give this board a home* and above the copies, because it is
+         * about the file this board already has rather than about making a new
+         * one — and because somebody reaching for *Save a copy…* on a board
+         * that has grown wants this first.
+         *
+         * No ellipsis: no dialog, nothing to name, and the file it rewrites is
+         * the one it is already looking at.
+         */
+        label: "Tidy up this board's file",
+        // The rule goes above whichever of these three is first, so the file
+        // group is separated from the boards above it exactly once.
+        divided: home === null,
+        run: tidy,
+      });
+    }
     below.push({
       /**
        * *Save a copy…*, and until T-364 this said *Export board…* with a
@@ -1035,6 +1070,7 @@ export function boardMenuRows(
        * invite does: a plain browser cannot write a bundle at all.
        */
       label: "Save a copy…",
+      divided: home === null && tidy === null,
       run: () => board.export(),
     });
     /**

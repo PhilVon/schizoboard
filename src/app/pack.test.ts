@@ -525,6 +525,187 @@ describe("when the board's own file is rewritten", () => {
   });
 
   /**
+   * T-367, AC-1030. Leaving a board flushes it and then asks the shell whether
+   * the file is worth folding up — two calls rather than one because they are
+   * two different costs, and the threshold is the shell's so that it lives in
+   * one place.
+   */
+  describe("and leaving a board", () => {
+    function leaving() {
+      const calls: string[] = [];
+      const boardFlush = vi.fn(async () => {
+        calls.push("flush");
+        return WROTE;
+      });
+      const boardCompactOnLeaving = vi.fn(async () => {
+        calls.push("tidy");
+        return null;
+      });
+      const boardCompact = vi.fn(async () => {
+        calls.push("compact");
+        return { ...WROTE, reclaimed: 0.75 };
+      });
+      return {
+        native: { boardFlush, boardCompactOnLeaving, boardCompact } as unknown as Platform,
+        calls,
+        onLeaving: vi.mocked(boardCompactOnLeaving),
+      };
+    }
+
+    it("flushes and then asks whether the file is worth folding up", async () => {
+      const shell = leaving();
+      const pack = new Pack(board(), shell.native, { idleMs: IDLE });
+      pack.wrote();
+
+      await pack.settle();
+
+      // The flush first: a compaction folds the file up around whatever the
+      // file holds, so the generation has to be in it before the fold.
+      expect(shell.calls).toEqual(["flush", "tidy"]);
+      expect(pack.pending).toBe(false);
+    });
+
+    it("asks even when nothing is owed, because the waste is not this session's", async () => {
+      const shell = leaving();
+      const pack = new Pack(board(), shell.native, { idleMs: IDLE });
+
+      await pack.settle();
+
+      // A board opened, read and left has flushed nothing and may still be
+      // carrying an afternoon of superseded generations from yesterday.
+      expect(shell.calls).toEqual(["tidy"]);
+    });
+
+    it("does not let a failed tidy stop a switch", async () => {
+      const shell = leaving();
+      shell.onLeaving.mockRejectedValue(new Error("the disk said no"));
+      const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+      const pack = new Pack(board(), shell.native, { idleMs: IDLE });
+      pack.wrote();
+
+      // The file is already up to date by then — the flush above saw to that —
+      // and what failed is only the tidying.
+      await expect(pack.settle()).resolves.toBeUndefined();
+      expect(warn).toHaveBeenCalled();
+      warn.mockRestore();
+    });
+
+    it("does nothing at all on a board this build may only partly read", async () => {
+      const shell = leaving();
+      const pack = new Pack(board(), shell.native, { idleMs: IDLE });
+      pack.wrote();
+      pack.seal();
+
+      await pack.settle();
+
+      expect(shell.calls).toEqual([]);
+    });
+
+    /** The row, which always compacts however little there is to reclaim. */
+    it("folds the file up when somebody asks, flushing what is owed first", async () => {
+      const shell = leaving();
+      const pack = new Pack(board(), shell.native, { idleMs: IDLE });
+      pack.wrote();
+
+      const outcome = await pack.compact();
+
+      expect(shell.calls).toEqual(["flush", "compact"]);
+      expect(outcome).toEqual({ bytes: 4096, reclaimed: 0.75, missing: [] });
+      // And the file now holds everything the board refers to, so the sweep may
+      // run again (T-363).
+      expect(pack.packedCleanly).toBe(true);
+    });
+
+    it("reports a failed fold rather than throwing", async () => {
+      const refused = new Error("the disk said no");
+      const native = {
+        boardFlush: vi.fn(async () => WROTE),
+        boardCompact: vi.fn(async () => {
+          throw refused;
+        }),
+      } as unknown as Platform;
+      const pack = new Pack(board(), native, { idleMs: IDLE });
+
+      expect(await pack.compact()).toEqual({ error: refused });
+    });
+  });
+
+  /**
+   * The callback that makes the *Tidy up this board's file* row appear at all,
+   * and the reason it exists rather than the caller reading once at boot.
+   *
+   * Whether a file is worth folding up changes on every **flush** — at boot a
+   * pack has nothing superseded in it, and everything that supersedes anything
+   * happens later. Read once, the row appears approximately never. That is what
+   * this was first written as; every test passed, the shell answered the
+   * question correctly, and nothing on screen ever offered it. Only driving it
+   * found that, which is why there is a test now.
+   */
+  describe("and telling the menu the file has changed", () => {
+    it("says so after every flush that reached the file", async () => {
+      const shell = flushing();
+      let flushed = 0;
+      const pack = new Pack(board(), shell.native, {
+        idleMs: IDLE,
+        onFlushed: () => {
+          flushed += 1;
+        },
+      });
+
+      for (let i = 0; i < 3; i++) {
+        pack.wrote();
+        await vi.advanceTimersByTimeAsync(IDLE);
+      }
+
+      expect(flushed).toBe(3);
+    });
+
+    it("says nothing for a write that failed, or for a board with no file", async () => {
+      const refusing = flushing();
+      refusing.refuse(new Error("the disk said no"));
+      let flushed = 0;
+      const onFlushed = () => {
+        flushed += 1;
+      };
+      const pack = new Pack(board(), refusing.native, {
+        idleMs: IDLE,
+        onError: () => {},
+        onFlushed,
+      });
+      pack.wrote();
+      await vi.advanceTimersByTimeAsync(IDLE);
+      expect(flushed).toBe(0);
+
+      const homeless = flushing(null);
+      const other = new Pack(board(), homeless.native, { idleMs: IDLE, onFlushed });
+      other.wrote();
+      await vi.advanceTimersByTimeAsync(IDLE);
+      expect(flushed).toBe(0);
+    });
+
+    it("says so after a compaction, which changes the answer most of all", async () => {
+      const native = {
+        boardFlush: vi.fn(async () => WROTE),
+        boardCompact: vi.fn(async () => ({ ...WROTE, reclaimed: 0.5 })),
+      } as unknown as Platform;
+      let flushed = 0;
+      const pack = new Pack(board(), native, {
+        idleMs: IDLE,
+        onFlushed: () => {
+          flushed += 1;
+        },
+      });
+      pack.wrote();
+
+      await pack.compact();
+
+      // Twice: the flush it does first, and the fold itself. Both change what
+      // the answer is, and the second changes it to no.
+      expect(flushed).toBe(2);
+    });
+  });
+
+  /**
    * The window between the document being read and the write returning is a
    * real one on a large board, and an edit that lands inside it is not in the
    * file that is being written. Clearing the flag *after* the write would
