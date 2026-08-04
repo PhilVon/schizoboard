@@ -5254,7 +5254,12 @@ async function boot(): Promise<void> {
     );
   };
 
-  hud.toggle();
+  /**
+   * The HUD itself ships — backquote opens it anywhere — but *starting* open
+   * is a development convenience, not a first impression. A person's first
+   * frame of the board should be the board.
+   */
+  if (import.meta.env.DEV) hud.toggle();
 }
 
 /**

@@ -1,9 +1,10 @@
 [package]
 name = "schizoboard"
-version = "0.1.0"
+version = "1.0.0"
 description = "An infinite corkboard for organising information that hasn't decided what shape it is yet."
 authors = ["Phil Wheatley"]
 edition = "2021"
+license = "Apache-2.0"
 # `src/bin/relay.rs` (T-69) made this crate ambiguous: `cargo run` with two
 # binaries and no default refuses to pick, and `tauri dev` runs a bare
 # `cargo run`. So the documented way to launch the application — `npm run tauri
