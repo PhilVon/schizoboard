@@ -312,6 +312,37 @@ impl BoardStore {
         Ok(Some(entry))
     }
 
+    /// A board to be on, whatever else has happened.
+    ///
+    /// [`Self::adopt_legacy`] answers for a data directory from before T-356.
+    /// This answers for the other two ways of arriving with no board: an
+    /// installation that has never been launched at all, and one whose register
+    /// was set aside because it could not be read.
+    ///
+    /// The board it mints has **no home** — it is a board before it is a file,
+    /// exactly as an adopted one is, and the same row gives it one. What it does
+    /// have is a workshop, because the alternative to a workshop is a window
+    /// with nothing to write to.
+    pub fn ensure_current(&self) -> io::Result<Entry> {
+        if let Some(entry) = self.current() {
+            return Ok(entry);
+        }
+        let board_id = mint_board_id();
+        let entry = Entry {
+            pack_id: mint_pack_id(),
+            workshop: workshop_for(&board_id),
+            board_id,
+            path: None,
+            title: String::new(),
+            last_opened: now(),
+        };
+        let mut state = self.lock();
+        state.current = Some(entry.pack_id.clone());
+        state.boards.push(entry.clone());
+        write_register(&self.path, &state)?;
+        Ok(entry)
+    }
+
     /// The room the open board is in, for `board_remembered`.
     ///
     /// The one method that survives from the version of this file that held a
@@ -537,7 +568,11 @@ fn workshop_for(board_id: &str) -> PathBuf {
 /// rather than a door — but it is the one field here that *does* become a path,
 /// and `bundle.rs`'s module note is about exactly what happens when a name from
 /// a file is joined onto one.
-fn is_workshop(path: &Path) -> bool {
+///
+/// Public because `workshop.rs` checks it again at the line where the value
+/// actually becomes a path, on the standing `is_board_name` is on: this is the
+/// first of two, not the only one.
+pub fn is_workshop(path: &Path) -> bool {
     !path.as_os_str().is_empty()
         && path
             .components()

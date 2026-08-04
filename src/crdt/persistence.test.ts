@@ -9,7 +9,13 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import * as Y from "yjs";
 
-import { boardSeed, initialiseBoard, openBoardDoc, snapshot, type BoardDoc } from "@/crdt/doc";
+import {
+  boardSeed,
+  initialiseBoard,
+  openBoardDoc,
+  snapshot,
+  type BoardDoc,
+} from "@/crdt/doc";
 import { createItems, setItemPoses } from "@/crdt/ops";
 import { TRACKED_ORIGINS } from "@/crdt/origins";
 import { Persistence } from "@/crdt/persistence";
@@ -42,11 +48,14 @@ class Store extends MockPlatform {
 }
 
 function polaroid(board: BoardDoc, x: number, y: number): string {
-  return createItems(board, [{ type: "polaroid", x, y, w: 300, h: 360 }])[0]!.itemId;
+  return createItems(board, [{ type: "polaroid", x, y, w: 300, h: 360 }])[0]!
+    .itemId;
 }
 
 /** A session: an empty document, opened against `store`. */
-async function session(store: Store): Promise<{ board: BoardDoc; persistence: Persistence }> {
+async function session(
+  store: Store,
+): Promise<{ board: BoardDoc; persistence: Persistence }> {
   const board = openBoardDoc();
   const persistence = new Persistence(board, store);
   await persistence.open();
@@ -91,7 +100,10 @@ describe("Persistence", () => {
     await new Persistence(second, store).open();
 
     expect(boardSeed(second)).toBe(boardSeed(first.board));
-    expect(readItem(id, second.items.get(id)!)).toMatchObject({ x: 120, y: -40 });
+    expect(readItem(id, second.items.get(id)!)).toMatchObject({
+      x: 120,
+      y: -40,
+    });
   });
 
   it("never writes back the frames it just read", async () => {
@@ -150,7 +162,9 @@ describe("Persistence", () => {
       const store = new Store();
       const errors: unknown[] = [];
       const board = openBoardDoc();
-      const persistence = new Persistence(board, store, { onError: (e) => errors.push(e) });
+      const persistence = new Persistence(board, store, {
+        onError: (e) => errors.push(e),
+      });
       await persistence.open();
       initialiseBoard(board);
 
@@ -173,7 +187,9 @@ describe("Persistence", () => {
       const store = new Store();
       const errors: unknown[] = [];
       const board = openBoardDoc();
-      const persistence = new Persistence(board, store, { onError: (e) => errors.push(e) });
+      const persistence = new Persistence(board, store, {
+        onError: (e) => errors.push(e),
+      });
       await persistence.open();
       store.failing = true;
 
@@ -281,7 +297,9 @@ describe("Persistence", () => {
       const store = new Unreadable();
       const errors: unknown[] = [];
       const board = openBoardDoc();
-      const persistence = new Persistence(board, store, { onError: (e) => errors.push(e) });
+      const persistence = new Persistence(board, store, {
+        onError: (e) => errors.push(e),
+      });
       await persistence.open();
 
       expect(persistence.readOnly).toBe(true);
@@ -368,6 +386,51 @@ describe("Persistence", () => {
   });
 
   /**
+   * The property a board switch is built on (T-358).
+   *
+   * `src-tauri/src/workshop.rs` swaps the store behind `doc_append_update` while
+   * the shell is running, so an append that arrives *after* the swap and belongs
+   * to the board *before* it would be written into the wrong board's log — a
+   * failure nothing would notice until the next launch, on a board that was
+   * never told.
+   *
+   * Nothing in Rust closes that, and nothing in Rust should: a lock there would
+   * serialise the append against the switch and then let the append win. It is
+   * closed here, by `close()` unsubscribing *before* it awaits `flush()`, and
+   * `flush()` returning the serialisation chain — so once it resolves there is
+   * nothing queued and nothing that can queue. `replaceWith` has leant on this
+   * since T-84; the switch is the second caller, and this is the test that says
+   * so out loud rather than leaving it as a property of the reading.
+   */
+  describe("closing", () => {
+    beforeEach(() => vi.useFakeTimers());
+    afterEach(() => vi.useRealTimers());
+
+    it("cannot be made to append after close resolves (T-358)", async () => {
+      const store = new Store();
+      const { board, persistence } = await session(store);
+      polaroid(board, 0, 0);
+      await persistence.close();
+
+      const afterClose = store.appends;
+      const inTheLog = await store.logLength();
+
+      // Everything a board still on screen can do between the switch and the
+      // reload: edits, and the timers that would have carried an earlier one.
+      polaroid(board, 100, 100);
+      setItemPoses(
+        board,
+        new Map([[polaroid(board, 5, 5), { x: 6, y: 6, rot: 0 }]]),
+      );
+      await persistence.flush();
+      await vi.advanceTimersByTimeAsync(10_000);
+
+      expect(store.appends).toBe(afterClose);
+      expect(await store.logLength()).toBe(inTheLog);
+    });
+  });
+
+  /**
    * T-84's replace (Q-111): somebody else's document goes on the disk, and the
    * board still on screen must not get a word in edgeways on the way out.
    */
@@ -395,7 +458,10 @@ describe("Persistence", () => {
       Y.applyUpdate(next.doc, state.snapshot!);
       expect(next.meta.get("title")).toBe("Somebody else's board");
       expect(next.items.size).toBe(1);
-      expect(readItem([...next.items.keys()][0]!, [...next.items.values()][0]!)?.type).toBe("note");
+      expect(
+        readItem([...next.items.keys()][0]!, [...next.items.values()][0]!)
+          ?.type,
+      ).toBe("note");
     });
 
     /**
@@ -448,11 +514,15 @@ describe("Persistence", () => {
       const board = openBoardDoc();
       const persistence = new Persistence(board, store, { onError: () => {} });
       store.failing = true;
-      vi.spyOn(store, "docLoad").mockRejectedValueOnce(new Error("the disk said no"));
+      vi.spyOn(store, "docLoad").mockRejectedValueOnce(
+        new Error("the disk said no"),
+      );
       await persistence.open();
       expect(persistence.readOnly).toBe(true);
 
-      await expect(persistence.replaceWith(await elsewhere())).rejects.toThrow(/read-only/);
+      await expect(persistence.replaceWith(await elsewhere())).rejects.toThrow(
+        /read-only/,
+      );
       expect(store.compactions).toBe(0);
     });
   });
