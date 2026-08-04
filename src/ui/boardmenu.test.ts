@@ -1053,8 +1053,19 @@ describe("the board menu on bare cork", () => {
         open: () => void asked.push("open"),
         pdf: () => void asked.push("pdf"),
         image: () => void asked.push("image"),
+        // The ordinary board: it has a file of its own, so there is nothing to
+        // give it and no row (T-361).
+        home: null,
       },
       asked,
+    };
+  };
+  /** A board whose home failed, which is the only state that offers the row. */
+  const unhomed = () => {
+    const shell = exporting();
+    return {
+      board: { ...shell.board, home: () => void shell.asked.push("home") },
+      asked: shell.asked,
     };
   };
   const AGE_ON = "Stop the board ageing";
@@ -1065,6 +1076,7 @@ describe("the board menu on bare cork", () => {
   const IMAGE = "Export the board as an image…";
   const IMAGE_SELECTION = "Export the selection as an image…";
   const OPEN = "Open a board…";
+  const HOME = "Give this board a home";
 
   it("offers the invite on empty cork, which used to open nothing at all", () => {
     // The whole of Q-76: a right-click here reached for something and found
@@ -1131,6 +1143,66 @@ describe("the board menu on bare cork", () => {
       exporting().board,
     ) as MenuRow[];
     expect(rows.map((r) => r.label)).toEqual([AGE_ON, "Copy invite link", EXPORT, PDF, IMAGE, OPEN]);
+  });
+
+  /**
+   * T-361, AC-1005. The row exists for one state and one state only: a board
+   * that is not in a file because giving it one failed. Every other board on
+   * this application has a file of its own within a couple of seconds of boot,
+   * and a permanent *Give this board a home* would be a row offering to do
+   * something already done.
+   */
+  it("does not offer a home to a board that has one, which is every board", () => {
+    const { invite } = sharing(null);
+    const rows = boardMenuRows(
+      scene,
+      write,
+      [],
+      [],
+      invite,
+      switching(true).ageing,
+      exporting().board,
+    ) as MenuRow[];
+    expect(rows.map((r) => r.label)).not.toContain(HOME);
+  });
+
+  it("offers a home above the exports when the migration could not give it one", () => {
+    const { invite } = sharing(null);
+    const shell = unhomed();
+    const rows = boardMenuRows(
+      scene,
+      write,
+      [],
+      [],
+      invite,
+      switching(true).ageing,
+      shell.board,
+    ) as MenuRow[];
+    // First among the file rows: it is the only one about a board that is *not*
+    // in a file, and the three below it all make a new file out of one that is.
+    expect(rows.map((r) => r.label)).toEqual([AGE_ON, HOME, EXPORT, PDF, IMAGE, OPEN]);
+    rows.find((r) => r.label === HOME)!.run();
+    expect(shell.asked).toEqual(["home"]);
+  });
+
+  /**
+   * The ellipsis convention on these menus is load-bearing — it promises a
+   * dialog and says nothing has happened yet. `board_home` opens none: the
+   * shell picks the location itself, which is the whole reason the migration
+   * can run without asking anybody anything.
+   */
+  it("promises no dialog, because homing a board opens none", () => {
+    const { invite } = sharing(null);
+    const rows = boardMenuRows(
+      scene,
+      write,
+      [],
+      [],
+      invite,
+      switching(true).ageing,
+      unhomed().board,
+    ) as MenuRow[];
+    expect(rows.find((r) => r.label === HOME)!.label).not.toContain("…");
   });
 
   it("asks the shell to export, and does not write to the document", () => {
