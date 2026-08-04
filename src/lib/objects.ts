@@ -18,6 +18,16 @@
 // --- what a file is ---------------------------------------------------------
 
 /**
+ * The mime of an `.epub`, which the format states inside itself at a fixed
+ * offset. Mirrors `assets::EPUB`.
+ */
+export const EPUB = "application/epub+zip";
+
+/** The mime of a `.docx`, registered and long. Mirrors `assets::DOCX`. */
+export const DOCX =
+  "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
+
+/**
  * What a file is, as far as the board is concerned — which is to say, which
  * object it becomes on the wall.
  *
@@ -50,6 +60,13 @@ export function assetKind(mime: string): AssetKind {
   if (mime.startsWith("video/")) return "video";
   if (mime.startsWith("audio/")) return "audio";
   if (mime === "application/pdf") return "document";
+  // The two containers (T-352, Q-333). Named one at a time and not by any
+  // prefix, because the family they belong to is *packaging* rather than
+  // meaning: an `.xlsx` and a `.pptx` are the same zip with the same first
+  // nineteen bytes, and neither is something this board can set on paper. The
+  // shell already refuses those, and naming these two here is what keeps the
+  // two halves of that judgement agreeing.
+  if (mime === EPUB || mime === DOCX) return "document";
   // **A web page is not a document on this board** — D-66, Q-331. Above the
   // prefix below, and it is the one exception to it.
   //

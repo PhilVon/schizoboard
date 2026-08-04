@@ -1148,6 +1148,11 @@ pub fn sniff_mime(bytes: &[u8]) -> Option<&'static str> {
     if bytes.starts_with(b"ID3") || is_mpeg_frame(bytes) {
         return Some("audio/mpeg");
     }
+    // The two containers, and the one arm here that is allowed to look past the
+    // window — Q-333, T-352. See [`zip_document`] for why.
+    if bytes.starts_with(ZIP_ENTRY) {
+        return zip_document(bytes);
+    }
     // Rich text, and it goes *above* the text arm rather than inside it. An
     // RTF is ASCII from end to end, so `reads_as_text` accepts it and it used
     // to come out of here as `text/plain` — a manilla folder whose page was set
@@ -1212,6 +1217,138 @@ fn find(haystack: &[u8], needle: &[u8]) -> Option<usize> {
     haystack
         .windows(needle.len())
         .position(|window| window == needle)
+}
+
+/// A zip's local file header, which is what every archive on this board opens
+/// with. An empty archive starts `PK\x05\x06` instead and has no entries to
+/// look at, so it is not one of these.
+const ZIP_ENTRY: &[u8] = b"PK\x03\x04";
+
+/// The mime of an `.epub`, which the format states inside itself.
+pub const EPUB: &str = "application/epub+zip";
+
+/// The mime of a `.docx`. Long, and it is the registered one.
+pub const DOCX: &str = "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
+
+/// Which kind of document this archive is, or `None` for one that is not a
+/// document at all — T-352, Q-333.
+///
+/// ## Two containers, and only one of them fits in the window
+///
+/// **An epub declares itself at fixed offsets and the specification makes that
+/// normative.** OCF requires the first entry to be named `mimetype`, to be
+/// *stored* rather than deflated, and to carry no extra field — which pins its
+/// name to byte 30 and its content to byte 38, and puts the whole of
+/// `application/epub+zip` inside [`SNIFF_BYTES`] with six bytes to spare. It is
+/// as strong a signature as the PDF header and it is checked the same way.
+///
+/// **A docx does not.** All nineteen bytes at offset 30 say is
+/// `[Content_Types].xml`, which is Office Open XML *packaging* — a spreadsheet
+/// and a slide deck have the identical nineteen bytes at the identical offset.
+/// What tells them apart is a part name further in, and reaching one means
+/// reading the archive's index.
+///
+/// ## The exception this arm carries, stated rather than hidden
+///
+/// Every other arm of [`sniff_mime`] answers from the sniff window, and the
+/// EBML and text arms both say why: at ingest the function is handed the whole
+/// file, and the answer must not depend on which of the two the caller had.
+/// **This arm is the exception** (Q-333), and it is deliberate rather than an
+/// oversight.
+///
+/// The rule was written against a *coincidence* — two gigabytes of video that
+/// happens to contain the four bytes `webm` somewhere in its payload. A zip's
+/// central directory is a structured index at a known place, not a byte
+/// sequence found by scanning, so the danger the rule exists for does not arise
+/// here. And the alternative was to call any Office package a word processing
+/// document, which would make the record say `wordprocessingml` about a
+/// spreadsheet — the board telling itself something untrue in the one place it
+/// is meant to decide what it is holding.
+///
+/// What is kept is the property *where it can be observed*. The only caller
+/// that ever holds sixty-four bytes is [`crate::bundle`]'s `worth_deflating`,
+/// which asks whether an entry is text or a wav so it knows whether compressing
+/// it is worth the time. A docx is neither under both readings — `None` from
+/// the head, `DOCX` from the whole file — so no caller can see the difference,
+/// and there is a test that says so.
+fn zip_document(bytes: &[u8]) -> Option<&'static str> {
+    match first_entry(bytes)? {
+        ZipHead::Epub => Some(EPUB),
+        ZipHead::Ooxml => holds_a_word_document(std::io::Cursor::new(bytes)).then_some(DOCX),
+        ZipHead::Other => None,
+    }
+}
+
+/// The same question asked of a file rather than of a buffer.
+///
+/// **This is what keeps the exception above from being observable.**
+/// [`sniff_path`] reads sixty-four bytes and nothing more — deliberately, since
+/// it is handed the path of a two-gigabyte film as readily as a memo — so
+/// routing it through [`sniff_mime`] would have every caller that dispatches on
+/// a stored file, [`crate::document::Reader::open`] first among them, see
+/// `None` for a docx and hand a zip to a PDF parser.
+///
+/// A zip's index is at the *end* and the crate seeks to it, so this reads a few
+/// kilobytes of directory rather than the file: the head stays sixty-four bytes
+/// and the archive is never walked.
+fn zip_document_at(head: &[u8], path: &Path) -> Option<&'static str> {
+    match first_entry(head)? {
+        ZipHead::Epub => Some(EPUB),
+        ZipHead::Ooxml => holds_a_word_document(File::open(path).ok()?).then_some(DOCX),
+        ZipHead::Other => None,
+    }
+}
+
+/// What an archive's first entry says about the whole of it.
+enum ZipHead {
+    /// `mimetype`, stored, holding [`EPUB`]. Complete evidence.
+    Epub,
+    /// `[Content_Types].xml`, which is Office Open XML packaging and says
+    /// nothing about which kind.
+    Ooxml,
+    /// Everything else, which includes this board's own `.schizo`.
+    Other,
+}
+
+fn first_entry(bytes: &[u8]) -> Option<ZipHead> {
+    // Name length and extra length, both little-endian, and both needed before
+    // an offset means anything: a writer that put an extra field on the first
+    // entry would move the content, and the fixed offsets below would then be
+    // reading somebody else's bytes.
+    let name_len = u16::from_le_bytes([*bytes.get(26)?, *bytes.get(27)?]) as usize;
+    let extra_len = u16::from_le_bytes([*bytes.get(28)?, *bytes.get(29)?]) as usize;
+    let name = bytes.get(30..30 + name_len)?;
+
+    if name == b"mimetype" && extra_len == 0 {
+        let at = 30 + name_len;
+        return Some(match bytes.get(at..at + EPUB.len()) {
+            Some(mime) if mime == EPUB.as_bytes() => ZipHead::Epub,
+            // An OCF container for a format this board has never heard of.
+            // Guessing would be worse than refusing.
+            _ => ZipHead::Other,
+        });
+    }
+    Some(if name == b"[Content_Types].xml" {
+        ZipHead::Ooxml
+    } else {
+        ZipHead::Other
+    })
+}
+
+/// `zip` and not a hand-walk of the local headers, for the reason `Cargo.toml`
+/// already gives for depending on it: the central directory, data descriptors
+/// and zip64's two ways of saying the same offset are exactly the corner where
+/// a hand-rolled parser is wrong on somebody else's file rather than on ours.
+///
+/// `by_name` rather than a walk over every entry — a docx of a hundred embedded
+/// images has a hundred entries, and this is one lookup in a map the crate has
+/// already built.
+fn holds_a_word_document<R: Read + io::Seek>(source: R) -> bool {
+    let Ok(mut archive) = zip::ZipArchive::new(source) else {
+        return false;
+    };
+    let found = archive.by_name("word/document.xml").is_ok();
+    found
 }
 
 /// Whether these bytes declare themselves an HTML *document* — T-355, D-66.
@@ -1322,6 +1459,11 @@ fn extension_for(mime: &str) -> &'static str {
         // export of a board that somehow holds one should not offer it as a
         // `.bin`.
         "text/html" => "html",
+        // The two containers (T-352). Both are zips, and both would otherwise
+        // leave the store as `.bin` — which is a file a word processor and a
+        // reader would each decline to open.
+        EPUB => "epub",
+        DOCX => "docx",
         // Reachable now in a way it was not: ingestion no longer decodes
         // everything it commits, so a format the sniffer does not know still
         // gets stored and can still be exported. A store directory is a
@@ -2442,9 +2584,15 @@ fn write_atomic(path: &Path, bytes: &[u8]) -> Result<()> {
 /// wrote. `None` for a file that is not there, and for one whose head matches
 /// nothing this build knows.
 pub(crate) fn sniff_path(path: &Path) -> Option<&'static str> {
-    read_head(path, SNIFF_BYTES)
-        .ok()
-        .and_then(|head| sniff_mime(&head))
+    let head = read_head(path, SNIFF_BYTES).ok()?;
+    // The one arm that cannot answer from a head (Q-333, T-352). Given the path
+    // it reads the archive's index instead, which is a seek to the end of the
+    // file rather than a read of it — so this stays a sixty-four byte question
+    // for everything that is not a zip, and a cheap one for what is.
+    if head.starts_with(ZIP_ENTRY) {
+        return zip_document_at(&head, path);
+    }
+    sniff_mime(&head)
 }
 
 fn read_head(path: &Path, n: usize) -> io::Result<Vec<u8>> {
@@ -2719,6 +2867,133 @@ mod tests {
         // which is what a word processor needs to open it again.
         assert_eq!(extension_for("text/rtf"), "rtf");
         assert_eq!(extension_for("text/plain"), "txt");
+    }
+
+    /// Build a zip in memory the way each format writes one, so the fixtures
+    /// are the formats rather than a copy of what the sniffer expects.
+    fn zipped(entries: &[(&str, &[u8], bool)]) -> Vec<u8> {
+        use std::io::Write;
+        let mut zip = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
+        for (name, body, stored) in entries {
+            let options: zip::write::FileOptions<'_, ()> = zip::write::FileOptions::default()
+                .compression_method(if *stored {
+                    zip::CompressionMethod::Stored
+                } else {
+                    zip::CompressionMethod::Deflated
+                });
+            zip.start_file(*name, options).unwrap();
+            zip.write_all(body).unwrap();
+        }
+        zip.finish().unwrap().into_inner()
+    }
+
+    fn epub() -> Vec<u8> {
+        zipped(&[
+            // Stored and first, which OCF makes normative and which is the
+            // whole of why this one is a signature.
+            ("mimetype", EPUB.as_bytes(), true),
+            ("META-INF/container.xml", b"<container/>", false),
+            ("OEBPS/content.opf", b"<package/>", false),
+        ])
+    }
+
+    fn ooxml(part: &str) -> Vec<u8> {
+        zipped(&[
+            ("[Content_Types].xml", b"<Types/>", false),
+            ("_rels/.rels", b"<Relationships/>", false),
+            (part, b"<root/>", false),
+        ])
+    }
+
+    /// AC-972. The epub half is complete inside the window, so the head and the
+    /// whole file agree — the property every other arm keeps.
+    #[test]
+    fn an_epub_says_what_it_is_at_the_offset_its_own_format_pins() {
+        let book = epub();
+        assert_eq!(sniff_mime(&book), Some(EPUB));
+        assert_eq!(sniff_mime(&book[..SNIFF_BYTES]), Some(EPUB), "head");
+        // The bytes the claim rests on, written out so a change to the fixture
+        // cannot quietly move them.
+        assert_eq!(&book[30..38], b"mimetype");
+        assert_eq!(&book[38..38 + EPUB.len()], EPUB.as_bytes());
+
+        // An OCF container for something else is refused rather than guessed at.
+        let other = zipped(&[("mimetype", b"application/x-something", true)]);
+        assert_eq!(sniff_mime(&other), None);
+    }
+
+    /// AC-973, and the whole of Q-333. All three of these have the identical
+    /// nineteen bytes at the identical offset; only one of them is a document.
+    #[test]
+    fn a_docx_is_told_from_the_other_office_packages_by_the_index() {
+        let docx = ooxml("word/document.xml");
+        let xlsx = ooxml("xl/workbook.xml");
+        let pptx = ooxml("ppt/presentation.xml");
+        for package in [&docx, &xlsx, &pptx] {
+            assert_eq!(&package[30..49], b"[Content_Types].xml", "the head is shared");
+        }
+        assert_eq!(sniff_mime(&docx), Some(DOCX));
+        assert_eq!(sniff_mime(&xlsx), None, "a spreadsheet is not a document");
+        assert_eq!(sniff_mime(&pptx), None, "a slide deck is not a document");
+    }
+
+    /// AC-976. The exception this arm carries is real — a docx reads `None`
+    /// from sixty-four bytes and `DOCX` from the whole file — and this is the
+    /// assertion that it cannot be observed, which is what Q-333 traded for.
+    #[test]
+    fn the_one_caller_with_only_a_head_gets_the_same_answer_either_way() {
+        let docx = ooxml("word/document.xml");
+        let head = sniff_mime(&docx[..SNIFF_BYTES]);
+        let whole = sniff_mime(&docx);
+        assert_eq!(head, None, "the index is not in the window");
+        assert_eq!(whole, Some(DOCX));
+
+        // `bundle::worth_deflating` asks exactly this of whatever it is given,
+        // and the two readings agree on the answer.
+        let deflate = |mime: Option<&str>| {
+            mime.is_some_and(|mime| mime.starts_with("text/") || mime == "audio/wav")
+        };
+        assert_eq!(deflate(head), deflate(whole));
+        assert!(!deflate(whole), "a docx is already compressed");
+    }
+
+    /// AC-974. Nothing that was refused before is quietly let in — and the one
+    /// that would hurt most is this board's own bundle.
+    #[test]
+    fn an_ordinary_zip_and_our_own_bundle_answer_as_they_always_did() {
+        assert_eq!(sniff_mime(&zipped(&[("holiday.jpg", b"not really", false)])), None);
+        // A `.schizo` opens with its manifest, which is neither of the two
+        // names above. If this ever changes, a bundle dragged onto the board
+        // becomes a case file instead of being offered as a bundle.
+        let schizo = zipped(&[
+            (crate::bundle::MANIFEST, b"{}", false),
+            ("snapshot.bin", &[0u8, 1, 2], false),
+        ]);
+        assert_eq!(sniff_mime(&schizo), None);
+        // And an empty archive, which has no first entry to read at all.
+        assert_eq!(sniff_mime(&zipped(&[])), None);
+    }
+
+    /// AC-975. The gate is open and the extractors are T-353 and T-354, so
+    /// until then a folder has nothing written where its thickness goes — and
+    /// the reader says which of the two kinds of bad news it is.
+    #[test]
+    fn a_container_this_build_cannot_read_yet_is_a_folder_with_no_thickness() {
+        let docx = ooxml("word/document.xml");
+        assert_eq!(crate::document::probe(&docx, DOCX, false), None);
+        assert_eq!(crate::document::probe(&epub(), EPUB, false), None);
+        assert_eq!(extension_for(DOCX), "docx");
+        assert_eq!(extension_for(EPUB), "epub");
+
+        // And the reader refuses it by name rather than handing a zip to lopdf,
+        // which would report a broken file about a file that is not broken.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("memo");
+        std::fs::write(&path, &docx).unwrap();
+        assert!(matches!(
+            crate::document::Reader::open(&path, false),
+            Err(crate::document::Error::Unreadable)
+        ));
     }
 
     /// AC-968. A web page says so at its own start, and everything else that

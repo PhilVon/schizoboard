@@ -3,6 +3,8 @@ import { describe, expect, it } from "vitest";
 import {
   addressLabel,
   assetKind,
+  DOCX,
+  EPUB,
   canBeOpened,
   carriesItsOwnName,
   CARD_UNITS,
@@ -45,6 +47,22 @@ describe("what a file is", () => {
     // Rich text is text with its own formatting, and it is a folder like the
     // rest (T-350).
     expect(assetKind("text/rtf")).toBe("document");
+  });
+
+  /** T-352, Q-333. The two containers, and only the two. */
+  it("makes a folder of the two zips that are documents, and of no other zip", () => {
+    expect(assetKind(EPUB)).toBe("document");
+    expect(assetKind(DOCX)).toBe("document");
+    // Named one at a time rather than by a prefix, because the family is
+    // *packaging*: a spreadsheet and a slide deck are the same zip with the
+    // same first nineteen bytes and neither is something this board can set on
+    // paper. The shell refuses them; this is the half that agrees with it.
+    expect(assetKind("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")).toBe(
+      "unknown",
+    );
+    expect(assetKind("application/zip")).toBe("unknown");
+    // And they carry names on their tabs like every other case file.
+    expect(carriesItsOwnName(assetKind(EPUB))).toBe(true);
   });
 
   /** D-66, Q-331. The one exception to the prefix above. */
@@ -102,7 +120,11 @@ describe("what a file is", () => {
     // understand" from "a record describing a cassette", and it is permanent:
     // a later build that learns a mime cannot tell this one what it decided.
     expect(assetKind("application/octet-stream")).toBe("unknown");
-    expect(assetKind("application/epub+zip")).toBe("unknown");
+    // This used to be `application/epub+zip`, which T-352 taught it. Swapped
+    // for one that is still true rather than deleted, because the *property*
+    // being asserted is that an unrecognised mime is refused rather than
+    // guessed at — and that is the line that must not rot.
+    expect(assetKind("application/x-cbz")).toBe("unknown");
     expect(assetKind("")).toBe("unknown");
   });
 });

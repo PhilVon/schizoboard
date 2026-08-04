@@ -322,6 +322,14 @@ pub enum Error {
     /// A bound in this module was exceeded. Carries which, because "too big" on
     /// its own is not something anyone can act on.
     TooLarge(String),
+    /// A format this build has the ingest gate for and no extractor — T-352.
+    ///
+    /// Separate from [`Error::Malformed`] because the two are different news: a
+    /// malformed file is broken and there is nothing anybody can do, and this
+    /// one is a perfectly good document that a later build will read. Saying
+    /// the first about the second is the sort of wrong sentence somebody spends
+    /// an afternoon on.
+    Unreadable,
 }
 
 impl std::fmt::Display for Error {
@@ -330,6 +338,7 @@ impl std::fmt::Display for Error {
             Error::Malformed(why) => write!(f, "could not read the document: {why}"),
             Error::Encrypted => write!(f, "the document is password protected"),
             Error::TooLarge(what) => write!(f, "{what}"),
+            Error::Unreadable => write!(f, "this build cannot read that kind of document yet"),
         }
     }
 }
@@ -414,6 +423,21 @@ impl Reader {
     /// extension to read, and the store's answer is the one the ingest gate and
     /// the asset record already agree on.
     pub fn open(path: &Path, markdown: bool) -> Result<Reader> {
+        // **A container this build has the gate for and not yet the extractor**
+        // — T-352, AC-975. Refused by name rather than left to fall through to
+        // lopdf, which would try to load a zip as a page tree and report "could
+        // not read the document: invalid file header" — a sentence about a
+        // broken file, for a file that is not broken.
+        //
+        // This arm is what T-353 and T-354 each replace with a reading. Until
+        // then the folder is on the wall with nothing written where its
+        // thickness goes, which is the answer a PDF this build cannot parse has
+        // always given.
+        if crate::assets::sniff_path(path)
+            .is_some_and(|mime| matches!(mime, crate::assets::EPUB | crate::assets::DOCX))
+        {
+            return Err(Error::Unreadable);
+        }
         if crate::assets::sniff_path(path).is_some_and(|mime| mime.starts_with("text/")) {
             let bytes = std::fs::read(path).map_err(|e| Error::Malformed(e.to_string()))?;
             let text = crate::text::decode(&bytes)

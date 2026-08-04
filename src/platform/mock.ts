@@ -45,6 +45,7 @@ import {
   type SyncStatus,
   type Unlisten,
 } from "@/platform/types";
+import { EPUB } from "@/lib/objects";
 
 /**
  * Always `await`ed by its callers rather than thrown directly, so an
@@ -117,6 +118,16 @@ function sniffMime(bytes: Uint8Array): string {
   // Above the text arm rather than inside it, because an RTF is ASCII from end
   // to end and would otherwise come out of here as `text/plain` — a case file
   // whose page is set with its own control words on it (T-350).
+  // The two containers (T-352). Only the epub half is mirrored honestly here,
+  // because the epub half is the one that fits in a signature: OCF pins
+  // `mimetype` to byte 30 and its content to byte 38. Telling a docx from a
+  // xlsx needs the archive's index, and a test double that guessed at it would
+  // be agreeing with itself rather than with `assets::zip_document` — so a
+  // docx in a frontend test arrives the way every other mime does, from
+  // `mimeFor` against a path.
+  if (starts(bytes, "PK\x03\x04") && at(bytes, 30, "mimetype") && at(bytes, 38, EPUB)) {
+    return EPUB;
+  }
   if (starts(bytes, "{\\rtf")) return "text/rtf";
   // And a web page, named so that `assetKind` can refuse it (D-66). Same arm,
   // same place, same reason: an html file is ASCII and the text arm below would
