@@ -918,13 +918,41 @@ Assets move as a side channel on the same connection: peers advertise what they 
 
 ### 7.8 The file
 
-A `.schizo` bundle: a zip containing a manifest, a document snapshot and the assets. **Export always embeds assets**, so a board you hand to someone is never half a board.
+**A board is a file.** A `.schizo` at a path you chose — a zip holding a manifest, a document snapshot and the assets — opened, written to continuously, and switched between. It stopped being an *export* of the board in T-356; before that there was one document per installation, hidden in a data directory, and a `.schizo` was a photograph of it you could hand to somebody.
 
-**Opening one replaces the board in that window, and what it opens is a new board.** The window mints a fresh board id, so it is no longer in the room the replaced board was in — anybody connected stays on the old board, nothing of it merges back in, and the invite that reached them no longer reaches here (Q-114). That is not a detail of implementation: a document with peers is not one client's to replace, and the honest version of "replace" is to leave rather than to overwrite what everybody else is holding.
+**Saving is still not a thing you do** — the board has been saving itself since the first thing landed on it, and that has not changed. It happens in two tiers, and the fine one is the one that was always there: the document's own log takes every edit within 200 ms, crash-safe, private to this machine. The coarse one writes the board into its file — on idle, on a switch, and on the way out. There is no Save button and never will be. What the second tier buys is not safety, which the first one already has; it is that the safe copy is somewhere you can find it, move it and send it.
+
+The consequence worth stating: **the file can be a few seconds behind the board, and that is by design.** If the two ever disagree, the workshop wins — a document log with anything in it is a session that ended before its file was written, so it is the newer of the two by construction. That one rule covers a power cut mid-write, a quit with no close hook, and a board on a USB stick that was pulled.
+
+**Opening one leaves the board you had, intact, in its own file.** This is the sentence that changed. Until T-356 opening a `.schizo` *replaced* the board in that window — it wrote the incoming snapshot over the only document there was — and everything about the gesture was shaped by that: a native "Replace this board?", a menu row kept deliberately at the bottom, and no recents list, because a recents list was a list of one-click ways to destroy what you were looking at. None of that is true now. Board B opens; board A is still board A, in its own file, exactly as you left it.
+
+**The fresh-board-id rule survives, in a narrower and truer form** (Q-114). A `.schizo` somebody sends you is a file this installation has never seen, so opening it mints a fresh board id: you are not in their room, anybody connected to them stays where they are, and the invite that reached them does not reach here. What is new is the other half. A file this installation *has* seen keeps the room it had — however often that file is renamed, or dragged into another folder, or moved between disks — because the key is a **pack id carried inside the file** rather than the path it happens to sit at. Keyed on the path, renaming a board would silently drop it out of its sync room and nothing on screen would say why.
+
+A pack id may live inside the file where a board id may not, and the difference is what each one *is*. A board id is a room name: it goes on the wire, it is what separates this window from the peers it has left, and one arriving inside a bundle would put every machine that opened that bundle in the exporter's room. A pack id names *the file* and nothing else. It never reaches the network, grants nothing, and a stranger holding one can do exactly what a stranger holding the file could already do.
+
+**A flush preserves the pack id; a copy mints one.** That is the rule that stops two files sharing a room.
+
+**The board you already had was moved into a file for you.** An installation from before T-356 keeps its document exactly where it is — nothing is moved, because moving a document is the one operation that can lose it — and is given a file in `Documents\Schizoboard` a moment after it opens, named for the board. Its sync room comes across with it, so a collaboration that is live at the moment of the upgrade is not dropped by it. If that write cannot happen — no Documents folder, a full disk — the board goes on running exactly as before and the cork menu offers *Give this board a home* to try again.
+
+**The verbs are all on the bare-cork menu**, which is where the board's own file verbs already lived:
+
+```
+New board…
+Open a board…
+  <up to five recent boards, by title>
+─────
+Save a copy…
+```
+
+*Open a board…* is no longer last and no longer confirms, because there is nothing left to confirm. The recents are the register — the list of boards this installation knows about — capped at five, named by title, with a folder name after any two that would otherwise read the same.
+
+*Save a copy…* is the row that used to say *Export board…*. Now that the board is a file, this one writes a **second** file, frozen at this moment, to hand to somebody. Its pack id is minted fresh, so the copy is its own board and never the same one twice.
+
+**One board per window.** Switching reloads the window onto the other board.
 
 ### 7.9 The picture
 
-Two more exports beside the bundle, and they answer a different question. A `.schizo` *is* the board — reopenable, everything on it, the thing to send someone who is going to work on it. A PDF or an image is what it **looked like** — §1.4's picture of your thinking, for someone who is only going to read it, and the only sense in which this application exports anything to be shown.
+Two exports beside *Save a copy…*, and they answer a different question. A `.schizo` **is** the board — literally now rather than as a way of speaking (§7.8): reopenable, everything on it, the thing to send someone who is going to work on it. A PDF or an image is what it **looked like** — §1.4's picture of your thinking, for someone who is only going to read it, and the only sense in which this application exports anything to be shown.
 
 **What an export covers is a region, not a cutout** (Q-127). With nothing selected it is the whole board; with something selected it is the bounds of that selection — and whatever else falls inside those bounds comes too. The menu row says which, because a right-click on bare cork leaves a selection standing and "the board" would otherwise be a lie in exactly the case nothing on screen corrects.
 
