@@ -167,6 +167,19 @@ impl From<zip::result::ZipError> for Error {
 #[serde(rename_all = "camelCase")]
 pub struct Manifest {
     pub format: String,
+    /// Which file this is (T-359).
+    ///
+    /// **`None` on every `.schizo` written before T-356**, which is what makes
+    /// this additive: an older bundle has no pack id, reads perfectly well
+    /// without one, and is given one the first time it is written again.
+    ///
+    /// It names the *file* and never the room, which is the whole reason it is
+    /// allowed to be in here at all — `board.rs`'s module note has the
+    /// argument, and the short version is that a board id would put every
+    /// machine opening this file into the exporter's sync room and a pack id
+    /// grants nothing to anybody.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pack_id: Option<String>,
     /// `meta.schemaVersion`, straight through. Migration is the frontend's, run
     /// on the merged document (DATA-MODEL section 12) — nothing here acts on
     /// this number, it is only carried so that side can.
@@ -192,6 +205,10 @@ pub struct Spec {
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct Written {
+    /// What this file is called from now on — minted here when the caller had
+    /// none, so that the one place a pack id comes into existence is the one
+    /// place a pack does.
+    pub pack_id: String,
     pub embedded: usize,
     /// Referenced by the board, absent from this disk, and therefore absent
     /// from the file. Empty is the normal case and the one worth not
@@ -224,9 +241,26 @@ pub struct Opened {
     pub manifest: Manifest,
     #[serde(skip)]
     pub snapshot: Vec<u8>,
-    /// Hashes now in this machine's store, whether they arrived just now or
-    /// were already here.
+    /// Hashes that arrived out of this archive just now.
     pub ingested: Vec<String>,
+    /// Hashes this machine already held, whose entries were **never read**
+    /// (T-359).
+    ///
+    /// This used to be folded into `ingested`, whose comment said "whether they
+    /// arrived just now or were already here" — true, and it meant reopening
+    /// your own six-gigabyte board decompressed and re-hashed six gigabytes to
+    /// arrive back where it started. Once a pack is the board rather than an
+    /// export, that is not an import cost paid once; it is what opening a board
+    /// costs.
+    ///
+    /// Separated rather than merely skipped because the caller acts on the
+    /// difference: `bundle_open` schedules variants for what came in, and
+    /// scheduling them for these would decode every picture on the board on
+    /// every open. The bounded consequence, stated rather than left to be
+    /// discovered: an asset held with its variants missing does not get them
+    /// rebuilt here. `AssetStore::resolve` falls back to the original, so the
+    /// picture still draws — heavier, and correct.
+    pub already: Vec<String>,
     /// Listed by the manifest and not actually in the archive.
     pub missing: Vec<String>,
 }
@@ -349,11 +383,26 @@ pub fn weigh(store: &AssetStore, spec: &Spec) -> Weighed {
 /// a truncated file would be trusted forever; here it is that the destination
 /// is very often the *previous* export of the same board, and a disk filling up
 /// halfway through should not cost the user the copy they already had.
-pub fn write(store: &AssetStore, spec: &Spec, snapshot: &[u8], dest: &Path) -> Result<Written> {
+pub fn write(
+    store: &AssetStore,
+    spec: &Spec,
+    pack_id: Option<&str>,
+    snapshot: &[u8],
+    dest: &Path,
+) -> Result<Written> {
     let (embedded, missing) = plan(store, spec);
+    // Minted here when there is none, and **the caller is Rust** — this is not
+    // on `Spec`, so it cannot arrive from the webview. That is deliberate and it
+    // is the rule the whole register turns on: a pack id is the key `board.rs`
+    // looks a board up by, so a webview that could name one could name a board
+    // it is not on. `bundle_save_as` passes `None` because a copy is a
+    // different board; a flush passes the register's, because it is the same
+    // file being written again.
+    let pack_id = pack_id.map(str::to_string).unwrap_or_else(crate::board::mint_pack_id);
 
     let manifest = Manifest {
         format: FORMAT.to_string(),
+        pack_id: Some(pack_id.clone()),
         schema_version: spec.schema_version,
         title: spec.title.clone(),
         assets: embedded.clone(),
@@ -367,6 +416,7 @@ pub fn write(store: &AssetStore, spec: &Spec, snapshot: &[u8], dest: &Path) -> R
                 let _ = fs::remove_file(&temp);
             })?;
             Ok(Written {
+                pack_id,
                 embedded: embedded.len(),
                 missing,
                 bytes,
@@ -584,6 +634,7 @@ pub fn read(store: &AssetStore, src: &Path) -> Result<Opened> {
         .ok_or_else(|| Error::NotABundle(format!("no {SNAPSHOT}")))?;
 
     let mut ingested = Vec::new();
+    let mut already = Vec::new();
     let mut missing = Vec::new();
     let mut seen = HashSet::new();
     for hash in &manifest.assets {
@@ -591,6 +642,25 @@ pub fn read(store: &AssetStore, src: &Path) -> Result<Opened> {
             return Err(Error::Corrupt(format!("{hash:?} is not a sha256")));
         }
         if !seen.insert(hash.as_str()) {
+            continue;
+        }
+        // Bytes this machine already holds are not read out of the archive at
+        // all (T-359) — not decompressed, not hashed, not handed to the store.
+        //
+        // **Nothing is weakened by that**, and it is worth saying why rather
+        // than trusting it. The check below proves an entry's bytes are what
+        // its *name* says; it defends the store against an archive that lies.
+        // A hash the store already has is bytes that went through that same
+        // gate when they arrived, and content addressing is what makes that
+        // still true today — so the question this skips is one that has already
+        // been answered about the very bytes that would be used. The archive's
+        // copy is never consulted, so an archive lying about it cannot matter.
+        //
+        // `has` is the original's presence, so an asset sitting in the 30-day
+        // trash is *not* held: it falls through and `ingest_bytes` restores it,
+        // which is the behaviour it had before this existed.
+        if store.has(hash) {
+            already.push(hash.clone());
             continue;
         }
         let Some(bytes) = entry(
@@ -617,6 +687,7 @@ pub fn read(store: &AssetStore, src: &Path) -> Result<Opened> {
         manifest,
         snapshot,
         ingested,
+        already,
         missing,
     })
 }
@@ -682,6 +753,17 @@ fn entry<R: Read + io::Seek>(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The T-84 call shape: `write` with no pack id, so a fresh one is minted.
+    ///
+    /// A shim rather than an edit to thirty call sites, and that is the point —
+    /// every test below is the one T-84 wrote, character for character, so what
+    /// they still assert is evidence about this change rather than about a
+    /// rewrite of them. The tests that are *about* the pack id call
+    /// `super::write` directly.
+    fn write(store: &AssetStore, spec: &Spec, snapshot: &[u8], dest: &Path) -> Result<Written> {
+        super::write(store, spec, None, snapshot, dest)
+    }
 
     /// A one-pixel PNG, so `ingest_bytes` has something it can actually probe.
     const PIXEL: &[u8] = &[
@@ -954,6 +1036,7 @@ mod tests {
             zip.write_all(
                 &serde_json::to_vec(&Manifest {
                     format: FORMAT.into(),
+                    pack_id: None,
                     schema_version: 1,
                     title: "Trust me".into(),
                     assets: vec![claimed.clone()],
@@ -991,6 +1074,7 @@ mod tests {
             zip.write_all(
                 &serde_json::to_vec(&Manifest {
                     format: FORMAT.into(),
+                    pack_id: None,
                     schema_version: 1,
                     title: "Nothing to see".into(),
                     assets: vec![],
@@ -1022,6 +1106,7 @@ mod tests {
             zip.write_all(
                 &serde_json::to_vec(&Manifest {
                     format: FORMAT.into(),
+                    pack_id: None,
                     schema_version: 1,
                     title: "..".into(),
                     assets: vec!["../../../etc/passwd".into()],
@@ -1242,6 +1327,174 @@ mod tests {
             taken.len(),
             "the entry was read into a buffer sized from something other than itself"
         );
+    }
+
+    // --- which file this is (T-359) -----------------------------------------
+
+    /// A pack that is written for the first time is given a name of its own,
+    /// and a pack being written *again* keeps the one it had. That difference
+    /// is the whole of the register's key.
+    #[test]
+    fn a_pack_id_is_minted_when_there_is_none_and_kept_when_there_is() {
+        let dir = tempfile::tempdir().unwrap();
+        let here = store(&dir, "here");
+        let dest = dir.path().join("board.schizo");
+
+        let first = super::write(&here, &spec(vec![]), None, b"doc", &dest).unwrap();
+        assert!(crate::board::is_pack_id(&first.pack_id));
+        assert_eq!(
+            peek(&dest).unwrap().pack_id.as_deref(),
+            Some(first.pack_id.as_str())
+        );
+
+        // The same file written again — a flush, once a pack is the board.
+        let again =
+            super::write(&here, &spec(vec![]), Some(&first.pack_id), b"doc two", &dest).unwrap();
+        assert_eq!(again.pack_id, first.pack_id);
+        assert_eq!(peek(&dest).unwrap().pack_id, Some(first.pack_id));
+    }
+
+    /// **A copy is a different board**, and this is the rule that makes it one.
+    ///
+    /// Two files sharing a pack id are two files the register cannot tell
+    /// apart: open the copy and you would be put in the original's sync room,
+    /// holding a document that is not the one those peers have.
+    #[test]
+    fn a_copy_is_not_the_board_it_was_copied_from() {
+        let dir = tempfile::tempdir().unwrap();
+        let here = store(&dir, "here");
+        let original = dir.path().join("original.schizo");
+        let copy = dir.path().join("copy.schizo");
+
+        let first = super::write(&here, &spec(vec![]), None, b"doc", &original).unwrap();
+        // `bundle_save_as` passes `None`, which is what makes this true.
+        let second = super::write(&here, &spec(vec![]), None, b"doc", &copy).unwrap();
+
+        assert_ne!(first.pack_id, second.pack_id);
+    }
+
+    /// The additive half: a `.schizo` from before any of this has no `packId`
+    /// key at all, and still opens.
+    #[test]
+    fn a_bundle_from_before_pack_ids_still_reads() {
+        let dir = tempfile::tempdir().unwrap();
+        let dest = dir.path().join("old.schizo");
+        {
+            let mut zip = ZipWriter::new(File::create(&dest).unwrap());
+            let plain = SimpleFileOptions::default();
+            zip.start_file(MANIFEST, plain).unwrap();
+            // Written out by hand rather than through `Manifest`, because the
+            // thing under test is the *absent key* and a serialiser that
+            // started emitting one would make this pass for the wrong reason.
+            zip.write_all(
+                br#"{"format":"schizoboard/bundle","schemaVersion":1,"title":"From before","assets":[]}"#,
+            )
+            .unwrap();
+            zip.start_file(SNAPSHOT, plain).unwrap();
+            zip.write_all(b"an older document").unwrap();
+            zip.finish().unwrap();
+        }
+
+        let opened = read(&store(&dir, "there"), &dest).unwrap();
+        assert_eq!(opened.manifest.pack_id, None);
+        assert_eq!(opened.manifest.title, "From before");
+        assert_eq!(opened.snapshot, b"an older document");
+        assert_eq!(peek(&dest).unwrap().pack_id, None);
+    }
+
+    /// Bytes this machine already holds are not read out of the archive.
+    ///
+    /// **The oracle is a lie in the file.** The entry for the held hash carries
+    /// somebody else's bytes, which `read` refuses as `Corrupt` the moment it
+    /// looks — so an archive that opens cleanly is an archive whose entry was
+    /// never opened. Asserting on `already` alone would pass just as well if
+    /// the bytes had been decompressed, hashed and thrown away, which is the
+    /// entire cost this exists to avoid.
+    #[test]
+    fn an_asset_this_machine_holds_is_never_read_out_of_the_archive() {
+        let dir = tempfile::tempdir().unwrap();
+        let here = store(&dir, "here");
+        let held = here.ingest_bytes(PIXEL, None).unwrap().sha256;
+        let fresh = assets::sha256_hex(b"bytes nobody here has yet");
+
+        let dest = dir.path().join("board.schizo");
+        {
+            let mut zip = ZipWriter::new(File::create(&dest).unwrap());
+            let plain = SimpleFileOptions::default();
+            zip.start_file(MANIFEST, plain).unwrap();
+            zip.write_all(
+                &serde_json::to_vec(&Manifest {
+                    format: FORMAT.into(),
+                    pack_id: Some(crate::board::mint_pack_id()),
+                    schema_version: 1,
+                    title: "Two photographs".into(),
+                    assets: vec![held.clone(), fresh.clone()],
+                })
+                .unwrap(),
+            )
+            .unwrap();
+            zip.start_file(SNAPSHOT, plain).unwrap();
+            zip.write_all(b"doc").unwrap();
+            // Named for a hash this machine holds, holding something else.
+            zip.start_file(format!("{ASSET_PREFIX}{held}"), plain)
+                .unwrap();
+            zip.write_all(b"these are somebody elses bytes").unwrap();
+            zip.start_file(format!("{ASSET_PREFIX}{fresh}"), plain)
+                .unwrap();
+            zip.write_all(b"bytes nobody here has yet").unwrap();
+            zip.finish().unwrap();
+        }
+
+        let opened = read(&here, &dest).unwrap();
+        assert_eq!(opened.already, vec![held.clone()]);
+        assert_eq!(opened.ingested, vec![fresh.clone()]);
+        assert!(opened.missing.is_empty());
+
+        // And the store still holds the real photograph rather than the lie.
+        assert_eq!(fs::read(here.original_path(&held)).unwrap(), PIXEL);
+        assert!(here.has(&fresh));
+    }
+
+    /// The other side of it: a machine holding none of them reads them all, so
+    /// the skip is about what is held and not about the archive.
+    #[test]
+    fn a_machine_holding_none_of_them_reads_all_of_them() {
+        let dir = tempfile::tempdir().unwrap();
+        let here = store(&dir, "here");
+        let photo = here.ingest_bytes(PIXEL, None).unwrap().sha256;
+        let dest = dir.path().join("board.schizo");
+        write(&here, &spec(vec![photo.clone()]), b"doc", &dest).unwrap();
+
+        let there = store(&dir, "there");
+        let opened = read(&there, &dest).unwrap();
+        assert_eq!(opened.ingested, vec![photo.clone()]);
+        assert!(opened.already.is_empty());
+
+        // Opened a second time on the same machine, nothing is read again.
+        let again = read(&there, &dest).unwrap();
+        assert!(again.ingested.is_empty());
+        assert_eq!(again.already, vec![photo]);
+    }
+
+    /// An asset in the thirty-day trash is **not** held, so it falls through to
+    /// the ingest that restores it — the behaviour it had before the skip
+    /// existed, and the one case where "the store knows this hash" and "the
+    /// store has these bytes" are different questions.
+    #[test]
+    fn an_asset_in_the_trash_is_restored_rather_than_skipped() {
+        let dir = tempfile::tempdir().unwrap();
+        let here = store(&dir, "here");
+        let photo = here.ingest_bytes(PIXEL, None).unwrap().sha256;
+        let dest = dir.path().join("board.schizo");
+        write(&here, &spec(vec![photo.clone()]), b"doc", &dest).unwrap();
+
+        here.gc(&HashSet::new()).unwrap();
+        assert!(!here.has(&photo), "the sweep left the original in place");
+
+        let opened = read(&here, &dest).unwrap();
+        assert_eq!(opened.ingested, vec![photo.clone()]);
+        assert!(opened.already.is_empty());
+        assert!(here.has(&photo));
     }
 
     #[test]

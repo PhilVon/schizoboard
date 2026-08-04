@@ -1180,7 +1180,12 @@ async fn bundle_save_as(
 
     blocking(move || -> bundle::Result<bundle::Written> {
         let store = store_of(&app).map_err(assets::Error::Unavailable)?;
-        bundle::write(&store, &spec, &snapshot, &dest)
+        // `None`: this is *Export board…*, and an export is a copy. A copy
+        // that carried the pack id of the board it came from would be a second
+        // file the register cannot tell apart from the first — open it and you
+        // would land in the original's sync room, holding somebody else's
+        // document. A fresh id is what makes a copy a different board (T-359).
+        bundle::write(&store, &spec, None, &snapshot, &dest)
     })
     .await
     .map(Some)
