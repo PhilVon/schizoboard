@@ -28,7 +28,9 @@ import {
   CHUNK_BYTES,
   type AssetMeta,
   type AssetVariant,
-  type BundleOpened,
+  type BoardCard,
+  type BoardOpened,
+  type BoardPicked,
   type BundleWeighed,
   type BundleWritten,
   type ClipboardKind,
@@ -216,8 +218,6 @@ export class MockPlatform implements Platform {
   private readonly updates: Uint8Array[] = [];
   private snapshot: Uint8Array | null = null;
   private readonly bus = new EventTarget();
-  /** Which board this "installation" is on — in memory, like everything else. */
-  private board: string | null = null;
 
   async assetIngestBytes(bytes: Uint8Array, mime?: string): Promise<AssetMeta> {
     const sha256 = await sha256Hex(bytes);
@@ -430,8 +430,42 @@ export class MockPlatform implements Platform {
     return unavailable("Weighing a board");
   }
 
-  bundleOpen(): Promise<BundleOpened | null> {
-    return unavailable("Opening a bundle");
+  // --- boards (T-356) -----------------------------------------------------
+  //
+  // A board is a file, and this platform has no files. So the two *readers*
+  // answer honestly — a browser tab knows about no boards and is on none of
+  // them — and everything that would touch the disk refuses out loud.
+  //
+  // `boardCurrent` returning `null` is not the same as saying there is no
+  // document: there is one, in memory, and `docLoad` serves it. What there is
+  // not is a board *file*, which is the only thing this shape describes.
+
+  async boardList(): Promise<BoardCard[]> {
+    return [];
+  }
+
+  async boardCurrent(): Promise<BoardCard | null> {
+    return null;
+  }
+
+  boardOpenPicked(): Promise<BoardPicked | null> {
+    return unavailable("Opening a board");
+  }
+
+  boardOpen(): Promise<BoardOpened> {
+    return unavailable("Opening a board");
+  }
+
+  boardNew(): Promise<BoardCard> {
+    return unavailable("Starting a new board");
+  }
+
+  boardFlush(): Promise<BundleWritten | null> {
+    return unavailable("Saving a board");
+  }
+
+  boardHome(): Promise<BundleWritten> {
+    return unavailable("Giving a board a home");
   }
 
   /**
@@ -530,21 +564,17 @@ export class MockPlatform implements Platform {
   }
 
   /**
-   * Implemented rather than refused even though the only thing that mints one is
-   * a bundle open, which this platform has no picker for: the *reader* runs on
-   * every boot, including in a plain browser, and a boot that threw on the way
-   * to deciding which board to open would be a board that does not open.
+   * Implemented rather than refused, because the *reader* runs on every boot —
+   * including in a plain browser — and a boot that threw on the way to deciding
+   * which board to open would be a board that does not open.
    *
-   * In memory, like the document and the assets, so a reloaded tab is back on
-   * the board it started on — which is the one place the mock will surprise you
-   * and is stated at the top of this file.
+   * Always `null`, and since T-356 that is the only answer it could give: a room
+   * is remembered against a board *file*, this platform has none, and nothing on
+   * this side can set one any more. `?board=` on the address bar is how a
+   * browser tab is put in a particular room, which `planSync` reads first.
    */
   async rememberedBoardId(): Promise<string | null> {
-    return this.board;
-  }
-
-  async rememberBoardId(boardId: string): Promise<void> {
-    this.board = boardId;
+    return null;
   }
 
   // --- asset transfer -----------------------------------------------------

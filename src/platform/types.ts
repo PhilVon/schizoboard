@@ -438,21 +438,47 @@ export interface BundleWeighed {
   bytes: number;
 }
 
-export interface BundleOpened {
-  manifest: BundleManifest;
-  /** The document the bundle holds, opaque — applying it is the caller's. */
-  snapshot: Uint8Array;
-  /** Hashes that arrived out of this archive just now. */
-  ingested: string[];
+// --- boards (T-356) ---------------------------------------------------------
+
+/**
+ * One board, as the side that may not know where it is sees it.
+ *
+ * ARCHITECTURE section 4.4's rule — no path crosses the boundary — reads in
+ * both directions, and a renderer handed every board's absolute path can name a
+ * location just as surely as one that asked for a path. So `folder` is the
+ * *display name* of the directory the file sits in and nothing more: enough to
+ * tell two boards called "Untitled board" apart, and not somewhere on a disk.
+ *
+ * `packId` is an opaque token issued by the shell. It is the only handle this
+ * side ever has on a board, and it is what `boardOpen` takes.
+ */
+export interface BoardCard {
+  packId: string;
+  title: string;
+  /** Empty for a board that has no file of its own yet. */
+  folder: string;
+  homed: boolean;
+  current: boolean;
+}
+
+/** The board the user picked out of a dialog — see `boardOpenPicked`. */
+export interface BoardPicked {
+  packId: string;
+  title: string;
+}
+
+export interface BoardOpened {
+  board: BoardCard;
   /**
-   * Hashes this machine already held, whose entries were never read (T-359).
+   * True when this machine had no workshop for that board and its file was read
+   * to make one.
    *
-   * Separate from `ingested` because Rust acts on the difference — variants are
-   * rebuilt for what came in, and rebuilding them for these would decode every
-   * picture on the board on every open.
+   * False is the ordinary case for a board you already had, and it is also what
+   * a *recovery* looks like: a workshop with anything in it is a session that
+   * ended before its file was written, so it is newer than the file and wins.
    */
-  already: string[];
-  /** Listed by the manifest and not actually in the archive. */
+  seeded: boolean;
+  /** Referenced by that board's file and not actually in it. Normally empty. */
   missing: string[];
 }
 
@@ -845,17 +871,81 @@ export interface Platform {
    */
   bundleWeigh(spec: BundleSpec): Promise<BundleWeighed>;
 
+  // --- boards (T-356) ------------------------------------------------------
+  //
+  // A `.schizo` stopped being an export and became the board: a file at a path
+  // the user chose, written to continuously, and switched between. These seven
+  // are the whole of that from this side, and between them they carry no path
+  // in either direction.
+  //
+  // They replace `bundleOpen`, whose native "Opening X will replace the board
+  // in this window" is the sentence that stopped being true: opening board B
+  // now leaves board A intact in its own file, so there is nothing to warn
+  // about and nothing to agree to.
+
+  /** Every board this installation knows about, most recently opened first. */
+  boardList(): Promise<BoardCard[]>;
+
+  /** The board this window is on, or `null` before there is one. */
+  boardCurrent(): Promise<BoardCard | null>;
+
   /**
-   * Read a `.schizo` the user picks, putting its photographs in this machine's
-   * store and handing back the document it holds.
+   * Ask which board the user wants — the dialog half of *Open a board…*.
    *
-   * Hands back rather than applies, because what to *do* with another board is
-   * a question about boards and this boundary owns bytes. Q-111 answered it:
-   * the bundle replaces the board in this window.
+   * Deliberately does **not** switch: this side has to close its persistence
+   * between finding out that a board was picked and moving onto it, and it
+   * cannot close it before, because a cancelled dialog would leave a window
+   * that had stopped saving. `boardOpen` is the switch, and it is the same call
+   * a recents row makes.
    *
-   * Resolves `null` for a cancelled dialog.
+   * `null` for a cancelled dialog.
    */
-  bundleOpen(): Promise<BundleOpened | null>;
+  boardOpenPicked(): Promise<BoardPicked | null>;
+
+  /**
+   * Point this window's document log at another board.
+   *
+   * **Close persistence first.** Nothing may append to the old board's log
+   * after this resolves, and the shell cannot enforce that — a lock there would
+   * serialise an append against the switch and then let the append win.
+   * `Persistence.close()` unsubscribes before it awaits its own flush, so when
+   * it resolves there is nothing left that could enqueue. Then reload: half the
+   * application holds a reference to the `Y.Doc` this window opened with.
+   */
+  boardOpen(packId: string): Promise<BoardOpened>;
+
+  /**
+   * A board nothing has ever been on — *New board…*.
+   *
+   * No dialog, and the asymmetry with `boardOpenPicked` is the design: a new
+   * board has no file to find. It is given one by `boardHome` once there is a
+   * title to name it by. Same contract as `boardOpen` — close, then reload.
+   */
+  boardNew(): Promise<BoardCard>;
+
+  /**
+   * Write the open board into its own file — the second tier of saving.
+   *
+   * The same `spec` and `snapshot` an export takes, and the difference is
+   * entirely on the shell's side: this writes to the file that board already
+   * *is*, keeping the pack id it already has, where `bundleSaveAs` writes a copy
+   * and mints a new one. Two files sharing a pack id would be two boards the
+   * register cannot tell apart.
+   *
+   * `null` for a board that has no file yet — not a failure, and `boardHome` is
+   * what answers it.
+   */
+  boardFlush(spec: BundleSpec, snapshot: Uint8Array): Promise<BundleWritten | null>;
+
+  /**
+   * Give a board with no file one, and write it there.
+   *
+   * The location is chosen entirely by the shell — this side supplies a *title*
+   * and gets back what was written, which is `assetExport`'s rule kept. No
+   * dialog: a board that has been running out of the data directory since before
+   * T-356 has already been decided on.
+   */
+  boardHome(spec: BundleSpec, snapshot: Uint8Array): Promise<BundleWritten>;
 
   // --- export (T-207, T-206) ----------------------------------------------
   /**
@@ -948,18 +1038,17 @@ export interface Platform {
   // has to be answerable *before* there is a relay for `syncStatus` to describe.
 
   /**
-   * The board this installation has been moved onto, or `null` for the one every
-   * installation starts on.
+   * The room the open board is in, or `null` for the one every installation
+   * starts on.
    *
-   * Only a bundle open ever sets it (Q-114): the document that arrives in a
-   * `.schizo` replaces the one on disk, and the window must not reconnect to the
-   * room the replaced board is in — the relay holds a document, and it would
-   * answer with the whole of what was just discarded.
+   * **Read-only since T-356, and that is the whole change here.** Its partner
+   * `rememberBoardId` let this side *set* the room, and had one caller: a bundle
+   * open, which replaced this window's document and had to mint a room the
+   * discarded board was not in (Q-114). Opening a board no longer discards one,
+   * so nothing on this side mints a room any more — the shell's register does
+   * it, on first sight of a board file it has never seen.
    */
   rememberedBoardId(): Promise<string | null>;
-
-  /** This is the board from now on. See [`rememberedBoardId`]. */
-  rememberBoardId(boardId: string): Promise<void>;
 
   // --- asset transfer: the bytes behind HAVE / WANT / DATA / DONE ----------
   //

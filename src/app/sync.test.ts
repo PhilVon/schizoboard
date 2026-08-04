@@ -10,7 +10,7 @@
 
 import { describe, expect, it } from "vitest";
 
-import { dialAddress, freshBoardId, identityFor, isBoardName, planSync } from "@/app/sync";
+import { dialAddress, identityFor, isBoardName, planSync } from "@/app/sync";
 import { SELECT_STROKE } from "@/render/overlay";
 import type { Platform } from "@/platform/types";
 import { STRING_COLORS } from "@/lib/palette";
@@ -176,21 +176,29 @@ describe("the board this installation is on", () => {
     }
   });
 
-  it("mints a name no board has been called before", () => {
-    const fresh = freshBoardId();
-    expect(isBoardName(fresh)).toBe(true);
-    expect(fresh).not.toBe("board");
+  /**
+   * The mint left this file with T-356 and the shape it minted did not.
+   *
+   * `freshBoardId` lived here because this module is where what a board may be
+   * called has always been decided, and its one caller was a bundle open —
+   * which replaced this window's document and had to leave the room the
+   * discarded board was in (Q-114). Opening a board no longer discards one, and
+   * whether a room is *new* is a question only the register can answer: it is
+   * the side that knows whether this machine has seen that file before. So
+   * `board.rs` mints, and this side reads what it minted.
+   *
+   * What has to stay true is that the two agree about the shape, because the
+   * value comes back over `board_remembered` and is checked here before it
+   * becomes a room on the wire.
+   */
+  it("accepts the shape the shell mints, and only that shape", () => {
+    const minted = `board-${"0123456789abcdef".repeat(2)}`;
+    expect(isBoardName(minted)).toBe(true);
+    expect(planSync("", minted).config.boardId).toBe(minted);
+    expect(planSync("", minted).complaint).toBeNull();
     // Distinguishable from a secret at a glance, since both are hex and both end
     // up in the same query string.
-    expect(fresh).toMatch(/^board-[0-9a-f]{32}$/);
-    expect(new Set(Array.from({ length: 32 }, freshBoardId)).size).toBe(32);
-  });
-
-  it("is a different room from the one the replaced board is in", () => {
-    // The whole of T-195 in one line. A bundle open replaces the document and
-    // reloads; if the reloaded window planned the same board, the relay — which
-    // holds a document — would answer with everything that was just discarded.
-    expect(planSync("", freshBoardId()).config.boardId).not.toBe(planSync("").config.boardId);
+    expect(minted).toMatch(/^board-[0-9a-f]{32}$/);
   });
 });
 

@@ -69,7 +69,7 @@ pub mod text;
 mod workshop;
 
 use std::collections::HashSet;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use serde::Serialize;
@@ -404,12 +404,21 @@ async fn sync_take_invite(app: AppHandle) -> Option<String> {
 
 // --- which board this is (T-195) -------------------------------------------
 
-/// The board this installation is on, or `None` for the one it starts on.
+/// The room the open board is in, or `None` on an installation that is not on a
+/// board yet.
 ///
 /// Asked once, at boot, before there is a provider — which is why it cannot be
 /// folded into `sync_status`, whose answers are all about a relay that is by
 /// then already running. `app/sync.ts` decides what `None` means; all this side
 /// knows is whether anybody has ever said otherwise.
+///
+/// **The only half of T-195's pair that survives T-356.** Its partner
+/// `board_remember` let the frontend *set* the room, and had one caller: a
+/// bundle open, which replaced this window's document and had to mint a room the
+/// discarded board was not in. Opening a board no longer discards one, so
+/// nothing mints a room on that side any more — the register does it, on first
+/// sight of a pack id it has never seen (`board.rs`, Q-114). The signature here
+/// is unchanged so that `app/invite.ts` and `app/sync.ts` are unchanged.
 #[tauri::command]
 async fn board_remembered(app: AppHandle) -> Option<String> {
     // The state is read *inside* the closure rather than handed to it, because
@@ -421,27 +430,6 @@ async fn board_remembered(app: AppHandle) -> Option<String> {
     .await
     .ok()
     .flatten()
-}
-
-/// This is the board from now on (Q-114).
-///
-/// One caller: a bundle open, which has just replaced the document and is about
-/// to reload the window into a room the board it discarded is not in. See
-/// `board.rs` for why that room has to survive a relaunch and not merely a
-/// reload.
-///
-/// The name is minted by the frontend, because `app/sync.ts` is where what a
-/// board may be called has always been decided — and it is checked again here,
-/// because it becomes a file name under `secrets/` on the very next launch.
-#[tauri::command]
-async fn board_remember(app: AppHandle, board_id: String) -> Result<(), String> {
-    blocking(move || -> Result<(), String> {
-        app.try_state::<board::BoardStore>()
-            .ok_or_else(|| "this board's name cannot be kept".to_string())?
-            .remember(&board_id)
-            .map_err(|error| error.to_string())
-    })
-    .await
 }
 
 /// A link on its way to the frontend.
@@ -1191,104 +1179,482 @@ async fn bundle_save_as(
     .map(Some)
 }
 
-/// Read a bundle the user picked, and put its photographs in this machine's
-/// store.
-///
-/// Returns the manifest and the document snapshot; what happens to the snapshot
-/// is a question about boards rather than about bytes, and it is answered on
-/// the other side of the boundary. Q-111 answered it *replace*, which is why
-/// there is a confirmation in the middle of this.
-///
-/// ## Three dialogs, in this order, and the order is the design
-///
-/// Pick, then peek, then ask. Asking first would be asking about a file that
-/// might not be a bundle; reading the whole thing first would put a stranger's
-/// photographs in this machine's store before anybody agreed to open their
-/// board. [`bundle::peek`] is the step that makes the middle possible — it
-/// costs one small entry and tells the confirmation which board it is about.
-///
-/// ## The confirmation's words are this side's, and that is not fussiness
-///
-/// Nothing in `capabilities/` grants the webview a dialog, so a native
-/// confirmation *has* to be opened from here. It must also be *worded* here.
-/// If the message crossed the boundary as an argument, then anything that can
-/// reach `invoke` — and paste ingests HTML from other people's pages — could
-/// put a sentence of its choosing in a box wearing the operating system's
-/// chrome, which is a far better phishing surface than anything the renderer
-/// can draw. So the frame is fixed and the only variable in it is the bundle's
-/// own title, reduced by [`bundle::display_title`] first.
-///
-/// An empty response body is a cancelled dialog — the raw equivalent of
-/// `Ok(None)` above, because a `Response` has no room for one. Saying no to the
-/// confirmation is the same outcome as closing the picker: no board arrived.
-#[tauri::command]
-async fn bundle_open(app: AppHandle) -> Result<tauri::ipc::Response, String> {
-    let nothing = || Ok(tauri::ipc::Response::new(Vec::new()));
+// --- boards (T-356) ---------------------------------------------------------
+//
+// A `.schizo` stopped being an export — a photograph of a board — and became
+// the board: a file at a path the user chose, written to continuously, and
+// switched between. These seven commands are the whole of that from the
+// webview's side, and between them they carry no path in either direction.
+//
+// **`bundle_open` is what they replace, and it is the confirmation in the
+// middle of it that is worth an obituary.** It read
+// *"Opening X will replace the board in this window. The board you have open now
+// will be gone."*, and every word of that was true when it was written (Q-111).
+// It is not true now: opening board B leaves board A intact in its own file, so
+// there is nothing to warn about and nothing to agree to. A dialog that asks
+// permission for a destruction that no longer happens teaches people to click
+// through dialogs.
 
+/// One board, as the side that may not know where it is sees it.
+///
+/// ARCHITECTURE section 4.4's rule — no path crosses the boundary — has always
+/// been read in one direction, and a webview handed every board's absolute path
+/// can name a location just as surely as one that asked for a path. So the
+/// register's outward face carries none.
+///
+/// `folder` is the **display name** of the directory the file sits in and
+/// nothing else: enough to tell two boards called "Untitled board" apart, and
+/// not somewhere on a disk. Empty for a board that has no file yet.
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+struct BoardCard {
+    pack_id: String,
+    title: String,
+    folder: String,
+    homed: bool,
+    current: bool,
+}
+
+/// What opening a board turned out to involve.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct BoardOpened {
+    board: BoardCard,
+    /// True when this machine had no workshop for that board and the pack was
+    /// read to make one — see [`take_up`] for why that is the only time it is.
+    seeded: bool,
+    /// Listed by the pack's manifest and not actually in the file. Normally
+    /// empty; not an error when it is not (DESIGN section 11.1, risk 4).
+    missing: Vec<String>,
+}
+
+/// The board the user picked out of a dialog, named by the id *this* side
+/// issued for it.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct BoardPicked {
+    pack_id: String,
+    title: String,
+}
+
+/// A register entry on its way out, with every path taken off it.
+fn card(entry: &board::Entry, current: Option<&str>) -> BoardCard {
+    BoardCard {
+        title: bundle::display_title(&entry.title),
+        // `parent().file_name()` and never `display()`: the *name* of the folder
+        // is a fact about which board this is, and the rest of the path is a
+        // fact about this machine that the webview has no business holding.
+        // Reduced by `display_title` on its own standing — a directory name is a
+        // string somebody else chose, and it is about to be drawn in a menu.
+        folder: entry
+            .path
+            .as_deref()
+            .and_then(Path::parent)
+            .and_then(Path::file_name)
+            .map(|name| bundle::display_title(&name.to_string_lossy()))
+            .unwrap_or_default(),
+        homed: entry.homed(),
+        current: current == Some(entry.pack_id.as_str()),
+        pack_id: entry.pack_id.clone(),
+    }
+}
+
+fn boards_of(app: &AppHandle) -> Result<tauri::State<'_, board::BoardStore>, String> {
+    app.try_state::<board::BoardStore>()
+        .ok_or_else(|| "the board register failed to open".to_string())
+}
+
+fn workshop_of(app: &AppHandle) -> Result<tauri::State<'_, Workshop>, String> {
+    app.try_state::<Workshop>()
+        .ok_or_else(|| "the document log failed to open".to_string())
+}
+
+/// Every board this installation knows about, most recently opened first.
+#[tauri::command]
+async fn board_list(app: AppHandle) -> Result<Vec<BoardCard>, String> {
+    blocking(move || -> Result<Vec<BoardCard>, String> {
+        let boards = boards_of(&app)?;
+        let current = boards.current().map(|entry| entry.pack_id);
+        Ok(boards
+            .list()
+            .iter()
+            .map(|entry| card(entry, current.as_deref()))
+            .collect())
+    })
+    .await
+}
+
+/// The board this window is on, or `None` before there is one.
+#[tauri::command]
+async fn board_current(app: AppHandle) -> Result<Option<BoardCard>, String> {
+    blocking(move || -> Result<Option<BoardCard>, String> {
+        Ok(boards_of(&app)?
+            .current()
+            .map(|entry| card(&entry, Some(&entry.pack_id))))
+    })
+    .await
+}
+
+/// Point this window's document log at another board.
+///
+/// Takes a pack id **this side issued** and resolves the file from its own
+/// register, which is the outward half of "no path crosses the boundary": the
+/// webview hands back an opaque token it was given by [`board_list`] or
+/// [`board_open_picked`] and never names a location.
+///
+/// ## The caller's half of the contract
+///
+/// Nothing may append to the old board's log after this returns, and nothing
+/// here can enforce that — a lock on this side would serialise an append against
+/// the switch and then let the append win. `crdt/persistence.ts`'s `close()`
+/// unsubscribes *before* it awaits its own flush, so when it resolves there is
+/// nothing left that could enqueue. `workshop.rs` writes the order out in full.
+///
+/// ## And the register is written last
+///
+/// Everything above it can fail — the workshop may not open, the pack may not
+/// read — and a failure leaves this window on the board it was already on, in
+/// the room it was already in. The frontend reloads afterwards; a reload that
+/// followed a failure comes back to exactly where it started.
+#[tauri::command]
+async fn board_open(app: AppHandle, pack_id: String) -> Result<BoardOpened, String> {
+    blocking(move || open_board(&app, &pack_id)).await
+}
+
+fn open_board(app: &AppHandle, pack_id: &str) -> Result<BoardOpened, String> {
+    let boards = boards_of(app)?;
+    let missing_board = || "there is no such board on this machine".to_string();
+    let entry = boards.find(pack_id).ok_or_else(missing_board)?;
+    let previous = boards.current();
+
+    let workshop = workshop_of(app)?;
+    let assets = store_of(app)?;
+    let taken = take_up(&workshop, &assets, &entry).inspect_err(|_| {
+        // `Workshop::switch` already refuses to drop the board it has when the
+        // *switch* fails. This is the other half: a switch that worked, followed
+        // by a pack that would not be read. A board that will not open is a board
+        // you are told about; it is not a reason to lose the one you are on.
+        if let (Some(previous), Ok(workshop)) = (&previous, workshop_of(app)) {
+            let _ = workshop.switch(previous);
+        }
+    })?;
+
+    // Thumbnails and display variants are a local derivative, never carried in
+    // the file — a pack holds originals, named by the only hash that can name
+    // them. Rebuilt on the same background path a paste uses, so the board can
+    // start drawing placeholders immediately rather than waiting on a few
+    // hundred decodes. Only for what came *in*: doing it for what this machine
+    // already held would decode every picture on the board on every open.
+    for sha256 in &taken.ingested {
+        schedule_variants(app, sha256.clone());
+    }
+
+    let entry = boards
+        .open(pack_id)
+        .map_err(|e| e.to_string())?
+        .ok_or_else(missing_board)?;
+    Ok(BoardOpened {
+        board: card(&entry, Some(pack_id)),
+        seeded: taken.seeded,
+        missing: taken.missing,
+    })
+}
+
+/// What [`take_up`] found when it opened a board's workshop.
+struct TakenUp {
+    seeded: bool,
+    ingested: Vec<String>,
+    missing: Vec<String>,
+}
+
+/// Open a board's workshop, seeding it from the pack if it is empty.
+///
+/// **The workshop wins when there is one**, and that single branch is what
+/// covers a torn append, a power cut mid-flush, a quit with no close hook, and a
+/// pack on a USB stick that was pulled. A workshop with anything in it is a
+/// session that ended before its pack was flushed, and it is therefore newer
+/// than the pack by construction — reading the pack over it would throw away
+/// exactly the work the workshop exists to keep.
+///
+/// A board whose file has been deleted or unplugged still opens, on its
+/// workshop, which is the same rule read from the other end.
+fn take_up(
+    workshop: &Workshop,
+    assets: &AssetStore,
+    entry: &board::Entry,
+) -> Result<TakenUp, String> {
+    let nothing = || TakenUp {
+        seeded: false,
+        ingested: Vec::new(),
+        missing: Vec::new(),
+    };
+    let store = workshop.switch(entry).map_err(|e| e.to_string())?;
+    let state = store.load().map_err(|e| e.to_string())?;
+    if state.snapshot.is_some() || !state.updates.is_empty() {
+        return Ok(nothing());
+    }
+    let Some(path) = entry.path.as_deref() else {
+        return Ok(nothing());
+    };
+
+    let opened = bundle::read(assets, path).map_err(|e| e.to_string())?;
+    // A pack with no document in it is not one a workshop can be seeded from,
+    // and `DocStore::compact` would refuse it anyway — an empty snapshot would
+    // truncate the log in exchange for nothing.
+    let seeded = !opened.snapshot.is_empty();
+    if seeded {
+        store.compact(&opened.snapshot).map_err(|e| e.to_string())?;
+    }
+    Ok(TakenUp {
+        seeded,
+        ingested: opened.ingested,
+        missing: opened.missing,
+    })
+}
+
+/// Which board did the user pick? — the dialog half of *Open a board…*.
+///
+/// Picks and peeks and admits, and deliberately **does not switch**: the caller
+/// has to close its persistence between finding out that a board was picked and
+/// this window moving onto it, and it cannot close it before, because a cancelled
+/// dialog would leave a window that had stopped saving. So the switch is
+/// [`board_open`] — the same call the recents make, which is also why a board
+/// opened from a picker and a board opened from the menu cannot drift apart.
+///
+/// `None` is a cancelled dialog: an ordinary outcome, not a failure.
+///
+/// ## Where the pack id comes from
+///
+/// Out of `manifest.json` when there is one, which is what keeps a board in its
+/// sync room across a rename (`board.rs`, Q-114). A `.schizo` written before
+/// T-359 carries none, and that falls back to the path — the one place in this
+/// application where a path is a key, and it is a fallback rather than the key
+/// precisely so that a renamed board does not silently leave its room. The
+/// first flush writes an id into the file and nothing consults the fallback
+/// again.
+#[tauri::command]
+async fn board_open_picked(app: AppHandle) -> Result<Option<BoardPicked>, String> {
+    // Off the main thread, or the dialog asks the main thread to open it and
+    // then waits for it. See `asset_export`.
     let handle = app.clone();
     let picked = tauri::async_runtime::spawn_blocking(move || {
         handle
             .dialog()
             .file()
-            .set_title("Open board")
-            .add_filter("Schizoboard bundle", &[bundle::EXTENSION])
+            .set_title("Open a board")
+            .add_filter("Schizoboard board", &[bundle::EXTENSION])
             .blocking_pick_file()
     })
     .await
     .map_err(|e| e.to_string())?;
 
     let Some(src) = picked else {
-        return nothing();
+        return Ok(None);
     };
     let src = src.into_path().map_err(|e| e.to_string())?;
 
-    let peeked = src.clone();
-    let manifest = blocking(move || bundle::peek(&peeked)).await?;
-    let name = bundle::display_title(&manifest.title);
-
-    let handle = app.clone();
-    let agreed = tauri::async_runtime::spawn_blocking(move || {
-        handle
-            .dialog()
-            .message(format!(
-                "Opening “{name}” will replace the board in this window.\n\n\
-                 The board you have open now will be gone."
-            ))
-            .title("Replace this board?")
-            .buttons(tauri_plugin_dialog::MessageDialogButtons::OkCancelCustom(
-                "Replace".into(),
-                "Keep this board".into(),
-            ))
-            .blocking_show()
+    blocking(move || -> Result<Option<BoardPicked>, String> {
+        // One small entry rather than the whole archive: this is the step that
+        // answers "is that a board at all, and which one" before anything of a
+        // stranger's is read into this machine's store.
+        let manifest = bundle::peek(&src).map_err(|e| e.to_string())?;
+        let boards = boards_of(&app)?;
+        let pack_id = manifest
+            .pack_id
+            .filter(|id| board::is_pack_id(id))
+            .or_else(|| boards.by_path(&src).map(|entry| entry.pack_id))
+            .unwrap_or_else(board::mint_pack_id);
+        let entry = boards
+            .admit(&pack_id, &src, &manifest.title)
+            .map_err(|e| e.to_string())?;
+        Ok(Some(BoardPicked {
+            title: bundle::display_title(&entry.title),
+            pack_id: entry.pack_id,
+        }))
     })
     .await
-    .map_err(|e| e.to_string())?;
+}
 
-    if !agreed {
-        return nothing();
-    }
-
-    let handle = app.clone();
-    let opened = blocking(move || -> bundle::Result<bundle::Opened> {
-        let store = store_of(&handle).map_err(assets::Error::Unavailable)?;
-        bundle::read(&store, &src)
+/// A board nothing has ever been on — *New board…*.
+///
+/// No dialog, and that asymmetry with [`board_open_picked`] is the design rather
+/// than an omission: a new board has no file to find. It gets one from
+/// [`board_home`] once there is a title to name it by, which is the same road the
+/// board adopted from before T-356 takes.
+///
+/// The caller's contract is [`board_open`]'s, for the same reason: this window's
+/// log is about to become another board's.
+#[tauri::command]
+async fn board_new(app: AppHandle) -> Result<BoardCard, String> {
+    blocking(move || -> Result<BoardCard, String> {
+        let boards = boards_of(&app)?;
+        let entry = boards.mint().map_err(|e| e.to_string())?;
+        if let Err(error) = workshop_of(&app)?.switch(&entry) {
+            // Taken back out rather than left behind. A board whose workshop
+            // will not open is a row in the recents that can never be opened,
+            // and nothing on screen would say why.
+            let _ = boards.forget(&entry.pack_id);
+            return Err(error.to_string());
+        }
+        let entry = boards
+            .open(&entry.pack_id)
+            .map_err(|e| e.to_string())?
+            .ok_or_else(|| "the new board could not be recorded".to_string())?;
+        Ok(card(&entry, Some(&entry.pack_id)))
     })
-    .await?;
+    .await
+}
 
-    // Thumbnails and display variants are a local derivative, never carried in
-    // the file — the bundle holds originals, named by the only hash that can
-    // name them. Rebuilt here on the same background path a paste uses, so the
-    // board can start drawing placeholders immediately rather than waiting on a
-    // few hundred decodes.
-    for sha256 in &opened.ingested {
-        schedule_variants(&app, sha256.clone());
+/// Write the open board into its own file — the second tier of saving.
+///
+/// The pack id is the **register's**, not the caller's, which is the rule the
+/// whole design turns on: a flush preserves the pack id and a copy mints one, so
+/// two files never share a sync room. `bundle::write` takes it as a parameter
+/// rather than off `Spec` precisely so that it cannot arrive from the webview —
+/// a webview that could name a pack id could name a board it is not on.
+///
+/// `Ok(None)` for a board that has no file yet. That is not a failure: it is the
+/// adopted pre-T-356 board, and [`board_home`] is the row that answers it.
+///
+/// The payload is framed rather than JSON — see [`bundle::split_payload`].
+#[tauri::command]
+async fn board_flush(
+    app: AppHandle,
+    request: tauri::ipc::Request<'_>,
+) -> Result<Option<bundle::Written>, String> {
+    let (spec, snapshot) = board_payload("board_flush", &request)?;
+    blocking(move || -> Result<Option<bundle::Written>, String> {
+        let boards = boards_of(&app)?;
+        let entry = boards
+            .current()
+            .ok_or_else(|| "no board is open in this window".to_string())?;
+        let Some(dest) = entry.path.clone() else {
+            return Ok(None);
+        };
+        write_pack(&app, &boards, &entry, &spec, &snapshot, &dest).map(Some)
+    })
+    .await
+}
+
+/// Give a board that has no file one, and write it there.
+///
+/// **The location is chosen entirely on this side**, which is `asset_export`'s
+/// rule kept: the frontend supplies a *title* and the shell supplies the place.
+/// No dialog either, and that is not the same decision twice — a board that has
+/// been running out of the data directory since before T-356 has already been
+/// decided on, and asking where to put it would be asking a question the user
+/// never asked.
+///
+/// The pack is written *before* the home is recorded, so a write that failed
+/// leaves the board unhomed and running exactly where it was, with the row still
+/// on the menu to try again. A migration that can fail and has no manual path
+/// leaves somebody stuck.
+#[tauri::command]
+async fn board_home(
+    app: AppHandle,
+    request: tauri::ipc::Request<'_>,
+) -> Result<bundle::Written, String> {
+    let (spec, snapshot) = board_payload("board_home", &request)?;
+    blocking(move || -> Result<bundle::Written, String> {
+        let boards = boards_of(&app)?;
+        let entry = boards
+            .current()
+            .ok_or_else(|| "no board is open in this window".to_string())?;
+        if entry.homed() {
+            return Err("that board already has a file of its own".to_string());
+        }
+        let dest = a_home_for(&app, &spec.title)?;
+        let written = write_pack(&app, &boards, &entry, &spec, &snapshot, &dest)?;
+        boards
+            .set_home(&entry.pack_id, &dest)
+            .map_err(|e| e.to_string())?;
+        Ok(written)
+    })
+    .await
+}
+
+/// The spec and the snapshot out of a framed body — [`bundle::split_payload`].
+fn board_payload(
+    who: &str,
+    request: &tauri::ipc::Request<'_>,
+) -> Result<(bundle::Spec, Vec<u8>), String> {
+    let InvokeBody::Raw(body) = request.body() else {
+        return Err(format!("{who} expects a raw body"));
+    };
+    let (json, snapshot) = bundle::split_payload(body).map_err(|e| e.to_string())?;
+    let spec: bundle::Spec = serde_json::from_slice(json).map_err(|e| e.to_string())?;
+    Ok((spec, snapshot.to_vec()))
+}
+
+/// The pack, and the register's note of what the board is now called.
+///
+/// The title is only ever *remembered* here — Rust holds no schema and cannot
+/// read `meta.title` (ARCHITECTURE section 4.2). It is written down because the
+/// menu names a board before it is open, and a board that is not open has
+/// nothing but this register to be named by.
+fn write_pack(
+    app: &AppHandle,
+    boards: &board::BoardStore,
+    entry: &board::Entry,
+    spec: &bundle::Spec,
+    snapshot: &[u8],
+    dest: &Path,
+) -> Result<bundle::Written, String> {
+    // The register says which *file*, and the workshop says which *document*.
+    // This is the one place they have to agree: a flush writes a whole document
+    // into a whole file, so a disagreement puts one board's work in another
+    // board's pack and nothing anywhere reports it. `board_open` is written so
+    // that they cannot come apart — the register moves last, and only after the
+    // workshop has — and this is the line that says so rather than leaving it as
+    // a property of the reading.
+    if workshop_of(app)?.current().as_deref() != Some(entry.workshop.as_path()) {
+        return Err("that board's document is not the one this window has open".to_string());
     }
+    let store = store_of(app)?;
+    let written = bundle::write(&store, spec, Some(&entry.pack_id), snapshot, dest)
+        .map_err(|e| e.to_string())?;
+    // Not fatal. A title the register missed is a stale row in a menu; the file
+    // it names is written and correct either way.
+    if let Err(error) = boards.set_title(&entry.pack_id, &spec.title) {
+        eprintln!("board: that board's title could not be kept: {error}");
+    }
+    Ok(written)
+}
 
-    let json = serde_json::to_vec(&opened).map_err(|e| e.to_string())?;
-    Ok(tauri::ipc::Response::new(bundle::join_payload(
-        &json,
-        &opened.snapshot,
-    )))
+/// Where boards without a file of their own go.
+const HOME_DIR: &str = "Schizoboard";
+
+/// Past this, a collision is somebody with a naming scheme rather than a board
+/// that needs a home, and going on trying is a directory being enumerated.
+const MAX_HOME_TRIES: u32 = 999;
+
+fn a_home_for(app: &AppHandle, title: &str) -> Result<PathBuf, String> {
+    let dir = app
+        .path()
+        .document_dir()
+        .map_err(|e| format!("this machine has no Documents folder: {e}"))?
+        .join(HOME_DIR);
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    let stem = assets::safe_stem(title).unwrap_or_else(|| "Untitled board".to_string());
+    free_name(&dir, &stem).ok_or_else(|| format!("there are already {MAX_HOME_TRIES} of {stem:?}"))
+}
+
+/// The first name in `dir` that is not taken, `<stem>.schizo` for choice.
+///
+/// A race rather than a guarantee, and it is the right shape anyway: two
+/// processes homing a board in the same millisecond would be two processes with
+/// the same board open, which is a much larger problem than a filename. What
+/// this does prevent is the ordinary one — two boards both called *Untitled
+/// board*, where the second would silently overwrite the first.
+fn free_name(dir: &Path, stem: &str) -> Option<PathBuf> {
+    (1..=MAX_HOME_TRIES)
+        .map(|n| {
+            dir.join(match n {
+                1 => format!("{stem}.{}", bundle::EXTENSION),
+                n => format!("{stem} {n}.{}", bundle::EXTENSION),
+            })
+        })
+        .find(|candidate| !candidate.exists())
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -1527,7 +1893,13 @@ pub fn run() {
             sync_status,
             sync_take_invite,
             board_remembered,
-            board_remember,
+            board_list,
+            board_current,
+            board_open,
+            board_open_picked,
+            board_new,
+            board_flush,
+            board_home,
             asset_ingest_bytes,
             asset_ingest_path,
             asset_ingest_url,
@@ -1549,7 +1921,6 @@ pub fn run() {
             doc_compact,
             bundle_weigh,
             bundle_save_as,
-            bundle_open,
             reading::document_page_count,
             reading::document_page,
             reading::document_page_image,
@@ -1616,6 +1987,184 @@ mod tests {
         assert_eq!(data_root(usual.clone()), PathBuf::from("D:/scratch/peer-a"));
 
         std::env::remove_var(DATA_DIR_ENV);
+    }
+
+    // --- boards (T-356) -----------------------------------------------------
+
+    /// A data root with an asset store and a workshop in it, as `setup` would
+    /// have left one.
+    fn installation() -> (tempfile::TempDir, Workshop, AssetStore) {
+        let dir = tempfile::tempdir().unwrap();
+        let assets = AssetStore::new(dir.path().join("assets")).unwrap();
+        let workshop = Workshop::new(dir.path().to_path_buf());
+        (dir, workshop, assets)
+    }
+
+    fn a_board(workshop: &str, path: Option<PathBuf>) -> board::Entry {
+        board::Entry {
+            pack_id: board::mint_pack_id(),
+            board_id: board::mint_board_id(),
+            path,
+            workshop: PathBuf::from(workshop),
+            title: "Case one".to_string(),
+            last_opened: 0,
+        }
+    }
+
+    /// A `.schizo` with a document in it and no photographs.
+    fn a_pack(assets: &AssetStore, dest: &Path, document: &[u8]) {
+        let spec = bundle::Spec {
+            schema_version: 1,
+            title: "Case one".to_string(),
+            assets: Vec::new(),
+        };
+        bundle::write(assets, &spec, None, document, dest).unwrap();
+    }
+
+    #[test]
+    fn a_board_opened_where_there_is_no_workshop_yet_is_seeded_from_its_pack() {
+        let (dir, workshop, assets) = installation();
+        let pack = dir.path().join("case one.schizo");
+        a_pack(&assets, &pack, b"the pack's document");
+
+        let entry = a_board("boards/board-one", Some(pack));
+        let taken = take_up(&workshop, &assets, &entry).unwrap();
+
+        assert!(taken.seeded);
+        assert!(taken.missing.is_empty());
+        let state = workshop.store().unwrap().load().unwrap();
+        assert_eq!(state.snapshot.as_deref(), Some(&b"the pack's document"[..]));
+    }
+
+    /// **The branch the whole crash story rests on.** A workshop with anything
+    /// in it is a session that ended before its pack was flushed, so it is newer
+    /// than the pack by construction — and reading the pack over it would throw
+    /// away exactly the work the workshop exists to keep. One branch, and it
+    /// covers a torn append, a power cut mid-flush, a quit with no close hook,
+    /// and a pack on a stick that was pulled.
+    #[test]
+    fn a_workshop_that_already_holds_work_wins_over_the_pack() {
+        let (dir, workshop, assets) = installation();
+        let pack = dir.path().join("case one.schizo");
+        a_pack(&assets, &pack, b"the pack, as of the last flush");
+        let entry = a_board("boards/board-one", Some(pack));
+
+        // The session that did not get its pack written.
+        DocStore::new(dir.path().join("boards/board-one"))
+            .unwrap()
+            .append(b"an hour of work after that flush")
+            .unwrap();
+
+        let taken = take_up(&workshop, &assets, &entry).unwrap();
+
+        assert!(!taken.seeded);
+        let state = workshop.store().unwrap().load().unwrap();
+        assert_eq!(state.snapshot, None);
+        assert_eq!(
+            state.updates,
+            vec![b"an hour of work after that flush".to_vec()]
+        );
+    }
+
+    /// A pack on a USB stick that was pulled, or a board somebody moved while it
+    /// was shut. The workshop is a whole copy of the document, so this opens.
+    #[test]
+    fn a_board_whose_file_has_gone_still_opens_on_its_workshop() {
+        let (dir, workshop, assets) = installation();
+        DocStore::new(dir.path().join("boards/board-one"))
+            .unwrap()
+            .append(b"still here")
+            .unwrap();
+
+        let entry = a_board("boards/board-one", Some(dir.path().join("gone.schizo")));
+        let taken = take_up(&workshop, &assets, &entry).unwrap();
+
+        assert!(!taken.seeded);
+        assert_eq!(
+            workshop.store().unwrap().load().unwrap().updates,
+            vec![b"still here".to_vec()]
+        );
+    }
+
+    /// And when there is no workshop *either*, there is no board — said out
+    /// loud rather than opening an empty one, which would look exactly like the
+    /// board having been emptied.
+    #[test]
+    fn a_board_with_neither_a_workshop_nor_a_file_is_refused() {
+        let (dir, workshop, assets) = installation();
+        let entry = a_board("boards/board-one", Some(dir.path().join("gone.schizo")));
+        assert!(take_up(&workshop, &assets, &entry).is_err());
+    }
+
+    /// A board that has never been given a file — the adopted pre-T-356 one, and
+    /// every board *New board…* mints. Nothing to seed from, and that is not a
+    /// failure.
+    #[test]
+    fn a_board_with_no_file_yet_opens_on_an_empty_workshop() {
+        let (_dir, workshop, assets) = installation();
+        let entry = a_board("doc", None);
+        let taken = take_up(&workshop, &assets, &entry).unwrap();
+
+        assert!(!taken.seeded);
+        assert!(workshop.store().unwrap().load().unwrap().snapshot.is_none());
+    }
+
+    /// AC-998, and the reason this struct exists at all: a webview handed every
+    /// board's absolute path can name a location just as surely as one that
+    /// asked for a path.
+    #[test]
+    fn a_board_crossing_the_boundary_carries_a_folder_name_and_never_a_location() {
+        let entry = board::Entry {
+            path: Some(PathBuf::from("D:/Users/somebody/Documents/Case files/one.schizo")),
+            ..a_board("boards/board-one", None)
+        };
+        let card = card(&entry, Some(&entry.pack_id));
+
+        assert_eq!(card.folder, "Case files");
+        assert!(card.homed);
+        assert!(card.current);
+        // Nothing anywhere in it that a path could be reassembled from.
+        for field in [&card.folder, &card.title, &card.pack_id] {
+            assert!(!field.contains("Documents"), "{field:?}");
+            assert!(!field.contains('/') && !field.contains('\\'), "{field:?}");
+        }
+    }
+
+    #[test]
+    fn a_board_with_no_file_is_in_no_folder_and_says_so() {
+        let entry = a_board("boards/board-one", None);
+        let card = card(&entry, None);
+        assert_eq!(card.folder, "");
+        assert!(!card.homed);
+        assert!(!card.current);
+    }
+
+    /// Two boards both called *Untitled board* is the ordinary case, and the
+    /// second silently overwriting the first would be the worst thing this
+    /// feature could do quietly.
+    #[test]
+    fn a_home_is_the_first_name_that_is_not_taken() {
+        let dir = tempfile::tempdir().unwrap();
+        let first = free_name(dir.path(), "Untitled board").unwrap();
+        assert_eq!(first.file_name().unwrap(), "Untitled board.schizo");
+
+        std::fs::write(&first, b"a board").unwrap();
+        let second = free_name(dir.path(), "Untitled board").unwrap();
+        assert_eq!(second.file_name().unwrap(), "Untitled board 2.schizo");
+
+        std::fs::write(&second, b"another").unwrap();
+        assert_eq!(
+            free_name(dir.path(), "Untitled board")
+                .unwrap()
+                .file_name()
+                .unwrap(),
+            "Untitled board 3.schizo"
+        );
+        // And a name nobody has used starts at the top again.
+        assert_eq!(
+            free_name(dir.path(), "Wexford").unwrap().file_name().unwrap(),
+            "Wexford.schizo"
+        );
     }
 
     #[test]

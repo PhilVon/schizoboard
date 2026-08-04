@@ -68,31 +68,25 @@ export function isSecret(value: string): boolean {
 /** What a board is called when nobody said. Matches the relay's own default. */
 const DEFAULT_BOARD = "board";
 
-/**
- * A board nothing has ever been on before (T-195, Q-114).
- *
- * Opening a bundle replaces this window's document (Q-111), and a replaced board
- * is not one this window may be talked back into: the relay *holds* a document,
- * so reconnecting to the room the old board was in is answered with everything
- * that was just discarded — DATA-MODEL section 12's warning about destructive
- * migrations, one level up. Q-114 settled the fix as minting a name instead of
- * reasoning about the old one, and the name is minted here because this module
- * is where what a board may be called has always been decided.
- *
- * The secret needs no minting: `sync/secret.rs` keeps one per board name and
- * invents one for a name it has never seen, so a fresh id is a fresh secret by
- * construction, and the fingerprint this window advertises over mDNS changes
- * with it (`sync/discovery.rs`, `is_joinable`).
- *
- * 128 bits from the platform CSPRNG, and the prefix is not decoration: a board
- * id and a board secret are both hex and both end up in the same query string,
- * so a bare one would be indistinguishable from the other at a glance in a log.
- */
-export function freshBoardId(): string {
-  const bytes = new Uint8Array(16);
-  crypto.getRandomValues(bytes);
-  return `${DEFAULT_BOARD}-${[...bytes].map((b) => b.toString(16).padStart(2, "0")).join("")}`;
-}
+// A board nothing has ever been on before used to be minted here — T-195,
+// Q-114, `freshBoardId`, and it read `board-` plus 128 bits of CSPRNG. It was
+// here because this module is where what a board may be called has always been
+// decided, and its one caller was a bundle open: the document that arrived
+// replaced this window's, and reconnecting to the room the replaced board was in
+// would be answered by the relay with the whole of what had just been discarded.
+//
+// T-356 moved the mint to `src-tauri/src/board.rs`, and the reason is that the
+// question changed underneath it. Opening a board no longer discards one, so
+// nothing here needs a *fresh* room; what is needed is the room *this file* is
+// in, which is a question only the register can answer — it is the side that
+// knows whether this machine has opened that file before. Q-114 survives
+// verbatim over there, in the form it was always really about: a board file this
+// installation has never seen gets a room of its own, and one it has keeps the
+// room it had.
+//
+// What is left here is the reader, `planSync`, which still checks the shape of
+// whatever comes back over `board_remembered` before it becomes a room name on
+// the wire.
 
 /**
  * What a board secret may look like (T-70).

@@ -897,13 +897,17 @@ export function boardMenuRows(
     if (openBoard !== null) {
       below.push({
         /**
-         * Last, and last on purpose. Q-111 made this the one row on the board
-         * that destroys a board — it replaces the one in this window — so it
-         * sits below *Export board…*, which is both the row somebody reading
-         * down wants far more often and, if they take it first, the thing that
-         * makes this one survivable.
+         * Last, and no longer last *on purpose* — T-364 moves it.
          *
-         * The confirmation is native and lives in `bundle_open`, because
+         * Q-111 made this the one row on the board that destroyed a board: it
+         * replaced the one in this window, so it sat below *Export board…*,
+         * which was both the row somebody reading down wants far more often
+         * and, if they took it first, the thing that made this one survivable.
+         * T-356 ended that — opening board B leaves board A intact in its own
+         * file — and with it went the native confirmation that used to stand in
+         * front of it.
+         *
+         * The picker is still native and still opened from Rust, because
          * nothing in `capabilities/` lets this side open a dialog at all.
          */
         label: "Open a board…",

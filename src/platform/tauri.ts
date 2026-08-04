@@ -18,7 +18,9 @@ import type {
   AssetMeta,
   PageCard,
   AssetVariant,
-  BundleOpened,
+  BoardCard,
+  BoardOpened,
+  BoardPicked,
   BundleSpec,
   BundleWeighed,
   BundleWritten,
@@ -73,6 +75,30 @@ function readFrames(body: ArrayBuffer | Uint8Array): Uint8Array[] {
     at += length;
   }
   return frames;
+}
+
+/**
+ * A little JSON in front of a lot of bytes: `[u32 le length][json][snapshot]`,
+ * the same framing `readFrames` reads back and for the same reason.
+ *
+ * Tauri's raw body is all-or-nothing — a command takes a raw payload or it takes
+ * JSON arguments, never both — and the snapshot has to be raw. Sending it as a
+ * JSON array of numbers is the mistake ARCHITECTURE section 4.3 already rejected
+ * for photographs, and putting the manifest in a header makes a
+ * five-hundred-photograph board's asset list thirty kilobytes of header.
+ * `bundle::split_payload` is the other end.
+ *
+ * Three callers since T-360, which is what lifted it out of `bundleSaveAs`: a
+ * copy, a flush and a home are the same payload going to three destinations, and
+ * the destination is the shell's business in all three.
+ */
+function framed(spec: BundleSpec, snapshot: Uint8Array): Uint8Array {
+  const json = new TextEncoder().encode(JSON.stringify(spec));
+  const payload = new Uint8Array(4 + json.byteLength + snapshot.byteLength);
+  new DataView(payload.buffer).setUint32(0, json.byteLength, true);
+  payload.set(json, 4);
+  payload.set(snapshot, 4 + json.byteLength);
+  return payload;
 }
 
 export class TauriPlatform implements Platform {
@@ -242,24 +268,8 @@ export class TauriPlatform implements Platform {
     return invoke<void>("doc_compact", snapshot);
   }
 
-  /**
-   * A little JSON in front of a lot of bytes: `[u32 le length][json][snapshot]`,
-   * the same framing `docLoad` reads back and for the same reason.
-   *
-   * Tauri's raw body is all-or-nothing — a command takes a raw payload or it
-   * takes JSON arguments, never both — and the snapshot has to be raw. Sending
-   * it as a JSON array of numbers is the mistake ARCHITECTURE section 4.3
-   * already rejected for photographs, and putting the manifest in a header
-   * makes a five-hundred-photograph board's asset list thirty kilobytes of
-   * header. `bundle::split_payload` is the other end.
-   */
-  async bundleSaveAs(spec: BundleSpec, snapshot: Uint8Array): Promise<BundleWritten | null> {
-    const json = new TextEncoder().encode(JSON.stringify(spec));
-    const payload = new Uint8Array(4 + json.byteLength + snapshot.byteLength);
-    new DataView(payload.buffer).setUint32(0, json.byteLength, true);
-    payload.set(json, 4);
-    payload.set(snapshot, 4 + json.byteLength);
-    return invoke<BundleWritten | null>("bundle_save_as", payload);
+  bundleSaveAs(spec: BundleSpec, snapshot: Uint8Array): Promise<BundleWritten | null> {
+    return invoke<BundleWritten | null>("bundle_save_as", framed(spec, snapshot));
   }
 
   bundleWeigh(spec: BundleSpec): Promise<BundleWeighed> {
@@ -268,22 +278,38 @@ export class TauriPlatform implements Platform {
     return invoke<BundleWeighed>("bundle_weigh", { spec });
   }
 
-  async bundleOpen(): Promise<BundleOpened | null> {
-    const body = await invoke<ArrayBuffer | Uint8Array>("bundle_open");
-    const bytes = body instanceof Uint8Array ? body : new Uint8Array(body);
-    // An empty body is a cancelled dialog — a `Response` has no room for the
-    // `null` the save side can return.
-    if (bytes.byteLength === 0) return null;
+  // --- boards (T-356) -----------------------------------------------------
+  //
+  // Ordinary JSON in both directions apart from the two that carry a document.
+  // Nothing here takes or returns a path: a board is named by the `packId` the
+  // shell issued for it, and the shell resolves the file from its own register.
 
-    const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
-    const length = view.getUint32(0, true);
-    if (4 + length > bytes.byteLength) {
-      throw new Error("bundle_open returned a truncated manifest");
-    }
-    const opened = JSON.parse(
-      new TextDecoder().decode(bytes.subarray(4, 4 + length)),
-    ) as Omit<BundleOpened, "snapshot">;
-    return { ...opened, snapshot: bytes.subarray(4 + length) };
+  boardList(): Promise<BoardCard[]> {
+    return invoke<BoardCard[]>("board_list");
+  }
+
+  boardCurrent(): Promise<BoardCard | null> {
+    return invoke<BoardCard | null>("board_current");
+  }
+
+  boardOpenPicked(): Promise<BoardPicked | null> {
+    return invoke<BoardPicked | null>("board_open_picked");
+  }
+
+  boardOpen(packId: string): Promise<BoardOpened> {
+    return invoke<BoardOpened>("board_open", { packId });
+  }
+
+  boardNew(): Promise<BoardCard> {
+    return invoke<BoardCard>("board_new");
+  }
+
+  boardFlush(spec: BundleSpec, snapshot: Uint8Array): Promise<BundleWritten | null> {
+    return invoke<BundleWritten | null>("board_flush", framed(spec, snapshot));
+  }
+
+  boardHome(spec: BundleSpec, snapshot: Uint8Array): Promise<BundleWritten> {
+    return invoke<BundleWritten>("board_home", framed(spec, snapshot));
   }
 
   // A name and then a page, and no destination in either direction — the third
@@ -335,10 +361,6 @@ export class TauriPlatform implements Platform {
 
   rememberedBoardId(): Promise<string | null> {
     return invoke<string | null>("board_remembered");
-  }
-
-  rememberBoardId(boardId: string): Promise<void> {
-    return invoke<void>("board_remember", { boardId });
   }
 
   peerHaveSummary(): Promise<string[]> {
