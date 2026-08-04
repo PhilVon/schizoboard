@@ -726,19 +726,30 @@ pub fn append(
 /// [`top_up`] puts them back first, at the cost of an index scan on a pack whose
 /// bytes this machine already holds (T-359).
 ///
-/// ## Nothing reads out of the pack, and that was decided rather than deferred
+/// ## Nothing *serves* bytes out of the pack, and that was decided rather than deferred
 ///
-/// This used to say what stage 3 would need from it: if `asset://` ever served
-/// ranges straight out of the pack, a compaction would rewrite every offset
-/// underneath a reader holding the file open, so it would have to lock against
-/// reads and `protocol.rs` would have to answer 503 for the length of one.
+/// Serves, not reads — this function reads the pack four lines down, and so
+/// does every board open. What nothing does is answer an `asset://` request
+/// out of the pack's `Stored` entries. That was the named next step once (if
+/// `asset://` served ranges straight out of the file — stage 3, in D-67's
+/// terms), investigated as T-369 and decided against in D-71, on five reasons
+/// of which the first is decisive alone: the disk saving requires deleting
+/// originals the open board still references.
 ///
-/// That cost was one of the three that decided against building it (D-71,
-/// T-369) — a compaction runs on every board switch worth it, over a file that
-/// may be six gigabytes, and 503ing every image for the length of one is a stall
-/// on a path that is instant today. So the lock is not missing. It is not needed,
-/// and the sentence is kept because the next person to have the idea deserves
-/// the argument rather than a blank.
+/// The reason that belongs *here* is the second. A compaction is [`write`] — a
+/// temporary filled beside the file and renamed over it, never a rewrite in
+/// place — so a reader *holding* the old file open would keep its bytes, or on
+/// the removable-drive filesystems packs get handed around on, block the
+/// rename outright. The sharper hazard is the **reopen**: an index read out of
+/// the old file names offsets that mean nothing in the new one. So a pack
+/// server would have to coordinate with this function the way [`append`]
+/// already does (T-375's re-check below is that coordination, grown for
+/// writers), and `protocol.rs` would have to answer 503 for the length of a
+/// fold — a stall on `?v=original` reads, which are video, audio and a peer's
+/// fetch; photographs are drawn from local variants either way. On the switch
+/// that fold is threshold- and editor-gated, but the Tidy row can point it at
+/// a six-gigabyte file whenever somebody asks. The coordination is not
+/// missing: it was priced, and the price decided.
 pub fn compact(store: &AssetStore, pack_id: &str, dest: &Path) -> Result<Tidied> {
     let before = fs::metadata(dest)?.len();
     // Everything the pack holds and this machine does not, back into the store
