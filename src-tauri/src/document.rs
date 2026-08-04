@@ -322,14 +322,6 @@ pub enum Error {
     /// A bound in this module was exceeded. Carries which, because "too big" on
     /// its own is not something anyone can act on.
     TooLarge(String),
-    /// A format this build has the ingest gate for and no extractor — T-352.
-    ///
-    /// Separate from [`Error::Malformed`] because the two are different news: a
-    /// malformed file is broken and there is nothing anybody can do, and this
-    /// one is a perfectly good document that a later build will read. Saying
-    /// the first about the second is the sort of wrong sentence somebody spends
-    /// an afternoon on.
-    Unreadable,
 }
 
 impl std::fmt::Display for Error {
@@ -338,7 +330,6 @@ impl std::fmt::Display for Error {
             Error::Malformed(why) => write!(f, "could not read the document: {why}"),
             Error::Encrypted => write!(f, "the document is password protected"),
             Error::TooLarge(what) => write!(f, "{what}"),
-            Error::Unreadable => write!(f, "this build cannot read that kind of document yet"),
         }
     }
 }
@@ -438,7 +429,13 @@ impl Reader {
                 let bytes = std::fs::read(path).map_err(|e| Error::Malformed(e.to_string()))?;
                 return Reader::of_docx(&bytes);
             }
-            Some(crate::assets::EPUB) => return Err(Error::Unreadable),
+            Some(crate::assets::EPUB) => {
+                let bytes = std::fs::read(path).map_err(|e| Error::Malformed(e.to_string()))?;
+                return Reader::of_reading(
+                    crate::epub::read(&bytes)
+                        .ok_or_else(|| Error::Malformed("no readable spine in the book".into()))?,
+                );
+            }
             _ => {}
         }
         if crate::assets::sniff_path(path).is_some_and(|mime| mime.starts_with("text/")) {
@@ -472,6 +469,14 @@ impl Reader {
         Reader::of_text(text, markdown)
     }
 
+    /// Open an epub already in memory — T-354.
+    pub fn open_epub(bytes: &[u8]) -> Result<Reader> {
+        Reader::of_reading(
+            crate::epub::read(bytes)
+                .ok_or_else(|| Error::Malformed("no readable spine in the book".into()))?,
+        )
+    }
+
     /// Open a docx already in memory — T-353.
     ///
     /// Not the dispatching door either, for [`Reader::open_bytes`]'s reason:
@@ -494,6 +499,18 @@ impl Reader {
     fn of_docx(bytes: &[u8]) -> Result<Reader> {
         let read = crate::docx::read(bytes)
             .ok_or_else(|| Error::Malformed("no word/document.xml in the package".into()))?;
+        Reader::of_reading(read)
+    }
+
+    /// Everything a container reader hands back, turned into pages.
+    ///
+    /// The line where a docx and an epub stop being containers. Both produce
+    /// the same [`crate::prose::Reading`] a markdown file or an `.rtf` does, so
+    /// from here down there is no format left — the same grid, the same
+    /// tiling, the same meaning for a page reference. D-65 paying for itself a
+    /// fifth time, and the reason the two hardest formats on this board cost a
+    /// hundred lines each rather than a subsystem.
+    fn of_reading(read: crate::prose::Reading) -> Result<Reader> {
         let pages = crate::text::paginate(&read.text);
         if pages.len() > MAX_PAGES {
             return Err(Error::TooLarge(format!(
@@ -881,6 +898,23 @@ pub fn probe(bytes: &[u8], mime: &str, markdown: bool) -> Option<Probe> {
                 // now rather than guessed at: `probe` is handed the bytes and
                 // `probe_path` is the route a title actually takes (Q-211), so
                 // adding it here would put the answer on the wrong road.
+                title: None,
+            })
+        }
+        // And a book, counted over the chapters its spine lists — T-354. Same
+        // bargain: the record's count is what the open sheet's header prints
+        // and what the folder's thickness is drawn from, and for an epub the
+        // difference is the whole book, since the source is XHTML in a zip and
+        // the markup outweighs the writing.
+        crate::assets::EPUB => {
+            let read = crate::epub::read(bytes)?;
+            let pages = crate::text::page_count(&read.text);
+            (pages <= MAX_PAGES).then_some(Probe {
+                pages: pages as u32,
+                // An epub *does* state a title, in the package's metadata. Left
+                // for `probe_path` to grow rather than answered here, for the
+                // reason the docx arm above gives: Q-211 put a title on the
+                // other road.
                 title: None,
             })
         }
@@ -3760,6 +3794,65 @@ mod tests {
             reading.pages.iter().map(|p| p.index).collect::<Vec<_>>(),
             vec![1, 2, 3]
         );
+    }
+
+    // --- T-354: an epub read as its words -------------------------------------
+
+    /// The reader's own view, and the last of the four. What matters here is
+    /// that a book comes through the *same door* as a text file: by the time it
+    /// reaches `Inner::Plain` there is no epub left in it.
+    #[test]
+    fn reads_an_epub_chapter_by_chapter_in_the_order_its_spine_states() {
+        let book = crate::epub::tests::book(&[
+            "<h1>The statement</h1><p>He came on the <strong>Tuesday</strong> train.</p>",
+            "<p>The second chapter.</p>",
+        ]);
+        let reader = Reader::open_epub(&book).expect("open");
+
+        // Q-337: a chapter boundary is a page boundary, so this book is two
+        // pages of a hundred-odd characters rather than one.
+        assert_eq!(reader.page_count(), 2);
+
+        let page = reader.page(1).unwrap();
+        let PageContent::Plain(text) = &page.content else {
+            panic!("a book is a plain page carrying roles — D-65");
+        };
+        assert_eq!(text.trim(), "The statement
+
+He came on the Tuesday train.");
+        assert_eq!(page.roles.first().map(|s| s.role), Some(crate::prose::Role::Heading(1)));
+        assert!(page.roles.iter().any(|s| s.role == crate::prose::Role::Strong));
+
+        let PageContent::Plain(second) = &reader.page(2).unwrap().content else {
+            panic!("plain");
+        };
+        assert_eq!(second.trim(), "The second chapter.");
+    }
+
+    /// AC-985. The record's count and the reader's pagination are the same
+    /// number, and for a book the gap is the whole of it — the source is XHTML
+    /// in a zip, so the markup outweighs the writing several times over.
+    #[test]
+    fn counts_an_epubs_pages_over_the_chapters_its_spine_lists() {
+        let chapters: Vec<String> = (0..6)
+            .map(|c| (0..40).map(|n| format!("<p>Chapter {c} line {n}.</p>")).collect())
+            .collect();
+        let refs: Vec<&str> = chapters.iter().map(String::as_str).collect();
+        let book = crate::epub::tests::book(&refs);
+
+        let probed = probe(&book, crate::assets::EPUB, false).expect("a book probes");
+        let reader = Reader::open_epub(&book).expect("open");
+        assert_eq!(probed.pages as usize, reader.page_count());
+        // Six chapters, each declaring a page, so never fewer than six however
+        // short they are.
+        assert!(probed.pages >= 6, "{}", probed.pages);
+    }
+
+    /// A zip that is not a book is bad news the caller can act on.
+    #[test]
+    fn a_zip_that_is_not_a_book_says_so() {
+        assert!(matches!(Reader::open_epub(b"not a zip"), Err(Error::Malformed(_))));
+        assert_eq!(probe(b"not a zip", crate::assets::EPUB, false), None);
     }
 
     // --- T-353: a docx read as its words --------------------------------------

@@ -44,6 +44,9 @@ pub mod prose;
 pub mod rtf;
 // A docx read as its words, out of the zip it arrives in (T-353).
 pub mod docx;
+// An epub read as its words, chapter by chapter in the order its spine states
+// (T-354).
+pub mod epub;
 mod media;
 // What a page says it is (T-289, Q-304). `pub` so the fetch that feeds it and
 // the command that answers with it can both name the type; the parser itself

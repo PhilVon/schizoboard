@@ -195,6 +195,8 @@ struct State {
     started: bool,
     /// Whether a paragraph is open at all.
     in_paragraph: bool,
+    /// Whether the paragraph before this one was a list item — see `emit`.
+    last_was_item: bool,
     bold: bool,
     italic: bool,
 }
@@ -293,9 +295,17 @@ fn end(name: &str, out: &mut Out, state: &mut State) {
 fn emit(out: &mut Out, state: &mut State, text: &str) {
     if !state.started && state.in_paragraph {
         state.started = true;
-        // A list item sits on its own line inside the list; anything else is a
-        // block, which is the distinction `markdown.rs` and `rtf.rs` both draw.
-        if state.item.is_some() {
+        // A list item sits on its own line inside the list, and the list as a
+        // whole is a block — so the *first* item still gets a blank line above
+        // it and only the ones after it run on.
+        //
+        // The `last_was_item` half of that was missing until `epub.rs` was
+        // written and the two formats disagreed: a list after a heading opened
+        // with a blank line in a markdown file, an `.rtf` and a book, and
+        // without one in a docx. This format is the one with no list *element*
+        // — `<w:numPr>` is a property of each paragraph — so "is this the first
+        // item" is a thing to remember rather than a thing to read.
+        if state.item.is_some() && state.last_was_item {
             out.line();
         } else {
             out.block();
@@ -314,6 +324,11 @@ fn emit(out: &mut Out, state: &mut State, text: &str) {
 
 /// Close whatever role this paragraph opened, leaving bold and italic alone.
 fn close_paragraph(out: &mut Out, state: &mut State) {
+    // Only a paragraph that actually held something counts: an empty one
+    // between two list items is a blank line in Word and must not break the run.
+    if state.started {
+        state.last_was_item = state.item.is_some();
+    }
     state.in_paragraph = false;
     state.started = false;
     // `close_role` and not `close`, because the innermost open span at the end
@@ -359,7 +374,7 @@ fn heading_level(style: &str) -> Option<u8> {
 /// like `&nbsp;` is not defined in XML and neither of these two formats permits
 /// one, so a table of the several hundred would be carrying HTML's vocabulary
 /// into a place it does not reach.
-fn entity(reference: &quick_xml::events::BytesRef<'_>) -> Option<char> {
+pub(crate) fn entity(reference: &quick_xml::events::BytesRef<'_>) -> Option<char> {
     if let Ok(Some(ch)) = reference.resolve_char_ref() {
         return Some(ch);
     }
@@ -454,6 +469,7 @@ pub(crate) mod tests {
 
 ",
                 "What was found
+
 ",
                 "A brown envelope.
 ",

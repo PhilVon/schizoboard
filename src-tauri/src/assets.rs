@@ -2887,14 +2887,11 @@ mod tests {
         zip.finish().unwrap().into_inner()
     }
 
+    /// A real book, built by the module that reads them — `epub.rs`'s own
+    /// fixture rather than a second one here, because two fixtures for one
+    /// format is how a sniffer and a reader come to disagree about it.
     fn epub() -> Vec<u8> {
-        zipped(&[
-            // Stored and first, which OCF makes normative and which is the
-            // whole of why this one is a signature.
-            ("mimetype", EPUB.as_bytes(), true),
-            ("META-INF/container.xml", b"<container/>", false),
-            ("OEBPS/content.opf", b"<package/>", false),
-        ])
+        crate::epub::tests::book(&["<p>A chapter.</p>"])
     }
 
     fn ooxml(part: &str) -> Vec<u8> {
@@ -2974,36 +2971,28 @@ mod tests {
         assert_eq!(sniff_mime(&zipped(&[])), None);
     }
 
-    /// AC-975, narrowed by T-353. The gate opened for both containers and the
-    /// extractors landed one at a time, so this now asserts the *seam*: a docx
-    /// reads, an epub does not yet, and the one that does not says which kind
-    /// of bad news it is rather than reporting a broken file.
+    /// AC-975, and its third and last shape. T-352 opened the gate for both
+    /// containers and the extractors landed one at a time, so this test tracked
+    /// the seam between them; T-354 closed it, and what is left is the plain
+    /// claim that both of these are documents this build reads.
     ///
-    /// T-354 deletes the epub half of this, and when it does, `Error::Unreadable`
-    /// has no producer left and should go with it.
+    /// `Error::Unreadable` went with the seam, because a variant that nothing
+    /// can produce is a sentence the board can no longer say.
     #[test]
-    fn the_container_without_an_extractor_yet_says_so_rather_than_breaking() {
+    fn both_containers_read_through_the_door_a_stored_file_takes() {
         let dir = tempfile::tempdir().unwrap();
-        let both = dir.path();
+        // Named without extensions, which is the point: these go through
+        // `sniff_path`, so what the file is called is irrelevant and the bytes
+        // decide — the rule the whole ingest story is built on.
+        std::fs::write(dir.path().join("memo"), ooxml("word/document.xml")).unwrap();
+        std::fs::write(dir.path().join("book"), epub()).unwrap();
 
-        // Named the way a store names them, which is to say not at all: these
-        // go through `sniff_path`, so the extension is irrelevant and that is
-        // the point.
-        std::fs::write(both.join("memo"), ooxml("word/document.xml")).unwrap();
-        std::fs::write(both.join("book"), epub()).unwrap();
-
-        // The half T-353 landed.
-        let reader = crate::document::Reader::open(&both.join("memo"), false);
-        assert!(reader.is_ok(), "a docx reads now");
-
-        // The half still to come, and it is `Unreadable` rather than
-        // `Malformed`: the file is a perfectly good document that a later build
-        // will read, and saying it is broken would be the wrong news.
-        assert!(matches!(
-            crate::document::Reader::open(&both.join("book"), false),
-            Err(crate::document::Error::Unreadable)
-        ));
-        assert_eq!(crate::document::probe(&epub(), EPUB, false), None);
+        for name in ["memo", "book"] {
+            assert!(
+                crate::document::Reader::open(&dir.path().join(name), false).is_ok(),
+                "{name} should read"
+            );
+        }
 
         // Both leave the store under a name their own application opens.
         assert_eq!(extension_for(DOCX), "docx");

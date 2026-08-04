@@ -106,6 +106,14 @@ pub(crate) struct Out {
     stack: Vec<(Option<usize>, Role)>,
     /// `2` for a blank line between blocks, `1` for a new line, `0` for none.
     owed: u8,
+    /// A single space owed *within* a line.
+    ///
+    /// For the markup formats, where a gap between two elements is a gap in the
+    /// sentence: `<em>one</em> <em>two</em>` is two words and joining them
+    /// would be wrong. Owed rather than written for the same reason the
+    /// newlines above are — a space before a block that turns out to be empty,
+    /// or at the very start of a paragraph, is not a space anybody typed.
+    owed_space: bool,
     /// Inside code, where the line breaks are the content.
     pub(crate) verbatim: bool,
 }
@@ -113,15 +121,24 @@ pub(crate) struct Out {
 impl Out {
     /// A blank line before whatever comes next, if anything has been written.
     pub(crate) fn block(&mut self) {
-        if !self.text.is_empty() {
+        self.owed_space = false;
+        if !self.nothing_to_separate() {
             self.owed = self.owed.max(2);
         }
     }
 
     /// A new line before whatever comes next, if anything has been written.
     pub(crate) fn line(&mut self) {
-        if !self.text.is_empty() {
+        self.owed_space = false;
+        if !self.nothing_to_separate() {
             self.owed = self.owed.max(1);
+        }
+    }
+
+    /// A space between two things on the same line, if a line is running.
+    pub(crate) fn space(&mut self) {
+        if !self.nothing_to_separate() && self.owed == 0 {
+            self.owed_space = true;
         }
     }
 
@@ -184,7 +201,23 @@ impl Out {
         for _ in 0..self.owed {
             self.text.push('\n');
         }
+        // Only when no line break took its place: a space at the start of a
+        // line is not a space anybody typed.
+        if self.owed == 0 && self.owed_space {
+            self.text.push(' ');
+        }
         self.owed = 0;
+        self.owed_space = false;
+    }
+
+    /// Whether separation would be wasted here.
+    ///
+    /// True before the first character, and **directly after a page break**,
+    /// which is the case that took a test to find: a form feed already
+    /// separates, so the paragraph opening the next chapter was writing a blank
+    /// line on top of it and every declared page began two rows down.
+    fn nothing_to_separate(&self) -> bool {
+        self.text.is_empty() || self.text.ends_with('\x0c')
     }
 
     /// Open a span. It begins at the next character pushed, not here.
