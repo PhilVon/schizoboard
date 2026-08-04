@@ -194,6 +194,7 @@ mod tests {
             ahead: false,
             generation: 0,
             taken: false,
+            flushed: false,
         }
     }
 

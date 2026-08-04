@@ -1786,6 +1786,16 @@ async fn board_compact_on_leaving(
         let Some(dest) = entry.path else {
             return Ok(None);
         };
+        // Only an editor folds (T-376, Q-359). A window that never put its own
+        // document into this file has no work in it to tidy, and rewriting it
+        // anyway can cost a concurrent instance its session: the fold resets
+        // the generations, that instance's register still says N, and its next
+        // flush reads our housekeeping as somebody taking the file. The waste
+        // this leaves unreclaimed is reclaimed by whoever actually edits the
+        // board — or by the row, where somebody asks.
+        if !entry.flushed {
+            return Ok(None);
+        }
         // Cheap enough to ask on every switch: the central directory already
         // knows what each generation weighs, so this reads no entry at all.
         if !bundle::worth_compacting(&dest) {
@@ -2065,6 +2075,16 @@ fn noting<T>(
             // else's writing from its own.
             if let Err(error) = boards.set_generation(pack_id, generation) {
                 eprintln!("board: that board's generation could not be kept: {error}");
+            }
+            // This window is an editor of that file now, which is what the
+            // on-leaving fold is gated on (T-376). Only a write that carried
+            // the document: a compaction rewrites the file without putting any
+            // work of this window's into it, and must not launder itself into
+            // the standing to do it again.
+            if carries == Carries::TheDocument {
+                if let Err(error) = boards.set_flushed(pack_id) {
+                    eprintln!("board: that board could not be noted as flushed: {error}");
+                }
             }
             Ok(written)
         }
@@ -2564,6 +2584,7 @@ mod tests {
             ahead: false,
             generation: 0,
             taken: false,
+            flushed: false,
         }
     }
 
@@ -2685,6 +2706,53 @@ mod tests {
         assert!(!std::fs::read_to_string(dir.path().join("boards.json"))
             .unwrap()
             .contains("taken"));
+    }
+
+    /// **T-376, Q-359.** Only an editor folds on the way out, and "editor" is a
+    /// fact `noting` records: a write that carried this window's document is
+    /// what makes this window one.
+    #[test]
+    fn a_write_that_carried_the_document_makes_this_window_an_editor() {
+        let dir = tempfile::tempdir().unwrap();
+        let (boards, id) = a_register(&dir);
+        assert!(!boards.current().unwrap().flushed);
+
+        noting(&boards, &id, Carries::TheDocument, || Ok::<_, Refused>(((), 1))).unwrap();
+
+        assert!(boards.current().unwrap().flushed);
+        // A fact about a running window, not about a board — nothing of it
+        // reaches the register on disk, so the next session decides afresh.
+        assert!(!std::fs::read_to_string(dir.path().join("boards.json"))
+            .unwrap()
+            .contains("flushed"));
+    }
+
+    /// A fold rewrites the file without putting any of this window's work into
+    /// it, and must not launder itself into the standing to do it again — or
+    /// one fold on a visited board would make every later visit fold too.
+    #[test]
+    fn a_fold_does_not_make_this_window_an_editor() {
+        let dir = tempfile::tempdir().unwrap();
+        let (boards, id) = a_register(&dir);
+
+        noting(&boards, &id, Carries::OnlyTheFile, || Ok::<_, Refused>(((), 0))).unwrap();
+
+        assert!(!boards.current().unwrap().flushed);
+    }
+
+    /// A flush that failed put nothing in the file, so it confers no standing
+    /// to rewrite that file either.
+    #[test]
+    fn a_write_that_failed_does_not_make_this_window_an_editor() {
+        let dir = tempfile::tempdir().unwrap();
+        let (boards, id) = a_register(&dir);
+
+        let refused = noting(&boards, &id, Carries::TheDocument, || {
+            Err::<((), u32), Refused>(Refused::Failed("the disk said no".to_string()))
+        });
+
+        assert!(refused.is_err());
+        assert!(!boards.current().unwrap().flushed);
     }
 
     /// A disk that said no. The document is not at risk — the workshop is the
@@ -2867,6 +2935,7 @@ mod tests {
             ahead: false,
             generation: 0,
             taken: false,
+            flushed: false,
         };
         assert!(!data.join("boards/board-one").exists());
 
@@ -2912,6 +2981,7 @@ mod tests {
             ahead: false,
             generation: 0,
             taken: false,
+            flushed: false,
         };
         let workshop = Workshop::new(data.to_path_buf());
         let taken = take_up(&workshop, &assets, &entry).unwrap();
@@ -2965,6 +3035,7 @@ mod tests {
                 ahead: false,
                 generation: 0,
                 taken: false,
+                flushed: false,
             };
             DocStore::new(data.join("boards/board-one"))
                 .unwrap()

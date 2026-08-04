@@ -167,6 +167,19 @@ pub struct Entry {
     /// clear it, when relaunching is the honest and obvious repair.
     #[serde(skip)]
     pub taken: bool,
+    /// Set for the rest of this session once this window has put *its own
+    /// document* into this board's file — a flush or a first home, never a
+    /// compaction (T-376).
+    ///
+    /// What `board_compact_on_leaving` is gated on. A window that only looked
+    /// at a board has no work in its file, and rewriting the file on the way
+    /// out anyway costs a concurrent instance its session: the fold resets the
+    /// generations, the other register still says N, and its next flush reads
+    /// our housekeeping as somebody taking the file (Q-359 — only editors
+    /// fold). Session-only for `taken`'s reason: this is a fact about a running
+    /// window, not about a board.
+    #[serde(skip)]
+    pub flushed: bool,
 }
 
 impl Entry {
@@ -299,6 +312,7 @@ impl BoardStore {
                     // moment this board is taken up.
                     generation: 0,
                     taken: false,
+                    flushed: false,
                 };
                 state.boards.push(entry.clone());
                 entry
@@ -393,6 +407,19 @@ impl BoardStore {
         Ok(())
     }
 
+    /// This window has put its own document into that board's file (T-376).
+    ///
+    /// One way and session-only, on [`Self::set_taken`]'s shape: `flushed` is
+    /// `#[serde(skip)]`, so nothing here reaches the register — the next
+    /// session decides afresh whether it is an editor of this file.
+    pub fn set_flushed(&self, pack_id: &str) -> io::Result<()> {
+        let mut state = self.lock();
+        if let Some(entry) = state.boards.iter_mut().find(|e| e.pack_id == pack_id) {
+            entry.flushed = true;
+        }
+        Ok(())
+    }
+
     /// Drop a board from the register.
     ///
     /// **Its room goes with it**, which is the cost worth stating: reopening
@@ -447,6 +474,7 @@ impl BoardStore {
             // a whole one, which leaves it at zero anyway.
             generation: 0,
             taken: false,
+            flushed: false,
         };
         let mut state = self.lock();
         state.current = Some(entry.pack_id.clone());
@@ -480,6 +508,7 @@ impl BoardStore {
             ahead: false,
             generation: 0,
             taken: false,
+            flushed: false,
         };
         let mut state = self.lock();
         state.boards.push(entry.clone());
