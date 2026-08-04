@@ -51,7 +51,7 @@ import {
   fitWriting,
   HAND_LINE,
   fitHost,
-  fitLabel,
+  fitLabelWrapped,
   PAGE_TEXT_SIZE,
   folderBulk,
   openSheetOf,
@@ -2771,9 +2771,12 @@ class CaseView implements View {
     // has ruled lines and the name carries onto the next one, which `items.css`
     // lets it do.
     const base = w * NUMBER_SIZE;
+    // A name that fits one line is written as it always was; one the floor
+    // would cut spills onto the strip's second line first (T-386,
+    // `fitLabelWrapped` and the clamp in `items.css`).
     const size =
       this.archetype === "folder"
-        ? fitLabel(this.number.textContent ?? "", w * LABEL_WIDTH, base)
+        ? fitLabelWrapped(this.number.textContent ?? "", w * LABEL_WIDTH, base, LABEL_LINES)
         : base;
     this.number.style.fontSize = `${Math.max(5, size).toFixed(1)}px`;
     // And the open page's own type, which is a different question with a
@@ -3792,6 +3795,9 @@ function measureOf(runs: readonly TextRun[], pageWidth: number): number {
  *  padding — the number `items.css` writes, here as well because `fitLabel`
  *  needs the box the name has to fit in. */
 const LABEL_WIDTH = 0.4;
+/** The ruled lines the gummed strip will hold before the name is cut — the
+ *  number `-webkit-line-clamp` in `items.css` writes (T-386). */
+const LABEL_LINES = 2;
 /**
  * How much of a VHS's width the clipped print takes, border and all — the
  * number `items.css` writes, here as well because the still is asked for at the

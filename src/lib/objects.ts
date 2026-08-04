@@ -728,6 +728,37 @@ export function fitLabel(
 }
 
 /**
+ * [`fitLabel`] for a strip that will hold a second line before it truncates —
+ * the folder's gummed label (T-386, at Phil's suggestion).
+ *
+ * **One line remains the preference, and that is the whole of the design.** A
+ * name that fits a single line above the floor is written exactly as it always
+ * was — smaller if it must be — because a short name wrapped mid-word onto a
+ * second line is a worse label than the same name set a little small. Only
+ * when the one-line fit has already hit the floor, which is where the old rule
+ * gave up and cut, does the name spill onto the second line: twice the box,
+ * the same floor, and past *that* the clamp's ellipsis cuts as before — one
+ * line later.
+ *
+ * The fit across two lines is aggregate: greedy wrapping wastes the end of the
+ * first line at a word boundary, so a name near the boundary may still clip a
+ * word into the ellipsis. That is the same answer the one-line rule gave, a
+ * line later, and estimating the break would need the words measured — which
+ * is the layout read this whole family of functions exists to avoid.
+ */
+export function fitLabelWrapped(
+  text: string,
+  box: number,
+  size: number,
+  lines: number,
+  advance: number = TYPED_ADVANCE,
+): number {
+  const one = fitLabel(text, box, size, advance);
+  if (one > size * LABEL_FLOOR) return one;
+  return fitLabel(text, box * lines, size, advance);
+}
+
+/**
  * The size a **host** has to come down to for it to fit a card's top line —
  * T-341.
  *

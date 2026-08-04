@@ -11,6 +11,8 @@ import {
   fileNoun,
   filesLabel,
   fitHost,
+  fitLabel,
+  fitLabelWrapped,
   fitWriting,
   HAND_LINE,
   isCaseObject,
@@ -548,6 +550,42 @@ describe("a host written on a card's top line", () => {
       expect(fit(host)).toBeLessThanOrEqual(nominal);
       expect(fit(host)).toBeGreaterThanOrEqual(nominal * 0.5);
     }
+  });
+});
+
+describe("a name on the folder's two-line gummed strip", () => {
+  // The folder's numbers: `render/items/dom.ts`'s LABEL_WIDTH and NUMBER_SIZE
+  // on a 481-unit folder, and its LABEL_LINES of two.
+  const W = 481;
+  const box = W * 0.4;
+  const nominal = W * 0.055;
+  const fit = (text: string): number => fitLabelWrapped(text, box, nominal, 2);
+
+  it("writes a name that fits one line exactly as the one-line rule did", () => {
+    // The preference is the design (T-386): a short name wrapped mid-word onto
+    // a second line is a worse label than the same name set a little small, so
+    // nothing that fitted before may move.
+    for (const name of ["notes", "wexford-notes", "configure-vhosts"]) {
+      expect(fit(name)).toBe(fitLabel(name, box, nominal));
+    }
+  });
+
+  it("spills onto the second line only where the one-line rule would cut", () => {
+    // Twenty-five characters was `CONFIGUR…` territory: below the one-line
+    // floor. On two lines it is written above it instead of cut.
+    const name = "quarterly-filings-2026-q1";
+    expect(fitLabel(name, box, nominal)).toBe(nominal * 0.5);
+    const two = fit(name);
+    expect(two).toBeGreaterThan(nominal * 0.5);
+    // And it fits the two lines at that size, measured the way the box is.
+    // The epsilon is floating point's: an unfloored fit lands exactly on it.
+    expect(name.length * two * 0.62).toBeLessThanOrEqual(box * 2 + 1e-9);
+  });
+
+  it("still floors and cuts a name too long for both lines", () => {
+    // The 67-character cap `caseNumber` allows is past two lines at the floor,
+    // so the ellipsis still exists — it just arrives one line later.
+    expect(fit("x".repeat(67))).toBe(nominal * 0.5);
   });
 });
 
