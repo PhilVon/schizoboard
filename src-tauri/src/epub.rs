@@ -198,8 +198,8 @@ fn chapter(xhtml: &str, out: &mut Out) {
             }
             Ok(Event::GeneralRef(reference)) => {
                 if state.skipping == 0 {
-                    if let Some(ch) = crate::docx::entity(&reference) {
-                        state.pending.push(ch);
+                    if let Some(text) = crate::docx::entity(&reference) {
+                        state.pending.push_str(&text);
                     }
                 }
             }
@@ -543,6 +543,23 @@ pub(crate) mod tests {
         assert!(roles.contains(&(Role::Strong, "Tuesday".into())), "{roles:?}");
         assert!(roles.contains(&(Role::Emphasis, "said nothing".into())), "{roles:?}");
         assert!(roles.contains(&(Role::Quote, "He would not say where.".into())), "{roles:?}");
+    }
+
+    /// An entity a *book* uses, which is not one of the five XML defines.
+    ///
+    /// The regression test for a character that went missing on the first
+    /// driven run: `&mdash;` resolved to nothing and the sentence closed up
+    /// over the gap, which is precisely the failure every reader in this crate
+    /// exists to prevent. XHTML inherits the entity sets its DTD declares, so a
+    /// real book writes these freely.
+    #[test]
+    fn an_html_entity_in_a_chapter_is_the_character_it_names() {
+        let read = read_ok(&["<p>Its own page &mdash; which is what was decided.</p>"]);
+        assert_eq!(read.text, "Its own page \u{2014} which is what was decided.");
+
+        // The five XML defines still work, and so does the numeric form.
+        let read = read_ok(&["<p>Marks &amp; Spencer, &#8220;quoted&#8221;.</p>"]);
+        assert_eq!(read.text, "Marks & Spencer, \u{201c}quoted\u{201d}.");
     }
 
     /// A gap between two elements is a gap in the sentence, and the source's

@@ -128,8 +128,8 @@ fn parse(xml: &str) -> Reading {
             // resolve it twice.
             Ok(Event::GeneralRef(reference)) => {
                 if state.in_text {
-                    if let Some(ch) = entity(&reference) {
-                        state.pending.push(ch);
+                    if let Some(text) = entity(&reference) {
+                        state.pending.push_str(&text);
                     }
                 }
             }
@@ -368,24 +368,24 @@ fn heading_level(style: &str) -> Option<u8> {
     rest.parse::<u8>().ok().filter(|n| (1..=6).contains(n))
 }
 
-/// One entity reference as the character it names.
+/// One entity reference as the characters it names.
 ///
-/// The five XML defines, plus the numeric form. Nothing else: an HTML entity
-/// like `&nbsp;` is not defined in XML and neither of these two formats permits
-/// one, so a table of the several hundred would be carrying HTML's vocabulary
-/// into a place it does not reach.
-pub(crate) fn entity(reference: &quick_xml::events::BytesRef<'_>) -> Option<char> {
+/// Numeric first, then the crate's own table — which with `escape-html` on is
+/// the five XML defines plus the HTML5 named references. A `.docx` uses only
+/// the five, and an XHTML chapter of an `.epub` uses whichever its DTD
+/// declares, so the wide table is there for the book rather than for the memo.
+///
+/// **`None` means the reference resolved to nothing, and nothing is what
+/// reaches the page** — which is a character of somebody's document going
+/// missing. That is why the table is the crate's rather than a list of the ones
+/// that came to mind: a `&mdash;` dropped out of a real book on the first run,
+/// and the list I would have written did not have it on it.
+pub(crate) fn entity(reference: &quick_xml::events::BytesRef<'_>) -> Option<String> {
     if let Ok(Some(ch)) = reference.resolve_char_ref() {
-        return Some(ch);
+        return Some(ch.to_string());
     }
-    match reference.decode().ok()?.as_ref() {
-        "amp" => Some('&'),
-        "lt" => Some('<'),
-        "gt" => Some('>'),
-        "quot" => Some('"'),
-        "apos" => Some('\''),
-        _ => None,
-    }
+    let name = reference.decode().ok()?;
+    quick_xml::escape::resolve_predefined_entity(&name).map(str::to_owned)
 }
 
 /// An attribute by local name, so `w:val` and a differently-prefixed `val`

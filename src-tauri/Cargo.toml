@@ -171,7 +171,15 @@ pulldown-cmark = { version = "0.13", default-features = false }
 # codepages an XML declaration can name. Both of these formats are UTF-8 by
 # specification — OPC requires it and EPUB requires UTF-8 or UTF-16 — so that
 # feature is a character-set zoo for files neither format permits.
-quick-xml = { version = "0.41", default-features = false }
+#
+# `escape-html` is kept, and the first draft of this file dropped it with a
+# comment saying neither format permits an HTML entity. **That was wrong about
+# the epub**, and driving one found it: XHTML inherits the entity sets its DTD
+# declares, so a real book writes `&mdash;` and `&nbsp;` freely — and without
+# this feature those resolved to nothing and were silently deleted from the
+# page. Losing a character of somebody's document is the one failure every
+# reader in this crate was written to prevent, so the table is worth its size.
+quick-xml = { version = "0.41", default-features = false, features = ["escape-html"] }
 
 # --- the embedded relay (T-69) ----------------------------------------------
 # The relay holds a real document, because a y-websocket server has to answer a
