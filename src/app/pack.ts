@@ -161,12 +161,6 @@ export interface PackOptions {
   /** How long the board has to go quiet before its file is rewritten. */
   idleMs?: number;
   /**
-   * Above this, the idle flush stands down and only a switch or a `pagehide`
-   * writes the pack. **The gate is stage 1's and is deleted by stage 2** — see
-   * [`Pack`]'s note on it.
-   */
-  idleLimitBytes?: number;
-  /**
    * `crdt/persistence.ts`'s pair, kept verbatim rather than merely resembled:
    * told once at the start of a run of failures, and its partner told when a
    * write succeeds after one has fired and never otherwise. That is what lets a
@@ -185,12 +179,6 @@ const PACK_DEFAULTS = {
    * finished changing.
    */
   idleMs: 5_000,
-  /**
-   * A quarter of a gigabyte. Stage 1's flush is `bundle::write`, which is a
-   * whole-file copy: at this size it costs seconds of disk and the free space
-   * twice over, which is not a thing to do every time somebody pauses.
-   */
-  idleLimitBytes: 256 * 1024 * 1024,
 } as const;
 
 /**
@@ -210,26 +198,23 @@ const PACK_DEFAULTS = {
  * So `Persistence` calls [`Pack.wrote`] after every successful append and
  * compaction, and this class holds no subscription at all.
  *
- * ## The size gate, and why it is temporary
+ * ## There is no size gate, and there was one
  *
- * Stage 1 writes the whole pack every time (`bundle::write`, temp-beside-dest
- * and rename), which is O(the file) rather than O(what changed). On a board of
- * photographs that is gigabytes of copying, so above [`idleLimitBytes`] the
- * idle flush stands down and only the two moments that cannot be skipped — a
- * switch and the way out — write the file.
+ * Stage 1 wrote the whole pack every time, which is O(the file) rather than
+ * O(what changed) — gigabytes of copying on a board of photographs. So the idle
+ * flush stood down above a quarter of a gigabyte and only a switch and the way
+ * out wrote the file, and that gate was the whole argument for stage 2.
  *
- * **That gate is the whole argument for stage 2** (T-366): once a flush is one
- * appended generation rather than a rewrite, a flush costs O(snapshot) whatever
- * the pack weighs, and this constant and the branch that reads it are deleted.
- * The board is safe under the gate either way — the workshop is the crash-safe
- * copy and the pack is merely stale — which is why stage 1 is allowed to ship
- * with it.
+ * T-366 spent the argument. A flush is now one appended `gen/<n>` entry, which
+ * costs O(the snapshot) whatever the pack weighs, so the constant and the
+ * branch that read it are gone rather than raised — a six-gigabyte board and an
+ * empty one now flush on exactly the same terms, which is a thing this class no
+ * longer has an opinion about.
  */
 export class Pack {
   private readonly board: BoardDoc;
   private readonly native: Platform;
   private readonly idleMs: number;
-  private readonly idleLimitBytes: number;
   private readonly onError: (error: unknown) => void;
   private readonly onRecovered: () => void;
 
@@ -238,8 +223,6 @@ export class Pack {
   private behind = false;
   /** Every flush, in order — `crdt/persistence.ts`'s chain, and for its reason. */
   private chain: Promise<void> = Promise.resolve();
-  /** What the file weighed when it was last written, or null before that. */
-  private weight: number | null = null;
   private failing = false;
   private stopped = false;
   /** See [`packedCleanly`]. False until a flush has actually put it all in. */
@@ -249,7 +232,6 @@ export class Pack {
     this.board = board;
     this.native = native;
     this.idleMs = options.idleMs ?? PACK_DEFAULTS.idleMs;
-    this.idleLimitBytes = options.idleLimitBytes ?? PACK_DEFAULTS.idleLimitBytes;
     this.onError =
       options.onError ??
       ((error) => console.error("[pack] the board's own file could not be written", error));
@@ -266,10 +248,6 @@ export class Pack {
   wrote(): void {
     if (this.stopped) return;
     this.behind = true;
-    // Above the gate the timer is simply never armed. Not "armed and then
-    // refused", which would look identical from here and would spend a
-    // `setTimeout` per batch to decide nothing.
-    if (this.weight !== null && this.weight > this.idleLimitBytes) return;
     this.rearm();
   }
 
@@ -401,7 +379,6 @@ export class Pack {
         this.clean = false;
         return;
       }
-      this.weight = written.bytes;
       // A file that went out without a photograph the board refers to is not
       // one the sweep may collect against — those bytes are on this disk and
       // nowhere else. `missing` is normally empty and is the whole reason it is

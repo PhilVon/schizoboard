@@ -294,15 +294,15 @@ pub fn split_payload(body: &[u8]) -> Result<(&[u8], &[u8])> {
     Ok((json, &body[4 + len..]))
 }
 
-/// The other direction, for a response.
+/// The other direction.
 ///
-/// Uncalled since T-360 took `bundle_open` out — nothing hands a document *back*
-/// across the boundary any more, because a board is opened by pointing this
-/// window's log at it rather than by shipping its snapshot to the webview. Kept
-/// rather than deleted because T-366's generations are this exact framing: a
-/// flush appends one `gen/<n>` entry holding `[u32 le json len][json][snapshot]`,
-/// which is this function and [`split_payload`] verbatim, tests and all.
-#[allow(dead_code)]
+/// Uncalled between T-360 and T-366 — nothing hands a document *back* across the
+/// IPC boundary any more, because a board is opened by pointing this window's
+/// log at it rather than by shipping its snapshot to the webview. It was kept
+/// rather than deleted on the grounds that generations would be this exact
+/// framing, and they are: [`append`] writes one `gen/<n>` entry holding
+/// `[u32 le json len][json][snapshot]`, which is this function and
+/// [`split_payload`] verbatim, tests and all.
 pub fn join_payload(json: &[u8], bytes: &[u8]) -> Vec<u8> {
     let mut out = Vec::with_capacity(4 + json.len() + bytes.len());
     out.extend_from_slice(&(json.len() as u32).to_le_bytes());
@@ -437,6 +437,165 @@ pub fn write(
     }
 }
 
+/// Where a generation lives, and the only name in this format that carries a
+/// number.
+///
+/// Parsing an integer out of `gen/<n>` is not what this module's note forbids.
+/// That rule is about a name from an archive becoming a **path**, and this name
+/// becomes a `u32` — it is never joined onto anything, and the generation's own
+/// manifest is still the only index into `assets/`.
+const GEN_PREFIX: &str = "gen/";
+
+/// How many generations a pack may carry before the file is a queue rather than
+/// a board.
+///
+/// At one flush per idle interval this is many hours of continuous work, and
+/// T-367's compaction folds them away long before it. Here so that a `.schizo`
+/// somebody else wrote cannot make the reader walk a directory of a million
+/// names looking for the highest.
+const MAX_GENERATIONS: u32 = 100_000;
+
+/// The highest generation in an archive, and how many there are.
+///
+/// `None` for a pack with none at all — every `.schizo` written before T-366,
+/// which is the property that keeps the T-84 corpus green without touching it:
+/// such a file is a pack with zero generations and reads as its `manifest.json`
+/// plus `snapshot.bin`.
+///
+/// A name that is not `gen/<integer>` is **ignored rather than refused**. It is
+/// a name in an archive somebody else wrote, and the alternative — failing the
+/// whole open — would let one junk entry make a board unopenable.
+fn newest_generation<R: Read + io::Seek>(zip: &ZipArchive<R>) -> Option<u32> {
+    zip.file_names()
+        .filter_map(|name| name.strip_prefix(GEN_PREFIX))
+        .filter_map(|n| n.parse::<u32>().ok())
+        .filter(|n| *n >= 1 && *n <= MAX_GENERATIONS)
+        .max()
+}
+
+/// Write the board into a pack that already exists, as one appended entry.
+///
+/// **This is the whole of stage 2** (T-366, D-70). A flush used to be
+/// [`write`] — a whole new zip beside the old one and a rename — which costs
+/// O(the file) and the free space twice over, so on a board of photographs it
+/// was gigabytes of copying every time somebody paused. It is now one entry
+/// appended to the end, which costs O(the snapshot) whatever the pack weighs.
+///
+/// ## Why an entry rather than a second `snapshot.bin`
+///
+/// `ZipWriter::new_append` exists, and `insert_file_data` refuses a duplicate
+/// name with no removal API beside it — so a second `snapshot.bin` is
+/// impossible. A uniquely named entry is the shape the crate will actually
+/// give, and once the name has to be unique it may as well be the ordering.
+///
+/// The payload is `[u32 le json len][json][snapshot]`, which is
+/// [`join_payload`] and [`split_payload`] verbatim: the framing already written
+/// for the IPC boundary, with its own tests.
+///
+/// ## And why not append past the old central directory
+///
+/// That shape claims to delegate parsing and does not. `ZipArchive` does not
+/// expose `dir_start`, so you find the EOCD yourself — that is the backward
+/// scan, and it is parsing. Carrying the existing entries into a fresh
+/// directory means re-emitting their records, and `ZipFileData` is not public,
+/// so you parse each 46-byte record plus name plus extra plus comment to find
+/// the next. And a six-gigabyte pack is past 4 GiB, so zip64 is mandatory —
+/// which is the *two ways of saying the same offset* that `Cargo.toml`'s
+/// standing argument against hand-rolling a zip names by name.
+///
+/// ## What a torn append costs, which is nothing
+///
+/// `new_append` leaves the cursor at the first byte of the old EOCD, so the
+/// first byte of any append destroys it and there is no previous directory to
+/// scan back to. **That does not matter, and the reason is the shape of the
+/// whole design rather than a mitigation.** The pack is not the only copy: the
+/// workshop is a crash-safe log with an fsynced snapshot, and the asset store
+/// holds every byte content-addressed. A pack that will not open is rewritten
+/// whole by the next flush (`write_pack` in `lib.rs`), out of a document the
+/// frontend still holds, and nothing is lost.
+///
+/// A forward `PK\x03\x04` repair scan is **deliberately not built**: it is the
+/// hand-rolled zip reading this crate exists to avoid, it would run
+/// approximately never, and it recovers strictly less than the workshop already
+/// does.
+pub fn append(
+    store: &AssetStore,
+    spec: &Spec,
+    pack_id: &str,
+    snapshot: &[u8],
+    dest: &Path,
+) -> Result<Written> {
+    let (embedded, missing) = plan(store, spec);
+
+    // Read first, append second, in two opens rather than one. The read is the
+    // central directory only — a few bytes per entry — and it answers the two
+    // questions the append needs: which generation this becomes, and which
+    // photographs are already in the file. `insert_file_data` refuses a
+    // duplicate name, so writing an asset twice is an error rather than waste.
+    let (generation, present) = {
+        let zip = ZipArchive::new(BufReader::new(File::open(dest)?))?;
+        let generation = newest_generation(&zip).unwrap_or(0) + 1;
+        let present: HashSet<String> = zip.file_names().map(str::to_string).collect();
+        (generation, present)
+    };
+    if generation > MAX_GENERATIONS {
+        return Err(Error::Corrupt(format!(
+            "that board's file already holds {MAX_GENERATIONS} generations"
+        )));
+    }
+
+    let manifest = Manifest {
+        format: FORMAT.to_string(),
+        pack_id: Some(pack_id.to_string()),
+        schema_version: spec.schema_version,
+        title: spec.title.clone(),
+        assets: embedded.clone(),
+    };
+    let json = serde_json::to_vec_pretty(&manifest).map_err(|e| Error::Json(e.to_string()))?;
+
+    let file = File::options().read(true).write(true).open(dest)?;
+    let mut zip = ZipWriter::new_append(file)?;
+
+    // Only what is not in there already. A pack holds every asset any of its
+    // generations ever listed, which is a little more than the newest manifest
+    // names — T-367's compaction is what drops the surplus, and until then
+    // carrying it is the cost of not rewriting the file.
+    let stored = SimpleFileOptions::default().compression_method(CompressionMethod::Stored);
+    for hash in &embedded {
+        let name = format!("{ASSET_PREFIX}{hash}");
+        if present.contains(&name) {
+            continue;
+        }
+        let mut source = File::open(store.original_path(hash))?;
+        zip.start_file(&name, stored)?;
+        io::copy(&mut source, &mut zip)?;
+    }
+
+    // The generation last, so that a torn append can only ever lose the entry
+    // that names the newest document — never an asset an *earlier* generation
+    // is still the index for.
+    let deflated = SimpleFileOptions::default().compression_method(CompressionMethod::Deflated);
+    zip.start_file(format!("{GEN_PREFIX}{generation}"), deflated)?;
+    zip.write_all(&join_payload(&json, snapshot))?;
+
+    let mut file = zip.finish()?;
+    // The board is on this disk in two places by now, so this is not what makes
+    // it safe — it is what makes the *pack* worth the append. Without it a power
+    // cut leaves a file whose directory the operating system has and whose bytes
+    // it does not, which is the one way an append can be worse than a rewrite:
+    // `write` renames a fully-flushed temporary over the destination and cannot
+    // produce that state at all.
+    file.sync_all()?;
+    let bytes = file.metadata()?.len();
+
+    Ok(Written {
+        pack_id: pack_id.to_string(),
+        embedded: embedded.len(),
+        missing,
+        bytes,
+    })
+}
+
 /// The zip itself. Split out so that every failure between `File::create` and
 /// the last byte lands in one place, where the half-written temporary can be
 /// swept up.
@@ -560,17 +719,11 @@ fn temp_beside(dest: &Path) -> PathBuf {
 /// entering this machine's store before anyone agreed to open their board.
 pub fn peek(src: &Path) -> Result<Manifest> {
     let mut zip = ZipArchive::new(BufReader::new(File::open(src)?))?;
-    let raw = entry(&mut zip, MANIFEST, MAX_MANIFEST_BYTES)?
-        .ok_or_else(|| Error::NotABundle(format!("no {MANIFEST}")))?;
-    let manifest: Manifest =
-        serde_json::from_slice(&raw).map_err(|e| Error::Json(e.to_string()))?;
-    if manifest.format != FORMAT {
-        return Err(Error::NotABundle(format!(
-            "its format is {:?}, not {FORMAT:?}",
-            manifest.format
-        )));
-    }
-    Ok(manifest)
+    // The newest generation's, because this answers "which board is that, and
+    // what is it called" and both of those move (T-366). A pack whose title was
+    // changed after it was first written would otherwise be offered in the
+    // picker under the name it had when it was created.
+    newest_manifest(&mut zip)
 }
 
 /// How much of a bundle's title may appear in a dialog.
@@ -620,10 +773,7 @@ pub fn display_title(title: &str) -> String {
 pub fn read(store: &AssetStore, src: &Path) -> Result<Opened> {
     let mut zip = ZipArchive::new(BufReader::new(File::open(src)?))?;
 
-    let manifest = read_manifest(&mut zip)?;
-
-    let snapshot = entry(&mut zip, SNAPSHOT, MAX_SNAPSHOT_BYTES)?
-        .ok_or_else(|| Error::NotABundle(format!("no {SNAPSHOT}")))?;
+    let (manifest, snapshot) = current(&mut zip)?;
 
     let taken = take_assets(store, &mut zip, &manifest)?;
     Ok(Opened {
@@ -665,9 +815,65 @@ pub fn read(store: &AssetStore, src: &Path) -> Result<Opened> {
 /// for, because the workshop it is topping up is newer than it by construction.
 pub fn top_up(store: &AssetStore, src: &Path) -> Result<Restored> {
     let mut zip = ZipArchive::new(BufReader::new(File::open(src)?))?;
-    let manifest = read_manifest(&mut zip)?;
+    let manifest = newest_manifest(&mut zip)?;
     let taken = take_assets(store, &mut zip, &manifest)?;
     Ok(taken)
+}
+
+/// The board this pack currently holds — its manifest and its document.
+///
+/// **The highest generation wins, and with none it falls back to
+/// `manifest.json` plus `snapshot.bin`** (T-366). That fallback is not a
+/// compatibility shim bolted on: every `.schizo` written before generations
+/// existed *is* a pack with zero of them, which is why T-84's round-trip corpus
+/// stayed green through this change without a line being touched, and why a
+/// compaction (T-367) is [`write`] unchanged.
+///
+/// A generation that will not parse is a torn append, and it is an **error**
+/// rather than a silent fall back to the one below it. Falling back would hand
+/// the caller a board as of some earlier moment while reporting success, which
+/// is the failure DATA-MODEL section 12 spends its whole length preventing one
+/// tier down. The caller's recovery is the workshop, which is newer than any
+/// generation by construction.
+fn current<R: Read + io::Seek>(zip: &mut ZipArchive<R>) -> Result<(Manifest, Vec<u8>)> {
+    let Some(generation) = newest_generation(zip) else {
+        let manifest = read_manifest(zip)?;
+        let snapshot = entry(zip, SNAPSHOT, MAX_SNAPSHOT_BYTES)?
+            .ok_or_else(|| Error::NotABundle(format!("no {SNAPSHOT}")))?;
+        return Ok((manifest, snapshot));
+    };
+
+    // `read_manifest`'s checks are run against the *base* manifest as well,
+    // because that is the entry that says whether this file is one of ours at
+    // all, and a generation is only meaningful inside a file that is.
+    read_manifest(zip)?;
+
+    let name = format!("{GEN_PREFIX}{generation}");
+    let payload = entry(zip, &name, MAX_MANIFEST_BYTES + MAX_SNAPSHOT_BYTES)?
+        .ok_or_else(|| Error::Corrupt(format!("{name} is in the directory and not in the file")))?;
+    let (json, snapshot) = split_payload(&payload)?;
+    let manifest = check_manifest(
+        serde_json::from_slice(json).map_err(|e| Error::Json(e.to_string()))?,
+    )?;
+    Ok((manifest, snapshot.to_vec()))
+}
+
+/// The manifest that indexes `assets/` right now — the newest generation's, or
+/// the base one on a pack with no generations.
+///
+/// [`top_up`]'s half of [`current`], which reads no document at all: on a large
+/// board the snapshot is tens of megabytes that a caller topping up the asset
+/// store has no use for.
+fn newest_manifest<R: Read + io::Seek>(zip: &mut ZipArchive<R>) -> Result<Manifest> {
+    let base = read_manifest(zip)?;
+    let Some(generation) = newest_generation(zip) else {
+        return Ok(base);
+    };
+    let name = format!("{GEN_PREFIX}{generation}");
+    let payload = entry(zip, &name, MAX_MANIFEST_BYTES + MAX_SNAPSHOT_BYTES)?
+        .ok_or_else(|| Error::Corrupt(format!("{name} is in the directory and not in the file")))?;
+    let (json, _) = split_payload(&payload)?;
+    check_manifest(serde_json::from_slice(json).map_err(|e| Error::Json(e.to_string()))?)
 }
 
 /// What a pack turned out to be holding for this machine's store.
@@ -677,13 +883,20 @@ pub struct Restored {
     pub missing: Vec<String>,
 }
 
-/// The manifest, checked — [`read`]'s first act and [`top_up`]'s.
-fn read_manifest(zip: &mut ZipArchive<BufReader<File>>) -> Result<Manifest> {
-    let manifest: Manifest = {
-        let raw = entry(zip, MANIFEST, MAX_MANIFEST_BYTES)?
-            .ok_or_else(|| Error::NotABundle(format!("no {MANIFEST}")))?;
-        serde_json::from_slice(&raw).map_err(|e| Error::Json(e.to_string()))?
-    };
+/// `manifest.json`, checked — the first act of every read.
+fn read_manifest<R: Read + io::Seek>(zip: &mut ZipArchive<R>) -> Result<Manifest> {
+    let raw = entry(zip, MANIFEST, MAX_MANIFEST_BYTES)?
+        .ok_or_else(|| Error::NotABundle(format!("no {MANIFEST}")))?;
+    check_manifest(serde_json::from_slice(&raw).map_err(|e| Error::Json(e.to_string()))?)
+}
+
+/// What a manifest has to be true of before anything acts on it.
+///
+/// Separate from the read because a generation's manifest arrives out of a
+/// framed payload rather than out of its own entry (T-366), and it has to pass
+/// exactly the same gate — a `gen/<n>` is a manifest a stranger wrote just as
+/// surely as `manifest.json` is.
+fn check_manifest(manifest: Manifest) -> Result<Manifest> {
     if manifest.format != FORMAT {
         return Err(Error::NotABundle(format!(
             "its format is {:?}, not {FORMAT:?}",
@@ -1659,5 +1872,293 @@ mod tests {
         let opened = read(&store(&dir, "there"), &dest).unwrap();
         assert!(opened.manifest.assets.is_empty());
         assert_eq!(opened.snapshot, b"doc");
+    }
+
+    // --- generations (T-366) ------------------------------------------------
+
+    /// AC-1023. The reader takes the highest `gen/<n>`, so what a pack holds is
+    /// the last thing appended to it and never the first.
+    #[test]
+    fn the_newest_generation_is_the_board() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = store(&dir, "mine");
+        let pack = dir.path().join("case one.schizo");
+        let id = crate::board::mint_pack_id();
+        super::write(&store, &spec(vec![]), Some(&id), b"as of the export", &pack).unwrap();
+
+        append(&store, &spec(vec![]), &id, b"an hour later", &pack).unwrap();
+        append(&store, &spec(vec![]), &id, b"an hour after that", &pack).unwrap();
+
+        let opened = read(&store, &pack).unwrap();
+        assert_eq!(opened.snapshot, b"an hour after that");
+        // And the pack id is the same file's throughout — a flush preserves it
+        // where a copy mints one, which is what stops two files sharing a room.
+        assert_eq!(opened.manifest.pack_id.as_deref(), Some(id.as_str()));
+    }
+
+    /// The generation is a number and the ordering has to be numeric, which
+    /// `10` against `9` is the whole of: a lexicographic max would have stopped
+    /// at nine and served an hour-old board for ever after.
+    #[test]
+    fn generations_are_ordered_as_numbers_and_not_as_names() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = store(&dir, "mine");
+        let pack = dir.path().join("case one.schizo");
+        let id = crate::board::mint_pack_id();
+        super::write(&store, &spec(vec![]), Some(&id), b"gen 0", &pack).unwrap();
+
+        for n in 1..=11 {
+            append(&store, &spec(vec![]), &id, format!("gen {n}").as_bytes(), &pack).unwrap();
+        }
+
+        assert_eq!(read(&store, &pack).unwrap().snapshot, b"gen 11");
+    }
+
+    /// AC-1024. The point of appending rather than rewriting is that the bytes
+    /// already in the file are not touched — so a stored photograph has to come
+    /// back out of a pack that has been appended to, byte for byte.
+    ///
+    /// Fifty megabytes rather than a pixel, because the thing being asserted is
+    /// that a *large* stored entry survives an append: the sizes and offsets in
+    /// the central directory are what an append rewrites, and a small file
+    /// would pass this without exercising the arithmetic that matters.
+    #[test]
+    fn a_stored_photograph_comes_back_unchanged_after_an_append() {
+        let dir = tempfile::tempdir().unwrap();
+        let mine = store(&dir, "mine");
+        let pack = dir.path().join("case one.schizo");
+        let id = crate::board::mint_pack_id();
+
+        // Incompressible, so `Stored` is genuinely storing rather than the zip
+        // quietly doing the work: a run of zeroes would deflate to nothing and
+        // prove much less.
+        let big: Vec<u8> = (0..50 * 1024 * 1024u32).map(|i| (i.wrapping_mul(2654435761) >> 24) as u8).collect();
+        let photo = mine.ingest_bytes(&big, None).unwrap().sha256;
+
+        super::write(&mine, &spec(vec![photo.clone()]), Some(&id), b"first", &pack).unwrap();
+        append(&mine, &spec(vec![photo.clone()]), &id, b"second", &pack).unwrap();
+
+        // Still a zip, still readable, and on a machine that has never seen
+        // those bytes — which is the only way to prove they came out of the file
+        // rather than out of a store that already had them.
+        let theirs = store(&dir, "theirs");
+        let opened = read(&theirs, &pack).unwrap();
+        assert_eq!(opened.snapshot, b"second");
+        assert_eq!(opened.ingested, vec![photo.clone()]);
+        assert!(opened.missing.is_empty());
+        assert_eq!(std::fs::read(theirs.original_path(&photo)).unwrap(), big);
+    }
+
+    /// A photograph that arrived after the pack was written goes in with the
+    /// generation that first references it, and one already in the file is not
+    /// written twice — `insert_file_data` refuses a duplicate name, so this is
+    /// an error rather than waste if it is got wrong.
+    #[test]
+    fn an_append_carries_only_the_photographs_the_file_does_not_have() {
+        let dir = tempfile::tempdir().unwrap();
+        let mine = store(&dir, "mine");
+        let pack = dir.path().join("case one.schizo");
+        let id = crate::board::mint_pack_id();
+
+        let first = mine.ingest_bytes(PIXEL, None).unwrap().sha256;
+        super::write(&mine, &spec(vec![first.clone()]), Some(&id), b"one", &pack).unwrap();
+        let before = std::fs::metadata(&pack).unwrap().len();
+
+        // The same board again: nothing new to carry.
+        append(&mine, &spec(vec![first.clone()]), &id, b"two", &pack).unwrap();
+        let after_nothing_new = std::fs::metadata(&pack).unwrap().len();
+        assert!(
+            after_nothing_new - before < 4096,
+            "an append that carried nothing new grew the file by {}",
+            after_nothing_new - before
+        );
+
+        // And a photograph that arrived since.
+        let second = mine.ingest_bytes(&[0u8; 40_000], None).unwrap().sha256;
+        append(&mine, &spec(vec![first.clone(), second.clone()]), &id, b"three", &pack).unwrap();
+
+        let theirs = store(&dir, "theirs");
+        let opened = read(&theirs, &pack).unwrap();
+        assert_eq!(opened.snapshot, b"three");
+        let mut got = opened.ingested;
+        got.sort();
+        let mut want = vec![first, second];
+        want.sort();
+        assert_eq!(got, want);
+    }
+
+    /// AC-1025, said out loud rather than left as a property of the corpus.
+    ///
+    /// Every `.schizo` written before T-366 is a pack with zero generations, so
+    /// the fallback to `manifest.json` plus `snapshot.bin` is not a
+    /// compatibility shim — it is what the reader does when there is nothing
+    /// newer, which is also why T-84's round-trip tests above are untouched.
+    #[test]
+    fn a_pack_from_before_generations_reads_as_its_manifest() {
+        let dir = tempfile::tempdir().unwrap();
+        let mine = store(&dir, "mine");
+        let pack = dir.path().join("an old export.schizo");
+        let photo = mine.ingest_bytes(PIXEL, None).unwrap().sha256;
+        // Exactly what T-84 wrote: no pack id, no generations.
+        write(&mine, &spec(vec![photo.clone()]), b"the old shape", &pack).unwrap();
+
+        let theirs = store(&dir, "theirs");
+        let opened = read(&theirs, &pack).unwrap();
+
+        assert_eq!(opened.snapshot, b"the old shape");
+        assert_eq!(opened.ingested, vec![photo]);
+        assert_eq!(peek(&pack).unwrap().title, "A board");
+    }
+
+    /// AC-1027. A snapshot is opaque bytes from a document this module never
+    /// reads, so it can contain anything at all — including the four bytes that
+    /// end a zip. A reader that found its way about by scanning for those would
+    /// be reading the document as though it were the archive.
+    #[test]
+    fn a_document_carrying_an_end_of_archive_signature_is_still_read() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = store(&dir, "mine");
+        let pack = dir.path().join("case one.schizo");
+        let id = crate::board::mint_pack_id();
+
+        // `PK\x05\x06` and `PK\x03\x04` — the end of a central directory and the
+        // start of a local file header — with a plausible tail behind each, so a
+        // scan would not merely find them but believe them.
+        let mut nasty = Vec::new();
+        nasty.extend_from_slice(b"before");
+        nasty.extend_from_slice(b"PK\x05\x06");
+        nasty.extend_from_slice(&[0u8; 18]);
+        nasty.extend_from_slice(b"PK\x03\x04");
+        nasty.extend_from_slice(&[0u8; 26]);
+        nasty.extend_from_slice(b"after");
+
+        super::write(&store, &spec(vec![]), Some(&id), b"first", &pack).unwrap();
+        append(&store, &spec(vec![]), &id, &nasty, &pack).unwrap();
+
+        assert_eq!(read(&store, &pack).unwrap().snapshot, nasty);
+
+        // And once more, so the nasty generation is in the middle of the file
+        // rather than at the end of it.
+        append(&store, &spec(vec![]), &id, b"third", &pack).unwrap();
+        assert_eq!(read(&store, &pack).unwrap().snapshot, b"third");
+    }
+
+    /// A `gen/` entry that is not a number is a name from a file somebody else
+    /// wrote. Ignored rather than refused — failing the open would let one junk
+    /// entry make a board unopenable, and the numbers beside it are still good.
+    #[test]
+    fn a_generation_that_is_not_a_number_is_passed_over() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = store(&dir, "mine");
+        let pack = dir.path().join("case one.schizo");
+        let id = crate::board::mint_pack_id();
+        super::write(&store, &spec(vec![]), Some(&id), b"base", &pack).unwrap();
+        append(&store, &spec(vec![]), &id, b"the real one", &pack).unwrap();
+
+        {
+            let file = File::options().read(true).write(true).open(&pack).unwrap();
+            let mut zip = ZipWriter::new_append(file).unwrap();
+            for name in ["gen/../secrets", "gen/9999999999999999999", "gen/", "gen/2x"] {
+                zip.start_file(name, SimpleFileOptions::default()).unwrap();
+                zip.write_all(b"not a generation").unwrap();
+            }
+            zip.finish().unwrap();
+        }
+
+        assert_eq!(read(&store, &pack).unwrap().snapshot, b"the real one");
+    }
+
+    /// A photograph that arrived *after* the base write is listed only by the
+    /// generation that carries it — so a top-up reading `manifest.json` would
+    /// walk a list from before that photograph existed and quietly not restore
+    /// it.
+    ///
+    /// That is T-363's hole reopening one layer up: the sweep trashes another
+    /// board's photographs on the promise that reopening that board brings them
+    /// back, and a top-up looking at the wrong manifest breaks the promise for
+    /// exactly the photographs added most recently.
+    #[test]
+    fn a_top_up_restores_what_the_newest_generation_lists() {
+        let dir = tempfile::tempdir().unwrap();
+        let mine = store(&dir, "mine");
+        let pack = dir.path().join("case one.schizo");
+        let id = crate::board::mint_pack_id();
+
+        let old = mine.ingest_bytes(PIXEL, None).unwrap().sha256;
+        super::write(&mine, &spec(vec![old.clone()]), Some(&id), b"first", &pack).unwrap();
+        // Arrived from a peer after the pack was written, and went in with the
+        // generation that first referenced it.
+        let fresh = mine.ingest_bytes(&[7u8; 20_000], None).unwrap().sha256;
+        append(&mine, &spec(vec![old.clone(), fresh.clone()]), &id, b"second", &pack).unwrap();
+
+        let theirs = store(&dir, "theirs");
+        let restored = top_up(&theirs, &pack).unwrap();
+
+        let mut got = restored.ingested;
+        got.sort();
+        let mut want = vec![old, fresh];
+        want.sort();
+        assert_eq!(got, want, "the top-up read the wrong manifest");
+        assert!(restored.missing.is_empty());
+    }
+
+    /// A `gen/<n>` is a manifest a stranger wrote just as surely as
+    /// `manifest.json` is, and it has to pass the same gate. Otherwise the one
+    /// entry in this format that is *not* checked is the one that decides what
+    /// the whole file means.
+    #[test]
+    fn a_generation_whose_manifest_is_not_ours_is_refused() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = store(&dir, "mine");
+        let pack = dir.path().join("case one.schizo");
+        let id = crate::board::mint_pack_id();
+        super::write(&store, &spec(vec![]), Some(&id), b"base", &pack).unwrap();
+
+        // A generation claiming to be some other format entirely. Appended by
+        // hand, because `append` could not produce one.
+        {
+            let file = File::options().read(true).write(true).open(&pack).unwrap();
+            let mut zip = ZipWriter::new_append(file).unwrap();
+            zip.start_file("gen/1", SimpleFileOptions::default()).unwrap();
+            let json = br#"{"format":"somebody/else","schemaVersion":1,"title":"x","assets":[]}"#;
+            zip.write_all(&join_payload(json, b"a document")).unwrap();
+            zip.finish().unwrap();
+        }
+
+        // Refused rather than falling back to the base manifest below it.
+        // Falling back would hand the caller a board as of an earlier moment
+        // while reporting success, which is the one failure this format spends
+        // its whole length preventing.
+        assert!(matches!(read(&store, &pack), Err(Error::NotABundle(_))));
+        assert!(matches!(top_up(&store, &pack), Err(Error::NotABundle(_))));
+    }
+
+    /// The same gate, on the count rather than the tag.
+    #[test]
+    fn a_generation_claiming_more_assets_than_a_board_has_is_refused() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = store(&dir, "mine");
+        let pack = dir.path().join("case one.schizo");
+        let id = crate::board::mint_pack_id();
+        super::write(&store, &spec(vec![]), Some(&id), b"base", &pack).unwrap();
+
+        {
+            let file = File::options().read(true).write(true).open(&pack).unwrap();
+            let mut zip = ZipWriter::new_append(file).unwrap();
+            zip.start_file("gen/1", SimpleFileOptions::default()).unwrap();
+            let assets: Vec<String> = (0..MAX_ASSETS + 1).map(|i| format!("{i:064x}")).collect();
+            let manifest = Manifest {
+                format: FORMAT.to_string(),
+                pack_id: Some(id.clone()),
+                schema_version: 1,
+                title: "x".into(),
+                assets,
+            };
+            let json = serde_json::to_vec(&manifest).unwrap();
+            zip.write_all(&join_payload(&json, b"a document")).unwrap();
+            zip.finish().unwrap();
+        }
+
+        assert!(matches!(read(&store, &pack), Err(Error::Corrupt(_))));
     }
 }

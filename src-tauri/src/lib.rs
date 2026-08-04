@@ -1626,6 +1626,53 @@ fn board_payload(
     Ok((spec, snapshot.to_vec()))
 }
 
+/// Append a generation, or write the whole file when appending is not on.
+///
+/// **Appending is the ordinary case and the whole of T-366.** A flush used to be
+/// a fresh zip beside the old one and a rename, which is O(the file) and the
+/// free space twice over; a generation is O(the snapshot) whatever the pack
+/// weighs. That is what deleted stage 1's size gate — above 256 MB the idle
+/// flush used to stand down, and there is nothing left for it to stand down
+/// from.
+///
+/// ## The three cases that fall back to a whole write, and they are one case
+///
+/// A file that is not there, a file that is not a zip, and a file whose central
+/// directory has gone. All three are "there is nothing here to append to", and
+/// the third is the interesting one: it is a **torn append**, and this is its
+/// recovery.
+///
+/// `ZipWriter::new_append` leaves the cursor on the first byte of the old EOCD,
+/// so a power cut during an append leaves a file with no directory at all and
+/// no earlier one to fall back to. D-70 chose to let that happen rather than
+/// defend against it, because the pack is not the only copy — the workshop is a
+/// crash-safe log and the asset store holds every byte — so the honest recovery
+/// is to write the file again from a document that is still on this machine.
+/// Which is this line, and it costs one whole write on a board that has just
+/// been through a power cut.
+///
+/// A forward `PK` repair scan is deliberately not built (D-70): it is the
+/// hand-rolled zip parsing `Cargo.toml` forbids, and it recovers strictly less
+/// than the workshop already does.
+fn save_pack(
+    store: &AssetStore,
+    spec: &bundle::Spec,
+    pack_id: &str,
+    snapshot: &[u8],
+    dest: &Path,
+) -> Result<bundle::Written, String> {
+    if dest.is_file() {
+        match bundle::append(store, spec, pack_id, snapshot, dest) {
+            Ok(written) => return Ok(written),
+            Err(error) => eprintln!(
+                "board: {} could not be appended to and is being written again: {error}",
+                dest.display()
+            ),
+        }
+    }
+    bundle::write(store, spec, Some(pack_id), snapshot, dest).map_err(|e| e.to_string())
+}
+
 /// The pack, and the register's note of what the board is now called.
 ///
 /// The title is only ever *remembered* here — Rust holds no schema and cannot
@@ -1651,8 +1698,7 @@ fn write_pack(
         return Err("that board's document is not the one this window has open".to_string());
     }
     let store = store_of(app)?;
-    let written = bundle::write(&store, spec, Some(&entry.pack_id), snapshot, dest)
-        .map_err(|e| e.to_string())?;
+    let written = save_pack(&store, spec, &entry.pack_id, snapshot, dest)?;
     // Not fatal. A title the register missed is a stale row in a menu; the file
     // it names is written and correct either way.
     if let Err(error) = boards.set_title(&entry.pack_id, &spec.title) {
@@ -2182,6 +2228,125 @@ mod tests {
         let entry = a_board("boards/board-one", Some(pack));
 
         assert!(take_up(&workshop, &assets, &entry).is_err());
+    }
+
+    /// A pack with no photographs in it — enough to have a manifest, a snapshot
+    /// and a central directory, which is all the crash tests need.
+    fn pack_spec() -> bundle::Spec {
+        bundle::Spec {
+            schema_version: 1,
+            title: "Case one".to_string(),
+            assets: Vec::new(),
+        }
+    }
+
+    /// AC-1026, and it is the test D-70's whole crash argument rests on.
+    ///
+    /// `ZipWriter::new_append` leaves the cursor on the first byte of the old
+    /// EOCD, so the first byte of any append destroys the only central
+    /// directory the file has and there is no earlier one to scan back to. A
+    /// power cut mid-append can therefore leave the pack in *any* state between
+    /// "the file as it was" and "the file as it will be", and this walks every
+    /// one of them.
+    ///
+    /// What must be true at each: the board still opens, on its workshop, with
+    /// its work intact — and the next flush leaves a pack that reads correctly
+    /// again. **No zip repair is involved and none is built.** The recovery is
+    /// that the pack was never the only copy.
+    #[test]
+    fn a_torn_append_is_repaired_from_the_workshop_at_every_offset() {
+        let dir = tempfile::tempdir().unwrap();
+        let data = dir.path();
+        let assets = AssetStore::new(data.join("assets")).unwrap();
+        let pack = data.join("case one.schizo");
+        let id = board::mint_pack_id();
+
+        bundle::write(&assets, &pack_spec(), Some(&id), b"as of the last flush", &pack).unwrap();
+        let intact = std::fs::read(&pack).unwrap();
+        bundle::append(&assets, &pack_spec(), &id, b"an hour of work later", &pack).unwrap();
+        let appended = std::fs::read(&pack).unwrap();
+        assert!(appended.len() > intact.len());
+
+        for cut in intact.len()..appended.len() {
+            std::fs::write(&pack, &appended[..cut]).unwrap();
+
+            // A workshop that has this session's work in it, which is what a
+            // machine that has just been through a power cut actually has.
+            let workshop = Workshop::new(data.to_path_buf());
+            let entry = board::Entry {
+                pack_id: id.clone(),
+                board_id: board::mint_board_id(),
+                path: Some(pack.clone()),
+                workshop: PathBuf::from("boards/board-one"),
+                title: "Case one".into(),
+                last_opened: 0,
+            };
+            DocStore::new(data.join("boards/board-one"))
+                .unwrap()
+                .append(b"an hour of work later")
+                .unwrap();
+
+            // It opens. Not "opens with a warning" — opens, on the workshop,
+            // which is newer than any generation by construction.
+            let taken = take_up(&workshop, &assets, &entry)
+                .unwrap_or_else(|e| panic!("truncated at {cut} of {} refused to open: {e}", appended.len()));
+            assert!(!taken.seeded, "truncated at {cut}: the workshop was overwritten");
+            let state = workshop.store().unwrap().load().unwrap();
+            assert_eq!(
+                state.updates,
+                vec![b"an hour of work later".to_vec()],
+                "truncated at {cut}: the work is not there"
+            );
+
+            // And the next flush leaves a file that reads. `save_pack` finds a
+            // pack it cannot append to and writes the whole thing instead,
+            // which is the repair in one line.
+            save_pack(&assets, &pack_spec(), &id, b"an hour of work later", &pack)
+                .unwrap_or_else(|e| panic!("truncated at {cut}: the repair failed: {e}"));
+            let reopened = bundle::read(&assets, &pack)
+                .unwrap_or_else(|e| panic!("truncated at {cut}: the repaired pack will not read: {e}"));
+            assert_eq!(reopened.snapshot, b"an hour of work later");
+            assert_eq!(reopened.manifest.pack_id.as_deref(), Some(id.as_str()));
+
+            std::fs::remove_dir_all(data.join("boards")).unwrap();
+        }
+    }
+
+    /// The ordinary case, so that the test above is not the only thing
+    /// exercising this pair: a pack that *is* fine is appended to rather than
+    /// rewritten, which is the whole of what T-366 bought.
+    #[test]
+    fn a_flush_appends_to_a_pack_that_is_fine() {
+        let dir = tempfile::tempdir().unwrap();
+        let assets = AssetStore::new(dir.path().join("assets")).unwrap();
+        let pack = dir.path().join("case one.schizo");
+        let id = board::mint_pack_id();
+        bundle::write(&assets, &pack_spec(), Some(&id), b"first", &pack).unwrap();
+
+        save_pack(&assets, &pack_spec(), &id, b"second", &pack).unwrap();
+
+        // Appended, not rewritten — the base entries are still where they were,
+        // and the newest generation is what a reader gets.
+        let opened = bundle::read(&assets, &pack).unwrap();
+        assert_eq!(opened.snapshot, b"second");
+        let zip = zip::ZipArchive::new(std::io::BufReader::new(std::fs::File::open(&pack).unwrap())).unwrap();
+        let names: Vec<&str> = zip.file_names().collect();
+        assert!(names.contains(&"gen/1"), "{names:?}");
+        assert!(names.contains(&"snapshot.bin"), "{names:?}");
+    }
+
+    /// A board that has never been written has no file to append to, and that
+    /// is the first flush of every board rather than an error.
+    #[test]
+    fn a_first_flush_writes_the_whole_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let assets = AssetStore::new(dir.path().join("assets")).unwrap();
+        let pack = dir.path().join("brand new.schizo");
+        let id = board::mint_pack_id();
+
+        save_pack(&assets, &pack_spec(), &id, b"the first one", &pack).unwrap();
+
+        assert_eq!(bundle::read(&assets, &pack).unwrap().snapshot, b"the first one");
     }
 
     /// **The branch the whole crash story rests on.** A workshop with anything
