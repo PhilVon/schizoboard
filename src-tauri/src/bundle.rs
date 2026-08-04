@@ -620,8 +620,67 @@ pub fn display_title(title: &str) -> String {
 pub fn read(store: &AssetStore, src: &Path) -> Result<Opened> {
     let mut zip = ZipArchive::new(BufReader::new(File::open(src)?))?;
 
+    let manifest = read_manifest(&mut zip)?;
+
+    let snapshot = entry(&mut zip, SNAPSHOT, MAX_SNAPSHOT_BYTES)?
+        .ok_or_else(|| Error::NotABundle(format!("no {SNAPSHOT}")))?;
+
+    let taken = take_assets(store, &mut zip, &manifest)?;
+    Ok(Opened {
+        manifest,
+        snapshot,
+        ingested: taken.ingested,
+        already: taken.already,
+        missing: taken.missing,
+    })
+}
+
+/// Put a pack's photographs in this machine's store, and read nothing else.
+///
+/// [`read`]'s asset half without its document half, for the open that is *not*
+/// seeding a workshop (T-363).
+///
+/// ## The hole this closes, which is the one D-67 called stage 1's worst
+///
+/// `assets/` is one store for the whole installation and `AssetStore::gc` takes
+/// one keep-set — the board this window is on. So the first sweep after a
+/// switch trashes every photograph belonging to every board you are *not* on.
+/// That was argued to be safe because the packs hold the archive copies and
+/// reopening a board brings them back, and it was not: `take_up` reads a pack
+/// only when the workshop is *empty*, and a board you have opened before always
+/// has a workshop. Nothing re-ingested those hashes, so `restore_from_trash`
+/// never fired, and after thirty days the photographs were gone — the board
+/// drawing them torn and naming nobody.
+///
+/// Driven before this existed: paste a photograph, switch to a new board, wait
+/// out the sweep, switch back. One blank polaroid and `1 missing` on the HUD.
+///
+/// ## What it costs, which is nearly nothing
+///
+/// The manifest and one `AssetStore::has` per listed hash. An entry whose bytes
+/// this machine already holds is never read out of the archive at all (T-359),
+/// so reopening your own six-gigabyte board reads a few kilobytes of index. The
+/// snapshot is not read either, which is the whole difference from [`read`] —
+/// on a large board that alone is tens of megabytes that this caller has no use
+/// for, because the workshop it is topping up is newer than it by construction.
+pub fn top_up(store: &AssetStore, src: &Path) -> Result<Restored> {
+    let mut zip = ZipArchive::new(BufReader::new(File::open(src)?))?;
+    let manifest = read_manifest(&mut zip)?;
+    let taken = take_assets(store, &mut zip, &manifest)?;
+    Ok(taken)
+}
+
+/// What a pack turned out to be holding for this machine's store.
+pub struct Restored {
+    pub ingested: Vec<String>,
+    pub already: Vec<String>,
+    pub missing: Vec<String>,
+}
+
+/// The manifest, checked — [`read`]'s first act and [`top_up`]'s.
+fn read_manifest(zip: &mut ZipArchive<BufReader<File>>) -> Result<Manifest> {
     let manifest: Manifest = {
-        let raw = entry(&mut zip, MANIFEST, MAX_MANIFEST_BYTES)?
+        let raw = entry(zip, MANIFEST, MAX_MANIFEST_BYTES)?
             .ok_or_else(|| Error::NotABundle(format!("no {MANIFEST}")))?;
         serde_json::from_slice(&raw).map_err(|e| Error::Json(e.to_string()))?
     };
@@ -637,10 +696,20 @@ pub fn read(store: &AssetStore, src: &Path) -> Result<Opened> {
             manifest.assets.len()
         )));
     }
+    Ok(manifest)
+}
 
-    let snapshot = entry(&mut zip, SNAPSHOT, MAX_SNAPSHOT_BYTES)?
-        .ok_or_else(|| Error::NotABundle(format!("no {SNAPSHOT}")))?;
-
+/// Every photograph the manifest lists that this machine does not already hold.
+///
+/// One copy, two callers, deliberately: [`read`] and [`top_up`] are the same
+/// act on the assets and differ only in what else they take out of the file. A
+/// second copy of this loop is a second place for the hash check below to be
+/// got wrong.
+fn take_assets(
+    store: &AssetStore,
+    zip: &mut ZipArchive<BufReader<File>>,
+    manifest: &Manifest,
+) -> Result<Restored> {
     let mut ingested = Vec::new();
     let mut already = Vec::new();
     let mut missing = Vec::new();
@@ -672,7 +741,7 @@ pub fn read(store: &AssetStore, src: &Path) -> Result<Opened> {
             continue;
         }
         let Some(bytes) = entry(
-            &mut zip,
+            zip,
             &format!("{ASSET_PREFIX}{hash}"),
             assets::MAX_ASSET_BYTES,
         )?
@@ -691,9 +760,7 @@ pub fn read(store: &AssetStore, src: &Path) -> Result<Opened> {
         ingested.push(hash.clone());
     }
 
-    Ok(Opened {
-        manifest,
-        snapshot,
+    Ok(Restored {
         ingested,
         already,
         missing,

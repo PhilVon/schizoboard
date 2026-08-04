@@ -75,6 +75,29 @@ export interface SweepOptions {
    * something sweeping the assets out from under it.
    */
   readonly readOnly: boolean;
+  /**
+   * Whether this session has put everything the board refers to into the
+   * board's own file (T-363).
+   *
+   * The second condition, on exactly `readOnly`'s standing and for a reason of
+   * the same shape: a fact this module cannot work out and must not guess.
+   *
+   * ## What it is guarding, which is not this board
+   *
+   * `assets/` is one store for the whole *installation* and `asset_gc` takes
+   * one keep-set — the board this window is on. So a sweep does not merely
+   * collect what this board has stopped referring to; it collects every
+   * photograph belonging to every board this window is not on. That is only
+   * survivable because each board's photographs are in its own pack and
+   * `take_up` puts them back on the next open, and this flag is what says
+   * whether that is true of this board yet. A file written without a photograph
+   * the board refers to — `missing` non-empty — is a file the recovery does not
+   * come out of, and those bytes are then on this disk and nowhere else.
+   *
+   * `app/pack.ts` computes it, because only the thing that wrote the file knows
+   * what went into it.
+   */
+  readonly packedCleanly: boolean;
 }
 
 /**
@@ -89,7 +112,7 @@ export async function sweepAssets(
   board: BoardDoc,
   options: SweepOptions,
 ): Promise<SweepResult | null> {
-  if (options.readOnly) return null;
+  if (options.readOnly || !options.packedCleanly) return null;
 
   const keep = referencedAssets(board);
   try {

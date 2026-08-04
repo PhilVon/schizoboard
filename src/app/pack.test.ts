@@ -467,6 +467,84 @@ describe("when the board's own file is rewritten", () => {
   });
 
   /**
+   * AC-1013. The flag `app/assetgc.ts` stands its sweep down on, and the only
+   * thing in the application that knows the answer — because only the thing
+   * that wrote the file knows what went into it.
+   */
+  describe("and whether the file holds everything", () => {
+    it("says no until a flush has actually happened", () => {
+      const pack = new Pack(board(PHOTO), flushing().native, { idleMs: IDLE });
+
+      // Not "probably yes because nothing has gone wrong". A board nobody has
+      // written this session has a file that may hold anything at all.
+      expect(pack.packedCleanly).toBe(false);
+    });
+
+    it("says yes once a flush has gone out with nothing missing", async () => {
+      const shell = flushing({ missing: [] });
+      const pack = new Pack(board(PHOTO), shell.native, { idleMs: IDLE });
+
+      pack.wrote();
+      await vi.advanceTimersByTimeAsync(IDLE);
+
+      expect(pack.packedCleanly).toBe(true);
+    });
+
+    /**
+     * The state the whole flag exists for: a photograph that arrived from a
+     * peer after the last flush is on this disk and in no pack, so a sweep run
+     * against another board's keep-set would put the only copy in the trash.
+     */
+    it("says no when the file went out without a photograph the board refers to", async () => {
+      const shell = flushing({ missing: [OTHER] });
+      const pack = new Pack(board(PHOTO, OTHER), shell.native, { idleMs: IDLE });
+
+      pack.wrote();
+      await vi.advanceTimersByTimeAsync(IDLE);
+
+      expect(pack.packedCleanly).toBe(false);
+    });
+
+    it("goes back to no when a write fails after one that worked", async () => {
+      const shell = flushing({ missing: [] });
+      const pack = new Pack(board(PHOTO), shell.native, { idleMs: IDLE, onError: () => {} });
+
+      pack.wrote();
+      await vi.advanceTimersByTimeAsync(IDLE);
+      expect(pack.packedCleanly).toBe(true);
+
+      shell.refuse(new Error("the disk said no"));
+      pack.wrote();
+      await vi.advanceTimersByTimeAsync(IDLE);
+      expect(pack.packedCleanly).toBe(false);
+    });
+
+    it("says no for a board with no file of its own to be packed into", async () => {
+      const shell = flushing(null);
+      const pack = new Pack(board(PHOTO), shell.native, { idleMs: IDLE });
+
+      pack.wrote();
+      await vi.advanceTimersByTimeAsync(IDLE);
+
+      expect(pack.packedCleanly).toBe(false);
+    });
+
+    it("says no on a board this build may only partly read", async () => {
+      const shell = flushing({ missing: [] });
+      const pack = new Pack(board(PHOTO), shell.native, { idleMs: IDLE });
+      pack.wrote();
+      await vi.advanceTimersByTimeAsync(IDLE);
+      expect(pack.packedCleanly).toBe(true);
+
+      // `packSpec` cannot see a future build's items, so what it last reported
+      // as complete was complete only as far as this build can read.
+      pack.seal();
+
+      expect(pack.packedCleanly).toBe(false);
+    });
+  });
+
+  /**
    * The window between the document being read and the write returning is a
    * real one on a large board, and an edit that lands inside it is not in the
    * file that is being written. Clearing the flag *after* the write would
