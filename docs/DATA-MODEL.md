@@ -465,25 +465,54 @@ Cap the stack at around 200 entries.
 
 ## 12. Persistence and migration
 
-**On disk:** an append-only log of opaque document updates plus a periodic snapshot. Compaction writes a fresh snapshot and truncates the log.
+**Two tiers, and they are the same shape one level apart.** Inside a board: an append-only log of opaque document updates plus a periodic snapshot, and compaction writes a fresh snapshot and truncates the log. Across the installation: that pair is the **workshop**, private to this machine and crash-safe, and the board's own file is the **pack**, portable and the thing you hand over.
 
-**Bundle format** — `.schizo`, a zip containing:
+| | fine, crash-safe, cheap | coarse, portable, the thing you hand over |
+|---|---|---|
+| inside a board | `log.bin` frames, 200 ms / 32 KB | `snapshot.bin`, at 1 MiB of log |
+| the installation | the workshop | the pack, on idle / close / switch |
+
+**The workshop wins when the two disagree.** A pack is seeded into a workshop only when the workshop is *empty*; a workshop with anything in it is a session that ended before its pack was written, and is therefore newer by construction. That one branch covers a torn write, a power cut mid-flush, a quit with no close hook, and a board on a stick that was pulled.
+
+**Pack format** — `.schizo`, a zip containing:
 
 ```
-manifest.json      schemaVersion, title, asset list
+manifest.json      packId, schemaVersion, title, asset list
 snapshot.bin       document state
 assets/<sha256>    the bytes
 ```
 
-**Export always embeds assets.** A board you hand to someone is never half a board.
+**A pack embeds every asset the board refers to.** A board you hand to someone is never half a board. What it did not have on this disk is reported rather than silently dropped.
+
+### 12.1 The register, and why the key is a pack id
+
+`<data>/boards.json` is what this installation knows: for each board a `packId`, a `boardId`, where its file is, where its workshop is, its title, and when it was last opened.
+
+**Keyed on the `packId` and never on the path.** A board renamed, or dragged into another folder, is a path this register has never seen — so keying on the path would mint a fresh board id for it under §7.8's rule and silently drop it out of its sync room, with nothing on screen saying why.
+
+A `packId` is 128 bits naming *the file*, minted when a pack is first written and preserved every time it is rewritten in place. **A flush preserves it; a copy mints one** — which is the rule that stops two files sharing a room. It may live inside the file where a `boardId` may not, because it is not a room name, never reaches the wire, never becomes a file under `secrets/`, and grants nothing.
+
+**A `packId` this register has never seen mints a fresh `boardId`.** That is Q-114 kept verbatim: a `.schizo` somebody sends you does not put you in their room. One it has seen keeps the room it had.
+
+```
+<data>/boards.json                      the register
+<data>/doc/                             a board adopted from before T-356 — left where it is
+<data>/boards/<boardId>/                every other board's workshop
+<data>/assets/                          the CAS, now a cache of the packs
+<data>/secrets/                         room secrets, unchanged
+```
+
+**The asset store is one store for the whole installation, and the collector (§10) takes one board's keep-set.** So a sweep collects the photographs of every board this window is *not* on. That is survivable because each board's photographs are in its own pack and are ingested back on the next open — and the sweep stands down entirely until this session has written a pack holding everything the board refers to, because what was never in the pack is not recoverable from it.
+
+### 12.2 Migration by schema version
 
 **Migration** is driven by `meta.schemaVersion`, run under a maintenance origin that undo doesn't track, by the first client to open a document at a lower version, guarded by an advisory lock so ten simultaneous joiners don't all migrate at once.
 
 **Prefer additive migrations.** In a CRDT, destructive migrations are genuinely dangerous: an old client that reconnects can resurrect the old shape, and the merge will accept it.
 
-### 12.1 A document from a *higher* version opens read-only
+### 12.3 A document from a *higher* version opens read-only
 
-The paragraph above is about a document older than the build reading it. The other direction had no rule at all and needed one, because it fails silently in both halves (T-224, Q-170).
+§12.2 is about a document older than the build reading it. The other direction had no rule at all and needed one, because it fails silently in both halves (T-224, Q-170).
 
 **What a future document does today.** An item whose `type` this build does not know reads as null and is skipped by the binding, so it is *invisible while remaining perfectly intact* — nothing deletes it on read (§8.1) and compaction re-emits it verbatim. That is the tolerant behaviour §8.1 asks for, and on its own it is fine. What is not fine is that `referencedAssets` builds the asset keep-set through the same reader: a future item's photograph is in no keep-set, so the collector (§10) is free to reclaim its bytes. Open a version-2 board on a version-1 build, wait for the sweep, and the pictures can go for good with the items still pointing at them.
 
@@ -493,7 +522,7 @@ The paragraph above is about a document older than the build reading it. The oth
 
 **Additive migration is still the policy**, which is what makes this the conservative answer rather than the obvious one: a version-2 board is usually perfectly editable by a version-1 build. It is refused anyway because editing around an item you cannot see is a mistake nothing announces — not to the person making it, and not to the person whose item it was.
 
-**A bundle carries the same version and is refused the same way.** Rust deliberately does not judge `manifest.schemaVersion` (`bundle.rs`), on the grounds that migration is the frontend's; the frontend now reads it before `replaceWith`, because past that line the board being replaced is already gone.
+**A pack from a newer build is no longer refused at the door, and the reason it used to be is gone** (T-356). Opening one used to *replace* the board in this window — it wrote the incoming snapshot over the only document there was — so a future board had to be turned away before that line, because past it there was nothing to go back to. Nothing is written over now: the board opens in its own file, this window seals it exactly as it seals one a peer raised mid-session, and the board you were on is still in its own file. So the check that has to happen is the one at boot, which was always there. Rust still deliberately does not judge `manifest.schemaVersion` (`bundle.rs`), on the standing that migration is the frontend's.
 
 ---
 

@@ -165,9 +165,13 @@ The dev HUD reports per-phase milliseconds, so a regression shows up as a number
 
 **Document log.** Append-only, length-prefixed opaque frames, flushed on a batch. Rust doesn't need a Yjs implementation for this — it appends bytes. The frontend periodically emits a snapshot and Rust atomically swaps it in and truncates the log.
 
+**And it can change which document it is writing to, without restarting the process** (T-356). A board is a file now, and the open board changes within one window's life. The log itself did not change at all to allow that, which is the point: what changed is that the *store* sits behind a handle the shell can swap, and everything downstream of it goes on appending bytes to whatever it currently is. The order is the caller's to get right and cannot be enforced from this side — a lock here would serialise a pending append against the switch and then let the append win, into the wrong board's log — so `crdt/persistence.ts` unsubscribes **before** it awaits its own flush, and the swap happens after that resolves.
+
 *(A Rust-side Yjs implementation would let the relay compact headlessly and would be reusable server-side, but it means two implementations must agree on the schema. Start frontend-driven.)*
 
 **There is a Rust-side Yjs now, and the note above still holds** — which is worth saying because the two look like a contradiction. `yrs 0.27` is a dependency, scoped to the relay, because a y-websocket server has to answer a state vector with the difference and §5.1 wants the same binary usable as an always-seeding peer, which cannot seed what it does not hold. What section 4.1 was guarding against is two implementations of the **schema**, and there is still only one: the relay never opens an item, a pin or a string. Headless compaction of *meaning* would cross that line and is still not being done. `Cargo.toml` carries the argument beside the dependency.
+
+**It is also why the migration into a file runs in the frontend** (T-356), which looks like a layering mistake and is this rule being kept. A pack holds *one merged snapshot*, and what is on disk is a snapshot plus however many log frames have landed since; merging those is a Yjs operation, so it belongs to §4.2. Reaching for `yrs` to do it here would be the second implementation of the schema that this section exists to prevent — and it would be reaching for it in the one place where being subtly wrong is a board rewritten incorrectly into the file somebody then hands over. So Rust adopts the old data directory at startup, leaves the entry with no file, and the frontend supplies the merged document a second and a half later.
 
 **Bundles**, native clipboard and drag-drop, URL fetching (no CORS wall), the embedded relay, and asset transfer.
 
@@ -187,7 +191,7 @@ Base64-ing a 12 MB photograph across the IPC boundary is the obvious first thing
 
 ### 4.4 IPC surface
 
-All thirty-seven, as `generate_handler!` registers them.
+All forty-five, as `generate_handler!` registers them.
 
 ```
 // commands (all async)
@@ -205,8 +209,8 @@ doc_load()                 → { snapshot, updates[] }
 doc_compact(snapshot)
 
 // no path in either direction, for the reason `asset_export` gives below
-bundle_save_as(manifest, snapshot) → { embedded, missing[], bytes } | null
-bundle_open()              → { manifest, snapshot, ingested[], missing[] } | null
+bundle_save_as(manifest, snapshot) → { packId, embedded, missing[], bytes } | null
+bundle_weigh(manifest)     → { embedded, missing, bytes }   // before the dialog
 
 // export, in two halves — see the note under `asset_export` below.
 // One `choose` for both routes: PDF and image are two filters on one dialog,
@@ -221,10 +225,19 @@ clipboard_source_url()     → url | null   // the CF_HTML SourceURL line, Win32
 
 sync_start(config) / sync_stop() / sync_status()
 sync_take_invite()         → invite | null    // what a deep link arrived carrying
-board_remembered()         → boardId | null
-board_remember(boardId)                       // beside the document, per Q-75
+board_remembered()         → boardId | null   // the room, from the register
                                               // the secret never crosses: sync/secret.rs
                                               // keeps one per board name, so it follows
+
+// boards are files (T-356). No path in either direction — see below, where
+// this list's own rule turns out to read outward as well as inward.
+board_list()               → card[]           // { packId, title, folder, homed, current }
+board_current()            → card | null
+board_open(packId)         → { board, seeded, missing[] }   // Rust resolves the path
+board_open_picked()        → { packId, title } | null       // the picker; does not switch
+board_new()                → card
+board_flush(manifest, snapshot) → { packId, embedded, missing[], bytes } | null
+board_home(manifest, snapshot)  → { packId, embedded, missing[], bytes }
 
 peer_have_summary()        → sha256[]     // everything this machine can serve
 asset_size(sha256)         → bytes        // 0 for one it does not hold
@@ -272,15 +285,29 @@ The frontend still has to pass the asset's `origName`, because the document hold
 
 Prefer this shape wherever the boundary is asked for a location: take the *intent* from the webview and let the native side obtain the location.
 
+**And the rule reads outward too, which was not noticed until there was more than one board** (T-356). Everything above is about the webview *naming* a location — and a webview handed every board's absolute path can name one just as surely as a webview that asked for a path. So nothing on the board commands carries a path in either direction:
+
+- `board_list` answers with a `packId`, a title, and a **`folder`** that is the display *name* of the directory the file sits in, through the same reduction a title goes through. Enough to tell two boards called *Untitled board* apart, and not somewhere on a disk.
+- `board_open` takes a `packId` **this side issued** and resolves the real path from the register. The webview hands back an opaque token it was given; it never learns, and never supplies, where the file is.
+- `board_home` takes a title and no destination — `asset_export`'s rule exactly — and the shell chooses `Documents\Schizoboard\<title>.schizo` itself. It opens no dialog, because a board that has been running since before it was a file has already been decided on.
+
+**A `packId` may cross where a `boardId` may not**, and the asymmetry is the whole reason the register can be keyed on one. A board id is a room name: it goes on the wire, it is a file under `secrets/`, and one arriving *inside* a bundle would put every machine that opened that bundle in the exporter's room. A pack id names the file and nothing else — it never reaches `sync/`, grants nothing, and a stranger holding one can do exactly what a stranger holding the file could already do. DATA-MODEL §12.1 carries the rest of the argument.
+
 **Both exports took it too, and had to be split in two to** (T-207). `export_choose` opens the save dialog and answers only *which format* the user settled on — never where; `export_pdf_write` and `export_image_write` write into it. The path is held in shell state between the two calls and never crosses in either direction, so the pair is the same rule as above rather than an exception to it — what the webview can do with them is bounded and dull: a `write` with no `choose` finds an empty slot and fails, a second `write` finds the slot already taken and fails, and a second `choose` replaces a path nobody used with one the user has just agreed to.
 
 One `choose` for both routes rather than one each, because PDF and image are two filters on a single dialog and it is the *dialog* that decides which of the two this is (Q-138, T-212). That is why it returns a format rather than a boolean: the caller asked to export the board and the user answered by naming a file, and the extension they picked is the answer to "as what".
 
 It is two commands rather than one because of *ordering*, not security. The board has to be posed for the page before the print — a print lays out at the paper width and fires no `resize` — and a single command would have printed the instant the dialog closed, so the window was already zoomed out to its own bounds while somebody was still typing a filename. Asking first also makes the common case the cheap one: cancelling now moves nothing at all.
 
-**Both bundle commands took the advice** (T-84). `bundle_save_as` was written above as `bundle_save_as(path)` and does not take one: it takes the board's title, on exactly the standing `origName` has — a suggestion `safe_stem` reduces before the dialog shows it — and the save dialog supplies the rest. `bundle_open` takes nothing at all and opens a picker. Between them and `asset_export` that is every place in the application where a file is chosen, and none of them lets the webview name one.
+**Every file command took the advice** (T-84, T-356). `bundle_save_as` was written above as `bundle_save_as(path)` and does not take one: it takes the board's title, on exactly the standing `origName` has — a suggestion `safe_stem` reduces before the dialog shows it — and the save dialog supplies the rest. `board_open_picked` takes nothing at all and opens a picker; `board_home` takes a title and chooses the location itself. With `asset_export` and the two `export_*` halves that is every place in this application where a file is chosen, and not one of them lets the webview name one.
 
-**There is no `bundle_recent`.** This list used to carry one, unbuilt, beside the two above — a recent-boards list, of the kind every application with a *File* menu has. Nothing in DESIGN or DATA-MODEL ever mentioned recent boards, so that line was the only evidence the feature had been wanted at all, and Q-111 changed what it would mean before anyone built it: *Open a board…* **replaces** the board in this window rather than opening a second one. A list of recently opened boards is therefore a list of one-click ways to destroy the board you are looking at — each behind the same native confirmation as the picker, and with none of the deliberateness of going and finding a file, which is the part of the gesture actually doing the protecting. Struck on Q-145 rather than left standing as an unbuilt promise; D-38 is the record.
+**There is no `bundle_recent`, and there is a recents list** — which is not a contradiction and is worth following, because the reasoning reversed on ground the decision that struck it did not anticipate.
+
+This list once carried an unbuilt `bundle_recent`, of the kind every application with a *File* menu has. Q-111 changed what it would mean before anyone built it: *Open a board…* **replaced** the board in this window, so a list of recently opened boards was a list of one-click ways to destroy the one you were looking at, with none of the deliberateness of going and finding a file — which was the part of the gesture actually doing the protecting. Struck on Q-145; D-38 is the record.
+
+D-38 named what would reopen it — "a second window on a second board" — and that is *not* what happened. There is still one board per window. What went away is **replace**: opening board B leaves board A intact in its own file, so the destruction the deliberateness was protecting against no longer exists. D-69 supersedes D-38 on exactly that difference.
+
+There is still no `bundle_recent`, because there is nothing left for it to do. `board_list` already answers with every board this installation knows about, most recently opened first — the register *is* the recents list, so the length, the eviction rule and the story about a board somebody moved all come from the thing that had to exist anyway.
 
 What crosses instead is a manifest and a snapshot, framed as `[u32 le length][json][snapshot]` in one raw body, because Tauri's raw payload is all-or-nothing and a document sent as a JSON array of numbers is the mistake §4.3 already rejected for photographs. Rust reads the manifest and never the snapshot: it is handed a title, a schema version and a list of hashes, which is the whole of what a bundle is from a side that owns bytes and no schema.
 

@@ -15,12 +15,36 @@
 //! ## Layout
 //!
 //! ```text
-//! doc/snapshot.bin   the whole document as of the last compaction
-//! doc/log.bin        SZBDLOG1 followed by every frame appended since
+//! <workshop>/snapshot.bin   the whole document as of the last compaction
+//! <workshop>/log.bin        SZBDLOG1 followed by every frame appended since
 //! ```
 //!
-//! One document per installation for now. Bundles (T-84) are how a board
-//! becomes a file you can hand to someone; multi-board arrives with them.
+//! ## The line this module used to end that section with, discharged
+//!
+//! > One document per installation for now. Bundles (T-84) are how a board
+//! > becomes a file you can hand to someone; multi-board arrives with them.
+//!
+//! **They arrived, and it did** (T-356). A `.schizo` stopped being a photograph
+//! of the board and became the board: a file at a path the user chose, written
+//! to continuously and switched between. There is one of these stores per
+//! board, and `<workshop>` is where the register says that board's lives —
+//! `boards/<boardId>/` for one minted since, and `doc/` forever for the one an
+//! installation from before T-356 was adopted with, because moving a document
+//! is the one operation that can lose it.
+//!
+//! **Nothing in this file changed to allow that**, which is the part worth
+//! recording. `workshop.rs` holds the swappable handle and `board.rs` holds the
+//! register; a `DocStore` is still a directory with two files in it and no
+//! opinion about which board it belongs to. What it gained is a caller that
+//! constructs more than one of them, and the contract that goes with it: a
+//! store may not be dropped while anything can still append to it, which
+//! `crdt/persistence.ts` closes by unsubscribing before it awaits its own
+//! flush, and which cannot be closed from this side (see `workshop.rs`).
+//!
+//! It is also now the *fine* tier of two rather than the only one. The pack is
+//! the coarse tier, and when the two disagree this one wins: a log with
+//! anything in it is a session that ended before its pack was written, so it is
+//! newer by construction. DATA-MODEL section 12 has the table.
 //!
 //! ## The two crash windows
 //!
