@@ -751,17 +751,32 @@ export function boardMenuRows(
   board: {
     export(): void;
     /**
-     * Null on a board this build may not write to (T-224).
+     * Nullable for the platform's sake and no longer for the document's.
      *
-     * The same standing `pdf` is on, and for a stronger reason: opening a
-     * bundle *replaces* the board in this window — it writes the new snapshot
-     * over this board's log — so on a read-only board it is the one row here
-     * that would do the exact thing being refused. Absent rather than disabled,
-     * like everything else on these menus.
+     * This was null on a read-only board until T-356, because opening a bundle
+     * *replaced* the board in this window — it wrote the new snapshot over this
+     * board's log, so it was the one row here that did the exact thing being
+     * refused. A board is a file now and opening B leaves A intact in its own
+     * file, so a sealed board may still do it (`main.ts`, `openBoard`).
      */
     open: (() => void) | null;
     pdf: (() => void) | null;
     image(): void;
+    /**
+     * Give this board a file of its own — **absent unless it has none**, which
+     * on almost every board is always (T-361).
+     *
+     * The board adopted from before T-356 and a board straight out of *New
+     * board…* are both homed automatically a moment after boot, and this row
+     * exists only for the case where that failed: no Documents folder, a full
+     * disk, a permission. Then somebody is looking at a board that is not in a
+     * file, and nothing else on screen would ever say so.
+     *
+     * Null on a read-only board too, and for the sweep's reason rather than the
+     * menu's: `packSpec` cannot see a future build's items, so it would write a
+     * file missing photographs that are plainly on the board.
+     */
+    home: (() => void) | null;
   } | null,
 ): MenuEntry[] {
   const rows = stringMenuRows(scene, write, strings);
@@ -810,6 +825,27 @@ export function boardMenuRows(
     });
   }
   if (board !== null) {
+    const home = board.home;
+    if (home !== null) {
+      below.push({
+        /**
+         * First among the file rows, because it is the only one here that is
+         * about a board *not being in a file* — and everything below it makes a
+         * new file out of a board that already is one.
+         *
+         * **No ellipsis, and that is not an oversight.** On these menus an
+         * ellipsis promises a dialog and says nothing has happened yet; this
+         * row opens none. The shell chooses the location itself
+         * (`a_home_for`), which is the same rule `asset_export` follows read
+         * the other way round — a board that has been running out of the data
+         * directory since before T-356 has already been decided on, and asking
+         * where to put it would be asking a question nobody asked.
+         */
+        label: "Give this board a home",
+        divided: true,
+        run: home,
+      });
+    }
     below.push({
       /**
        * The ellipsis is doing real work: this row opens a save dialog and

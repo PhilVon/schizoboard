@@ -22,7 +22,6 @@ import {
   initialiseBoard,
   openBoardDoc,
   assetKindsOf,
-  referencedAssets,
   sealBoard,
   snapshot,
 } from "@/crdt/doc";
@@ -77,6 +76,7 @@ import { exportPdf, type Stage as PdfStage } from "@/app/exportPdf";
 import { noteSizeFor } from "@/app/ingest";
 import { Paste } from "@/app/paste";
 import { Mesh } from "@/app/mesh";
+import { HOME_DELAY_MS, homeBoard, packSpec } from "@/app/pack";
 import { formatInvite, inviteSearch, openingPlan, parseInvite } from "@/app/invite";
 import * as prefs from "@/app/prefs";
 import { dialAddress, identityFor } from "@/app/sync";
@@ -267,6 +267,20 @@ async function boot(): Promise<void> {
   let readOnly = false;
   /** Set once there is a window to change — see `sayTrouble` for the pattern. */
   let onSealed: (() => void) | null = null;
+  /**
+   * The manual way to give this board a file, when the automatic one failed
+   * (T-361).
+   *
+   * Null is the ordinary state and it means the row is absent: either this
+   * board already has a file of its own, or the attempt to give it one has not
+   * finished yet. It becomes a function only on a failure, which is the one
+   * state where somebody is looking at a board that is *not* in a file and
+   * nothing else on screen would ever tell them so.
+   *
+   * Declared up here for `onSealed`'s reason — the menu that reads it is built
+   * long before the boot step that can set it.
+   */
+  let homeRetry: (() => void) | null = null;
   const sealIfFuture = (): void => {
     if (readOnly || !futureSchema(board)) return;
     readOnly = true;
@@ -2282,11 +2296,10 @@ async function boot(): Promise<void> {
    */
   const exportBoard = async (): Promise<void> => {
     try {
-      const spec = {
-        schemaVersion: boardSchemaVersion(board),
-        title: boardTitle(board),
-        assets: referencedAssets(board),
-      };
+      // The same three lines this used to hold, moved to `app/pack.ts` under
+      // T-361 because homing and flushing a board write the same file out of
+      // the same document, and three copies of that reader would drift.
+      const spec = packSpec(board);
       const doc = snapshot(board);
       /**
        * What it will weigh, said before the dialog rather than after the file —
@@ -2818,6 +2831,10 @@ async function boot(): Promise<void> {
                 open: null,
                 pdf: native.canPrintPdf ? () => void printBoard() : null,
                 image: () => void saveBoardImage(),
+                // Never offered here, and `giveThisBoardAHome` refuses on the
+                // same grounds: this build can only partly read this document,
+                // so the file it wrote would be missing whatever it cannot see.
+                home: null,
               }
             : null,
         ),
@@ -2979,6 +2996,13 @@ async function boot(): Promise<void> {
               // all (T-210, Q-139).
               pdf: native.canPrintPdf ? () => void printBoard() : null,
               image: () => void saveBoardImage(),
+              // Null on every board that has a file of its own, which is every
+              // board a few seconds after boot. Read at open time like every
+              // other row here, so a home that succeeded while the menu stood
+              // open leaves the row behind until the next right-click — which
+              // is harmless: `homeBoard` asks the register first and does
+              // nothing at all for a board that already has a file.
+              home: homeRetry,
             }
           : null,
       ),
@@ -4840,6 +4864,79 @@ async function boot(): Promise<void> {
     });
   }, ASSET_SWEEP_DELAY_MS);
 
+  /**
+   * The board this installation already had, given a file of its own (T-361).
+   *
+   * ## Why it happens here rather than in the shell
+   *
+   * A pack holds one merged snapshot, and what is on disk is `snapshot.bin`
+   * plus however many log frames have landed since. Merging those is a Yjs
+   * operation, so it belongs on the side that owns the schema (ARCHITECTURE
+   * section 4.2) — `yrs` is linked for the relay and reaching for it here would
+   * be a second implementation of the one thing section 4.1 says there is only
+   * one of. So Rust adopts the old data directory at startup and leaves the
+   * entry unhomed, and this is the step that finishes the job.
+   *
+   * It answers for *New board…* too, by construction rather than by a second
+   * route: a minted board is unhomed for the same few seconds and reloads
+   * through here.
+   *
+   * ## Delayed, and not for the reason the sweep is
+   *
+   * A moment, not thirty seconds. Long enough that the first frames are drawn
+   * before `snapshot()` walks the whole document — on a large board that is a
+   * real stall, and stalling the first paint of a session would be the most
+   * visible possible moment to do it. Well short of the sweep, so the file
+   * exists before anything starts reclaiming bytes.
+   *
+   * ## Not on a read-only board
+   *
+   * `packSpec` builds its asset list through `readItem`, so on a document from
+   * a newer build a future item's photograph is in no list — the same hole
+   * T-224 left in the sweep above. A build that can only partly read a document
+   * cannot write an honest file out of it, and the board is not at risk either
+   * way: it goes on running out of its workshop exactly as it has been, which
+   * is the same place a failed home leaves it.
+   */
+  const giveThisBoardAHome = async (): Promise<void> => {
+    if (readOnly) return;
+    const homing = await homeBoard(native, board);
+    if (homing === null) return;
+    if (homing.kind === "failed") {
+      // Named to the console for `copyInvite`'s reason: the reason is `ENOSPC`
+      // or a Documents folder that is not there, and there is genuinely
+      // somewhere to go and look.
+      console.warn("[board] this board could not be given a file of its own", homing.error);
+      homeRetry = () => void giveThisBoardAHome();
+      flash.say("This board has no file of its own yet — right-click the cork to try again");
+      return;
+    }
+    homeRetry = null;
+    /**
+     * Said out loud, because something has changed about where the person's
+     * work lives and nothing else on screen would ever mention it. DESIGN
+     * section 7.8's "it has been saving itself since the first thing landed on
+     * it" is still true and is not what this sentence is about: it is about the
+     * board having become a file they can find, move and hand over.
+     *
+     * A folder *name* and never a path, which is all this side was told
+     * (`app/pack.ts`).
+     */
+    const where = homing.folder.length > 0 ? `, in your ${homing.folder} folder` : "";
+    const missing = new Set(homing.missing);
+    if (missing.size > 0) {
+      // The same news `exportBoard` gives, for the same reason: "it is in a
+      // file" and "it is in a file without four of its photographs" are
+      // different pieces of news to the person whose board it is.
+      flash.say(
+        `This board is now a file of its own${where} — without ` +
+          `${filesLabel(missing.size, assetKindsOf(board, missing))} this machine does not have`,
+      );
+      return;
+    }
+    flash.say(`This board is now a file of its own${where}`);
+  };
+  window.setTimeout(() => void giveThisBoardAHome(), HOME_DELAY_MS);
 
   /**
    * What a seal that lands *now* has to do, over and above what `sealIfFuture`
