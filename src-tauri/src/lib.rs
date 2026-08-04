@@ -1666,7 +1666,7 @@ async fn board_home(
         // A board that has never had a file gets a whole one, which `save_pack`
         // does anyway for a destination that is not there — said here as the
         // intention rather than left to fall out of the path check.
-        let written = write_pack(&app, &boards, &entry, &spec, &snapshot, &dest, Writing::Compact)?;
+        let written = write_pack(&app, &boards, &entry, &spec, &snapshot, &dest, Writing::Whole)?;
         boards
             .set_home(&entry.pack_id, &dest)
             .map_err(|e| e.to_string())?;
@@ -1722,7 +1722,17 @@ async fn board_compact(
             return Err("that board's document is not the one this window has open".to_string());
         }
         let store = store_of(&app)?;
-        let tidied = bundle::compact(&store, &entry.pack_id, &dest).map_err(|e| e.to_string())?;
+        // Through `noting` like every other write of this file, and T-374 is what
+        // it cost not to be. A compaction *is* `bundle::write`, so it leaves a
+        // pack with no generations in it — and the register went on saying five.
+        // The next flush then read the board's own tidying as another window's
+        // writing and sealed the pack, on a machine running one window.
+        let tidied = noting(&boards, &entry.pack_id, Writing::Fold, || {
+            bundle::compact(&store, &entry.pack_id, &dest)
+                .map(|tidied| (tidied, 0))
+                .map_err(|e| Refused::Failed(e.to_string()))
+        })
+        .map_err(|refused| refused.to_string())?;
         if let Err(error) = boards.set_title(&entry.pack_id, &spec.title) {
             eprintln!("board: that board's title could not be kept: {error}");
         }
@@ -1762,7 +1772,7 @@ async fn board_compact_on_leaving(
         if !bundle::worth_compacting(&dest) {
             return Ok(None);
         }
-        write_pack(&app, &boards, &entry, &spec, &snapshot, &dest, Writing::Compact).map(Some)
+        write_pack(&app, &boards, &entry, &spec, &snapshot, &dest, Writing::Fold).map(Some)
     })
     .await
 }
@@ -1876,11 +1886,36 @@ impl std::fmt::Display for Refused {
 /// Which of the two writes a caller is asking for.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Writing {
-    /// The ordinary flush: append a generation, and compact on the way past a
-    /// board that has accumulated enough of them to be worth it.
+    /// The ordinary flush: append a generation, falling back to a whole file
+    /// when there is nothing to append to.
     Flush,
-    /// Somebody pressed the row. Always the whole file.
-    Compact,
+    /// A board being given its first file. A whole one, always.
+    Whole,
+    /// A compaction: fold the generations away, reading the document **out of
+    /// the file itself** rather than out of this window.
+    Fold,
+}
+
+impl Writing {
+    /// Whether this write puts *this window's document* into the file (T-374).
+    ///
+    /// The distinction is what the register's `ahead` flag turns on, and the two
+    /// cases are genuinely different rather than a shade of one. A flush and a
+    /// first home both carry the document across, so the file is level with the
+    /// workshop afterwards and the note comes down. A compaction carries
+    /// nothing: `bundle::compact` reads the document out of the pack's own
+    /// newest generation, so a workshop that was ahead of that file before is
+    /// still ahead of it after, and clearing the note would lose the catch-up at
+    /// the next launch.
+    ///
+    /// It is reachable: `Pack.settle` flushes and then compacts on the way out
+    /// of a board, and a flush that failed leaves exactly that state.
+    fn carries_the_document(self) -> bool {
+        match self {
+            Writing::Flush | Writing::Whole => true,
+            Writing::Fold => false,
+        }
+    }
 }
 
 /// Append a generation, or write the whole file when appending is not on.
@@ -1920,7 +1955,7 @@ fn save_pack(
     writing: Writing,
     ours: u32,
 ) -> Result<(bundle::Written, u32), Refused> {
-    if writing == Writing::Compact && dest.is_file() {
+    if writing == Writing::Fold && dest.is_file() {
         // Everything the pack holds goes back into the store before anything
         // reads the store to decide what the new file gets — `bundle::compact`
         // says why that is not an optimisation.
@@ -1928,9 +1963,20 @@ fn save_pack(
             // A compaction is `write`, so what it leaves is a pack with no
             // generations at all — and the register has to be told that, or the
             // next append would expect a generation the file no longer has and
-            // read its own tidying as somebody else's writing.
+            // read its own tidying as somebody else's writing (T-374).
             .map(|tidied| (tidied.written, 0))
             .map_err(|e| Refused::Failed(e.to_string()));
+    }
+    // A fold with no file to fold is nothing to do rather than a whole write.
+    // `board_compact_on_leaving` cannot reach it — `worth_compacting` is false
+    // for a file that has gone — and the line is here so that the *next* caller
+    // of `Fold` cannot silently get a whole file written from a snapshot it only
+    // passed along to be polite.
+    if writing == Writing::Fold {
+        return Err(Refused::Failed(format!(
+            "{} is not there to be tidied",
+            dest.display()
+        )));
     }
     if dest.is_file() {
         match bundle::append(store, spec, pack_id, snapshot, dest, ours) {
@@ -1957,35 +2003,77 @@ fn save_pack(
         .map_err(|e| Refused::Failed(e.to_string()))
 }
 
-/// Write a board's file with the register's note of whether the workshop is
-/// ahead of it kept honest either side (T-370).
+/// **Every write of a board's file goes through here**, and it is the only place
+/// that keeps the register's account of that file (T-370, T-368, T-374).
 ///
-/// **Cleared before the write and put back if it fails**, which is
-/// `app/pack.ts`'s discipline one tier down and is load-bearing for the same
-/// reason. An edit landing while this write is in flight marks the board ahead
-/// again — `doc_append_update` does that, and it does it *before* its own append
-/// — and clearing afterwards would overwrite exactly that mark. What it would
-/// leave is a register saying "level" over a workshop that is not, for edits
-/// made during the slowest writes, which are the ones on the largest boards.
+/// The account is three facts: whether the workshop is ahead of the file, what
+/// generation the file is at, and whether another window has taken it. They were
+/// kept in two places for one commit — `write_pack` had all three and
+/// `board_compact` had none — and the cost of that was immediate and
+/// user-visible: pressing *Tidy up this board's file* left the register saying
+/// generation 5 over a file a compaction had just put back to zero, so the very
+/// next flush read the board's own tidying as somebody else's writing and sealed
+/// the pack, with **THIS BOARD'S FILE IS NOT BEING UPDATED — another window has
+/// the file** on the bar and no other window anywhere. So this takes a closure
+/// rather than being three calls a caller has to remember, and the second road
+/// is gone.
 ///
-/// Neither note is fatal. A note that could not be cleared costs one redundant
-/// append at the next boot; refusing to write the file over it would cost the
-/// flush. What is being kept here is a fact about a copy of a copy.
-fn noting<T, E>(
+/// ## `ahead` is cleared before the write and put back if it fails
+///
+/// `app/pack.ts`'s discipline one tier down, and load-bearing for the same
+/// reason. An edit landing while the write is in flight marks the board ahead
+/// again — `doc_append_update` does that, and does it *before* its own append —
+/// and clearing afterwards would overwrite exactly that mark, leaving a register
+/// saying "level" over a workshop that is not, for the edits made during the
+/// slowest writes.
+///
+/// ## And only by a write that carries the document
+///
+/// A compaction does not (see [`Writing::carries_the_document`]): it reads the
+/// board out of the pack's own newest generation, so a workshop that was ahead
+/// of that file before it is still ahead of it after. Clearing the note there
+/// would throw away the catch-up at the next launch, and `Pack.settle` reaches
+/// it whenever a flush fails on the way out of a board.
+///
+/// ## None of the three notes is fatal
+///
+/// What is being kept here is a fact about a copy of a copy. A note that could
+/// not be written costs a redundant append at the next boot; refusing to write
+/// the file over it would cost the flush itself.
+fn noting<T>(
     boards: &board::BoardStore,
     pack_id: &str,
-    write: impl FnOnce() -> Result<T, E>,
-) -> Result<T, E> {
-    if let Err(error) = boards.set_ahead(pack_id, false) {
-        eprintln!("board: that board's file could not be noted as written: {error}");
+    writing: Writing,
+    write: impl FnOnce() -> Result<(T, u32), Refused>,
+) -> Result<T, Refused> {
+    if writing.carries_the_document() {
+        if let Err(error) = boards.set_ahead(pack_id, false) {
+            eprintln!("board: that board's file could not be noted as written: {error}");
+        }
     }
     match write() {
-        Ok(written) => Ok(written),
-        Err(error) => {
-            if let Err(error) = boards.set_ahead(pack_id, true) {
-                eprintln!("board: that board's file could not be noted as behind: {error}");
+        Ok((written, generation)) => {
+            // What the file is at now, so the next append can tell somebody
+            // else's writing from its own.
+            if let Err(error) = boards.set_generation(pack_id, generation) {
+                eprintln!("board: that board's generation could not be kept: {error}");
             }
-            Err(error)
+            Ok(written)
+        }
+        Err(refused) => {
+            if writing.carries_the_document() {
+                if let Err(error) = boards.set_ahead(pack_id, true) {
+                    eprintln!("board: that board's file could not be noted as behind: {error}");
+                }
+            }
+            // One way, and only for this session — `Entry::taken` is not written
+            // to the register, so a relaunch starts clean and re-reads the file.
+            if matches!(refused, Refused::Taken) {
+                if let Err(error) = boards.set_taken(pack_id) {
+                    eprintln!("board: that board could not be marked as taken: {error}");
+                }
+            }
+            Err(refused)
         }
     }
 }
@@ -2024,7 +2112,7 @@ fn write_pack(
         return Err(Refused::TAKEN.to_string());
     }
     let store = store_of(app)?;
-    let (written, generation) = noting(boards, &entry.pack_id, || {
+    let written = noting(boards, &entry.pack_id, writing, || {
         save_pack(
             &store,
             spec,
@@ -2035,21 +2123,7 @@ fn write_pack(
             entry.generation,
         )
     })
-    .map_err(|refused| {
-        // The refusal latches here rather than in `save_pack`, because this is
-        // the layer holding the register. One way, and only for this session.
-        if matches!(refused, Refused::Taken) {
-            if let Err(error) = boards.set_taken(&entry.pack_id) {
-                eprintln!("board: that board could not be marked as taken: {error}");
-            }
-        }
-        refused.to_string()
-    })?;
-    // What the file is at now, so the next append knows what it is appending to
-    // and can tell somebody else's write from its own.
-    if let Err(error) = boards.set_generation(&entry.pack_id, generation) {
-        eprintln!("board: that board's generation could not be kept: {error}");
-    }
+    .map_err(|refused| refused.to_string())?;
     // Not fatal. A title the register missed is a stale row in a menu; the file
     // it names is written and correct either way.
     if let Err(error) = boards.set_title(&entry.pack_id, &spec.title) {
@@ -2541,9 +2615,68 @@ mod tests {
         let (boards, id) = a_register(&dir);
         boards.set_ahead(&id, true).unwrap();
 
-        noting(&boards, &id, || Ok::<_, String>(())).unwrap();
+        noting(&boards, &id, Writing::Flush, || Ok::<_, Refused>(((), 1))).unwrap();
 
         assert!(!boards.current().unwrap().ahead);
+        // And the register knows what the file is at, which is the half T-374
+        // was: it used to be kept by the caller, and one caller forgot.
+        assert_eq!(boards.current().unwrap().generation, 1);
+    }
+
+    /// **T-374.** A compaction reads the document out of the pack's own newest
+    /// generation, so it does not carry this window's document into the file —
+    /// and a workshop that was ahead of that file before is still ahead of it
+    /// after. `Pack.settle` reaches exactly this state whenever a flush fails on
+    /// the way out of a board, and clearing the note there would throw away the
+    /// catch-up at the next launch.
+    #[test]
+    fn folding_a_file_up_does_not_claim_the_workshop_is_level_with_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let (boards, id) = a_register(&dir);
+        boards.set_ahead(&id, true).unwrap();
+
+        noting(&boards, &id, Writing::Fold, || Ok::<_, Refused>(((), 0))).unwrap();
+
+        assert!(boards.current().unwrap().ahead);
+        // The generation is still recorded, because that half is about the file
+        // and a fold changes it — to nothing.
+        assert_eq!(boards.current().unwrap().generation, 0);
+    }
+
+    /// The bug T-374 is, at the layer it was missing from. A compaction leaves a
+    /// pack with no generations in it; a register that went on saying five would
+    /// make the next flush read the board's own tidying as another window's
+    /// writing, and seal the pack on a machine running one window.
+    #[test]
+    fn a_folded_file_is_recorded_as_having_no_generations() {
+        let dir = tempfile::tempdir().unwrap();
+        let (boards, id) = a_register(&dir);
+        boards.set_generation(&id, 5).unwrap();
+
+        noting(&boards, &id, Writing::Fold, || Ok::<_, Refused>(((), 0))).unwrap();
+
+        assert_eq!(boards.current().unwrap().generation, 0);
+        assert!(!boards.current().unwrap().taken);
+    }
+
+    /// The latch, in the one place that holds the register. It used to be in
+    /// `write_pack`, which is the road `board_compact` does not take.
+    #[test]
+    fn a_file_another_window_took_is_taken_for_the_session() {
+        let dir = tempfile::tempdir().unwrap();
+        let (boards, id) = a_register(&dir);
+
+        let refused = noting(&boards, &id, Writing::Flush, || {
+            Err::<((), u32), Refused>(Refused::Taken)
+        });
+
+        assert!(matches!(refused, Err(Refused::Taken)));
+        assert!(boards.current().unwrap().taken);
+        // And it is a fact about a running window, not about a board — nothing
+        // of it reaches the register on disk.
+        assert!(!std::fs::read_to_string(dir.path().join("boards.json"))
+            .unwrap()
+            .contains("taken"));
     }
 
     /// A disk that said no. The document is not at risk — the workshop is the
@@ -2556,12 +2689,14 @@ mod tests {
         let (boards, id) = a_register(&dir);
         boards.set_ahead(&id, true).unwrap();
 
-        let refused = noting(&boards, &id, || {
-            Err::<(), String>("the disk said no".to_string())
+        let refused = noting(&boards, &id, Writing::Flush, || {
+            Err::<((), u32), Refused>(Refused::Failed("the disk said no".to_string()))
         });
 
-        assert_eq!(refused.unwrap_err(), "the disk said no");
+        assert_eq!(refused.unwrap_err().to_string(), "the disk said no");
         assert!(boards.current().unwrap().ahead);
+        // And an ordinary failure does not take the file away for the session.
+        assert!(!boards.current().unwrap().taken);
     }
 
     /// The whole reason the note is cleared *before* the write rather than
@@ -2575,10 +2710,10 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let (boards, id) = a_register(&dir);
 
-        noting(&boards, &id, || {
+        noting(&boards, &id, Writing::Flush, || {
             // The append that `doc_append_update` is about to make.
             boards.set_ahead(&id, true).unwrap();
-            Ok::<_, String>(())
+            Ok::<_, Refused>(((), 1))
         })
         .unwrap();
 
