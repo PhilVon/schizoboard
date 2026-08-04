@@ -189,6 +189,30 @@ impl BoardStore {
         state.boards.iter().find(|e| e.pack_id == current).cloned()
     }
 
+    /// The entry for this pack id, if this installation has one.
+    pub fn find(&self, pack_id: &str) -> Option<Entry> {
+        let state = self.lock();
+        state.boards.iter().find(|e| e.pack_id == pack_id).cloned()
+    }
+
+    /// The entry whose file is at this path, if there is one.
+    ///
+    /// **A fallback, and never the key** — the module note above is about why
+    /// keying on the path would silently drop a renamed board out of its sync
+    /// room. Its one caller is a `.schizo` written before T-359, which carries no
+    /// pack id at all: without this, opening the same old export twice would mint
+    /// a second id for it and the register would hold two boards where the disk
+    /// holds one. The first flush writes an id into the file and nothing consults
+    /// this again.
+    pub fn by_path(&self, path: &Path) -> Option<Entry> {
+        let state = self.lock();
+        state
+            .boards
+            .iter()
+            .find(|e| e.path.as_deref() == Some(path))
+            .cloned()
+    }
+
     /// The entry for this pack, minting a board id if it is new here.
     ///
     /// **This is Q-114, and it is the whole design in four lines.** A pack id
@@ -312,21 +336,17 @@ impl BoardStore {
         Ok(Some(entry))
     }
 
-    /// A board to be on, whatever else has happened.
+    /// A board that has never existed anywhere before — *New board…*.
     ///
-    /// [`Self::adopt_legacy`] answers for a data directory from before T-356.
-    /// This answers for the other two ways of arriving with no board: an
-    /// installation that has never been launched at all, and one whose register
-    /// was set aside because it could not be read.
+    /// It has **no home**: it is a board before it is a file, exactly as an
+    /// adopted one is, and the same row gives it one (`board_home`). What it does
+    /// have is a workshop, because the alternative to a workshop is a window with
+    /// nothing to write to.
     ///
-    /// The board it mints has **no home** — it is a board before it is a file,
-    /// exactly as an adopted one is, and the same row gives it one. What it does
-    /// have is a workshop, because the alternative to a workshop is a window
-    /// with nothing to write to.
-    pub fn ensure_current(&self) -> io::Result<Entry> {
-        if let Some(entry) = self.current() {
-            return Ok(entry);
-        }
+    /// Minted without becoming current, because a board whose workshop will not
+    /// open is not a board this window may be moved onto — see `board_new`, which
+    /// takes it back out of the register when that happens.
+    pub fn mint(&self) -> io::Result<Entry> {
         let board_id = mint_board_id();
         let entry = Entry {
             pack_id: mint_pack_id(),
@@ -337,10 +357,27 @@ impl BoardStore {
             last_opened: now(),
         };
         let mut state = self.lock();
-        state.current = Some(entry.pack_id.clone());
         state.boards.push(entry.clone());
         write_register(&self.path, &state)?;
         Ok(entry)
+    }
+
+    /// A board to be on, whatever else has happened.
+    ///
+    /// [`Self::adopt_legacy`] answers for a data directory from before T-356.
+    /// This answers for the other two ways of arriving with no board: an
+    /// installation that has never been launched at all, and one whose register
+    /// was set aside because it could not be read.
+    pub fn ensure_current(&self) -> io::Result<Entry> {
+        if let Some(entry) = self.current() {
+            return Ok(entry);
+        }
+        let entry = self.mint()?;
+        // `mint` does not make a board current, and here it has to be: this is
+        // the boot path, and the alternative to being on this one is being on
+        // none at all.
+        self.open(&entry.pack_id)
+            .map(|opened| opened.unwrap_or(entry))
     }
 
     /// The room the open board is in, for `board_remembered`.
@@ -350,48 +387,6 @@ impl BoardStore {
     /// `app/invite.ts` and `app/sync.ts` do not change at all.
     pub fn get(&self) -> Option<String> {
         self.current().map(|entry| entry.board_id)
-    }
-
-    /// The open board is in this room from now on.
-    ///
-    /// **Interim, and retired by T-360.** Its one caller is `bundle_open`, which
-    /// still replaces the document in place and mints its own room on the way
-    /// (Q-114) — a gesture that stops existing when opening a board stops
-    /// destroying one. Until then the register has to be able to record what
-    /// that gesture decided, or the board would come back on the next launch in
-    /// the room it had just left.
-    ///
-    /// The workshop deliberately does **not** follow the new name. It is
-    /// recorded rather than derived precisely so that a board can change rooms
-    /// without its log moving out from under it.
-    pub fn remember(&self, board_id: &str) -> io::Result<()> {
-        if !is_board_name(board_id) {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                format!("{board_id:?} is not a board name"),
-            ));
-        }
-        let mut state = self.lock();
-        match state
-            .current
-            .clone()
-            .and_then(|current| state.boards.iter_mut().find(|e| e.pack_id == current))
-        {
-            Some(entry) => entry.board_id = board_id.to_string(),
-            None => {
-                let entry = Entry {
-                    pack_id: mint_pack_id(),
-                    board_id: board_id.to_string(),
-                    path: None,
-                    workshop: PathBuf::from(LEGACY_WORKSHOP),
-                    title: String::new(),
-                    last_opened: now(),
-                };
-                state.current = Some(entry.pack_id.clone());
-                state.boards.push(entry);
-            }
-        }
-        write_register(&self.path, &state)
     }
 
     fn amend(&self, pack_id: &str, change: impl FnOnce(&mut Entry)) -> io::Result<()> {
@@ -952,6 +947,57 @@ mod tests {
         assert_eq!(store.current(), None);
         // Nothing on disk was deleted — this is a register, not a bin.
         assert!(home.is_file());
+    }
+
+    // --- minting and finding -------------------------------------------------
+
+    /// *New board…*: a board before it is a file, and not the one this window is
+    /// on until somebody says so.
+    #[test]
+    fn a_minted_board_has_a_workshop_and_no_home_and_is_not_current() {
+        let (_dir, store) = store();
+        let entry = store.mint().unwrap();
+
+        assert!(is_board_name(&entry.board_id));
+        assert_eq!(entry.workshop, workshop_for(&entry.board_id));
+        assert!(!entry.homed());
+        // In the register, and not underfoot: `board_new` switches the workshop
+        // before it commits to the board, and a mint that made itself current
+        // would leave the window on a board that then failed to open.
+        assert_eq!(store.current(), None);
+        assert_eq!(store.list().len(), 1);
+
+        let second = store.mint().unwrap();
+        assert_ne!(entry.pack_id, second.pack_id);
+        assert_ne!(entry.workshop, second.workshop);
+    }
+
+    #[test]
+    fn a_board_can_be_looked_up_by_the_id_this_side_issued() {
+        let (dir, store) = store();
+        let id = mint_pack_id();
+        store.admit(&id, &pack(&dir, "one.schizo"), "One").unwrap();
+
+        assert_eq!(store.find(&id).unwrap().title, "One");
+        assert_eq!(store.find(&mint_pack_id()), None);
+    }
+
+    /// The fallback for a `.schizo` written before pack ids existed. Keyed on
+    /// the path *here only*, so that opening the same old export twice is one
+    /// board rather than two.
+    #[test]
+    fn a_pack_with_no_id_of_its_own_is_found_again_by_where_it_is() {
+        let (dir, store) = store();
+        let old = pack(&dir, "before-t359.schizo");
+        let id = mint_pack_id();
+        store.admit(&id, &old, "An old export").unwrap();
+
+        assert_eq!(store.by_path(&old).unwrap().pack_id, id);
+        assert_eq!(store.by_path(&pack(&dir, "elsewhere.schizo")), None);
+        // A board that has never been given a file is not at any path, so it can
+        // never be found by this and answer for another one.
+        store.mint().unwrap();
+        assert_eq!(store.by_path(Path::new("")), None);
     }
 
     // --- names --------------------------------------------------------------

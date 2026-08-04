@@ -79,7 +79,7 @@ import { Paste } from "@/app/paste";
 import { Mesh } from "@/app/mesh";
 import { formatInvite, inviteSearch, openingPlan, parseInvite } from "@/app/invite";
 import * as prefs from "@/app/prefs";
-import { dialAddress, freshBoardId, identityFor } from "@/app/sync";
+import { dialAddress, identityFor } from "@/app/sync";
 import { fileSize } from "@/lib/filesize";
 import { DEFAULT_ERASER_SIZE, type InkSurface, type WetStroke } from "@/lib/ink";
 import {
@@ -2678,121 +2678,85 @@ async function boot(): Promise<void> {
   };
 
   /**
-   * Replace this window's board with one out of a `.schizo` (T-84, Q-111).
+   * Put this window on another board (T-356).
    *
-   * Everything up to and including the confirmation is `bundle_open`'s, on the
-   * far side of the boundary — the picker, the peek that finds out which board
-   * is being offered, and the native "Replace this board?" that has to be
-   * worded over there because the webview is granted no dialog of its own. A
-   * `null` covers both ways of saying no, and they are the same outcome: no
-   * board arrived, so nothing here happens.
+   * **The gesture that used to destroy a board and no longer does.** Until
+   * T-356 this replaced the document on disk with the one out of a `.schizo`,
+   * which is why it came with a native "Replace this board?" and why the row
+   * sat last on the menu. A board is a file now: opening board B leaves board A
+   * intact in its own file, so there is nothing to warn about, nothing to agree
+   * to, and no room to mint (Q-114 moved into `board.rs`, which mints one on
+   * first sight of a file it has never seen).
    *
-   * Then the document is written down and the window is reloaded, which is
-   * Q-77's answer to the same shape of problem. It reads like avoiding the
-   * work, and it is the opposite: half the application holds a reference to
-   * this `Y.Doc` — the binding, the scene mirror, undo, the rope set, the sync
-   * provider — and swapping it underneath all of them is a great deal more
-   * machinery than `boot()` already is, to arrive at a board `boot()` produces
-   * correctly by construction.
+   * The picker is `board_open_picked` and the switch is `board_open`, and they
+   * are two calls rather than one for a reason this file has to honour: the
+   * order below is load-bearing. `close()` unsubscribes and *then* awaits its
+   * own flush, so past that line nothing can enqueue — and past that line the
+   * shell may point `doc_append_update` at another board's log. Closing before
+   * the picker would leave a window that had stopped saving every time somebody
+   * cancelled a dialog.
    *
-   * A missing photograph is said out loud rather than swallowed, but *after*
-   * the board is on screen — it is a fact about the board that just arrived,
-   * not a reason to refuse it, and T-75's placeholders are what it looks like.
+   * Then the window reloads, which is Q-77's answer to the same shape of
+   * problem. It reads like avoiding the work and is the opposite: half the
+   * application holds a reference to this `Y.Doc` — the binding, the scene
+   * mirror, undo, the rope set, the sync provider — and swapping it underneath
+   * all of them is a great deal more machinery than `boot()` already is, to
+   * arrive at a board `boot()` produces correctly by construction.
+   *
+   * ## What happened to the schema check
+   *
+   * A `.schizo` from a newer build used to be refused here (T-224), and the
+   * reason was that the route past read-only mode was *destructive*: exporting a
+   * future board and opening it wrote the document over this window's log, and
+   * by the time the reload found out, there was nothing to go back to. Nothing
+   * is written over now. A board this build cannot fully read opens read-only,
+   * exactly as one that arrived over sync does, and the board you were on is
+   * still in its own file — so the check that has to happen is the one at boot,
+   * which was always there.
    */
-  const openBundle = async (): Promise<void> => {
-    let opened: Awaited<ReturnType<typeof native.bundleOpen>>;
+  const openBoard = async (): Promise<void> => {
+    let picked;
     try {
-      opened = await native.bundleOpen();
+      picked = await native.boardOpenPicked();
     } catch (error) {
-      console.warn("[bundle] the board could not be opened", error);
+      console.warn("[board] that board could not be opened", error);
       flash.say("That board could not be opened — the reason is in the console");
       return;
     }
-    if (opened === null) return;
+    if (picked === null) return;
+    await switchToBoard(picked.packId);
+  };
 
-    /**
-     * A bundle from a newer build, refused at the door (T-224).
-     *
-     * Rust deliberately carries a surprising `schemaVersion` through untouched
-     * — `bundle.rs` has a passing test saying so, on the stated grounds that
-     * migration is this side's job — and until now this side never read the
-     * field at all. So the one route past the read-only mode was to *export* a
-     * future board and open the bundle: `replaceWith` writes it over the log
-     * and the window reloads onto a document it cannot fully read.
-     *
-     * Refused here rather than caught at the reload, because by then the old
-     * board has been overwritten and there is nothing to go back to. The
-     * photographs Rust ingested on the way in are the one thing this cannot
-     * undo; they are content-addressed, so they cost disk and nothing else.
-     */
-    if (opened.manifest.schemaVersion > SCHEMA_VERSION) {
-      console.warn(
-        `[bundle] that board is schema ${opened.manifest.schemaVersion} and this build reads ` +
-          `${SCHEMA_VERSION}; it has not been opened`,
-      );
-      flash.say("That board was made by a newer version — this one has been left alone");
-      return;
-    }
-
+  /**
+   * Stop writing to this board, point the shell at another, and reload.
+   *
+   * Past `close()` this window is no longer saving and cannot be made to again
+   * — it is a one-way door, and the reload is what comes through it. So a
+   * failure below does not return: it reloads anyway, onto the board this
+   * window was already on, because the register is written last on the far side
+   * and a switch that failed changed nothing there. A window left running and
+   * silently not saving would be the worse of the two by a long way.
+   */
+  const switchToBoard = async (packId: string): Promise<void> => {
     try {
-      await persistence.replaceWith(opened.snapshot);
+      await persistence.close();
+      const opened = await native.boardOpen(packId);
+      if (opened.missing.length > 0) {
+        // Said to the console rather than to the person: this window is about
+        // to stop existing and a flash lasts 2.4 seconds. `files` rather than a
+        // kind is the only honest word going — these hashes are the *incoming*
+        // board's, and the document that could say what they are is the one
+        // this window is about to load (T-344).
+        console.warn(`[board] ${opened.missing.length} files were not in that board's file`);
+      }
     } catch (error) {
-      // The one failure worth being loud about: the photographs have already
-      // landed and the board has not, so this window is now showing a board
-      // that disagrees with what is on the disk beside it.
-      console.error("[bundle] the board was read but could not be written", error);
-      flash.say("That board could not replace this one — nothing has changed");
-      return;
-    }
-    /**
-     * The board that has just been replaced is not one this window may be
-     * talked back into (T-195, Q-114).
-     *
-     * The document was written locally and nothing above this line touched
-     * sync — so on a board with a peer, the reload below would re-attach the
-     * provider, the relay would answer this client's state vector with the
-     * difference, and the difference is *the whole of the board that was just
-     * replaced*. It merges straight back in on top of the bundle's, and the
-     * user is looking at two boards at once having been told one of them was
-     * gone. DATA-MODEL section 12 says the same thing about destructive
-     * migrations: an old client that reconnects can resurrect the old shape,
-     * and the merge will accept it.
-     *
-     * So the answer is not to reason about the old room but to leave it: a
-     * fresh board id, which is a fresh secret and a fresh mDNS fingerprint by
-     * construction (`sync/secret.rs`, `sync/discovery.rs`). Both halves are
-     * needed and they fail in opposite directions — the query string is what
-     * gets *this* reload into the new room, and the shell's copy is what keeps
-     * it there on the next launch, which has no query string at all.
-     *
-     * After the write rather than before it, because a replace that failed has
-     * changed nothing and must leave this window exactly where it was.
-     */
-    const boardId = freshBoardId();
-    try {
-      await native.rememberBoardId(boardId);
-    } catch (error) {
-      // Loud, and still not a reason to stop. This window is safe either way —
-      // the reload names the board itself — and what has been lost is the next
-      // launch, which will go back to the room the replaced board is in and
-      // merge it. Better said out loud now than discovered tomorrow.
-      console.error("[bundle] this board's new name could not be kept", error);
-    }
-
-    if (opened.missing.length > 0) {
-      // Survives the reload as a query the next boot reads, because this window
-      // is about to stop existing and a flash lasts 2.4 seconds.
-      // `files` rather than a kind, and here it is the only honest word going:
-      // these hashes are the *incoming* board's, and the document that could
-      // say what they are is the one about to replace this window (T-344).
-      console.warn(`[bundle] ${opened.missing.length} files were not in that bundle`);
+      console.error("[board] the switch failed; this window is reloading where it was", error);
     }
     // The whole query string, not just `board=`: every parameter this
     // application reads off one names a board or somewhere to look for it
-    // (`planSync`), and the board they were naming no longer exists here. A
-    // window that opened a bundle is hosting its own new board, and `?relay=`
-    // pointing at somebody else's is the clearest way to be wrong about that.
-    window.location.search = `board=${boardId}`;
+    // (`planSync`), and none of them is about the board being opened. The room
+    // comes from the shell's register now, through `board_remembered`.
+    window.location.search = "";
   };
 
   root.addEventListener("contextmenu", (e) => {
@@ -3005,7 +2969,11 @@ async function boot(): Promise<void> {
         native.kind === "tauri"
           ? {
               export: () => void exportBoard(),
-              open: readOnly ? null : () => void openBundle(),
+              // No read-only guard, and its removal is the whole of T-356 in
+              // one line: opening another board writes nothing to this one, so
+              // a sealed board may still do it. T-364 moves the row and gives
+              // it neighbours.
+              open: () => void openBoard(),
               // The one row a platform can take away: `PrintToPdf` is
               // WebView2's, so macOS and Linux get the image and no PDF row at
               // all (T-210, Q-139).

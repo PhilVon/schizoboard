@@ -37,7 +37,7 @@ import { existsSync } from "node:fs";
 import { connect, createServer } from "node:net";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
-import { freshBoardId, planSync } from "@/app/sync";
+import { planSync } from "@/app/sync";
 import { openBoardDoc, type BoardDoc } from "@/crdt/doc";
 import { createItems } from "@/crdt/ops";
 import { readItem } from "@/crdt/schema";
@@ -421,8 +421,8 @@ describe.each(servers)("against $name", (server) => {
   }, 60_000);
 
   /**
-   * A board replaced out of a bundle, with somebody still on the old one
-   * (T-195, Q-114).
+   * A window that has moved to another board, with somebody still on the one it
+   * left (T-195, Q-114).
    *
    * This is the one test here that is about a *product* decision rather than
    * about the protocol, and it is here because nowhere else can hold it: the
@@ -435,29 +435,32 @@ describe.each(servers)("against $name", (server) => {
    * y-websocket room *is* — so a fix that only worked against ours would be a
    * fix resting on an accident.
    */
-  it("does not hand a replaced board back to the window that replaced it", async () => {
+  it("does not hand the board it left back to the window that left it", async () => {
     // The room a window plans on an installation nobody has ever moved — asked
     // rather than named, so that the two halves of this test are the two answers
     // `planSync` really gives, and dropping the second argument below is exactly
     // the code that was there before this task.
     const OLD = planSync("").config.boardId;
     const ours = board(OLD);
-    // The peer, who never leaves. Nothing about a replace is their business, and
+    // The peer, who never leaves. Nothing about the switch is their business, and
     // the room living on inside them is precisely what makes this reachable —
     // solo, `sync/mod.rs` drops a room the moment it is empty, which is why T-84
     // never saw this.
     const peer = board(OLD);
     await until(() => ours.provider.synced && peer.provider.synced);
-    const discarded = polaroid(ours.board, 10, 20);
-    await until(() => at(peer.board, discarded) !== null);
+    const left = polaroid(ours.board, 10, 20);
+    await until(() => at(peer.board, left) !== null);
 
-    // The bundle open. `persistence.replaceWith` writes the bundle's document
-    // over this one's and the window reloads, so what arrives next is a new
-    // document on a new socket — and the room it asks for is whatever `planSync`
-    // names once the shell has been told this installation was moved.
+    // The switch. `persistence.close()` stops this window writing, the shell
+    // points its document log at another board, and the window reloads — so what
+    // arrives next is a different document on a new socket, in whatever room
+    // `planSync` names once `board_remembered` has answered for the board now
+    // open. Since T-356 the register mints that name (`board.rs`, on first sight
+    // of a file this machine has not opened); here it is only a string of the
+    // agreed shape, because what is under test is the *relay*.
     ours.provider.destroy();
-    const reloaded = board(planSync("", freshBoardId()).config.boardId);
-    const fromTheBundle = polaroid(reloaded.board, 300, 400);
+    const reloaded = board(planSync("", aRoomThisMachineHasNotBeenIn()).config.boardId);
+    const onTheOtherBoard = polaroid(reloaded.board, 300, 400);
 
     // The control, and the reason this cannot pass vacuously: a window that came
     // back to the *same* room is handed the board it discarded — by this server,
@@ -465,16 +468,32 @@ describe.each(servers)("against $name", (server) => {
     // simply had not happened yet" is not available as an explanation for the
     // assertions below. Without the fix, `reloaded` *is* this.
     const control = board(OLD);
-    await until(() => at(control.board, discarded) !== null);
+    await until(() => at(control.board, left) !== null);
     await until(() => reloaded.provider.synced);
 
-    expect(at(reloaded.board, discarded)).toBeNull();
+    expect(at(reloaded.board, left)).toBeNull();
     expect(reloaded.board.items.size).toBe(1);
     // And the other direction: nobody left on the old board is quietly given a
     // board they never opened.
-    expect(at(peer.board, fromTheBundle)).toBeNull();
+    expect(at(peer.board, onTheOtherBoard)).toBeNull();
   }, 60_000);
 });
+
+/**
+ * A room name of the shape `src-tauri/src/board.rs` mints, for a board this
+ * installation has not opened before.
+ *
+ * Spelled out here rather than imported, because the mint is on the other side
+ * of the boundary and this file has no shell — and it costs nothing, because
+ * nothing about the *name* is under test. What is under test is the relay, whose
+ * rooms are keyed on whatever string it is handed. That the two sides agree
+ * about the shape is `app/sync.test.ts`'s.
+ */
+function aRoomThisMachineHasNotBeenIn(): string {
+  const bytes = new Uint8Array(16);
+  crypto.getRandomValues(bytes);
+  return `board-${[...bytes].map((b) => b.toString(16).padStart(2, "0")).join("")}`;
+}
 
 /**
  * The secret, against the real relay over a real socket (T-70).

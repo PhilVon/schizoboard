@@ -295,6 +295,14 @@ pub fn split_payload(body: &[u8]) -> Result<(&[u8], &[u8])> {
 }
 
 /// The other direction, for a response.
+///
+/// Uncalled since T-360 took `bundle_open` out — nothing hands a document *back*
+/// across the boundary any more, because a board is opened by pointing this
+/// window's log at it rather than by shipping its snapshot to the webview. Kept
+/// rather than deleted because T-366's generations are this exact framing: a
+/// flush appends one `gen/<n>` entry holding `[u32 le json len][json][snapshot]`,
+/// which is this function and [`split_payload`] verbatim, tests and all.
+#[allow(dead_code)]
 pub fn join_payload(json: &[u8], bytes: &[u8]) -> Vec<u8> {
     let mut out = Vec::with_capacity(4 + json.len() + bytes.len());
     out.extend_from_slice(&(json.len() as u32).to_le_bytes());
