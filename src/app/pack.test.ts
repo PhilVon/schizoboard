@@ -15,7 +15,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { HOME_DELAY_MS, homeBoard, Pack, packSpec } from "@/app/pack";
 import { ASSET_SWEEP_DELAY_MS } from "@/app/assetgc";
-import { initialiseBoard, openBoardDoc, type BoardDoc } from "@/crdt/doc";
+import { boardTitle, initialiseBoard, openBoardDoc, type BoardDoc } from "@/crdt/doc";
 import { createItems } from "@/crdt/ops";
 import { SCHEMA_VERSION } from "@/crdt/schema";
 import type { BoardCard, BundleSpec, BundleWritten, Platform } from "@/platform/types";
@@ -574,6 +574,30 @@ describe("when the board's own file is rewritten", () => {
       // A board opened, read and left has flushed nothing and may still be
       // carrying an afternoon of superseded generations from yesterday.
       expect(shell.calls).toEqual(["tidy"]);
+    });
+
+    /**
+     * T-373. Both compaction commands took a spec and a snapshot and read
+     * neither: the shell folds a file up out of that file's own newest
+     * generation, which is what makes a compaction the ordinary writer
+     * unchanged. The cost was never the bytes on the wire — it was `packSpec`
+     * and `snapshot` here, two walks of the whole document, on the switch and on
+     * the row somebody just pressed.
+     *
+     * Asserted on the *argument* rather than on a timing, because a walk of a
+     * three-item test board is too cheap to measure and the shape is the thing:
+     * what crosses is the one fact only this side can read.
+     */
+    it("hands the shell a title to remember and not the board to fold", async () => {
+      const shell = leaving();
+      const doc = board(PHOTO);
+      const pack = new Pack(doc, shell.native, { idleMs: IDLE });
+
+      await pack.settle();
+
+      expect(shell.onLeaving).toHaveBeenCalledWith(boardTitle(doc));
+      // One argument, so nothing of the document went with it.
+      expect(shell.onLeaving.mock.calls[0]).toHaveLength(1);
     });
 
     it("does not let a failed tidy stop a switch", async () => {

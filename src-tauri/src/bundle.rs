@@ -642,7 +642,7 @@ pub fn append(
     zip.start_file(format!("{GEN_PREFIX}{generation}"), deflated)?;
     zip.write_all(&join_payload(&json, snapshot))?;
 
-    let mut file = zip.finish()?;
+    let file = zip.finish()?;
     // The board is on this disk in two places by now, so this is not what makes
     // it safe — it is what makes the *pack* worth the append. Without it a power
     // cut leaves a file whose directory the operating system has and whose bytes

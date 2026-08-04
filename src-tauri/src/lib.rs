@@ -1691,54 +1691,62 @@ fn board_payload(
 /// Fold a board's file back into one — the row on the cork menu (T-367).
 ///
 /// Always compacts, however little there is to reclaim, because somebody asked.
-/// The automatic half is on the switch (see [`save_pack`]) and is the one with
-/// a threshold; a row that decided for itself whether to do the thing it says
+/// The automatic half is [`board_compact_on_leaving`] and is the one with a
+/// threshold; a row that decided for itself whether to do the thing it says
 /// would be a row you cannot trust.
 ///
-/// Takes the *whole* document rather than reading the pack for it, on
-/// `board_flush`'s standing: this window has the newest board there is, and the
-/// pack is at best as new as the last flush.
+/// **Takes a title and not a document** (T-373). It used to take both, framed
+/// like a flush, and read neither: `bundle::compact` builds its own spec out of
+/// the manifest it reads — which is the whole reason a compaction is
+/// [`bundle::write`] unchanged — so the snapshot arrived and was dropped, and
+/// the asset list with it. What that cost was not the bytes on the wire but
+/// `packSpec` and `snapshot` on the other side: two walks of the whole document,
+/// on the two paths somebody is actually waiting on.
 #[tauri::command]
-async fn board_compact(
-    app: AppHandle,
-    request: tauri::ipc::Request<'_>,
-) -> Result<Option<bundle::Tidied>, String> {
-    let (spec, snapshot) = board_payload("board_compact", &request)?;
-    blocking(move || -> Result<Option<bundle::Tidied>, String> {
-        let boards = boards_of(&app)?;
-        let entry = boards
-            .current()
-            .ok_or_else(|| "no board is open in this window".to_string())?;
-        // A board with no file of its own has nothing to compact, which is the
-        // same `Ok(None)` a flush gives and means the same thing.
-        let Some(dest) = entry.path.clone() else {
-            return Ok(None);
-        };
-        // The agreement check `write_pack` makes, before anything rewrites a
-        // whole file: the register says which *file* and the workshop says which
-        // *document*, and a disagreement would fold one board's work into
-        // another board's pack.
-        if workshop_of(&app)?.current().as_deref() != Some(entry.workshop.as_path()) {
-            return Err("that board's document is not the one this window has open".to_string());
-        }
-        let store = store_of(&app)?;
-        // Through `noting` like every other write of this file, and T-374 is what
-        // it cost not to be. A compaction *is* `bundle::write`, so it leaves a
-        // pack with no generations in it — and the register went on saying five.
-        // The next flush then read the board's own tidying as another window's
-        // writing and sealed the pack, on a machine running one window.
-        let tidied = noting(&boards, &entry.pack_id, Writing::Fold, || {
-            bundle::compact(&store, &entry.pack_id, &dest)
-                .map(|tidied| (tidied, 0))
-                .map_err(|e| Refused::Failed(e.to_string()))
-        })
-        .map_err(|refused| refused.to_string())?;
-        if let Err(error) = boards.set_title(&entry.pack_id, &spec.title) {
-            eprintln!("board: that board's title could not be kept: {error}");
-        }
-        Ok(Some(tidied))
+async fn board_compact(app: AppHandle, title: String) -> Result<Option<bundle::Tidied>, String> {
+    blocking(move || fold_pack(&app, &title)).await
+}
+
+/// Fold the open board's file back into one, and keep the register's account of
+/// that file (T-367, T-374).
+///
+/// The shared half of the two compaction commands. It was one command's inline
+/// body and the other's trip through `write_pack`, and those two roads disagreed
+/// about the register for four commits — see [`noting`] for what that cost.
+///
+/// `Ok(None)` for a board with no file of its own, which is the same `Ok(None)`
+/// a flush gives and means the same thing.
+fn fold_pack(app: &AppHandle, title: &str) -> Result<Option<bundle::Tidied>, String> {
+    let boards = boards_of(app)?;
+    let entry = boards
+        .current()
+        .ok_or_else(|| "no board is open in this window".to_string())?;
+    let Some(dest) = entry.path.clone() else {
+        return Ok(None);
+    };
+    // The register says which *file* and the workshop says which *document*, and
+    // a disagreement would fold one board's work into another board's pack.
+    if workshop_of(app)?.current().as_deref() != Some(entry.workshop.as_path()) {
+        return Err("that board's document is not the one this window has open".to_string());
+    }
+    // A file another window is writing is not one this window rewrites whole,
+    // which is the loudest possible version of T-368's rule.
+    if entry.taken {
+        return Err(Refused::TAKEN.to_string());
+    }
+    let store = store_of(app)?;
+    let tidied = noting(&boards, &entry.pack_id, Carries::OnlyTheFile, || {
+        bundle::compact(&store, &entry.pack_id, &dest)
+            // A compaction *is* `write`, so it leaves a pack with no generations
+            // in it at all, and the register has to be told (T-374).
+            .map(|tidied| (tidied, 0))
+            .map_err(|e| Refused::Failed(e.to_string()))
     })
-    .await
+    .map_err(|refused| refused.to_string())?;
+    if let Err(error) = boards.set_title(&entry.pack_id, title) {
+        eprintln!("board: that board's title could not be kept: {error}");
+    }
+    Ok(Some(tidied))
 }
 
 /// Leave this board with its file tidied, if there is enough in it to be worth
@@ -1753,18 +1761,21 @@ async fn board_compact(
 /// `Ok(None)` for a board with no file, and for one whose file has too little
 /// in it to be worth rewriting — the ordinary case on the ordinary switch, and
 /// not news.
+///
+/// Takes a title and not a document, on [`board_compact`]'s standing and rather
+/// more sharply: this one is on the switch, so the two walks of the document it
+/// used to ask for were between somebody pressing a board's name and that board
+/// appearing.
 #[tauri::command]
 async fn board_compact_on_leaving(
     app: AppHandle,
-    request: tauri::ipc::Request<'_>,
+    title: String,
 ) -> Result<Option<bundle::Written>, String> {
-    let (spec, snapshot) = board_payload("board_compact_on_leaving", &request)?;
     blocking(move || -> Result<Option<bundle::Written>, String> {
-        let boards = boards_of(&app)?;
-        let entry = boards
-            .current()
-            .ok_or_else(|| "no board is open in this window".to_string())?;
-        let Some(dest) = entry.path.clone() else {
+        let Some(entry) = boards_of(&app)?.current() else {
+            return Err("no board is open in this window".to_string());
+        };
+        let Some(dest) = entry.path else {
             return Ok(None);
         };
         // Cheap enough to ask on every switch: the central directory already
@@ -1772,7 +1783,10 @@ async fn board_compact_on_leaving(
         if !bundle::worth_compacting(&dest) {
             return Ok(None);
         }
-        write_pack(&app, &boards, &entry, &spec, &snapshot, &dest, Writing::Fold).map(Some)
+        // The same fold the row does. It used to be a trip through `write_pack`
+        // with a `Writing` that meant "compact", and the two roads disagreed
+        // about the register for four commits (T-374).
+        Ok(fold_pack(&app, &title)?.map(|tidied| tidied.written))
     })
     .await
 }
@@ -1891,31 +1905,29 @@ enum Writing {
     Flush,
     /// A board being given its first file. A whole one, always.
     Whole,
-    /// A compaction: fold the generations away, reading the document **out of
-    /// the file itself** rather than out of this window.
-    Fold,
 }
 
-impl Writing {
-    /// Whether this write puts *this window's document* into the file (T-374).
-    ///
-    /// The distinction is what the register's `ahead` flag turns on, and the two
-    /// cases are genuinely different rather than a shade of one. A flush and a
-    /// first home both carry the document across, so the file is level with the
-    /// workshop afterwards and the note comes down. A compaction carries
-    /// nothing: `bundle::compact` reads the document out of the pack's own
+/// Whether a write of a board's file puts *this window's document* into it
+/// (T-374).
+///
+/// What the register's `ahead` flag turns on, and the two cases are genuinely
+/// different rather than shades of one — which is why this is its own word and
+/// not a reading of [`Writing`]. Getting it from `Writing` would also have meant
+/// [`fold_pack`] naming a variant of "which way is `save_pack` writing this",
+/// when `fold_pack` does not call `save_pack` at all.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Carries {
+    /// A flush or a first home. The document goes across, so the file is level
+    /// with the workshop afterwards and the note comes down.
+    TheDocument,
+    /// A compaction. `bundle::compact` reads the board out of the pack's own
     /// newest generation, so a workshop that was ahead of that file before is
-    /// still ahead of it after, and clearing the note would lose the catch-up at
-    /// the next launch.
+    /// still ahead of it after — and clearing the note here would throw away
+    /// T-370's catch-up at the next launch.
     ///
-    /// It is reachable: `Pack.settle` flushes and then compacts on the way out
-    /// of a board, and a flush that failed leaves exactly that state.
-    fn carries_the_document(self) -> bool {
-        match self {
-            Writing::Flush | Writing::Whole => true,
-            Writing::Fold => false,
-        }
-    }
+    /// Reachable: `Pack.settle` flushes and then compacts on the way out of a
+    /// board, and a flush that failed leaves exactly this state.
+    OnlyTheFile,
 }
 
 /// Append a generation, or write the whole file when appending is not on.
@@ -1955,28 +1967,16 @@ fn save_pack(
     writing: Writing,
     ours: u32,
 ) -> Result<(bundle::Written, u32), Refused> {
-    if writing == Writing::Fold && dest.is_file() {
-        // Everything the pack holds goes back into the store before anything
-        // reads the store to decide what the new file gets — `bundle::compact`
-        // says why that is not an optimisation.
-        return bundle::compact(store, pack_id, dest)
-            // A compaction is `write`, so what it leaves is a pack with no
-            // generations at all — and the register has to be told that, or the
-            // next append would expect a generation the file no longer has and
-            // read its own tidying as somebody else's writing (T-374).
-            .map(|tidied| (tidied.written, 0))
+    // Compaction is not here any more (T-373). It used to be this function's
+    // first branch, reached by a `Writing` that meant "fold" — which put the one
+    // write that does *not* carry a document through the one function whose
+    // whole job is carrying one, and told the two apart by whether the file
+    // happened to exist. `fold_pack` is that road now, and it takes no snapshot
+    // because it never needed one.
+    if writing == Writing::Whole {
+        return bundle::write(store, spec, Some(pack_id), snapshot, dest)
+            .map(|written| (written, 0))
             .map_err(|e| Refused::Failed(e.to_string()));
-    }
-    // A fold with no file to fold is nothing to do rather than a whole write.
-    // `board_compact_on_leaving` cannot reach it — `worth_compacting` is false
-    // for a file that has gone — and the line is here so that the *next* caller
-    // of `Fold` cannot silently get a whole file written from a snapshot it only
-    // passed along to be polite.
-    if writing == Writing::Fold {
-        return Err(Refused::Failed(format!(
-            "{} is not there to be tidied",
-            dest.display()
-        )));
     }
     if dest.is_file() {
         match bundle::append(store, spec, pack_id, snapshot, dest, ours) {
@@ -2029,7 +2029,7 @@ fn save_pack(
 ///
 /// ## And only by a write that carries the document
 ///
-/// A compaction does not (see [`Writing::carries_the_document`]): it reads the
+/// A compaction does not (see [`Carries::OnlyTheFile`]): it reads the
 /// board out of the pack's own newest generation, so a workshop that was ahead
 /// of that file before it is still ahead of it after. Clearing the note there
 /// would throw away the catch-up at the next launch, and `Pack.settle` reaches
@@ -2043,10 +2043,10 @@ fn save_pack(
 fn noting<T>(
     boards: &board::BoardStore,
     pack_id: &str,
-    writing: Writing,
+    carries: Carries,
     write: impl FnOnce() -> Result<(T, u32), Refused>,
 ) -> Result<T, Refused> {
-    if writing.carries_the_document() {
+    if carries == Carries::TheDocument {
         if let Err(error) = boards.set_ahead(pack_id, false) {
             eprintln!("board: that board's file could not be noted as written: {error}");
         }
@@ -2061,7 +2061,7 @@ fn noting<T>(
             Ok(written)
         }
         Err(refused) => {
-            if writing.carries_the_document() {
+            if carries == Carries::TheDocument {
                 if let Err(error) = boards.set_ahead(pack_id, true) {
                     eprintln!("board: that board's file could not be noted as behind: {error}");
                 }
@@ -2112,7 +2112,7 @@ fn write_pack(
         return Err(Refused::TAKEN.to_string());
     }
     let store = store_of(app)?;
-    let written = noting(boards, &entry.pack_id, writing, || {
+    let written = noting(boards, &entry.pack_id, Carries::TheDocument, || {
         save_pack(
             &store,
             spec,
@@ -2615,7 +2615,7 @@ mod tests {
         let (boards, id) = a_register(&dir);
         boards.set_ahead(&id, true).unwrap();
 
-        noting(&boards, &id, Writing::Flush, || Ok::<_, Refused>(((), 1))).unwrap();
+        noting(&boards, &id, Carries::TheDocument, || Ok::<_, Refused>(((), 1))).unwrap();
 
         assert!(!boards.current().unwrap().ahead);
         // And the register knows what the file is at, which is the half T-374
@@ -2635,7 +2635,7 @@ mod tests {
         let (boards, id) = a_register(&dir);
         boards.set_ahead(&id, true).unwrap();
 
-        noting(&boards, &id, Writing::Fold, || Ok::<_, Refused>(((), 0))).unwrap();
+        noting(&boards, &id, Carries::OnlyTheFile, || Ok::<_, Refused>(((), 0))).unwrap();
 
         assert!(boards.current().unwrap().ahead);
         // The generation is still recorded, because that half is about the file
@@ -2653,7 +2653,7 @@ mod tests {
         let (boards, id) = a_register(&dir);
         boards.set_generation(&id, 5).unwrap();
 
-        noting(&boards, &id, Writing::Fold, || Ok::<_, Refused>(((), 0))).unwrap();
+        noting(&boards, &id, Carries::OnlyTheFile, || Ok::<_, Refused>(((), 0))).unwrap();
 
         assert_eq!(boards.current().unwrap().generation, 0);
         assert!(!boards.current().unwrap().taken);
@@ -2666,7 +2666,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let (boards, id) = a_register(&dir);
 
-        let refused = noting(&boards, &id, Writing::Flush, || {
+        let refused = noting(&boards, &id, Carries::TheDocument, || {
             Err::<((), u32), Refused>(Refused::Taken)
         });
 
@@ -2689,7 +2689,7 @@ mod tests {
         let (boards, id) = a_register(&dir);
         boards.set_ahead(&id, true).unwrap();
 
-        let refused = noting(&boards, &id, Writing::Flush, || {
+        let refused = noting(&boards, &id, Carries::TheDocument, || {
             Err::<((), u32), Refused>(Refused::Failed("the disk said no".to_string()))
         });
 
@@ -2710,7 +2710,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let (boards, id) = a_register(&dir);
 
-        noting(&boards, &id, Writing::Flush, || {
+        noting(&boards, &id, Carries::TheDocument, || {
             // The append that `doc_append_update` is about to make.
             boards.set_ahead(&id, true).unwrap();
             Ok::<_, Refused>(((), 1))

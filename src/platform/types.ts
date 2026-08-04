@@ -966,8 +966,19 @@ export interface Platform {
    *
    * O(the pack) where a flush is O(the snapshot), which is the whole reason
    * there are two of these. `null` for a board with no file of its own.
+   *
+   * **A title, and not the board** (T-373). It took a spec and a snapshot until
+   * it was noticed that it reads neither: the shell folds the file up out of the
+   * file's own newest generation, which is what makes a compaction the ordinary
+   * writer unchanged. The title is the one thing that crosses, because the
+   * register remembers what a board is called so the menu can name one that is
+   * not open, and only this side can read `meta.title`.
+   *
+   * What that cost was never the bytes. It was `packSpec` and `snapshot` on this
+   * side: two walks of the whole document to produce arguments nobody read, on
+   * the two paths somebody is actually waiting on.
    */
-  boardCompact(spec: BundleSpec, snapshot: Uint8Array): Promise<BundleTidied | null>;
+  boardCompact(title: string): Promise<BundleTidied | null>;
   /**
    * The same, on the way out of a board, and **only when there is enough in the
    * file to be worth the rewrite** (Q-350).
@@ -976,8 +987,12 @@ export interface Platform {
    * number deciding when to spend seconds of somebody's disk, written down in
    * two languages, is a number that will disagree with itself. `null` is "there
    * was not enough to bother", which is the ordinary switch and is not news.
+   *
+   * Takes a title on the row's standing above, and rather more sharply: this one
+   * is on the switch, between somebody pressing a board's name and that board
+   * appearing.
    */
-  boardCompactOnLeaving(spec: BundleSpec, snapshot: Uint8Array): Promise<BundleWritten | null>;
+  boardCompactOnLeaving(title: string): Promise<BundleWritten | null>;
   /**
    * Whether this board's file has enough superseded in it to be worth offering
    * to tidy — for deciding whether the row exists at all.

@@ -313,12 +313,15 @@ export class TauriPlatform implements Platform {
     return invoke<BundleWritten>("board_home", framed(spec, snapshot));
   }
 
-  boardCompact(spec: BundleSpec, snapshot: Uint8Array): Promise<BundleTidied | null> {
-    return invoke<BundleTidied | null>("board_compact", framed(spec, snapshot));
+  // Not `framed`: a compaction reads the board out of the board's own file, so
+  // the only thing that crosses is what the register should remember it is
+  // called (T-373).
+  boardCompact(title: string): Promise<BundleTidied | null> {
+    return invoke<BundleTidied | null>("board_compact", { title });
   }
 
-  boardCompactOnLeaving(spec: BundleSpec, snapshot: Uint8Array): Promise<BundleWritten | null> {
-    return invoke<BundleWritten | null>("board_compact_on_leaving", framed(spec, snapshot));
+  boardCompactOnLeaving(title: string): Promise<BundleWritten | null> {
+    return invoke<BundleWritten | null>("board_compact_on_leaving", { title });
   }
 
   boardWorthTidying(): Promise<boolean> {

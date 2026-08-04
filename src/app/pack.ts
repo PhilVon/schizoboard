@@ -394,12 +394,18 @@ export class Pack {
    * Never on the idle timer, which is the whole of AC-1030: a rewrite that
    * fired every time somebody paused would be exactly the stall T-366 spent
    * itself removing, arriving at a different moment.
+   *
+   * The compaction takes a *title* and not the board (T-373). The flush above
+   * has already put the document in the file, and the shell folds the file up
+   * out of the file — so building a spec and a snapshot for this call was two
+   * walks of the whole document, between somebody pressing a board's name and
+   * that board appearing.
    */
   async settle(): Promise<void> {
     if (this.stopped) return;
     await this.flushNow();
     try {
-      await this.native.boardCompactOnLeaving(packSpec(this.board), snapshot(this.board));
+      await this.native.boardCompactOnLeaving(boardTitle(this.board));
     } catch (error) {
       // Housekeeping on the way out of a board nobody is looking at any more.
       // The file is already up to date — `flushNow` above saw to that — and
@@ -422,7 +428,7 @@ export class Pack {
     // around a document one idle interval old.
     await this.flushNow();
     try {
-      const written = await this.native.boardCompact(packSpec(this.board), snapshot(this.board));
+      const written = await this.native.boardCompact(boardTitle(this.board));
       if (written === null) return null;
       this.clean = written.missing.length === 0;
       this.onFlushed();
