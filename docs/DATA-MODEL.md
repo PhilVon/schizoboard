@@ -470,17 +470,25 @@ Cap the stack at around 200 entries.
 | | fine, crash-safe, cheap | coarse, portable, the thing you hand over |
 |---|---|---|
 | inside a board | `log.bin` frames, 200 ms / 32 KB | `snapshot.bin`, at 1 MiB of log |
-| the installation | the workshop | the pack, on idle / close / switch |
+| the installation | the workshop | the pack, on idle / close / switch, and at a launch that finds work owed |
 
 **The workshop wins when the two disagree.** A pack is seeded into a workshop only when the workshop is *empty*; a workshop with anything in it is a session that ended before its pack was written, and is therefore newer by construction. That one branch covers a torn write, a power cut mid-flush, a quit with no close hook, and a board on a stick that was pulled.
+
+**And the next launch catches the pack up** (T-370). The workshop winning is what stops a quit *losing* anything; on its own it does not stop the file staying stale, because nothing rewrote a pack until the board was edited again — so a board quit on and never touched had a file a session behind for good, silently, and that file is the one you hand over. The register records whether the workshop has moved since the pack was last written, so a launch that finds work owed flushes it and a launch that finds none writes nothing.
 
 **Pack format** — `.schizo`, a zip containing:
 
 ```
-manifest.json      packId, schemaVersion, title, asset list
-snapshot.bin       document state
-assets/<sha256>    the bytes
+manifest.json      packId, schemaVersion, title, asset list — as of the last compaction
+snapshot.bin       document state — as of the last compaction
+assets/<sha256>    the bytes, STORED and never rewritten
+gen/1              superseded
+gen/2              the current document, and its own manifest
 ```
+
+**A flush appends one generation; it does not rewrite the file** (T-366). A `gen/<n>` is `[u32 le json len][json][snapshot]` — a manifest and a document state, framed as they already are across the IPC boundary — so a save costs the size of the snapshot rather than the size of the file, and a board of photographs is not copied every time somebody pauses. **The reader takes the highest `n`**, and with none falls back to `manifest.json` plus `snapshot.bin`, which is why every `.schizo` written before generations existed is simply a pack with zero of them.
+
+**Compaction is what reclaims them** (T-367): the newest generation read out and the whole file written again from it, without the superseded generations and without any photograph the board has stopped referring to. It is O(the pack) where a flush is O(the snapshot), so it runs on the way out of a board and on an explicit menu row, never on the idle timer. A compacted pack is a pack with zero generations — which is also why *Save a copy…* and an export stopped being two different things.
 
 **A pack embeds every asset the board refers to.** A board you hand to someone is never half a board. What it did not have on this disk is reported rather than silently dropped.
 

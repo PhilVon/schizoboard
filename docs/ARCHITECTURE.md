@@ -239,6 +239,22 @@ board_new()                → card
 board_flush(manifest, snapshot) → { packId, embedded, missing[], bytes } | null
 board_home(manifest, snapshot)  → { packId, embedded, missing[], bytes }
 
+// folding a file back into one (T-367). A flush appends a generation and is
+// O(the snapshot); these rewrite the whole file and are O(the pack), which is
+// the whole reason they are separate commands rather than a flag on one.
+board_compact(manifest, snapshot)           → { ..., reclaimed } | null  // the row
+board_compact_on_leaving(m, snapshot)       → { ... } | null   // only if worth it
+board_worth_tidying()      → bool         // whether the row exists at all. A
+                                          // boolean and not the fraction, so the
+                                          // threshold stays on the side that acts
+                                          // on it and cannot disagree with itself
+
+board_workshop_ahead()     → bool         // has the workshop moved since the file
+                                          // was last written (T-370)? The question
+                                          // a boot could not ask. The answer was
+                                          // written down the last time either side
+                                          // of it moved, so it costs no disk
+
 peer_have_summary()        → sha256[]     // everything this machine can serve
 asset_size(sha256)         → bytes        // 0 for one it does not hold
 asset_partial(sha256)      → bytes        // how far a resumed transfer got
