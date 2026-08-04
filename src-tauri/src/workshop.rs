@@ -47,11 +47,17 @@
 //! would be written into the wrong log — the one failure this module could have
 //! that nothing would notice until the next launch.
 //!
-//! It is closed on the *frontend* side, and it was closed before this existed:
-//! `crdt/persistence.ts`'s `close()` unsubscribes and **then** awaits `flush()`,
-//! and `flush()` returns the serialisation chain, so nothing can be enqueued
-//! after it resolves. `replaceWith` has relied on exactly that since T-84. So
-//! the order a board switch has to follow is:
+//! It is closed on the *frontend* side, and it was closed before this existed —
+//! though by a narrower margin than it looks. `crdt/persistence.ts`'s `close()`
+//! unsubscribes and **then** awaits `flush()`, and that order is the whole of
+//! it: unsubscribing second would leave an edit that landed *during* the flush
+//! sitting in `pending` with a timer armed behind it, and that timer would fire
+//! against whichever log this module had swapped in by then. Which is this
+//! hazard, arriving by the one road that looks safe. `persistence.test.ts` has
+//! the case, and it took a mutation to find rather than a reading.
+//!
+//! `replaceWith` has relied on the same property since T-84. So the order a
+//! board switch has to follow is:
 //!
 //! ```text
 //! pack.flushNow()  ->  persistence.close()  ->  board_open  ->  reload

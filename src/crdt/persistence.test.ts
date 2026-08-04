@@ -28,10 +28,13 @@ class Store extends MockPlatform {
   appends = 0;
   compactions = 0;
   failing = false;
+  /** Runs while an append is in flight — the gap a late frame lands in. */
+  duringAppend: (() => void) | null = null;
 
   override async docAppendUpdate(bytes: Uint8Array): Promise<void> {
     this.appends += 1;
     if (this.failing) throw new Error("the disk said no");
+    this.duringAppend?.();
     return super.docAppendUpdate(bytes);
   }
 
@@ -396,11 +399,10 @@ describe("Persistence", () => {
    *
    * Nothing in Rust closes that, and nothing in Rust should: a lock there would
    * serialise the append against the switch and then let the append win. It is
-   * closed here, by `close()` unsubscribing *before* it awaits `flush()`, and
-   * `flush()` returning the serialisation chain — so once it resolves there is
-   * nothing queued and nothing that can queue. `replaceWith` has leant on this
-   * since T-84; the switch is the second caller, and this is the test that says
-   * so out loud rather than leaving it as a property of the reading.
+   * closed here, by `close()` unsubscribing **before** it awaits `flush()` — and
+   * that order is the whole of it, which took a mutation to establish rather
+   * than a reading. `replaceWith` has leant on it since T-84; the switch is the
+   * second caller.
    */
   describe("closing", () => {
     beforeEach(() => vi.useFakeTimers());
@@ -427,6 +429,49 @@ describe("Persistence", () => {
 
       expect(store.appends).toBe(afterClose);
       expect(await store.logLength()).toBe(inTheLog);
+    });
+
+    /**
+     * The edit that lands **while `close()` is awaiting its own flush**, which
+     * is the case the test above does not reach and the only one where the
+     * order inside `close()` is load-bearing.
+     *
+     * Unsubscribing second, that edit is still being listened for: it goes into
+     * `pending` and *arms a timer*. `close()` then returns, the board switches,
+     * the window has not reloaded yet — and the timer fires against a store
+     * that is now some other board's log. That is the wrong-log append in full,
+     * and it is why the two lines inside `close()` are in the order they are
+     * rather than in the order that reads better.
+     *
+     * Unsubscribing first, the edit is dropped from persistence's view before
+     * it can queue. It is lost either way — the board is going — and the
+     * difference is that one of them loses it quietly here and the other writes
+     * it down somewhere it does not belong.
+     */
+    it("an edit landing during close is not left armed behind it (T-358)", async () => {
+      const store = new Store();
+      const { board, persistence } = await session(store);
+      polaroid(board, 0, 0);
+
+      // The frame that lands mid-IPC. A real one arrives from the render loop
+      // or from a peer while the disk write is in flight; here it rides the
+      // await inside `flush()`, which is the same gap.
+      let landed = false;
+      store.duringAppend = () => {
+        if (landed) return;
+        landed = true;
+        polaroid(board, 900, 900);
+      };
+
+      await persistence.close();
+      expect(landed).toBe(true);
+
+      const afterClose = store.appends;
+      await vi.advanceTimersByTimeAsync(10_000);
+
+      // Nothing was left armed. Past this line the shell may point
+      // `doc_append_update` at another board's log.
+      expect(store.appends).toBe(afterClose);
     });
   });
 
