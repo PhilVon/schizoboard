@@ -1740,7 +1740,15 @@ fn fold_pack(app: &AppHandle, title: &str) -> Result<Option<bundle::Tidied>, Str
             // A compaction *is* `write`, so it leaves a pack with no generations
             // in it at all, and the register has to be told (T-374).
             .map(|tidied| (tidied, 0))
-            .map_err(|e| Refused::Failed(e.to_string()))
+            // The one compact failure that means the file has another writer
+            // (T-375): the fold read the pack, somebody appended, and the
+            // refusal to rename over their work surfaces here. `Taken` for
+            // `save_pack`'s reason — this window stops writing a file it has
+            // lost, and the bar says so.
+            .map_err(|e| match e {
+                bundle::Error::Interleaved { .. } => Refused::Taken,
+                e => Refused::Failed(e.to_string()),
+            })
     })
     .map_err(|refused| refused.to_string())?;
     if let Err(error) = boards.set_title(&entry.pack_id, title) {

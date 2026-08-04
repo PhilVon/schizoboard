@@ -420,6 +420,32 @@ pub fn write(
     snapshot: &[u8],
     dest: &Path,
 ) -> Result<Written> {
+    write_expecting(store, spec, pack_id, snapshot, dest, None)
+}
+
+/// [`write`], refusing the rename if the destination has grown a generation
+/// since `expect_newest` was read out of it (T-375).
+///
+/// The guard [`compact`] folds under. [`append`] checks `newest != ours` out of
+/// the read it was already making, but a compaction's read and its rename are
+/// separated by rewriting the whole file — seconds, on the packs worth
+/// compacting — and a generation another window appends in between would go
+/// under the rename and out of existence, with its writer told the save
+/// succeeded. Re-reading the central directory here closes that window to the
+/// gap between two adjacent calls; it is not zero, on [`append`]'s own honesty:
+/// an interleave is *caught*, not prevented.
+///
+/// `None` is every other caller: a copy, a first home, a torn-append recovery —
+/// writes whose destination is not a file some other window believes it is
+/// appending to, or is a file whose directory is already gone.
+fn write_expecting(
+    store: &AssetStore,
+    spec: &Spec,
+    pack_id: Option<&str>,
+    snapshot: &[u8],
+    dest: &Path,
+    expect_newest: Option<u32>,
+) -> Result<Written> {
     let (embedded, missing) = plan(store, spec);
     // Minted here when there is none, and **the caller is Rust** — this is not
     // on `Spec`, so it cannot arrive from the webview. That is deliberate and it
@@ -442,6 +468,19 @@ pub fn write(
     let result = fill(store, &manifest, snapshot, &embedded, &temp);
     match result {
         Ok(bytes) => {
+            if let Some(ours) = expect_newest {
+                // A destination that will not answer is treated the same as one
+                // that has moved: somebody may be mid-append, and renaming over
+                // a file in an unknown state is the loss this guard exists to
+                // refuse.
+                let theirs = generation_of(dest).inspect_err(|_| {
+                    let _ = fs::remove_file(&temp);
+                })?;
+                if theirs != ours {
+                    let _ = fs::remove_file(&temp);
+                    return Err(Error::Interleaved { ours, theirs });
+                }
+            }
             fs::rename(&temp, dest).inspect_err(|_| {
                 let _ = fs::remove_file(&temp);
             })?;
@@ -706,19 +745,33 @@ pub fn compact(store: &AssetStore, pack_id: &str, dest: &Path) -> Result<Tidied>
     // before anything reads the store to decide what goes in the new file.
     top_up(store, dest)?;
 
-    let (manifest, snapshot) = {
+    // The newest generation and the document it holds, out of one open — the
+    // number is what the fold's rename is conditional on (T-375).
+    let (newest, (manifest, snapshot)) = {
         let mut zip = ZipArchive::new(BufReader::new(File::open(dest)?))?;
-        current(&mut zip)?
+        (newest_generation(&zip).unwrap_or(0), current(&mut zip)?)
     };
     let spec = Spec {
         schema_version: manifest.schema_version,
         title: manifest.title,
         assets: manifest.assets,
     };
+    // T-375's race, made constructible: a test may land an append right here,
+    // between the read above and the write below. Compiled only into tests and
+    // a no-op unless one is installed.
+    #[cfg(test)]
+    tests::MID_FOLD.with(|hook| {
+        if let Some(f) = hook.borrow_mut().as_mut() {
+            f()
+        }
+    });
     // The register's pack id, not the manifest's, for `write`'s reason: a
     // compaction is the same file being written again, so it keeps its id where
-    // a copy mints one.
-    let written = write(store, &spec, Some(pack_id), &snapshot, dest)?;
+    // a copy mints one. Conditional on the file still being at the generation
+    // read above — a generation appended during the fold must survive it
+    // (T-375), and `Interleaved` here is `append`'s: the file has moved under
+    // us, and this window stops writing it.
+    let written = write_expecting(store, &spec, Some(pack_id), &snapshot, dest, Some(newest))?;
     Ok(Tidied {
         // A *fraction* rather than a count of bytes reclaimed, and that is a
         // wording decision rather than a technical one. `lib/filesize.ts`
@@ -1267,6 +1320,15 @@ fn entry<R: Read + io::Seek>(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    thread_local! {
+        /// The seam [`compact`] exposes to T-375's race test: a closure run
+        /// between the fold's read and its write, on this thread only. Tests
+        /// each run on their own thread, so an installed hook cannot leak into
+        /// a neighbour.
+        pub(super) static MID_FOLD: std::cell::RefCell<Option<Box<dyn FnMut()>>> =
+            const { std::cell::RefCell::new(None) };
+    }
 
     /// The T-84 call shape: `write` with no pack id, so a fresh one is minted.
     ///
@@ -2264,6 +2326,141 @@ mod tests {
 
         appended(&store, &spec(vec![]), &id, b"one", &pack).unwrap();
         assert_eq!(generation_of(&pack).unwrap(), 1);
+    }
+
+    // --- a fold against a concurrent writer (T-375) --------------------------
+
+    /// AC-1055, AC-1056, AC-1058. A generation appended between a fold's read
+    /// and its rename survives, because the rename is refused.
+    ///
+    /// The race is constructed at the seam where it is decided: `expect_newest`
+    /// *is* the fold's read, so an append landing after it is exactly an append
+    /// landing mid-fold — no clock or thread needed. And the two beliefs here
+    /// are both real, neither a register's: the folder's came out of the file it
+    /// read, the appender's out of the file it appended to.
+    #[test]
+    fn a_generation_appended_during_a_fold_survives_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = store(&dir, "mine");
+        let pack = dir.path().join("case one.schizo");
+        let id = crate::board::mint_pack_id();
+        super::write(&store, &spec(vec![]), Some(&id), b"the export", &pack).unwrap();
+
+        // The fold reads the file here: newest is 0, the document "the export".
+        // The other instance's flush lands while the fold is rewriting:
+        appended(&store, &spec(vec![]), &id, b"their flush", &pack).unwrap();
+
+        let refused =
+            write_expecting(&store, &spec(vec![]), Some(&id), b"the export", &pack, Some(0));
+
+        assert!(
+            matches!(refused, Err(Error::Interleaved { ours: 0, theirs: 1 })),
+            "{refused:?}"
+        );
+        // Their flush is still the board — nothing went under a rename.
+        assert_eq!(read(&store, &pack).unwrap().snapshot, b"their flush");
+    }
+
+    /// AC-1057. The writer whose generation the fold refused to take is not
+    /// damaged by the refusal: its next flush appends as if the fold had never
+    /// been tried, because it was not — the file is exactly as that writer left
+    /// it.
+    #[test]
+    fn the_writer_a_fold_stood_down_for_keeps_writing() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = store(&dir, "mine");
+        let pack = dir.path().join("case one.schizo");
+        let id = crate::board::mint_pack_id();
+        super::write(&store, &spec(vec![]), Some(&id), b"the export", &pack).unwrap();
+        appended(&store, &spec(vec![]), &id, b"their flush", &pack).unwrap();
+        let before = fs::read(&pack).unwrap();
+
+        write_expecting(&store, &spec(vec![]), Some(&id), b"the export", &pack, Some(0))
+            .unwrap_err();
+
+        assert_eq!(fs::read(&pack).unwrap(), before);
+        append(&store, &spec(vec![]), &id, b"their evening", &pack, 1).unwrap();
+        assert_eq!(read(&store, &pack).unwrap().snapshot, b"their evening");
+    }
+
+    /// The refusal cleans up after itself: the temporary the fold had already
+    /// filled does not stay behind beside the pack.
+    #[test]
+    fn a_refused_fold_leaves_no_temporary_beside_the_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = store(&dir, "mine");
+        let pack = dir.path().join("case one.schizo");
+        let id = crate::board::mint_pack_id();
+        super::write(&store, &spec(vec![]), Some(&id), b"the export", &pack).unwrap();
+        appended(&store, &spec(vec![]), &id, b"their flush", &pack).unwrap();
+
+        write_expecting(&store, &spec(vec![]), Some(&id), b"the export", &pack, Some(0))
+            .unwrap_err();
+
+        let strays: Vec<_> = fs::read_dir(dir.path())
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .filter(|name| name != "case one.schizo" && name != "mine")
+            .collect();
+        assert!(strays.is_empty(), "{strays:?}");
+    }
+
+    /// AC-1056, through `compact` itself rather than the seam underneath it: an
+    /// append genuinely lands between the fold's read and its write, and the
+    /// appended generation is what the file holds afterwards. This is the test
+    /// that pins `compact` *passing* the newest it read — the three above would
+    /// all survive a `compact` that handed `write_expecting` nothing.
+    #[test]
+    fn an_append_landing_mid_fold_survives_the_fold() {
+        let dir = tempfile::tempdir().unwrap();
+        // The other instance's store first, before the helper's name is
+        // shadowed: its own `AssetStore` over the same directory, the way a
+        // second process would hold one.
+        let their_store = store(&dir, "mine");
+        let store = store(&dir, "mine");
+        let pack = dir.path().join("case one.schizo");
+        let id = crate::board::mint_pack_id();
+        super::write(&store, &spec(vec![]), Some(&id), b"the export", &pack).unwrap();
+        appended(&store, &spec(vec![]), &id, b"one", &pack).unwrap();
+
+        // The other instance, striking between compact's read and its rename.
+        let their_pack = pack.clone();
+        let their_id = id.clone();
+        MID_FOLD.with(|hook| {
+            *hook.borrow_mut() = Some(Box::new(move || {
+                appended(&their_store, &spec(vec![]), &their_id, b"their flush", &their_pack)
+                    .unwrap();
+            }))
+        });
+        let refused = compact(&store, &id, &pack);
+        MID_FOLD.with(|hook| *hook.borrow_mut() = None);
+
+        assert!(
+            matches!(refused, Err(Error::Interleaved { ours: 1, theirs: 2 })),
+            "{refused:?}"
+        );
+        assert_eq!(read(&store, &pack).unwrap().snapshot, b"their flush");
+    }
+
+    /// And a fold nobody raced does what it always did — `compact` hands
+    /// `write_expecting` the newest it read, they agree, and the file folds.
+    /// (Every `compact` test in this file exercises the same agreement; this
+    /// one exists to pin it *with* generations in the file to fold away.)
+    #[test]
+    fn a_fold_nobody_raced_still_folds() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = store(&dir, "mine");
+        let pack = dir.path().join("case one.schizo");
+        let id = crate::board::mint_pack_id();
+        super::write(&store, &spec(vec![]), Some(&id), b"the export", &pack).unwrap();
+        appended(&store, &spec(vec![]), &id, b"one", &pack).unwrap();
+        appended(&store, &spec(vec![]), &id, b"two", &pack).unwrap();
+
+        compact(&store, &id, &pack).unwrap();
+
+        assert_eq!(generation_of(&pack).unwrap(), 0);
+        assert_eq!(read(&store, &pack).unwrap().snapshot, b"two");
     }
 
     /// AC-1024. The point of appending rather than rewriting is that the bytes
