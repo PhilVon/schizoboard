@@ -8,6 +8,7 @@ import { CAPTION_BOTTOM, CAPTION_HEIGHT, FRAME_BOTTOM } from "@/lib/polaroid";
 import { ItemInk } from "@/render/ink/canvas";
 import {
   DomItemLayer,
+  fitLeafBody,
   NO_FACTS,
   type AssetFacts,
   type AssetLookup,
@@ -3461,5 +3462,81 @@ describe("a caption that will not fit is written smaller", () => {
     // The band is a physical part of the print, so a short caption does not get
     // big writing — only a long one gets small writing.
     expect(captionSize("x")).toBeLessThanOrEqual(330 * 0.055 + 0.01);
+  });
+});
+
+/**
+ * A page that will not fit its sheet is written smaller — T-385, the reading
+ * surface's copy of the caption rule above.
+ *
+ * happy-dom lays nothing out, so the box is modelled: `clientHeight` is the
+ * sheet's fixed column and `scrollHeight` answers what the page would measure
+ * at the scale the last write set — which is exactly the contract the real DOM
+ * gives `fitLeafBody`, minus the browser. The driven run on T-385 is the other
+ * half of the evidence, against real layout.
+ */
+describe("a page that will not fit its sheet is written smaller", () => {
+  /** A `.leaf-body` whose drawn height at scale 1 would be `need` in a box of
+   *  `box`, shrinking linearly with the scale written to it. */
+  function bodyOf(box: number, need: number | ((scale: number) => number)): HTMLElement {
+    const el = document.createElement("div");
+    Object.defineProperty(el, "clientHeight", { get: () => box });
+    Object.defineProperty(el, "scrollHeight", {
+      get: () => {
+        const scale = el.style.fontSize === "" ? 1 : Number.parseFloat(el.style.fontSize);
+        return typeof need === "function" ? need(scale) : Math.round(need * scale);
+      },
+    });
+    return el;
+  }
+
+  it("leaves a page that fits at the size the sheet was cut for", () => {
+    const body = bodyOf(406, 380);
+    fitLeafBody(body);
+    expect(body.style.fontSize).toBe("");
+  });
+
+  it("lets a page that fits back out of a shrink its predecessor earned", () => {
+    // The same body draws page after page, and the scale belongs to the page
+    // rather than to the sheet — a turn from a dense page to a sparse one must
+    // not carry the small writing forward.
+    const body = bodyOf(406, 380);
+    body.style.fontSize = "0.8em";
+    fitLeafBody(body);
+    expect(body.style.fontSize).toBe("");
+  });
+
+  it("writes an overflowing page smaller by its own overshoot", () => {
+    // The driven numbers: a markdown page measuring 502 in a 406 box.
+    const body = bodyOf(406, 502);
+    fitLeafBody(body);
+    const scale = Number.parseFloat(body.style.fontSize);
+    expect(scale).toBeCloseTo(406 / 502, 3);
+    // And at that scale the page fits.
+    expect(body.scrollHeight).toBeLessThanOrEqual(406);
+  });
+
+  it("takes a second pass when the first lands short", () => {
+    // Real shrinking re-wraps, so height is not perfectly linear in the scale.
+    // Model a page that stays stubbornly 20 px too tall after the first cut.
+    const need = (scale: number): number => (scale === 1 ? 500 : Math.round(500 * scale) + 20);
+    const body = bodyOf(406, need);
+    fitLeafBody(body);
+    expect(body.scrollHeight).toBeLessThanOrEqual(406);
+  });
+
+  it("stops at the floor rather than vanishing", () => {
+    const body = bodyOf(100, 1000);
+    fitLeafBody(body);
+    expect(Number.parseFloat(body.style.fontSize)).toBe(0.5);
+  });
+
+  it("touches nothing it cannot measure", () => {
+    // A pooled view, or this very environment: no layout, box of zero. The one
+    // thing it may still do is clear a stale scale, which costs nothing.
+    const body = bodyOf(0, 500);
+    body.style.fontSize = "0.7em";
+    fitLeafBody(body);
+    expect(body.style.fontSize).toBe("");
   });
 });

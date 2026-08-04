@@ -3122,6 +3122,11 @@ class CaseView implements View {
 
     this.leaf.dataset["page"] =
       view === null ? "reading" : view.phase === "ready" ? (content?.kind ?? "reading") : view.phase;
+
+    // After the dataset, because `.leaf-body` is `display: none` in every state
+    // but a text-bearing one and an unlaid box measures zero.
+    if (content?.kind === "plain") fitLeafBody(body);
+    else body.style.fontSize = "";
   }
 
   /**
@@ -3582,6 +3587,67 @@ function writeMarkdown(
   // quietly differs is how the next person concludes markdown is exempt from
   // something. Nothing here jitters, because the marks came off a machine.
   void seed;
+}
+
+/**
+ * How small a page's writing will go before the clip is the lesser evil.
+ *
+ * Below half size the page stops reading as the same document beside its
+ * neighbours, and no real page needs it: the worst case the grid can produce —
+ * every charged row drawn one-to-one, plus markdown's heading sizes and block
+ * margins — lands around 0.75.
+ */
+const LEAF_FIT_FLOOR = 0.5;
+
+/**
+ * The page, written smaller when it will not fit the sheet — T-385, and the
+ * reading surface's copy of the rule every fixed box on this board follows
+ * (T-333, T-338, T-341): writing that does not fit its object is written
+ * smaller, never clipped.
+ *
+ * ## Why the sheet cannot simply be trusted to fit
+ *
+ * Pagination charges rows on `text.rs`'s 66-column grid and is deliberately
+ * blind to the typeface — D-60's bargain, and the grid froze when the first
+ * citation was stored. The sheet holds about 37 rendered rows at its size, and
+ * what bridged the gap to the grid's 46 was re-wrapping: prose charged at 66
+ * columns re-wraps into the sheet's ~85-character measure and comes back nine
+ * or so rows shorter. **Lines that do not re-wrap get no such discount.** A
+ * page of list items, headings, code or plain short lines draws one line per
+ * charged row — 46 into a box of 37 — and a markdown page is made of exactly
+ * those blocks, with T-348's heading sizes and block margins on top. Driven,
+ * that measured 69 to 96 px clipped off a 406 px body, a fifth of the page
+ * gone unread under `overflow: hidden`.
+ *
+ * ## Why the answer is the type size and not the grid
+ *
+ * Moving either grid number moves every stored page reference — corruption by
+ * stylesheet edit, the exact failure D-60 chose the byte rule to prevent. And
+ * the sheet cannot grow: it is A4 in a folder that holds A4. What is left is
+ * what a typist with one sheet left does — set the page smaller. Measured on
+ * the laid-out DOM rather than estimated the way `fitWriting` estimates,
+ * because a page mixes faces, sizes, indents and margins that an advance-width
+ * guess would have to re-derive from `items.css` and silently drift from.
+ *
+ * The scale is in `em` so it composes with the leaf's own size (`sizeLabels`
+ * sets that in px off the item's width) and survives a resize unchanged. A
+ * page that fits keeps its size — most prose pages — so the common case costs
+ * one layout read on a page turn and writes nothing.
+ *
+ * Each pass scales by the exact overshoot; shrinking only ever *removes* wrap
+ * lines, so one pass usually lands and the loop is a bound, not a search.
+ */
+export function fitLeafBody(body: HTMLElement): void {
+  body.style.fontSize = "";
+  if (body.clientHeight <= 0) return; // pooled out of layout, or a test's DOM
+  let scale = 1;
+  for (let pass = 0; pass < 3 && scale > LEAF_FIT_FLOOR; pass++) {
+    const box = body.clientHeight;
+    const need = body.scrollHeight;
+    if (need <= box) break;
+    scale = Math.max(LEAF_FIT_FLOOR, scale * (box / need));
+    body.style.fontSize = `${scale.toFixed(4)}em`;
+  }
 }
 
 /** The element one role is drawn as. See `items.css` for what each looks like. */

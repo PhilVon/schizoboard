@@ -2382,11 +2382,16 @@ textarea.item-field::-webkit-scrollbar {
  * grid's 66 columns and this measure's 85 do not agree, and were never going to
  * — D-60 defines pagination in bytes and is deliberately blind to the typeface.
  * What has to be true is that a page's worth of text fits the sheet and roughly
- * fills it, and at 8.4 units a real page draws in 34 lines of the 37 that fit.
+ * fills it, and at 8.4 units a page of wrapping prose draws in about 34 lines
+ * of the 37 that fit. **That discount is the re-wrap's, and lines that do not
+ * re-wrap never get it**: a page of list items, headings, code or short plain
+ * lines draws one line per charged row — up to 46 into the 37 — which T-385
+ * measured as a fifth of a markdown page clipped off the foot of the sheet.
  *
- * The lever, if that ever stops being true, is the grid rather than this:
- * layout is downstream of pagination and has to stay that way, or a stylesheet
- * edit moves every citation anybody stored.
+ * The lever is NOT the grid: it froze when the first citation was stored, or a
+ * stylesheet edit moves every reference anybody kept. `fitLeafBody` (dom.ts)
+ * is the mechanism instead — a page measured too tall for the sheet is written
+ * smaller, per T-333/T-338/T-341's rule for every fixed box on the board.
  */
 /*
  * A VHS is 290 x 160 units, so the sheet is 214 tall and 151.6 across it, and
@@ -2473,9 +2478,12 @@ textarea.item-field::-webkit-scrollbar {
  * worked out the baselines moved — and collapsing them would be this side
  * inventing a paragraph structure the file never stated.
  *
- * It scrolls nowhere. A page holds a page: whatever does not fit is the
- * pagination being wrong rather than something to be scrolled to, which is why
- * the grid above is asserted rather than trusted.
+ * It scrolls nowhere. A page holds a page — but the grid's 46 rows only fit
+ * this box when the text re-wraps shorter (see the measure note above), and a
+ * page of lines that do not re-wrap draws more rows than the sheet has. So
+ * `fitLeafBody` (dom.ts, T-385) measures the drawn page and writes it smaller
+ * when it has to; the `overflow: hidden` is the backstop under that, not the
+ * policy.
  */
 .leaf-body {
   flex: 1 1 auto;
