@@ -105,7 +105,9 @@ An item is a physical object lying on the board. Three archetypes, sharing one s
 | **Note** | Pasting text | Lined or plain paper, handwritten face, ragged or torn edge |
 | **Scrap** | The note tool with no text | Blank paper. Exists purely to be drawn on |
 
-They differ only in styling and defaults. Every archetype can hold text, can hold ink, can hold an image, and can be pinned. A scrap is not a special type in the code — it's a note that happens to have no text yet, which is exactly what a blank piece of paper is.
+They differ only in styling and defaults. Every archetype can hold text, can hold ink, and can be pinned. A scrap is not a special type in the code — it's a note that happens to have no text yet, which is exactly what a blank piece of paper is.
+
+**"can hold an image" was struck from that sentence on T-327.** It claimed something the code did not do — `PaperView.bind` takes its asset resolver and ignores it, so a note with an `assetId` set rendered as blank paper and the bytes were simply invisible, with nothing erroring. The clause went rather than the behaviour being built, because **a picture on this board is a polaroid**: nothing in section 3.4's restyle grammar offers a way to put an image *on* a note, so honouring the sentence would have meant a renderer with no producer — the shape T-219 and T-240 have both already been filed as defects for. A note is for writing on and a photograph is a photograph.
 
 **There was a fourth row here, and it was struck on Q-179.** *Card — explicit creation — index card, ruled, slightly stiffer paper.* An index card is a **stock**, not an archetype: everything you can see about one comes from `paperStock: "index"` — the 20px ruling, the red margin, the die-cut edge at a third of a unit of rag, the colour — and every sheet on this board already offers that stock on the Paper strip of its right-click menu. What the `card` *type* bought on top of that was one line of code choosing that stock by default, which is not an archetype's worth of difference. It followed the scrap the paragraph above describes, and for the same reason.
 

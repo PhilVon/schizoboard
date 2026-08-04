@@ -2,9 +2,9 @@
  * The DOM item layer: four archetypes, one pool, one write phase.
  *
  * > They differ only in styling and defaults. Every archetype can hold text,
- * > can hold ink, can hold an image, and can be pinned. A scrap is not a
- * > special type in the code — it's a note that happens to have no text yet,
- * > which is exactly what a blank piece of paper is. — DESIGN section 2.1
+ * > can hold ink, and can be pinned. A scrap is not a special type in the
+ * > code — it's a note that happens to have no text yet, which is exactly
+ * > what a blank piece of paper is. — DESIGN section 2.1
  *
  * So there are two *views*, not four: a polaroid, and a sheet of paper. Note,
  * scrap and card are the same view with different stock.
@@ -1907,6 +1907,18 @@ class PaperView implements View {
     this.el.append(this.shadow.el, this.surface, ...this.tape.nodes);
   }
 
+  /**
+   * The three underscored parameters are the shape every view's `bind` takes,
+   * and paper genuinely wants none of them.
+   *
+   * `_assetUrl` in particular was, until T-327, a **documented promise this
+   * class quietly broke**: DESIGN 2.1 said every archetype can hold an image,
+   * a note with an `assetId` set rendered as blank paper, and nothing errored.
+   * The clause was struck rather than the image built — a picture on this
+   * board is a polaroid, and section 3.4's restyle grammar offers no way to put
+   * one *on* a note, so honouring it would have been a renderer with no
+   * producer. The parameter stays because the signature is shared.
+   */
   bind(
     cold: ItemCold,
     _facts: AssetFacts,
