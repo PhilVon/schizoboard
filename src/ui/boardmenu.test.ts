@@ -9,6 +9,8 @@
 
 import { beforeEach, describe, expect, it } from "vitest";
 
+import type { BoardCard } from "@/platform/types";
+
 import { Scene, type ItemPose } from "@/state/scene";
 import type { BoardWriter, StringStyle, WritePose } from "@/state/tools/tool";
 import { STRING_MATERIALS } from "@/lib/material";
@@ -27,6 +29,8 @@ import {
   itemMenuRows,
   penMenuRows,
   pinMenuRows,
+  recentBoards,
+  RECENT_BOARDS,
   stringMenuRows,
   type Pen,
 } from "@/ui/boardmenu";
@@ -1053,6 +1057,10 @@ describe("the board menu on bare cork", () => {
         open: () => void asked.push("open"),
         pdf: () => void asked.push("pdf"),
         image: () => void asked.push("image"),
+        new: () => void asked.push("new"),
+        // The ordinary installation: one board, so there is nowhere else to go
+        // and the recents are empty (T-364).
+        recents: [],
         // The ordinary board: it has a file of its own, so there is nothing to
         // give it and no row (T-361).
         home: null,
@@ -1070,7 +1078,8 @@ describe("the board menu on bare cork", () => {
   };
   const AGE_ON = "Stop the board ageing";
   const AGE_OFF = "Let the board age";
-  const EXPORT = "Export board…";
+  const SAVE_COPY = "Save a copy…";
+  const NEW = "New board…";
   const PDF = "Export the board as PDF…";
   const PDF_SELECTION = "Export the selection as PDF…";
   const IMAGE = "Export the board as an image…";
@@ -1131,7 +1140,13 @@ describe("the board menu on bare cork", () => {
     expect(rows[0]!.divided).toBe(false);
   });
 
-  it("offers the export under the invite, because both hand the board over", () => {
+  /**
+   * The order T-364 settled on: the boards, then the files made out of this
+   * one. *New board…* and *Open a board…* are the two verbs that are always
+   * there, the recents sit under them, and everything below the second divider
+   * writes a new file out of the board you are on.
+   */
+  it("puts the boards above the files made out of this one", () => {
     const { invite } = sharing(LINK);
     const rows = boardMenuRows(
       scene,
@@ -1142,7 +1157,15 @@ describe("the board menu on bare cork", () => {
       switching(true).ageing,
       exporting().board,
     ) as MenuRow[];
-    expect(rows.map((r) => r.label)).toEqual([AGE_ON, "Copy invite link", EXPORT, PDF, IMAGE, OPEN]);
+    expect(rows.map((r) => r.label)).toEqual([
+      AGE_ON,
+      "Copy invite link",
+      NEW,
+      OPEN,
+      SAVE_COPY,
+      PDF,
+      IMAGE,
+    ]);
   });
 
   /**
@@ -1180,7 +1203,7 @@ describe("the board menu on bare cork", () => {
     ) as MenuRow[];
     // First among the file rows: it is the only one about a board that is *not*
     // in a file, and the three below it all make a new file out of one that is.
-    expect(rows.map((r) => r.label)).toEqual([AGE_ON, HOME, EXPORT, PDF, IMAGE, OPEN]);
+    expect(rows.map((r) => r.label)).toEqual([AGE_ON, NEW, OPEN, HOME, SAVE_COPY, PDF, IMAGE]);
     rows.find((r) => r.label === HOME)!.run();
     expect(shell.asked).toEqual(["home"]);
   });
@@ -1217,11 +1240,231 @@ describe("the board menu on bare cork", () => {
       switching(true).ageing,
       shell.board,
     ) as MenuRow[];
-    rows.find((r) => r.label === EXPORT)!.run();
+    rows.find((r) => r.label === SAVE_COPY)!.run();
     rows.find((r) => r.label === OPEN)!.run();
     expect(shell.asked).toEqual(["export", "open"]);
     // Handing a board over, or taking one, is not an edit to this one.
     expect(writes).toEqual([]);
+  });
+
+  /**
+   * The recents (T-364, AC-1015, D-69).
+   *
+   * D-38 struck this list down and named what would bring it back, and it was
+   * not quite what happened: it expected multi-window, and what actually went
+   * away was *replace*. A recents list was a list of one-click ways to destroy
+   * the board you were looking at; opening board B now leaves board A intact in
+   * its own file, so there is no destruction left for the deliberateness of
+   * going and finding a file to protect against.
+   */
+  describe("and the boards you had", () => {
+    const opened: string[] = [];
+    const recent = (packId: string, title: string, folder = "Schizoboard") => ({
+      packId,
+      title,
+      folder,
+      open: (id: string) => void opened.push(id),
+    });
+    const withRecents = (...rows: ReturnType<typeof recent>[]) => ({
+      ...exporting().board,
+      recents: rows,
+    });
+
+    beforeEach(() => {
+      opened.length = 0;
+    });
+
+    it("lists them as flat rows under the two verbs", () => {
+      const { invite } = sharing(null);
+      const rows = boardMenuRows(
+        scene,
+        write,
+        [],
+        [],
+        invite,
+        switching(true).ageing,
+        withRecents(recent("a".repeat(32), "The Redgrave file"), recent("b".repeat(32), "Cold cases")),
+      ) as MenuRow[];
+
+      // Flat rows and not a picker: a `MenuChoice` is a chip with no text of
+      // its own, painted by swatch, weight or fibre — right for a colour you
+      // recognise on sight, wrong for a board whose identity *is* its name.
+      expect(rows.map((r) => r.label)).toEqual([
+        AGE_ON,
+        NEW,
+        OPEN,
+        "The Redgrave file",
+        "Cold cases",
+        SAVE_COPY,
+        PDF,
+        IMAGE,
+      ]);
+      expect(rows.every((r) => typeof r.label === "string")).toBe(true);
+    });
+
+    it("opens the board a row names, by the token the shell issued", () => {
+      const { invite } = sharing(null);
+      const first = "c".repeat(32);
+      const second = "d".repeat(32);
+      const rows = boardMenuRows(
+        scene,
+        write,
+        [],
+        [],
+        invite,
+        switching(true).ageing,
+        // Two, and the *second* is picked. With one row in the list a menu that
+        // always opened `recents[0]` would pass this and be wrong.
+        withRecents(recent(first, "The Redgrave file"), recent(second, "Cold cases")),
+      ) as MenuRow[];
+
+      rows.find((r) => r.label === "Cold cases")!.run();
+
+      // An opaque token and never a path — ARCHITECTURE section 4.4 read
+      // outward, which is why `BoardRow` carries a folder *name* at most.
+      expect(opened).toEqual([second]);
+    });
+
+    /**
+     * Two boards called *Untitled board* is the ordinary case rather than a
+     * corner: it is what every board is called before somebody names it, and a
+     * menu with the same row twice is a menu you cannot use.
+     */
+    it("says which folder only when the title does not stand alone", () => {
+      const { invite } = sharing(null);
+      const rows = boardMenuRows(
+        scene,
+        write,
+        [],
+        [],
+        invite,
+        switching(true).ageing,
+        withRecents(
+          recent("a".repeat(32), "Untitled board", "Schizoboard"),
+          recent("b".repeat(32), "Untitled board", "Case files"),
+          recent("c".repeat(32), "The Redgrave file", "Schizoboard"),
+        ),
+      ) as MenuRow[];
+      const labels = rows.map((r) => r.label);
+
+      expect(labels).toContain("Untitled board — Schizoboard");
+      expect(labels).toContain("Untitled board — Case files");
+      // And the one that stands alone is left alone: the same six words after
+      // every title is noise that hides the case it exists for.
+      expect(labels).toContain("The Redgrave file");
+    });
+
+    /**
+     * The mapping from the register, which is the only part of the recents with
+     * a decision in it — which boards, and how many.
+     */
+    describe("read off the register", () => {
+      const card = (packId: string, over: Partial<BoardCard> = {}): BoardCard => ({
+        packId,
+        title: "Untitled board",
+        folder: "Schizoboard",
+        homed: true,
+        current: false,
+        ...over,
+      });
+
+      it("leaves out the board the menu is open on top of", () => {
+        const rows = recentBoards(
+          [
+            card("a".repeat(32), { current: true, title: "This one" }),
+            card("b".repeat(32), { title: "That one" }),
+          ],
+          () => {},
+        );
+
+        // Not somewhere to go, and a row for it would be a reload dressed as a
+        // destination.
+        expect(rows.map((r) => r.title)).toEqual(["That one"]);
+      });
+
+      it("stops at five, however many boards this installation holds", () => {
+        const rows = recentBoards(
+          Array.from({ length: 12 }, (_, i) => card(`${i}`.padStart(32, "0"), { title: `Board ${i}` })),
+          () => {},
+        );
+
+        expect(rows).toHaveLength(RECENT_BOARDS);
+        expect(RECENT_BOARDS).toBe(5);
+        // The first five of a list the shell already sorted most-recent-first,
+        // rather than any five.
+        expect(rows.map((r) => r.title)).toEqual([
+          "Board 0",
+          "Board 1",
+          "Board 2",
+          "Board 3",
+          "Board 4",
+        ]);
+      });
+
+      it("is empty on an installation that has only ever had one board", () => {
+        expect(recentBoards([card("a".repeat(32), { current: true })], () => {})).toEqual([]);
+        expect(recentBoards([], () => {})).toEqual([]);
+      });
+    });
+
+    it("has no rows at all on an installation with one board", () => {
+      const { invite } = sharing(null);
+      const rows = boardMenuRows(
+        scene,
+        write,
+        [],
+        [],
+        invite,
+        switching(true).ageing,
+        exporting().board,
+      ) as MenuRow[];
+
+      expect(rows.map((r) => r.label)).toEqual([AGE_ON, NEW, OPEN, SAVE_COPY, PDF, IMAGE]);
+    });
+  });
+
+  /**
+   * AC-1017. The guard `open` gave up did not evaporate — it moved to the row
+   * that changes what boards this installation *has*.
+   */
+  it("drops starting a new board on one this build may only partly read", () => {
+    const { invite } = sharing(LINK);
+    const { board, asked } = exporting();
+    const rows = boardMenuRows(
+      scene,
+      write,
+      [],
+      [],
+      invite,
+      switching(true).ageing,
+      { ...board, new: null },
+    ) as MenuRow[];
+
+    const labels = rows.map((r) => r.label);
+    expect(labels).not.toContain(NEW);
+    // And going somewhere else is still offered, which is the pair of it: a
+    // sealed board is one to leave, not one to be trapped on.
+    expect(labels).toContain(OPEN);
+    rows.find((r) => r.label === OPEN)!.run();
+    expect(asked).toEqual(["open"]);
+  });
+
+  it("asks the shell to start a new board, and does not write to this one", () => {
+    const { invite } = sharing(null);
+    const shell = exporting();
+    const rows = boardMenuRows(
+      scene,
+      write,
+      [],
+      [],
+      invite,
+      switching(true).ageing,
+      shell.board,
+    ) as MenuRow[];
+
+    rows.find((r) => r.label === NEW)!.run();
+
+    expect(shell.asked).toEqual(["new"]);
   });
 
   it("drops the export in a plain browser, where nothing can write a file", () => {
@@ -1229,7 +1472,7 @@ describe("the board menu on bare cork", () => {
     // is a question nothing on screen can answer.
     const { invite } = sharing(LINK);
     const rows = boardMenuRows(scene, write, [], [], invite, switching(true).ageing, null) as MenuRow[];
-    expect(rows.map((r) => r.label)).not.toContain(EXPORT);
+    expect(rows.map((r) => r.label)).not.toContain(SAVE_COPY);
     expect(rows.map((r) => r.label)).not.toContain(OPEN);
   });
 
@@ -1246,19 +1489,20 @@ describe("the board menu on bare cork", () => {
       switching(true).ageing,
       exporting().board,
     ) as MenuRow[];
-    expect(rows.map((r) => r.label)).toEqual([AGE_ON, EXPORT, PDF, IMAGE, OPEN]);
+    expect(rows.map((r) => r.label)).toEqual([AGE_ON, NEW, OPEN, SAVE_COPY, PDF, IMAGE]);
   });
 
   /**
-   * And it goes altogether on a board this build may not write to (T-224).
+   * Null still takes the row away, and the reason is now only the platform's.
    *
-   * The same standing `pdf` is on — null takes the row away — and the stronger
-   * reason: opening a bundle *replaces* the board in this window, writing the
-   * new snapshot over this one's log. On a read-only board it is the only row
-   * left here that would do the exact thing being refused. Everything else on
-   * this menu is a read or a preference, which is why the menu survives at all.
+   * Until T-356 this was null on a read-only board too, because opening a
+   * bundle *replaced* the board in this window — it wrote the new snapshot over
+   * this one's log, so it was the one row here that did the exact thing being
+   * refused. A board is a file now, so opening B writes nothing to A and a
+   * sealed board may still do it. AC-1016 is that inversion, and the guard it
+   * gave up is on *New board…* below.
    */
-  it("drops opening a board when there is nowhere to open one into", () => {
+  it("drops opening a board when the shell cannot open a picker", () => {
     const { invite } = sharing(LINK);
     const { board, asked } = exporting();
     const rows = boardMenuRows(
@@ -1272,19 +1516,21 @@ describe("the board menu on bare cork", () => {
     ) as MenuRow[];
 
     const labels = rows.map((r) => r.label);
-    expect(labels).toEqual([AGE_ON, "Copy invite link", EXPORT, PDF, IMAGE]);
+    expect(labels).toEqual([AGE_ON, "Copy invite link", NEW, SAVE_COPY, PDF, IMAGE]);
     // And the rest of the menu is untouched — this is one row, not a mode.
-    rows.find((r) => r.label === EXPORT)!.run();
+    rows.find((r) => r.label === SAVE_COPY)!.run();
     rows.find((r) => r.label === IMAGE)!.run();
     expect(asked).toEqual(["export", "image"]);
   });
 
   /**
-   * Q-111 made *Open a board…* the one row here that destroys a board, so it
-   * goes last — below the row somebody reading down wants far more often, and
-   * below the one that makes it survivable if they take it first.
+   * AC-1016, from the other end. Q-111 made *Open a board…* the one row here
+   * that destroyed a board, so it went last — below the row somebody reading
+   * down wants far more often, and below the one that made it survivable if
+   * they took it first. T-356 ended the destruction, and this asserts the row
+   * is no longer being kept out of the way.
    */
-  it("puts opening a board last, under the export that would have saved it", () => {
+  it("no longer keeps opening a board at the bottom, because it destroys nothing", () => {
     const { invite } = sharing(LINK);
     const rows = boardMenuRows(
       scene,
@@ -1296,8 +1542,8 @@ describe("the board menu on bare cork", () => {
       exporting().board,
     ) as MenuRow[];
     const labels = rows.map((r) => r.label);
-    expect(labels.at(-1)).toBe(OPEN);
-    expect(labels.indexOf(EXPORT)).toBeLessThan(labels.indexOf(OPEN));
+    expect(labels.at(-1)).not.toBe(OPEN);
+    expect(labels.indexOf(OPEN)).toBeLessThan(labels.indexOf(SAVE_COPY));
   });
 
   /**
@@ -1463,11 +1709,11 @@ describe("the board menu on bare cork", () => {
   });
 
   /**
-   * Under *Export board…* because a `.schizo` is the board — everything on it,
-   * reopenable — and a PDF is what it looked like. And above *Open a board…*,
-   * which is the row that destroys one.
+   * Under *Save a copy…* because a `.schizo` is the board — everything on it,
+   * reopenable — and a PDF is what it looked like. Both are now below *Open a
+   * board…*, which since T-364 is no longer the row that destroys one.
    */
-  it("puts the picture under the board and above the row that replaces it", () => {
+  it("puts the picture under the copy of the board, and both under the boards", () => {
     const { invite } = sharing(null);
     const labels = (
       boardMenuRows(
@@ -1480,8 +1726,8 @@ describe("the board menu on bare cork", () => {
         exporting().board,
       ) as MenuRow[]
     ).map((r) => r.label);
-    expect(labels.indexOf(EXPORT)).toBeLessThan(labels.indexOf(PDF));
-    expect(labels.indexOf(PDF)).toBeLessThan(labels.indexOf(OPEN));
+    expect(labels.indexOf(SAVE_COPY)).toBeLessThan(labels.indexOf(PDF));
+    expect(labels.indexOf(OPEN)).toBeLessThan(labels.indexOf(SAVE_COPY));
   });
 
   /**
@@ -1510,7 +1756,7 @@ describe("the board menu on bare cork", () => {
         ) as MenuRow[]
       ).map((r) => r.label);
       expect(labels).not.toContain(PDF);
-      expect(labels).toEqual(expect.arrayContaining([EXPORT, IMAGE, OPEN]));
+      expect(labels).toEqual(expect.arrayContaining([SAVE_COPY, IMAGE, OPEN]));
     });
 
     /** The wording is off the selection either way — with the PDF row gone the
