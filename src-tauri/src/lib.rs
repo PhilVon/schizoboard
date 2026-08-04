@@ -1406,7 +1406,21 @@ pub fn run() {
             // beside the document for the same reason: it is the third thing
             // that says which board this is, and all three have to be the same
             // age or a launch resolves a mixture of two.
-            app.manage(board::BoardStore::new(data.join("board-id"))?);
+            //
+            // A register rather than the one string it was until T-356, and it
+            // takes up a data directory from before that change on the spot:
+            // the document at `doc/` becomes a board with the room the old
+            // `board-id` file names, adopted **in place** so that nothing moves
+            // and an older binary would still find the same log. See `board.rs`.
+            let boards = board::BoardStore::new(data.join("boards.json"))?;
+            if let Err(error) = boards.adopt_legacy(&data) {
+                // Not fatal, and deliberately: the board still opens, out of the
+                // same `doc/` it always did, in whatever room `app/sync.ts`
+                // resolves without an answer from here. What is lost is the
+                // register, which the next launch will try to build again.
+                eprintln!("board: this installation's board could not be taken up: {error}");
+            }
+            app.manage(boards);
             app.manage(Hosting::default());
             app.manage(PendingInvite::default());
             // Where the next PDF is going, between the save dialog and the
