@@ -363,45 +363,25 @@ describe("when the board's own file is rewritten", () => {
   });
 
   /**
-   * AC-1011, and stage 2 deletes it. Stage 1's flush is `bundle::write`, a
-   * whole-file copy: on a board of photographs that is gigabytes of disk every
-   * time somebody pauses.
+   * AC-1028, from the other side. Stage 1 stood the idle flush down above a
+   * quarter of a gigabyte, because a flush was a whole-file copy and that is
+   * gigabytes of disk every time somebody pauses. T-366 made a flush one
+   * appended entry, costing the snapshot whatever the pack weighs — so the gate
+   * is gone rather than raised, and a six-gigabyte board flushes on exactly the
+   * same terms as an empty one.
    */
-  it("stands the idle write down once the file is too big to rewrite on a pause", async () => {
-    const shell = flushing({ bytes: 300 * 1024 * 1024 });
-    const pack = new Pack(board(), shell.native, {
-      idleMs: IDLE,
-      idleLimitBytes: 256 * 1024 * 1024,
-    });
+  it("flushes a huge pack on idle exactly as it flushes a small one", async () => {
+    const huge = flushing({ bytes: 6 * 1024 * 1024 * 1024 });
+    const small = flushing({ bytes: 4096 });
 
-    // The first one has to happen, because the size is a fact about a file that
-    // does not exist until it has been written once.
-    pack.wrote();
-    await vi.advanceTimersByTimeAsync(IDLE);
-    expect(shell.calls()).toBe(1);
-
-    pack.wrote();
-    await vi.advanceTimersByTimeAsync(IDLE * 5);
-    expect(shell.calls()).toBe(1);
-    // Owed, and it says so — the two moments that cannot be skipped still take
-    // it, which is the whole of what the gate costs.
-    expect(pack.pending).toBe(true);
-    await pack.flushNow();
-    expect(shell.calls()).toBe(2);
-  });
-
-  it("goes on writing on idle while the file is small enough to", async () => {
-    const shell = flushing({ bytes: 4096 });
-    const pack = new Pack(board(), shell.native, {
-      idleMs: IDLE,
-      idleLimitBytes: 256 * 1024 * 1024,
-    });
-
-    for (let i = 0; i < 3; i++) {
-      pack.wrote();
-      await vi.advanceTimersByTimeAsync(IDLE);
+    for (const shell of [huge, small]) {
+      const pack = new Pack(board(), shell.native, { idleMs: IDLE });
+      for (let i = 0; i < 3; i++) {
+        pack.wrote();
+        await vi.advanceTimersByTimeAsync(IDLE);
+      }
+      expect(shell.calls()).toBe(3);
     }
-    expect(shell.calls()).toBe(3);
   });
 
   /** AC-1009, and it is `crdt/persistence.ts`'s pair kept rather than resembled. */
