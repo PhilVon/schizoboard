@@ -4904,7 +4904,13 @@ async function boot(): Promise<void> {
     // `referencedAssets` builds the keep-set through `readItem`, so on a
     // document from a newer build a future item's photograph is in no keep-set
     // and this sweep would reclaim bytes that are still on the board.
-    void sweepAssets(native, board, { readOnly: persistence.readOnly || readOnly }).then((result) => {
+    void sweepAssets(native, board, {
+      readOnly: persistence.readOnly || readOnly,
+      // Read here rather than thirty seconds ago, which is the point of reading
+      // it at all: the idle flush lands at five seconds, so by now an ordinary
+      // session has written its file and the answer is yes.
+      packedCleanly: pack.packedCleanly,
+    }).then((result) => {
       if (result === null || result.freedBytes === 0) return;
       console.info(
         `[assets] reclaimed ${Math.round(result.freedBytes / 1024)} kB; ` +

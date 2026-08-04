@@ -242,6 +242,8 @@ export class Pack {
   private weight: number | null = null;
   private failing = false;
   private stopped = false;
+  /** See [`packedCleanly`]. False until a flush has actually put it all in. */
+  private clean = false;
 
   constructor(board: BoardDoc, native: Platform, options: PackOptions = {}) {
     this.board = board;
@@ -319,12 +321,37 @@ export class Pack {
    */
   seal(): void {
     this.stopped = true;
+    this.clean = false;
     this.disarm();
   }
 
   /** Whether a flush is owed — for a caller deciding whether to await one. */
   get pending(): boolean {
     return this.behind;
+  }
+
+  /**
+   * Whether this session has put everything the board refers to into its file
+   * (T-363).
+   *
+   * `app/assetgc.ts`'s second condition, on exactly `readOnly`'s standing: a
+   * fact the sweep cannot work out and must not guess. The store is one store
+   * for the whole installation and `asset_gc` takes one board's keep-set, so a
+   * sweep trashes every photograph belonging to every board this window is not
+   * on. That is only recoverable because a board's photographs are in its pack
+   * and `take_up` puts them back on the next open — and this is the flag that
+   * says whether that sentence is true of *this* board yet.
+   *
+   * **False until a flush has actually succeeded**, which includes a board
+   * nobody has edited this session. That reads like a regression in the
+   * collector and is not one: the sweep runs once, thirty seconds after boot,
+   * and only ever collects what was already gone when the window opened. A
+   * session with nothing to flush leaves that rubbish for the next session that
+   * writes something, rather than collecting it against a file that may not
+   * hold what the board refers to.
+   */
+  get packedCleanly(): boolean {
+    return this.clean;
   }
 
   private rearm(): void {
@@ -363,15 +390,30 @@ export class Pack {
         // behind as it is possible to be. It does not spin, because only
         // `wrote` arms the timer and nothing here does.
         this.behind = true;
+        // Cannot fire today and is not dead: a board's path is only ever set,
+        // never cleared, so `clean` is still false from construction when this
+        // runs. It is here because "there is no file" and "the file holds
+        // everything" must never be true together, and the day something makes
+        // a board un-homed — a forget verb, T-368's refusal — the failure would
+        // be a sweep trashing the only copy of somebody's photographs. A
+        // mutation survives this line for exactly that reason; the state it
+        // guards has no test because it has no producer.
+        this.clean = false;
         return;
       }
       this.weight = written.bytes;
+      // A file that went out without a photograph the board refers to is not
+      // one the sweep may collect against — those bytes are on this disk and
+      // nowhere else. `missing` is normally empty and is the whole reason it is
+      // a list rather than a count.
+      this.clean = written.missing.length === 0;
       this.recovered();
     } catch (error) {
       // Put back, exactly as `Persistence` puts a batch back. The document is
       // not at risk — this tier is a copy of a copy — but a file left silently
       // a session behind is the thing somebody hands to somebody else.
       this.behind = true;
+      this.clean = false;
       this.report(error);
     }
   }

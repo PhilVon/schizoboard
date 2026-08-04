@@ -43,7 +43,7 @@ describe("sweeping the asset store", () => {
   it("collects everything the document does not refer to", async () => {
     const { native, gc } = store();
 
-    const result = await sweepAssets(native, withPhotos(PHOTO, OTHER), { readOnly: false });
+    const result = await sweepAssets(native, withPhotos(PHOTO, OTHER), { readOnly: false, packedCleanly: true });
 
     expect(gc).toHaveBeenCalledTimes(1);
     expect([...gc.mock.calls[0]![0]].sort()).toEqual([PHOTO, OTHER].sort());
@@ -58,7 +58,7 @@ describe("sweeping the asset store", () => {
   it("collects everything when the board genuinely refers to nothing", async () => {
     const { native, gc } = store();
 
-    const result = await sweepAssets(native, board(), { readOnly: false });
+    const result = await sweepAssets(native, board(), { readOnly: false, packedCleanly: true });
 
     expect(gc).toHaveBeenCalledWith([]);
     expect(result).toEqual({ freedBytes: 4096, kept: 0 });
@@ -74,7 +74,7 @@ describe("sweeping the asset store", () => {
   it("does not collect at all when the document failed to load", async () => {
     const { native, gc } = store();
 
-    expect(await sweepAssets(native, board(), { readOnly: true })).toBeNull();
+    expect(await sweepAssets(native, board(), { readOnly: true, packedCleanly: true })).toBeNull();
     expect(gc).not.toHaveBeenCalled();
   });
 
@@ -85,8 +85,82 @@ describe("sweeping the asset store", () => {
     });
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
 
-    expect(await sweepAssets(store(gc).native, withPhotos(PHOTO), { readOnly: false })).toBeNull();
+    expect(await sweepAssets(store(gc).native, withPhotos(PHOTO), { readOnly: false, packedCleanly: true })).toBeNull();
     expect(warn).toHaveBeenCalled();
     warn.mockRestore();
+  });
+
+  /**
+   * T-363, and the condition guards something this module cannot see.
+   *
+   * `assets/` is one store for the whole installation and `asset_gc` takes one
+   * keep-set — the board this window is on. So a sweep does not merely collect
+   * what this board has stopped referring to; it collects every photograph
+   * belonging to every board this window is *not* on. That is survivable only
+   * because each board's photographs are in its own pack and `take_up` puts
+   * them back on the next open, which is what `packedCleanly` asserts.
+   */
+  describe("and the board's own file", () => {
+    it("declines until this session has actually written the file", async () => {
+      const { native, gc } = store();
+
+      const result = await sweepAssets(native, withPhotos(PHOTO), {
+        readOnly: false,
+        packedCleanly: false,
+      });
+
+      expect(result).toBeNull();
+      expect(gc).not.toHaveBeenCalled();
+    });
+
+    /**
+     * AC-1014, stated as the thing that must not happen. A photograph that
+     * arrived from a peer after the last flush is in the store and not in the
+     * pack — so it is on this disk and nowhere else, and a sweep run against
+     * some other board's keep-set would put the only copy in the trash.
+     *
+     * `missing` non-empty is exactly that state reported by the shell, and it
+     * is what turns the flag off.
+     */
+    it("does not trash a photograph that arrived after the last flush", async () => {
+      const { native, gc } = store();
+      const board = withPhotos(PHOTO, OTHER);
+
+      // The flush went out before OTHER arrived, so the file has one of the two
+      // and the shell said so.
+      const packed = { missing: [OTHER] };
+      const result = await sweepAssets(native, board, {
+        readOnly: false,
+        packedCleanly: packed.missing.length === 0,
+      });
+
+      expect(result).toBeNull();
+      expect(gc).not.toHaveBeenCalled();
+    });
+
+    it("collects once the file holds everything the board refers to", async () => {
+      const { native, gc } = store();
+
+      const result = await sweepAssets(native, withPhotos(PHOTO), {
+        readOnly: false,
+        packedCleanly: true,
+      });
+
+      expect(gc).toHaveBeenCalledTimes(1);
+      expect(result).toEqual({ freedBytes: 4096, kept: 1 });
+    });
+
+    /** Two conditions, and either one alone is enough to stand it down. */
+    it("declines on a read-only board however cleanly it was packed", async () => {
+      const { native, gc } = store();
+
+      const result = await sweepAssets(native, withPhotos(PHOTO), {
+        readOnly: true,
+        packedCleanly: true,
+      });
+
+      expect(result).toBeNull();
+      expect(gc).not.toHaveBeenCalled();
+    });
   });
 });

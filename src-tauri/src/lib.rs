@@ -1378,6 +1378,28 @@ struct TakenUp {
 ///
 /// A board whose file has been deleted or unplugged still opens, on its
 /// workshop, which is the same rule read from the other end.
+///
+/// ## The photographs are taken either way (T-363)
+///
+/// The document half above is the whole of what this used to do, and it left
+/// stage 1's worst hole open. `assets/` is one store for the whole installation
+/// and `AssetStore::gc` takes one keep-set — the board this window is on — so
+/// the first sweep after a switch trashes every photograph belonging to every
+/// board you are not on. That was argued to be safe because reopening a board
+/// brings them back out of its pack, and it was not: this function read the
+/// pack only when the workshop was empty, and a board you have opened before
+/// always has a workshop. The bytes sat in the thirty-day trash with nothing to
+/// pull them out, and the board drew them torn.
+///
+/// So the assets are topped up on **every** open, and only the document half is
+/// conditional. It is nearly free — `bundle::top_up` reads the manifest and one
+/// `has` per hash, and never touches an entry this machine already holds
+/// (T-359) — and it is what makes the sweep's whole recoverable-for-thirty-days
+/// argument true rather than merely stated.
+///
+/// A top-up that fails is **not** an open that fails, which is the other half
+/// of the same rule: the workshop is the board, and a pack that has been
+/// deleted or unplugged is a bonus this open does not get.
 fn take_up(
     workshop: &Workshop,
     assets: &AssetStore,
@@ -1390,13 +1412,31 @@ fn take_up(
     };
     let store = workshop.switch(entry).map_err(|e| e.to_string())?;
     let state = store.load().map_err(|e| e.to_string())?;
-    if state.snapshot.is_some() || !state.updates.is_empty() {
-        return Ok(nothing());
-    }
+    let fresh = state.snapshot.is_none() && state.updates.is_empty();
     let Some(path) = entry.path.as_deref() else {
         return Ok(nothing());
     };
 
+    if !fresh {
+        // The workshop already holds this board and is newer than the pack by
+        // construction, so nothing here may fail the open. A pack that will not
+        // read is a console line and a board that opens.
+        return match bundle::top_up(assets, path) {
+            Ok(restored) => Ok(TakenUp {
+                seeded: false,
+                ingested: restored.ingested,
+                missing: restored.missing,
+            }),
+            Err(error) => {
+                eprintln!("board: that board's file could not be read for its photographs: {error}");
+                Ok(nothing())
+            }
+        };
+    }
+
+    // An empty workshop, where the pack is the only copy of the document there
+    // is — so here a pack that will not read *is* the failure, and saying so
+    // beats opening an empty board.
     let opened = bundle::read(assets, path).map_err(|e| e.to_string())?;
     // A pack with no document in it is not one a workshop can be seeded from,
     // and `DocStore::compact` would refuse it anyway — an empty snapshot would
@@ -2034,6 +2074,114 @@ mod tests {
         assert!(taken.missing.is_empty());
         let state = workshop.store().unwrap().load().unwrap();
         assert_eq!(state.snapshot.as_deref(), Some(&b"the pack's document"[..]));
+    }
+
+    /// A `.schizo` holding a document and one photograph, and the hash of it.
+    fn a_pack_with_a_photograph(assets: &AssetStore, dest: &Path, document: &[u8]) -> String {
+        let sha256 = assets.ingest_bytes(b"the photograph's bytes", None).unwrap().sha256;
+        let spec = bundle::Spec {
+            schema_version: 1,
+            title: "Case one".to_string(),
+            assets: vec![sha256.clone()],
+        };
+        bundle::write(assets, &spec, None, document, dest).unwrap();
+        sha256
+    }
+
+    /// **T-363, and it is stage 1's worst hole rather than a nicety.**
+    ///
+    /// `assets/` is one store for the whole installation and `AssetStore::gc`
+    /// takes one keep-set — the board this window is on — so the first sweep
+    /// after a switch trashes every photograph belonging to every board you are
+    /// not on. That was argued to be safe because reopening a board brings them
+    /// back out of its pack. It did not: the pack was read only when the
+    /// workshop was empty, and a board you have opened before always has a
+    /// workshop. Driven before the fix: paste a photograph, switch to a new
+    /// board, wait out the sweep, switch back — one blank polaroid and
+    /// `1 missing` on the HUD, with the bytes sitting in the trash and nothing
+    /// to pull them out.
+    #[test]
+    fn reopening_a_board_brings_its_photographs_back_out_of_its_pack() {
+        let (dir, workshop, assets) = installation();
+        let pack = dir.path().join("case one.schizo");
+        let sha256 = a_pack_with_a_photograph(&assets, &pack, b"the pack's document");
+        let entry = a_board("boards/board-one", Some(pack));
+
+        // A session that has been on this board before, so its workshop is not
+        // empty — which is the whole condition the old code turned on.
+        DocStore::new(dir.path().join("boards/board-one"))
+            .unwrap()
+            .append(b"an hour of work")
+            .unwrap();
+        // And the sweep, while this window was on some other board.
+        assets.gc(&HashSet::new()).unwrap();
+        assert!(!assets.has(&sha256), "the sweep should have trashed it");
+
+        let taken = take_up(&workshop, &assets, &entry).unwrap();
+
+        assert!(assets.has(&sha256), "the photograph did not come back");
+        assert_eq!(taken.ingested, vec![sha256]);
+        // And the document half is untouched: the workshop is still newer than
+        // the pack and still wins.
+        assert!(!taken.seeded);
+        let state = workshop.store().unwrap().load().unwrap();
+        assert_eq!(state.updates, vec![b"an hour of work".to_vec()]);
+    }
+
+    /// The cost of the line above, which is what makes it affordable to run on
+    /// every open rather than only on the ones that need it.
+    #[test]
+    fn a_photograph_this_machine_already_holds_is_never_read_out_of_the_pack() {
+        let (dir, workshop, assets) = installation();
+        let pack = dir.path().join("case one.schizo");
+        let sha256 = a_pack_with_a_photograph(&assets, &pack, b"the pack's document");
+        let entry = a_board("boards/board-one", Some(pack));
+        DocStore::new(dir.path().join("boards/board-one"))
+            .unwrap()
+            .append(b"an hour of work")
+            .unwrap();
+
+        let taken = take_up(&workshop, &assets, &entry).unwrap();
+
+        // Held already, so nothing was decompressed, hashed or ingested —
+        // reopening a six-gigabyte board reads its index and stops.
+        assert!(taken.ingested.is_empty());
+        assert!(taken.missing.is_empty());
+        assert!(assets.has(&sha256));
+    }
+
+    /// The other half of the rule. A top-up is a bonus and may not fail an open:
+    /// the workshop is the board, and a pack on a stick that was pulled is a
+    /// pack this open does not get to read.
+    #[test]
+    fn a_pack_that_will_not_read_does_not_stop_a_board_that_has_a_workshop() {
+        let (dir, workshop, assets) = installation();
+        let pack = dir.path().join("case one.schizo");
+        std::fs::write(&pack, b"this is not a zip at all").unwrap();
+        let entry = a_board("boards/board-one", Some(pack));
+        DocStore::new(dir.path().join("boards/board-one"))
+            .unwrap()
+            .append(b"still here")
+            .unwrap();
+
+        let taken = take_up(&workshop, &assets, &entry).unwrap();
+
+        assert!(!taken.seeded);
+        let state = workshop.store().unwrap().load().unwrap();
+        assert_eq!(state.updates, vec![b"still here".to_vec()]);
+    }
+
+    /// And the case that is *not* softened by any of the above: with no
+    /// workshop, the pack is the only copy of the document there is, so a pack
+    /// that will not read is the failure rather than an empty board.
+    #[test]
+    fn a_pack_that_will_not_read_is_still_fatal_when_it_is_the_only_copy() {
+        let (dir, workshop, assets) = installation();
+        let pack = dir.path().join("case one.schizo");
+        std::fs::write(&pack, b"this is not a zip at all").unwrap();
+        let entry = a_board("boards/board-one", Some(pack));
+
+        assert!(take_up(&workshop, &assets, &entry).is_err());
     }
 
     /// **The branch the whole crash story rests on.** A workshop with anything
