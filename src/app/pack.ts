@@ -17,15 +17,29 @@
  *
  * ## Everything that writes a pack builds its spec here
  *
- * `packSpec` is one function with three callers — the export, the home below,
- * and (T-362) the flush — because they are three ways of writing *the same
- * file* and a second copy of that reader would drift. It has drifted before on
- * this board: a paste grew its own asset writer and was a field behind the real
- * one for a fortnight, and nothing failed while it was.
+ * `packSpec` is one function with three callers — the export, the home, and the
+ * flush — because they are three ways of writing *the same file* and a second
+ * copy of that reader would drift. It has drifted before on this board: a paste
+ * grew its own asset writer and was a field behind the real one for a
+ * fortnight, and nothing failed while it was.
  *
  * The set it reports is `referencedAssets`, which is also the set `assetgc.ts`
  * spares. That is not a coincidence and it must not become one — what survives
  * a collection is exactly what a pack carries.
+ *
+ * ## When the pack is written (T-362)
+ *
+ * On idle, on a switch, and on the way out — never on a Save button, because
+ * there is not one and never will be (DESIGN section 7.8). [`Pack`] below is
+ * the timer and the policy; `board_flush` is the write.
+ *
+ * The document is *already* safe by the time any of that runs, which is what
+ * makes every decision in this file affordable. A pack that is a few seconds
+ * behind costs nothing: the workshop is the crash-safe copy, and `board_open`
+ * prefers it over the pack precisely because a workshop with anything in it is
+ * a session that ended before its pack was flushed. So this tier may skip a
+ * beat, back off, or give up for a session, and the worst outcome is a file
+ * that is stale rather than a board that is lost.
  */
 
 import type { BoardDoc } from "@/crdt/doc";
@@ -139,4 +153,239 @@ export async function homeBoard(native: Platform, board: BoardDoc): Promise<Homi
     console.warn("[pack] the board was homed but the register would not say where", error);
   }
   return { kind: "homed", folder, bytes: written.bytes, missing: [...written.missing] };
+}
+
+// --- the flush --------------------------------------------------------------
+
+export interface PackOptions {
+  /** How long the board has to go quiet before its file is rewritten. */
+  idleMs?: number;
+  /**
+   * Above this, the idle flush stands down and only a switch or a `pagehide`
+   * writes the pack. **The gate is stage 1's and is deleted by stage 2** — see
+   * [`Pack`]'s note on it.
+   */
+  idleLimitBytes?: number;
+  /**
+   * `crdt/persistence.ts`'s pair, kept verbatim rather than merely resembled:
+   * told once at the start of a run of failures, and its partner told when a
+   * write succeeds after one has fired and never otherwise. That is what lets a
+   * caller hold one standing sentence up and take it down again without keeping
+   * its own flag.
+   */
+  onError?: (error: unknown) => void;
+  onRecovered?: () => void;
+}
+
+const PACK_DEFAULTS = {
+  /**
+   * Long enough that it lands between gestures rather than inside a working
+   * rhythm — a whole-file rewrite is the expensive tier, and one that fired
+   * between two drags would be paying that price for a board nobody has
+   * finished changing.
+   */
+  idleMs: 5_000,
+  /**
+   * A quarter of a gigabyte. Stage 1's flush is `bundle::write`, which is a
+   * whole-file copy: at this size it costs seconds of disk and the free space
+   * twice over, which is not a thing to do every time somebody pauses.
+   */
+  idleLimitBytes: 256 * 1024 * 1024,
+} as const;
+
+/**
+ * When the board's own file is rewritten, and when it is not.
+ *
+ * ## One callback, not a second subscriber to the document
+ *
+ * The obvious build is `board.doc.on("update", …)` and it is wrong twice over.
+ * ARCHITECTURE section 2.1 keeps the subscriber count deliberately small, and
+ * `crdt/persistence.ts` has already argued its own way past that rule by never
+ * looking inside an update. More practically: what this tier needs to know is
+ * not "the document changed" but "the document changed *and reached the
+ * disk*", and only `Persistence` knows the second half. A document subscriber
+ * would rearm the timer for an edit whose write then failed, and the pack would
+ * be rewritten out of a workshop that had not been updated.
+ *
+ * So `Persistence` calls [`Pack.wrote`] after every successful append and
+ * compaction, and this class holds no subscription at all.
+ *
+ * ## The size gate, and why it is temporary
+ *
+ * Stage 1 writes the whole pack every time (`bundle::write`, temp-beside-dest
+ * and rename), which is O(the file) rather than O(what changed). On a board of
+ * photographs that is gigabytes of copying, so above [`idleLimitBytes`] the
+ * idle flush stands down and only the two moments that cannot be skipped — a
+ * switch and the way out — write the file.
+ *
+ * **That gate is the whole argument for stage 2** (T-366): once a flush is one
+ * appended generation rather than a rewrite, a flush costs O(snapshot) whatever
+ * the pack weighs, and this constant and the branch that reads it are deleted.
+ * The board is safe under the gate either way — the workshop is the crash-safe
+ * copy and the pack is merely stale — which is why stage 1 is allowed to ship
+ * with it.
+ */
+export class Pack {
+  private readonly board: BoardDoc;
+  private readonly native: Platform;
+  private readonly idleMs: number;
+  private readonly idleLimitBytes: number;
+  private readonly onError: (error: unknown) => void;
+  private readonly onRecovered: () => void;
+
+  private timer: ReturnType<typeof setTimeout> | null = null;
+  /** The document has moved on since the last successful flush. */
+  private behind = false;
+  /** Every flush, in order — `crdt/persistence.ts`'s chain, and for its reason. */
+  private chain: Promise<void> = Promise.resolve();
+  /** What the file weighed when it was last written, or null before that. */
+  private weight: number | null = null;
+  private failing = false;
+  private stopped = false;
+
+  constructor(board: BoardDoc, native: Platform, options: PackOptions = {}) {
+    this.board = board;
+    this.native = native;
+    this.idleMs = options.idleMs ?? PACK_DEFAULTS.idleMs;
+    this.idleLimitBytes = options.idleLimitBytes ?? PACK_DEFAULTS.idleLimitBytes;
+    this.onError =
+      options.onError ??
+      ((error) => console.error("[pack] the board's own file could not be written", error));
+    this.onRecovered = options.onRecovered ?? (() => console.info("[pack] the board's file is being written again"));
+  }
+
+  /**
+   * The document has reached the disk, so the file is now behind it.
+   *
+   * Called by `Persistence` rather than by a document subscriber — see the
+   * class note. Rearms rather than resets: every write pushes the flush out
+   * again, so a board being worked on continuously is not interrupted by one.
+   */
+  wrote(): void {
+    if (this.stopped) return;
+    this.behind = true;
+    // Above the gate the timer is simply never armed. Not "armed and then
+    // refused", which would look identical from here and would spend a
+    // `setTimeout` per batch to decide nothing.
+    if (this.weight !== null && this.weight > this.idleLimitBytes) return;
+    this.rearm();
+  }
+
+  /**
+   * Write the file now and settle when it has been written.
+   *
+   * The one to await before a switch. D-67 fixes the order and it is
+   * load-bearing: `pack.flushNow()` → `persistence.close()` → `board_open` →
+   * reload. This first, because it reads the *document*, and `close()` is the
+   * one-way door past which this window may no longer be writing to the board
+   * it thinks it is.
+   *
+   * Returns the chain rather than one job, so a caller that awaits it is
+   * guaranteed nothing of this tier's is still in flight.
+   */
+  flushNow(): Promise<void> {
+    this.disarm();
+    if (!this.behind || this.stopped) return this.chain;
+    return this.enqueue();
+  }
+
+  /**
+   * The way out, where nothing can be awaited.
+   *
+   * `pagehide` cannot hold the window open, so this starts a flush and returns.
+   * What that loses at worst is one idle interval **of the pack** and never of
+   * the document — `Persistence` has its own `pagehide` line and the workshop
+   * is what the next launch reads.
+   *
+   * The call goes through the chain like every other, so it is issued one
+   * microtask later rather than synchronously. That is inside the task that is
+   * unloading the page, which is the whole of what this needs; going around the
+   * chain to save a microtask would buy nothing and would let the last write of
+   * a session overtake one already in flight.
+   */
+  flushBestEffort(): void {
+    void this.flushNow();
+  }
+
+  /**
+   * Stop writing this board's file, for good.
+   *
+   * Its one caller is a board this build may only partly read. `packSpec`
+   * builds its asset list through `readItem`, so a future build's item has a
+   * photograph in no list — a file written from here would be missing
+   * photographs that are plainly on the board, and would then be the copy
+   * somebody hands over. The workshop still holds every byte, so what is
+   * refused is the *export* of a board and never the board.
+   */
+  seal(): void {
+    this.stopped = true;
+    this.disarm();
+  }
+
+  /** Whether a flush is owed — for a caller deciding whether to await one. */
+  get pending(): boolean {
+    return this.behind;
+  }
+
+  private rearm(): void {
+    this.disarm();
+    this.timer = setTimeout(() => {
+      this.timer = null;
+      void this.flushNow();
+    }, this.idleMs);
+  }
+
+  private disarm(): void {
+    if (this.timer === null) return;
+    clearTimeout(this.timer);
+    this.timer = null;
+  }
+
+  private enqueue(): Promise<void> {
+    this.chain = this.chain.then(() => this.write());
+    return this.chain;
+  }
+
+  private async write(): Promise<void> {
+    if (this.stopped || !this.behind) return;
+    // Cleared *before* the write rather than after it, so an edit landing while
+    // this is in flight leaves the flag up and earns its own flush. Clearing it
+    // afterwards would swallow exactly the edits made during the slowest
+    // writes, which are the ones on the largest boards.
+    this.behind = false;
+    try {
+      const written = await this.native.boardFlush(packSpec(this.board), snapshot(this.board));
+      if (written === null) {
+        // A board with no file of its own yet — the adopted pre-T-356 board in
+        // the second and a half before `homeBoard` runs, or one whose home
+        // failed. Nothing was written, so the flag goes back up: it says "the
+        // file is behind the document", and a board with no file at all is as
+        // behind as it is possible to be. It does not spin, because only
+        // `wrote` arms the timer and nothing here does.
+        this.behind = true;
+        return;
+      }
+      this.weight = written.bytes;
+      this.recovered();
+    } catch (error) {
+      // Put back, exactly as `Persistence` puts a batch back. The document is
+      // not at risk — this tier is a copy of a copy — but a file left silently
+      // a session behind is the thing somebody hands to somebody else.
+      this.behind = true;
+      this.report(error);
+    }
+  }
+
+  /** One report per run of failures, so a disconnected disk is not a loop. */
+  private report(error: unknown): void {
+    if (this.failing) return;
+    this.failing = true;
+    this.onError(error);
+  }
+
+  private recovered(): void {
+    if (!this.failing) return;
+    this.failing = false;
+    this.onRecovered();
+  }
 }

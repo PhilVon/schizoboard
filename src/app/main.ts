@@ -76,7 +76,7 @@ import { exportPdf, type Stage as PdfStage } from "@/app/exportPdf";
 import { noteSizeFor } from "@/app/ingest";
 import { Paste } from "@/app/paste";
 import { Mesh } from "@/app/mesh";
-import { HOME_DELAY_MS, homeBoard, packSpec } from "@/app/pack";
+import { HOME_DELAY_MS, homeBoard, Pack, packSpec } from "@/app/pack";
 import { formatInvite, inviteSearch, openingPlan, parseInvite } from "@/app/invite";
 import * as prefs from "@/app/prefs";
 import { dialAddress, identityFor } from "@/app/sync";
@@ -211,26 +211,57 @@ async function boot(): Promise<void> {
    * to fail can fail before the board has a mouth; held here and said the
    * moment there is one, rather than dropped for being early.
    */
-  let heldTrouble: string | null = null;
+  /**
+   * Two tiers can be in trouble and there is one line to say so in, so they are
+   * held separately and the worse one wins (T-362).
+   *
+   * They are not the same news and must not be able to overwrite one another.
+   * `doc` is the document not reaching the disk, which is the user's work; the
+   * `pack` is the board's own *file* not being brought up to date, which is a
+   * copy of a copy — the workshop still has everything, and `board_open` reads
+   * the workshop over the pack for exactly this reason. A pack failing while
+   * the document was also failing must not take down the sentence about the
+   * document, and a pack recovering must not either.
+   */
+  const held: { doc: string | null; pack: string | null } = { doc: null, pack: null };
   let sayTrouble: ((message: string | null) => void) | null = null;
-  const trouble = (message: string | null): void => {
-    heldTrouble = message;
-    sayTrouble?.(message);
+  const trouble = (tier: "doc" | "pack", message: string | null): void => {
+    held[tier] = message;
+    sayTrouble?.(held.doc ?? held.pack);
   };
+  const pack = new Pack(board, native, {
+    onError: (error) => {
+      console.error("[pack] the board's own file could not be written", error);
+      trouble(
+        "pack",
+        "The board's own file is not being updated — your changes are safe here, but the file is behind",
+      );
+    },
+    onRecovered: () => trouble("pack", null),
+  });
   const persistence = new Persistence(board, native, {
     onError: (error) => {
       // The console keeps the reason. The flash gets the consequence, because
       // the reason is `EBUSY` and the consequence is somebody's afternoon.
       console.error("the board could not be written to disk:", error);
       if (persistence.readOnly) return;
-      trouble("The board is not being saved — your changes are here, but they are not reaching the disk");
+      trouble("doc", "The board is not being saved — your changes are here, but they are not reaching the disk");
     },
-    onRecovered: () => trouble(null),
+    onRecovered: () => trouble("doc", null),
+    // The coarse tier's only input. Not a second subscriber to the document —
+    // `crdt/persistence.ts` argues that out in full at the option's own note.
+    onWrote: () => pack.wrote(),
   });
   // Before `initialiseBoard`, so a board that already exists keeps its own cork
   // seed and creation date rather than having fresh ones merged over the top,
   // and before the binding starts, so the scene is mirrored once.
   await persistence.open();
+  // A store that would not open never writes, so `onWrote` never fires and the
+  // coarse tier would sit idle anyway. Said out loud rather than left as a
+  // property of two other files: a board opened read-only because its log could
+  // not be read must not write that board over its own file, and "it happens
+  // not to" is not the same promise as "it does not".
+  if (persistence.readOnly) pack.seal();
   initialiseBoard(board);
 
   /**
@@ -285,6 +316,12 @@ async function boot(): Promise<void> {
     if (readOnly || !futureSchema(board)) return;
     readOnly = true;
     sealBoard(board);
+    // The coarse tier stops for good. `packSpec` reads the document through
+    // `readItem`, so a future build's item has its photograph in no asset list
+    // — a pack written from here would silently be missing photographs that are
+    // plainly on the board, and it is the pack that gets handed to somebody.
+    // The workshop still holds every byte; what is refused is writing the copy.
+    pack.seal();
     console.warn(
       `[schema] this board is version ${boardSchemaVersion(board)} and this build reads ` +
         `${SCHEMA_VERSION}; it is open read-only so that nothing here writes to a document ` +
@@ -2752,6 +2789,11 @@ async function boot(): Promise<void> {
    */
   const switchToBoard = async (packId: string): Promise<void> => {
     try {
+      // The pack first, and D-67 fixes this order rather than leaving it to
+      // taste: this reads the *document*, and `close()` is the one-way door
+      // past which this window may no longer be writing to the board it thinks
+      // it is. A board left behind is left with its file up to date.
+      await pack.flushNow();
       await persistence.close();
       const opened = await native.boardOpen(packId);
       if (opened.missing.length > 0) {
@@ -3333,7 +3375,7 @@ async function boot(): Promise<void> {
     else flash.hold(message);
   };
   // A store that failed to open did so before this line existed.
-  if (heldTrouble !== null) sayTrouble(heldTrouble);
+  if ((held.doc ?? held.pack) !== null) sayTrouble(held.doc ?? held.pack);
 
   /**
    * And now `Ctrl+C`, `Ctrl+X` and `Ctrl+D` have somewhere to say what they did
@@ -3764,7 +3806,14 @@ async function boot(): Promise<void> {
   // Best effort, and only worth the line because the window closing is the one
   // moment a whole batch can be in flight: a gesture that ended 199ms ago is
   // otherwise the one thing a clean exit loses.
-  window.addEventListener("pagehide", () => void persistence.flush());
+  window.addEventListener("pagehide", () => {
+    void persistence.flush();
+    // And the coarse tier, which cannot be awaited here either. What a quit
+    // loses at worst is one idle interval of the *pack* and never of the
+    // document — the workshop is what the next launch reads, and it reads it in
+    // preference to the pack precisely because of this moment.
+    pack.flushBestEffort();
+  });
 
   // --- the nine phases (docs/ARCHITECTURE.md section 3) ---------------------
 

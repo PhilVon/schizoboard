@@ -356,6 +356,112 @@ describe("Persistence", () => {
     });
   });
 
+  /**
+   * The one thing the coarse tier is told, and the reason it is a callback here
+   * rather than a second `board.doc.on("update", …)` over there (T-362).
+   *
+   * What `app/pack.ts` needs to know is not "the document changed" but "the
+   * document changed **and reached the disk**", and this is the only place that
+   * knows the second half. A subscriber would rearm on an edit whose write then
+   * failed, and the board's own file would be rewritten out of a workshop that
+   * had not been updated.
+   */
+  describe("telling the coarse tier", () => {
+    beforeEach(() => vi.useFakeTimers());
+    afterEach(() => vi.useRealTimers());
+
+    it("says so once per batch that reached the disk", async () => {
+      const store = new Store();
+      const board = openBoardDoc();
+      let wrote = 0;
+      const persistence = new Persistence(board, store, { onWrote: () => (wrote += 1) });
+      await persistence.open();
+      initialiseBoard(board);
+
+      // A batch, not an edit: three items inside one window are one write.
+      polaroid(board, 0, 0);
+      polaroid(board, 1, 1);
+      polaroid(board, 2, 2);
+      await vi.advanceTimersByTimeAsync(200);
+      expect(store.appends).toBe(1);
+      expect(wrote).toBe(1);
+
+      polaroid(board, 3, 3);
+      await vi.advanceTimersByTimeAsync(200);
+      expect(wrote).toBe(2);
+
+      await persistence.close();
+    });
+
+    it("says nothing for a write that did not reach the disk", async () => {
+      const store = new Store();
+      const board = openBoardDoc();
+      let wrote = 0;
+      const persistence = new Persistence(board, store, {
+        onWrote: () => (wrote += 1),
+        onError: () => {},
+      });
+      await persistence.open();
+      initialiseBoard(board);
+
+      store.failing = true;
+      polaroid(board, 0, 0);
+      await vi.advanceTimersByTimeAsync(200);
+      expect(store.appends).toBe(1);
+      // The append was attempted and refused, so the document on disk has not
+      // moved and the pack is not behind anything new.
+      expect(wrote).toBe(0);
+
+      store.failing = false;
+      await vi.advanceTimersByTimeAsync(200);
+      expect(wrote).toBe(1);
+
+      await persistence.close();
+    });
+
+    it("says so for a compaction too, which is a write with no edit behind it", async () => {
+      const store = new Store();
+      const board = openBoardDoc();
+      let wrote = 0;
+      const persistence = new Persistence(board, store, {
+        compactBytes: 1,
+        onWrote: () => (wrote += 1),
+      });
+      await persistence.open();
+      initialiseBoard(board);
+
+      polaroid(board, 0, 0);
+      await vi.advanceTimersByTimeAsync(200);
+
+      expect(store.compactions).toBe(1);
+      // The append and the compaction it triggered: the document on disk has
+      // moved twice and the file's own copy is behind both.
+      expect(wrote).toBe(2);
+
+      await persistence.close();
+    });
+
+    it("is silent on a board that never opened, because nothing is ever written", async () => {
+      const store = new Store();
+      vi.spyOn(store, "docLoad").mockRejectedValue(new Error("the log is not ours"));
+      const board = openBoardDoc();
+      let wrote = 0;
+      const persistence = new Persistence(board, store, {
+        onWrote: () => (wrote += 1),
+        onError: () => {},
+      });
+      await persistence.open();
+      initialiseBoard(board);
+
+      polaroid(board, 0, 0);
+      await vi.advanceTimersByTimeAsync(200);
+      await persistence.flush();
+
+      expect(persistence.readOnly).toBe(true);
+      expect(wrote).toBe(0);
+    });
+  });
+
   describe("the batch window", () => {
     beforeEach(() => vi.useFakeTimers());
     afterEach(() => vi.useRealTimers());

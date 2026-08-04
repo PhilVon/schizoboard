@@ -81,6 +81,24 @@ export interface PersistenceOptions {
    * is no longer true is worse than never having said it.
    */
   onRecovered?: () => void;
+  /**
+   * The document has reached the disk — told after every append and every
+   * compaction that succeeded, and never after one that did not.
+   *
+   * `app/pack.ts` is the caller and this callback is the whole of its input.
+   * It exists rather than a second `board.doc.on("update", …)` for two
+   * reasons. ARCHITECTURE section 2.1 keeps the number of subscribers to this
+   * document deliberately small, and the module note above spends a paragraph
+   * arguing this file's own way past that rule; a third one would be arguing
+   * it again for something that does not need to be a subscription at all.
+   *
+   * And the second is the one that matters: what the coarse tier needs to know
+   * is not "the document changed" but "the document changed **and reached the
+   * disk**", and this is the only place that knows the second half. A
+   * subscriber would rearm on an edit whose write then failed, and the pack
+   * would be rewritten out of a workshop that had not been updated.
+   */
+  onWrote?: () => void;
 }
 
 const DEFAULTS = {
@@ -103,6 +121,7 @@ export class Persistence {
   private readonly compactBytes: number;
   private readonly onError: (error: unknown) => void;
   private readonly onRecovered: () => void;
+  private readonly onWrote: () => void;
 
   /** Updates seen since the last flush, in order. */
   private pending: Uint8Array[] = [];
@@ -131,6 +150,7 @@ export class Persistence {
       options.onError ??
       ((error) => console.error("the board could not be written to disk:", error));
     this.onRecovered = options.onRecovered ?? (() => console.info("the board is being written again"));
+    this.onWrote = options.onWrote ?? (() => {});
   }
 
   /** Nothing is being written, and nothing will be. */
@@ -187,6 +207,7 @@ export class Persistence {
         await this.native.docAppendUpdate(batch);
         this.stored += batch.byteLength;
         this.recovered();
+        this.onWrote();
         if (this.stored >= this.compactAt) await this.compactNow();
       } catch (error) {
         // Kept, not dropped. A write that failed because a disk was briefly
@@ -283,6 +304,11 @@ export class Persistence {
       this.stored = 0;
       this.compactAt = this.compactBytes;
       this.recovered();
+      // A compaction is a write like any other from the coarse tier's point of
+      // view: the document on disk has moved and the pack has not. It is also
+      // the one that happens at boot on a long log, which is a real change
+      // reaching the disk with no edit behind it.
+      this.onWrote();
     } catch (error) {
       // Back off by a whole threshold rather than retrying on the next flush:
       // encoding the document is the expensive half, and doing it every 200 ms

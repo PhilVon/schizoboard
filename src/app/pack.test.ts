@@ -1,20 +1,24 @@
 /**
- * Giving a board a file of its own, and the two properties that matter.
+ * The coarse tier of saving: giving a board a file of its own, and keeping that
+ * file up to date afterwards.
  *
- * It has to actually home a board that has no file — the migration is the one
- * thing in T-356 that must not go wrong. And every way of failing has to leave
- * the board exactly where it was, saying so, with a way to try again: a
- * migration that can fail and has no manual path leaves somebody stuck.
+ * The properties that matter are the same on both halves and they pull in
+ * opposite directions. It has to actually write — the migration is the one
+ * thing in T-356 that must not go wrong, and a file silently a session behind
+ * is the one somebody hands over. And every way of failing has to leave the
+ * board exactly where it was, saying so, with a way through: the workshop is
+ * the crash-safe copy, so this tier is allowed to skip a beat, but it is not
+ * allowed to skip one quietly.
  */
 
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { HOME_DELAY_MS, homeBoard, packSpec } from "@/app/pack";
+import { HOME_DELAY_MS, homeBoard, Pack, packSpec } from "@/app/pack";
 import { ASSET_SWEEP_DELAY_MS } from "@/app/assetgc";
 import { initialiseBoard, openBoardDoc, type BoardDoc } from "@/crdt/doc";
 import { createItems } from "@/crdt/ops";
 import { SCHEMA_VERSION } from "@/crdt/schema";
-import type { BoardCard, BundleWritten, Platform } from "@/platform/types";
+import type { BoardCard, BundleSpec, BundleWritten, Platform } from "@/platform/types";
 
 const PHOTO = "a".repeat(64);
 const OTHER = "b".repeat(64);
@@ -214,5 +218,274 @@ describe("when it happens", () => {
    */
   it("homes a board long before the asset sweep runs", () => {
     expect(HOME_DELAY_MS).toBeLessThan(ASSET_SWEEP_DELAY_MS);
+  });
+});
+
+describe("when the board's own file is rewritten", () => {
+  beforeEach(() => vi.useFakeTimers());
+  afterEach(() => vi.useRealTimers());
+
+  const IDLE = 5_000;
+
+  /** A shell that records every flush and can be made to refuse. */
+  function flushing(over: Partial<BundleWritten> | null = {}) {
+    const flushes: { assets: string[]; bytes: number }[] = [];
+    let refusing: Error | null = null;
+    const answer: BundleWritten | null = over === null ? null : { ...WROTE, ...over };
+    /** Runs while a flush is in flight — the gap a late edit lands in. */
+    let during: (() => void) | null = null;
+    const boardFlush = vi.fn(async (spec: BundleSpec, snap: Uint8Array) => {
+      if (refusing) throw refusing;
+      flushes.push({ assets: [...spec.assets], bytes: snap.byteLength });
+      during?.();
+      return answer;
+    });
+    return {
+      native: { boardFlush } as unknown as Platform,
+      flushes,
+      calls: () => boardFlush.mock.calls.length,
+      refuse: (error: Error | null) => {
+        refusing = error;
+      },
+      whileWriting: (run: (() => void) | null) => {
+        during = run;
+      },
+    };
+  }
+
+  it("writes nothing at all until the document has reached the disk", async () => {
+    const shell = flushing();
+    const pack = new Pack(board(PHOTO), shell.native);
+
+    await vi.advanceTimersByTimeAsync(IDLE * 3);
+
+    // No subscriber to the document, so a board nobody has written to disk is a
+    // board whose file nobody rewrites.
+    expect(shell.calls()).toBe(0);
+    expect(pack.pending).toBe(false);
+  });
+
+  it("writes the file once the board has been quiet for the idle interval", async () => {
+    const shell = flushing();
+    const pack = new Pack(board(PHOTO), shell.native, { idleMs: IDLE });
+
+    pack.wrote();
+    expect(pack.pending).toBe(true);
+    await vi.advanceTimersByTimeAsync(IDLE - 1);
+    expect(shell.calls()).toBe(0);
+    await vi.advanceTimersByTimeAsync(1);
+
+    expect(shell.flushes).toHaveLength(1);
+    expect(shell.flushes[0]!.assets).toEqual([PHOTO]);
+    expect(shell.flushes[0]!.bytes).toBeGreaterThan(0);
+    expect(pack.pending).toBe(false);
+  });
+
+  /**
+   * The rearm, and the property that makes an idle interval an idle interval
+   * rather than a period: a board being worked on continuously is never
+   * interrupted by a whole-file rewrite.
+   */
+  it("pushes the write out again on every write to the document", async () => {
+    const shell = flushing();
+    const pack = new Pack(board(), shell.native, { idleMs: IDLE });
+
+    for (let i = 0; i < 5; i++) {
+      pack.wrote();
+      await vi.advanceTimersByTimeAsync(IDLE - 500);
+    }
+    expect(shell.calls()).toBe(0);
+
+    await vi.advanceTimersByTimeAsync(500);
+    expect(shell.calls()).toBe(1);
+  });
+
+  it("settles when a caller needs the file written before a switch", async () => {
+    const shell = flushing();
+    const pack = new Pack(board(), shell.native, { idleMs: IDLE });
+    pack.wrote();
+
+    await pack.flushNow();
+
+    // Written, and without waiting out the timer — which is the point: this is
+    // what `switchToBoard` awaits before it closes the fine tier.
+    expect(shell.calls()).toBe(1);
+    expect(pack.pending).toBe(false);
+    // And the timer it disarmed does not fire a second one behind it.
+    await vi.advanceTimersByTimeAsync(IDLE * 2);
+    expect(shell.calls()).toBe(1);
+  });
+
+  it("asks for nothing when there is nothing owed", async () => {
+    const shell = flushing();
+    const pack = new Pack(board(), shell.native);
+
+    await pack.flushNow();
+
+    expect(shell.calls()).toBe(0);
+  });
+
+  it("starts a write on the way out without waiting for one", async () => {
+    const shell = flushing();
+    const pack = new Pack(board(), shell.native, { idleMs: IDLE });
+    pack.wrote();
+
+    // A pagehide handler cannot await, so this returns immediately — but the
+    // call has to be *issued* before the task that is unloading the page ends,
+    // and one microtask turn is inside that task. No timer is advanced here on
+    // purpose: a flush that needed the idle interval would be one a quit never
+    // reaches.
+    pack.flushBestEffort();
+    await Promise.resolve();
+
+    expect(shell.calls()).toBe(1);
+  });
+
+  /**
+   * AC-1010. `packSpec` reads the document through `readItem`, so on a board
+   * from a newer build a future item's photograph is in no asset list — a file
+   * written here would be missing photographs plainly on the board, and it is
+   * the file that gets handed to somebody.
+   */
+  it("stops for good on a board this build may only partly read", async () => {
+    const shell = flushing();
+    const pack = new Pack(board(), shell.native, { idleMs: IDLE });
+    pack.wrote();
+
+    pack.seal();
+
+    await vi.advanceTimersByTimeAsync(IDLE * 3);
+    pack.wrote();
+    await vi.advanceTimersByTimeAsync(IDLE * 3);
+    await pack.flushNow();
+    pack.flushBestEffort();
+    expect(shell.calls()).toBe(0);
+  });
+
+  /**
+   * AC-1011, and stage 2 deletes it. Stage 1's flush is `bundle::write`, a
+   * whole-file copy: on a board of photographs that is gigabytes of disk every
+   * time somebody pauses.
+   */
+  it("stands the idle write down once the file is too big to rewrite on a pause", async () => {
+    const shell = flushing({ bytes: 300 * 1024 * 1024 });
+    const pack = new Pack(board(), shell.native, {
+      idleMs: IDLE,
+      idleLimitBytes: 256 * 1024 * 1024,
+    });
+
+    // The first one has to happen, because the size is a fact about a file that
+    // does not exist until it has been written once.
+    pack.wrote();
+    await vi.advanceTimersByTimeAsync(IDLE);
+    expect(shell.calls()).toBe(1);
+
+    pack.wrote();
+    await vi.advanceTimersByTimeAsync(IDLE * 5);
+    expect(shell.calls()).toBe(1);
+    // Owed, and it says so — the two moments that cannot be skipped still take
+    // it, which is the whole of what the gate costs.
+    expect(pack.pending).toBe(true);
+    await pack.flushNow();
+    expect(shell.calls()).toBe(2);
+  });
+
+  it("goes on writing on idle while the file is small enough to", async () => {
+    const shell = flushing({ bytes: 4096 });
+    const pack = new Pack(board(), shell.native, {
+      idleMs: IDLE,
+      idleLimitBytes: 256 * 1024 * 1024,
+    });
+
+    for (let i = 0; i < 3; i++) {
+      pack.wrote();
+      await vi.advanceTimersByTimeAsync(IDLE);
+    }
+    expect(shell.calls()).toBe(3);
+  });
+
+  /** AC-1009, and it is `crdt/persistence.ts`'s pair kept rather than resembled. */
+  it("says so once when the file will not write, and once when it writes again", async () => {
+    const shell = flushing();
+    const errors: unknown[] = [];
+    let recovered = 0;
+    const pack = new Pack(board(), shell.native, {
+      idleMs: IDLE,
+      onError: (error) => errors.push(error),
+      onRecovered: () => {
+        recovered += 1;
+      },
+    });
+
+    shell.refuse(new Error("the disk said no"));
+    for (let i = 0; i < 3; i++) {
+      pack.wrote();
+      await vi.advanceTimersByTimeAsync(IDLE);
+    }
+    // One report per run of failures. A disconnected disk is one piece of news.
+    expect(errors).toHaveLength(1);
+    expect(recovered).toBe(0);
+    // And the write is still owed, so nothing has been quietly dropped.
+    expect(pack.pending).toBe(true);
+
+    shell.refuse(null);
+    pack.wrote();
+    await vi.advanceTimersByTimeAsync(IDLE);
+    expect(recovered).toBe(1);
+    expect(pack.pending).toBe(false);
+
+    // Silent from here — a standing sentence taken down twice is a sentence
+    // that was never standing.
+    pack.wrote();
+    await vi.advanceTimersByTimeAsync(IDLE);
+    expect(recovered).toBe(1);
+    expect(errors).toHaveLength(1);
+  });
+
+  /**
+   * A board with no file of its own — the adopted pre-T-356 one, in the second
+   * and a half before `homeBoard` runs. The shell answers `null` rather than
+   * failing, and it must not read as "written".
+   */
+  it("stays owed when there is no file to write to yet", async () => {
+    const shell = flushing(null);
+    const errors: unknown[] = [];
+    const pack = new Pack(board(), shell.native, {
+      idleMs: IDLE,
+      onError: (error) => errors.push(error),
+    });
+
+    pack.wrote();
+    await vi.advanceTimersByTimeAsync(IDLE);
+
+    expect(pack.pending).toBe(true);
+    // Not a failure, so nothing is said about it.
+    expect(errors).toHaveLength(0);
+    // And it does not spin: only a write to the document arms the timer.
+    await vi.advanceTimersByTimeAsync(IDLE * 5);
+    expect(shell.calls()).toBe(1);
+  });
+
+  /**
+   * The window between the document being read and the write returning is a
+   * real one on a large board, and an edit that lands inside it is not in the
+   * file that is being written. Clearing the flag *after* the write would
+   * swallow exactly the edits made during the slowest writes, which are the
+   * ones on the largest boards.
+   */
+  it("keeps an edit that landed while the file was being written", async () => {
+    const shell = flushing();
+    const pack = new Pack(board(), shell.native, { idleMs: IDLE });
+    shell.whileWriting(() => pack.wrote());
+    pack.wrote();
+
+    await pack.flushNow();
+
+    expect(pack.pending).toBe(true);
+    // And that edit gets its own write on the next idle interval, rather than
+    // waiting for whatever happens to be edited next.
+    shell.whileWriting(null);
+    await vi.advanceTimersByTimeAsync(IDLE);
+    expect(shell.calls()).toBe(2);
   });
 });
