@@ -136,7 +136,15 @@ import { isScissors, stringAt } from "@/state/tools/frame";
 import { SelectTool } from "@/state/tools/select";
 import { StringTool } from "@/state/tools/string";
 import type { BoardWriter, Tool, WritePose } from "@/state/tools/tool";
-import { boardMenuRows, itemMenuRows, penMenuRows, pinMenuRows, stringMenuRows } from "@/ui/boardmenu";
+import {
+  boardMenuRows,
+  itemMenuRows,
+  penMenuRows,
+  pinMenuRows,
+  recentBoards,
+  stringMenuRows,
+  type BoardRow,
+} from "@/ui/boardmenu";
 import { Crt, type CrtFilm } from "@/ui/crt";
 import { Hud, type HudStats } from "@/ui/hud";
 import { RAIL, Toolbar } from "@/ui/toolbar";
@@ -2764,6 +2772,35 @@ async function boot(): Promise<void> {
    * still in its own file — so the check that has to happen is the one at boot,
    * which was always there.
    */
+  /**
+   * A board nothing has ever been on — *New board…* (T-364).
+   *
+   * No dialog, and the asymmetry with `openBoard` below is the design rather
+   * than an omission: a new board has no file to find. It gets one from
+   * `homeBoard` a second and a half after the reload, which is the same road
+   * the board adopted from before T-356 takes.
+   *
+   * The order past `boardNew` is `switchToBoard`'s and for the same reasons —
+   * the shell has already pointed this window's log at the new board by the
+   * time it returns, so there is no way back that is not a reload.
+   */
+  const newBoard = async (): Promise<void> => {
+    try {
+      await pack.flushNow();
+      await persistence.close();
+      await native.boardNew();
+    } catch (error) {
+      // Past `close()` this window is not saving and cannot be made to again,
+      // so this reloads whatever happened — onto the new board if the shell got
+      // that far, and onto the old one if it did not, because `board_new`
+      // takes its own entry back out of the register when the workshop will not
+      // open. A window left running and silently not saving is much the worse
+      // of the two.
+      console.error("[board] a new board could not be started; this window is reloading", error);
+    }
+    window.location.search = "";
+  };
+
   const openBoard = async (): Promise<void> => {
     let picked;
     try {
@@ -2813,6 +2850,36 @@ async function boot(): Promise<void> {
     // comes from the shell's register now, through `board_remembered`.
     window.location.search = "";
   };
+
+  /**
+   * The boards you had, for the menu (T-364, D-69).
+   *
+   * ## Read once, and that is not a shortcut
+   *
+   * The register only changes when a window changes boards, and a window that
+   * changes boards *reloads* — so within one session this list cannot go stale
+   * by anything this window does. Another window could add a board, and there
+   * is one window per board, so the case is a second Schizoboard opening a
+   * board this one has never seen; that shows up on the next launch. Reading it
+   * when the menu opens would be the alternative and is worse: `boardMenuRows`
+   * is synchronous because every other row on it is, and an awaited row would
+   * pop the menu a frame or two after the click that asked for it.
+   *
+   * Capped at five in `list.slice`, which is D-69's number and lives here
+   * rather than in the shell: the register is the whole record and this is one
+   * menu's opinion about how much of it is a menu.
+   */
+  let recents: BoardRow[] = [];
+  const readRecents = async (): Promise<void> => {
+    try {
+      recents = recentBoards(await native.boardList(), (packId) => void switchToBoard(packId));
+    } catch (error) {
+      // A menu with no recents on it, which is also what a fresh installation
+      // looks like. Nothing else on this menu depends on the answer.
+      console.warn("[board] the other boards could not be listed", error);
+    }
+  };
+  void readRecents();
 
   root.addEventListener("contextmenu", (e) => {
     e.preventDefault();
@@ -2870,7 +2937,17 @@ async function boot(): Promise<void> {
           native.kind === "tauri"
             ? {
                 export: () => void exportBoard(),
-                open: null,
+                // Offered on a sealed board, which is the whole of T-356 in one
+                // line: opening board B writes nothing to board A, so there is
+                // nothing here to refuse (T-364, AC-1016).
+                open: () => void openBoard(),
+                // And the guard moved here. Minting a board changes what boards
+                // this installation has, and a build that cannot fully read the
+                // document in front of it is not the one to make that change.
+                new: null,
+                // Absent for the same reason `recents` is not: this list is a
+                // way to leave, and leaving is allowed.
+                recents,
                 pdf: native.canPrintPdf ? () => void printBoard() : null,
                 image: () => void saveBoardImage(),
                 // Never offered here, and `giveThisBoardAHome` refuses on the
@@ -3030,9 +3107,10 @@ async function boot(): Promise<void> {
               export: () => void exportBoard(),
               // No read-only guard, and its removal is the whole of T-356 in
               // one line: opening another board writes nothing to this one, so
-              // a sealed board may still do it. T-364 moves the row and gives
-              // it neighbours.
+              // a sealed board may still do it.
               open: () => void openBoard(),
+              new: () => void newBoard(),
+              recents,
               // The one row a platform can take away: `PrintToPdf` is
               // WebView2's, so macOS and Linux get the image and no PDF row at
               // all (T-210, Q-139).

@@ -33,6 +33,7 @@ import { STRING_MATERIALS } from "@/lib/material";
 import { fileNoun, isCaseObject, type AssetKind } from "@/lib/objects";
 import { STRING_COLORS, STRING_THICKNESSES } from "@/lib/palette";
 import { PAPER_STOCKS, STOCK_BASE, STOCK_NAMES, type ItemStyle } from "@/lib/style";
+import type { BoardCard } from "@/platform/types";
 import type { Scene } from "@/state/scene";
 import { itemLocal, settleOnPin, settleOnUnpin } from "@/state/tools/frame";
 import type { BoardWriter } from "@/state/tools/tool";
@@ -731,6 +732,54 @@ export function pinMenuRows(
  * that said "the board" while writing a file of three notes would be lying, so
  * it says which it is. That is the whole of `selected`.
  */
+/**
+ * One of the other boards this installation knows about (T-364).
+ *
+ * No path, and the `folder` is a display *name* rather than a location —
+ * `board.rs` reduces the parent directory through `display_title` on the way
+ * out, which is ARCHITECTURE section 4.4 read outward: a renderer handed every
+ * board's absolute path can name a location just as surely as one that asked
+ * for a path. The name is enough to tell two boards called *Untitled board*
+ * apart, and that is all it is for.
+ */
+export interface BoardRow {
+  readonly packId: string;
+  readonly title: string;
+  readonly folder: string;
+  readonly open: (packId: string) => void;
+}
+
+/** D-69's cap. Past five it is a file browser rather than a memory. */
+export const RECENT_BOARDS = 5;
+
+/**
+ * The register, as the rows a menu can hold (T-364).
+ *
+ * Here rather than inline in `app/main.ts` because it is the only part of the
+ * recents with a decision in it — which boards, and how many — and `boot()` is
+ * not somewhere a decision can be tested.
+ */
+export function recentBoards(
+  boards: readonly BoardCard[],
+  open: (packId: string) => void,
+): BoardRow[] {
+  return (
+    boards
+      // The board you are on is not somewhere to go. It is also the only one
+      // `current` can be true of, so this both keeps the top row from being a
+      // no-op that reloads the window and stops the list naming the board the
+      // menu is open on top of.
+      .filter((card) => !card.current)
+      .slice(0, RECENT_BOARDS)
+      .map((card) => ({
+        packId: card.packId,
+        title: card.title,
+        folder: card.folder,
+        open,
+      }))
+  );
+}
+
 export function boardMenuRows(
   scene: Scene,
   write: BoardWriter,
@@ -749,7 +798,29 @@ export function boardMenuRows(
    * and then failing after the file had been named.
    */
   board: {
+    /**
+     * *Save a copy…* — a compaction of this board to a path the user picks.
+     *
+     * Called `export` because the shell command still is: `bundle_save_as`
+     * writes the same file it always did, and what changed is what that file
+     * *is* rather than how it is written. See the row for why the label moved.
+     */
     export(): void;
+    /**
+     * A board nothing has ever been on — **null on a board this build may only
+     * partly read** (T-364, D-67 section 6).
+     *
+     * The read-only guard moved here from `open` below, and the two moved in
+     * opposite directions for the same reason. Opening board B leaves board A
+     * intact in its own file, so there is nothing there to refuse. Minting one
+     * is the row that changes what boards this installation *has* — a register
+     * entry, a workshop directory, and a file in Documents a moment later — and
+     * a build that cannot fully read the document it is looking at is not the
+     * one that should be making that change. Conservative rather than forced:
+     * nothing here would corrupt the sealed board, which stays in its own file
+     * either way.
+     */
+    new: (() => void) | null;
     /**
      * Nullable for the platform's sake and no longer for the document's.
      *
@@ -760,6 +831,16 @@ export function boardMenuRows(
      * file, so a sealed board may still do it (`main.ts`, `openBoard`).
      */
     open: (() => void) | null;
+    /**
+     * The other boards this installation knows about, most recently opened
+     * first and **capped at five by the caller** (D-69).
+     *
+     * The register *is* the recents list, which is what makes this defensible
+     * where D-38 struck it down: the length, the eviction rule and the story
+     * about a board somebody moved all come from the thing that had to exist
+     * anyway. Each row carries an opaque `packId` and never a path.
+     */
+    recents: readonly BoardRow[];
     pdf: (() => void) | null;
     image(): void;
     /**
@@ -825,19 +906,96 @@ export function boardMenuRows(
     });
   }
   if (board !== null) {
+    /**
+     * The boards, and then the files made out of this one — two groups behind
+     * two rules (T-364, D-67 section 6).
+     *
+     * The order inside the first is *make a board*, *find a board*, *the boards
+     * you had*, which is widest-first: the two verbs are always available and
+     * the list under them is whatever this installation happens to hold.
+     */
+    const newBoard = board.new;
+    if (newBoard !== null) {
+      below.push({
+        /**
+         * No dialog and an ellipsis anyway, which is the one place on these
+         * menus that rule bends and it is worth saying why rather than looking
+         * like an oversight. `board_new` picks no location — a new board is
+         * given one by `board_home` a second and a half later, exactly as the
+         * adopted pre-T-356 board is. But it is not *finished when you let go*
+         * either: the window reloads onto a board that is not this one, which
+         * is a great deal more than a row like *Copy invite link* promises. The
+         * ellipsis is the honest half of the convention here — something
+         * further is about to happen.
+         */
+        label: "New board…",
+        divided: true,
+        run: newBoard,
+      });
+    }
+    const openBoard = board.open;
+    if (openBoard !== null) {
+      below.push({
+        /**
+         * Off the bottom of the menu, where it sat "last on purpose, because it
+         * destroys" — and that comment is deleted along with the read-only
+         * guard that went with it (T-364).
+         *
+         * Q-111 made this the one row on the board that destroyed a board: it
+         * replaced the one in this window, so it belonged below *Export
+         * board…*, which was both the row somebody reading down wants far more
+         * often and, if they took it first, the thing that made this one
+         * survivable. T-356 ended that. Opening board B leaves board A intact
+         * in its own file, so there is nothing to warn about, nothing to agree
+         * to, and no reason for it to be last.
+         *
+         * The picker is still native and still opened from Rust, because
+         * nothing in `capabilities/` lets this side open a dialog at all.
+         */
+        label: "Open a board…",
+        divided: newBoard === null,
+        run: openBoard,
+      });
+    }
+    /**
+     * The boards you had, by name (D-69).
+     *
+     * D-38 struck this down and named what would bring it back, and it was not
+     * quite what happened: it expected multi-window, and what actually went
+     * away was *replace*. A recents list was a list of one-click ways to
+     * destroy the board you were looking at, and the deliberateness of going
+     * and finding a file was most of the protection. There is no longer a
+     * destruction for that deliberateness to protect against.
+     *
+     * **Flat rows rather than a submenu or a picker**, and both alternatives
+     * are refused on their own grounds. `ui/menu.ts` has no nesting at all, and
+     * its note says why — hover intent, open delay, which submenu closes when
+     * the pointer cuts a corner. And a `MenuChoice` is a chip "with no text of
+     * its own", painted by swatch, weight or fibre: right for a colour you
+     * recognise on sight, wrong for a board whose whole identity is its name.
+     */
+    for (const recent of board.recents) {
+      below.push({
+        // The folder only when the title does not stand alone. Two boards both
+        // called *Untitled board* is the ordinary case rather than a corner —
+        // it is what every board is called before somebody names it — and a
+        // menu with the same row twice is a menu you cannot use. A name and
+        // never a location: see `BoardRow`.
+        label: nameOf(recent, board.recents),
+        run: () => recent.open(recent.packId),
+      });
+    }
     const home = board.home;
     if (home !== null) {
       below.push({
         /**
-         * First among the file rows, because it is the only one here that is
-         * about a board *not being in a file* — and everything below it makes a
-         * new file out of a board that already is one.
+         * First among the file rows, because it is the only one about a board
+         * *not being in a file* — and everything below it makes a new file out
+         * of a board that already is one (T-361).
          *
-         * **No ellipsis, and that is not an oversight.** On these menus an
-         * ellipsis promises a dialog and says nothing has happened yet; this
-         * row opens none. The shell chooses the location itself
-         * (`a_home_for`), which is the same rule `asset_export` follows read
-         * the other way round — a board that has been running out of the data
+         * **No ellipsis, and that is not an oversight.** The shell chooses the
+         * location itself (`a_home_for`), which is `asset_export`'s rule read
+         * the other way round: a board that has been running out of the data
          * directory since before T-356 has already been decided on, and asking
          * where to put it would be asking a question nobody asked.
          */
@@ -848,30 +1006,41 @@ export function boardMenuRows(
     }
     below.push({
       /**
-       * The ellipsis is doing real work: this row opens a save dialog and
-       * nothing has happened yet when it is picked. *Copy invite link* above it
-       * has no ellipsis for the same reason — that one is finished the moment
-       * you let go.
+       * *Save a copy…*, and until T-364 this said *Export board…* with a
+       * docblock arguing the opposite of what is now true. The argument is
+       * rewritten rather than left standing, because the old one reads as a
+       * live objection to the new label.
        *
-       * "Export" rather than "Save", because a board is already saved; it has
-       * been saving itself since the first thing landed on it (DESIGN 7.8).
-       * A *Save* row invites the reading that everything before it was
-       * provisional, which is the one thing this application never asks anyone
-       * to worry about.
+       * It said: "Export" rather than "Save", because a board is already saved
+       * — it has been saving itself since the first thing landed on it (DESIGN
+       * 7.8) — and a *Save* row invites the reading that everything before it
+       * was provisional. Every word of that was true when a `.schizo` was a
+       * photograph of the board and the board itself lived in the data
+       * directory. It is not now. **The board is a file**, and this row does
+       * not save it; it writes a *second* file, frozen at this moment, to hand
+       * to somebody. That is a copy, and *Save a copy…* is the only wording of
+       * the three that says so.
        *
-       * Null removes the row rather than disabling it, the way the invite above
-       * does — a plain browser cannot write a bundle at all, and a menu entry
-       * you cannot use is a question nothing on screen can answer.
+       * Q-341 settled it as one row rather than two. Once the flush and the
+       * export both write a compacted `.schizo` at a path, *Export board…* and
+       * *Save a copy…* differ only in intention, and two rows doing the same
+       * thing under different names is a menu asking a question that has no
+       * answer.
+       *
+       * The ellipsis is doing real work: this opens a save dialog and nothing
+       * has happened yet when it is picked. *Copy invite link* above has none
+       * for the same reason — that one is finished the moment you let go.
+       *
+       * Null removes the whole group rather than disabling it, the way the
+       * invite does: a plain browser cannot write a bundle at all.
        */
-      label: "Export board…",
-      // Under the invite: both hand the board to somebody, and this is the
-      // heavier of the two.
+      label: "Save a copy…",
       run: () => board.export(),
     });
     /**
      * The picture, where the row above it is the board itself (T-209).
      *
-     * Under *Export board…* because a `.schizo` is the board — everything on
+     * Under *Save a copy…* because a `.schizo` is the board — everything on
      * it, reopenable, and the thing to send somebody who is going to work on
      * it. A PDF is what it *looked* like: DESIGN section 1's "taking a picture
      * of your thinking", for somebody who is only going to read it. The order
@@ -929,29 +1098,26 @@ export function boardMenuRows(
           : "Export the board as an image…",
       run: () => board.image(),
     });
-    const openBoard = board.open;
-    if (openBoard !== null) {
-      below.push({
-        /**
-         * Last, and no longer last *on purpose* — T-364 moves it.
-         *
-         * Q-111 made this the one row on the board that destroyed a board: it
-         * replaced the one in this window, so it sat below *Export board…*,
-         * which was both the row somebody reading down wants far more often
-         * and, if they took it first, the thing that made this one survivable.
-         * T-356 ended that — opening board B leaves board A intact in its own
-         * file — and with it went the native confirmation that used to stand in
-         * front of it.
-         *
-         * The picker is still native and still opened from Rust, because
-         * nothing in `capabilities/` lets this side open a dialog at all.
-         */
-        label: "Open a board…",
-        run: () => openBoard(),
-      });
-    }
   }
   return [...rows, ...below];
+}
+
+/**
+ * What to call a board in the recents, given the others it sits beside.
+ *
+ * The title alone until it does not stand alone, and then the folder's display
+ * name after it. Two boards both called *Untitled board* is the ordinary case
+ * rather than a corner — it is what every board is called before somebody names
+ * it — and a menu with the same row twice is a menu you cannot use.
+ *
+ * Not the folder on every row, which was the other way to write it: on a
+ * machine where every board sits in `Schizoboard` that is the same six words
+ * after every title, which is noise that makes the one case it exists for
+ * harder to see rather than easier.
+ */
+function nameOf(board: BoardRow, among: readonly BoardRow[]): string {
+  const shared = among.filter((other) => other.title === board.title).length > 1;
+  return shared && board.folder.length > 0 ? `${board.title} — ${board.folder}` : board.title;
 }
 
 /**
