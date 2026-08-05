@@ -35,10 +35,12 @@ function meshWithSpy(max?: number): {
   dialled: string[];
   providers: ReturnType<typeof fakeProvider>[];
   dropped: string[];
+  disconnected: SyncProvider[];
 } {
   const dialled: string[] = [];
   const providers: ReturnType<typeof fakeProvider>[] = [];
   const dropped: string[] = [];
+  const disconnected: SyncProvider[] = [];
   const mesh = new Mesh({
     connect: (url) => {
       dialled.push(url);
@@ -46,10 +48,11 @@ function meshWithSpy(max?: number): {
       providers.push(provider);
       return provider;
     },
+    disconnect: (provider) => disconnected.push(provider),
     max,
     onDropped: (reason) => dropped.push(reason),
   });
-  return { mesh, dialled, providers, dropped };
+  return { mesh, dialled, providers, dropped, disconnected };
 }
 
 function peer(instance: string, url: string) {
@@ -94,6 +97,19 @@ describe("the mesh", () => {
     expect(providers[1]!.destroyed).toBe(false);
     expect(mesh.size).toBe(1);
     expect(mesh.urls()).toEqual(["ws://10.0.0.4:4321/demo"]);
+  });
+
+  it("says which provider it is letting go of, before it goes", () => {
+    // The asset exchange subscribes to every provider the mesh opens (T-388),
+    // and this is how it learns to unsubscribe — after the destroy it would be
+    // detaching a corpse whose listeners are already cleared.
+    const { mesh, providers, disconnected } = meshWithSpy();
+    mesh.found(peer("a", "ws://192.168.1.9:4321/demo"));
+    mesh.found(peer("a", "ws://10.0.0.4:4321/demo"));
+    expect(disconnected).toEqual([providers[0]]);
+
+    mesh.destroy();
+    expect(disconnected).toEqual([providers[0], providers[1]]);
   });
 
   it("stops at its bound, and says what it dropped", () => {

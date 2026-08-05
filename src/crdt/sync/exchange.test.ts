@@ -52,6 +52,8 @@ class Wire implements Pick<SyncProvider, "send" | "on" | "synced"> {
   private readonly arrivals: ((change: { added: number[] }) => void)[] = [];
   /** Everything the exchange has said, in order, already decoded. */
   readonly sent: { to: number; message: NonNullable<ReturnType<typeof decodeAsset>> }[] = [];
+  /** Where a frame goes when this wire is plugged into a `Room`. */
+  routed: ((to: number, tail: Uint8Array) => void) | null = null;
   private readonly listeners = new Map<string, ((value: never) => void)[]>();
 
   send(frame: Uint8Array): boolean {
@@ -72,9 +74,11 @@ class Wire implements Pick<SyncProvider, "send" | "on" | "synced"> {
     expect(varUint()).toBe(MessageType.ASSET);
     expect(varUint()).toBe(0); // never fills in its own id: the relay does that
     const to = varUint();
-    const message = decodeAsset(frame.subarray(at));
+    const tail = frame.subarray(at);
+    const message = decodeAsset(tail);
     expect(message).not.toBeNull();
     this.sent.push({ to, message: message! });
+    this.routed?.(to, tail);
     return true;
   }
 
@@ -82,7 +86,12 @@ class Wire implements Pick<SyncProvider, "send" | "on" | "synced"> {
     const set = this.listeners.get(event) ?? [];
     set.push(listener as (value: never) => void);
     this.listeners.set(event, set);
-    return () => {};
+    // A real remover, because `detach` (T-388) is exactly the caller that needs
+    // unsubscribing to be observable.
+    return () => {
+      const at = set.indexOf(listener as (value: never) => void);
+      if (at >= 0) set.splice(at, 1);
+    };
   }
 
   /** A peer says something to us. */
@@ -610,6 +619,148 @@ describe("the asset exchange", () => {
         .filter((f) => f.message.kind === "data")
         .map((f) => (f.message as { index: number }).index);
       expect(indices).toEqual([4]);
+    });
+  });
+
+  // --- several wires (T-388) ----------------------------------------------
+
+  describe("a second wire", () => {
+    let meshWire: Wire;
+
+    beforeEach(async () => {
+      meshWire = new Wire();
+      exchange.attach(meshWire as unknown as SyncProvider);
+      // Attaching an already-synced wire announces what is held down it, the
+      // same way the first wire's open did — wait for it so every test below
+      // starts from a quiet line.
+      await vi.waitFor(() => expect(meshWire.sent).toHaveLength(1));
+      expect(meshWire.sent[0]).toMatchObject({ to: 0, message: { kind: "have" } });
+      meshWire.sent.length = 0;
+    });
+
+    it("asks a holder down the wire it was heard on", async () => {
+      meshWire.hear(PEER_A, encodeHave([hash]));
+      exchange.want(hash);
+      await sent();
+
+      // The main wire cannot reach this peer — on a LAN it is the wire to our
+      // own loopback relay, and PEER_A is not in that room at all.
+      expect(wire.wants()).toEqual([]);
+      expect(meshWire.wants()).toHaveLength(1);
+      expect(meshWire.wants()[0]!.to).toBe(PEER_A);
+    });
+
+    it("serves a WANT back down the wire that carried it", async () => {
+      store.hold(hash, bytes);
+      meshWire.hear(PEER_A, encodeWant(hash, Priority.IDLE, 0));
+
+      await vi.waitFor(() =>
+        expect(meshWire.sent.some((f) => f.message.kind === "done")).toBe(true),
+      );
+      expect(meshWire.sent.filter((f) => f.message.kind === "data")).toHaveLength(1);
+      expect(wire.sent).toEqual([]);
+    });
+
+    it("announces down every open wire", () => {
+      exchange.announce([UNRELATED]);
+
+      expect(wire.sent.filter((f) => f.message.kind === "have")).toHaveLength(1);
+      expect(meshWire.sent.filter((f) => f.message.kind === "have")).toHaveLength(1);
+    });
+
+    it("a wire that closes takes only the peers heard through it", async () => {
+      const other = "a".repeat(64);
+      meshWire.hear(PEER_A, encodeHave([hash]));
+      wire.hear(PEER_B, encodeHave([other]));
+
+      meshWire.status("offline");
+      exchange.want(hash);
+      exchange.want(other);
+      await sent();
+
+      // PEER_A went with its wire; PEER_B's is still up, and forgetting it too
+      // would stall every transfer on the board because one link blinked.
+      expect(meshWire.wants()).toEqual([]);
+      expect(wire.wants().map((w) => w.to)).toEqual([PEER_B]);
+      expect(exchange.stats().wanted).toBe(2);
+    });
+
+    it("stops hearing a wire it was told to let go of", async () => {
+      exchange.detach(meshWire as unknown as SyncProvider);
+      meshWire.hear(PEER_A, encodeHave([hash]));
+      exchange.want(hash);
+      await sent();
+
+      expect(meshWire.wants()).toEqual([]);
+      expect(wire.wants()).toEqual([]);
+    });
+  });
+
+  describe("a LAN board, where the only links that cross machines are the mesh's", () => {
+    /**
+     * A relay room as a script — the routing half of `room.rs`: the sender's id
+     * stamped from the connection, `to = 0` broadcast, anything else point to
+     * point. Two of these plus four wires reproduce the topology `app/sync.ts`
+     * actually builds on a LAN, which is the one the old single-provider
+     * exchange was deaf in.
+     */
+    class Room {
+      private readonly members: { client: number; wire: Wire }[] = [];
+
+      join(client: number, wire: Wire): void {
+        this.members.push({ client, wire });
+        wire.routed = (to, tail) => {
+          for (const member of this.members) {
+            if (member.wire === wire) continue;
+            if (to === 0 || member.client === to) member.wire.hear(client, tail);
+          }
+        };
+      }
+    }
+
+    it("moves an asset between two exchanges whose main providers never share a room", async () => {
+      // Machine A hosts its own relay and dials it over loopback; so does B.
+      // What crosses the network is each machine's mesh dial of the *other's*
+      // relay — so A's room holds A's main wire and B's mesh wire, and B's room
+      // the mirror image. No room ever holds both main wires.
+      const clientA = 101;
+      const clientB = 202;
+      const mainA = new Wire();
+      const meshA = new Wire();
+      const mainB = new Wire();
+      const meshB = new Wire();
+      const roomA = new Room();
+      const roomB = new Room();
+      roomA.join(clientA, mainA);
+      roomA.join(clientB, meshB);
+      roomB.join(clientB, mainB);
+      roomB.join(clientA, meshA);
+
+      const storeA = new Store();
+      const storeB = new Store();
+      storeA.hold(hash, bytes);
+
+      const exchangeA = new AssetExchange(
+        mainA as unknown as SyncProvider,
+        storeA as unknown as Platform,
+      );
+      exchangeA.attach(meshA as unknown as SyncProvider);
+      const exchangeB = new AssetExchange(
+        mainB as unknown as SyncProvider,
+        storeB as unknown as Platform,
+      );
+      exchangeB.attach(meshB as unknown as SyncProvider);
+
+      try {
+        // B's renderer draws the polaroid and asks. Before T-388 this waited
+        // forever: A's HAVE arrived on B's mesh wire, which nothing heard.
+        exchangeB.want(hash, Priority.VISIBLE);
+
+        await vi.waitFor(() => expect(storeB.committed).toEqual([hash]));
+      } finally {
+        exchangeA.destroy();
+        exchangeB.destroy();
+      }
     });
   });
 });

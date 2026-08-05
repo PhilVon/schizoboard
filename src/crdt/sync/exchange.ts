@@ -27,6 +27,21 @@
  * and ask the next one. A silent peer, a refusal, a failed verification and a
  * dropped socket are one code path, because there is only one useful response
  * to any of them.
+ *
+ * ## One exchange, several wires (T-388)
+ *
+ * On a real network there is no room both peers' own providers are in. Each
+ * machine hosts its own relay and dials it over loopback; the connections that
+ * actually cross the network are the ones `app/mesh.ts` opens to the relays
+ * discovery found. So an exchange listening to one provider hears no `HAVE`
+ * that matters and speaks into a room where nobody who wants anything can hear
+ * it — the document syncs, and every photograph stays blank film, forever.
+ *
+ * Hence `attach`: every provider on the board is a wire this one conversation
+ * runs over. A peer is reachable down whichever wire it was last heard on
+ * (`routes`), a `HAVE` is announced down all of them, and a wire that closes
+ * takes exactly the peers heard through it — not the ones the other wires can
+ * still reach.
  */
 
 import { CHUNK_BYTES, type Platform } from "../../platform/types";
@@ -107,31 +122,38 @@ export interface ExchangeOptions {
   onUnavailable?: (sha256: string, tried: readonly number[]) => void;
 }
 
+/** One attached provider: whether its handshake is through, and how to let go. */
+interface Attached {
+  open: boolean;
+  unlisten: (() => void)[];
+}
+
 export class AssetExchange {
   private readonly holders = new Map<string, Set<number>>();
   private readonly wanted = new Map<string, Wanted>();
   private readonly inFlight = new Map<string, InFlight>();
-  private readonly unlisten: (() => void)[] = [];
+  private readonly attached = new Map<SyncProvider, Attached>();
+  /**
+   * The wire each peer was last heard on, which is the wire that reaches them.
+   *
+   * Latest sighting wins. A peer on two wires — its own dial of our relay and
+   * our dial of its — is reachable down either, and whichever carried its most
+   * recent frame is the one least likely to have quietly died since.
+   */
+  private readonly routes = new Map<number, SyncProvider>();
+  private readonly awareness: SyncProvider["awareness"];
   private readonly onPeers: (change: { added: number[] }) => void;
-  private open = false;
   private destroyed = false;
 
   constructor(
-    private readonly provider: SyncProvider,
+    provider: SyncProvider,
     private readonly native: Platform,
     private readonly options: ExchangeOptions = {},
   ) {
-    this.unlisten.push(provider.on("asset", ({ from, tail }) => this.receive(from, tail)));
-    this.unlisten.push(
-      provider.on("status", (status) => {
-        // `synced`, not `connected`. The relay stamps the sender's client id
-        // into every asset frame from the awareness it has seen, and until the
-        // handshake is through it has seen none — so a frame sent any earlier is
-        // dropped by the relay with nothing said (D-28).
-        if (status === "synced") void this.opened();
-        else this.closed();
-      }),
-    );
+    // One awareness for the whole exchange: `app/main.ts` hands every mesh
+    // provider the primary's awareness, so this is everybody on the board
+    // however they are connected — and one listener is enough.
+    this.awareness = provider.awareness;
     // Tell a peer that has just arrived what we hold.
     //
     // `HAVE` is a broadcast with no history behind it, so everything announced
@@ -146,11 +168,61 @@ export class AssetExchange {
     // exactly this case, plus chatter forever on a board where nothing changes.
     // Everything that alters what we hold already announces on the spot.
     this.onPeers = ({ added }: { added: number[] }): void => {
-      if (added.some((client) => client !== provider.awareness.clientID)) void this.reannounce();
+      if (added.some((client) => client !== this.awareness.clientID)) void this.reannounce();
     };
-    provider.awareness.on("change", this.onPeers);
+    this.awareness.on("change", this.onPeers);
 
-    if (provider.synced) void this.opened();
+    this.attach(provider);
+  }
+
+  /**
+   * One more wire this conversation runs over (T-388).
+   *
+   * Called with the primary provider by the constructor and with every mesh
+   * provider by `app/main.ts`, because on a LAN those are the only connections
+   * that cross the network at all — an exchange that does not hear them hears
+   * nobody, and the board is a wall of blank film with a synced document behind
+   * it. Idempotent per provider.
+   */
+  attach(provider: SyncProvider): void {
+    if (this.destroyed || this.attached.has(provider)) return;
+    const entry: Attached = { open: false, unlisten: [] };
+    this.attached.set(provider, entry);
+    entry.unlisten.push(
+      provider.on("asset", ({ from, tail }) => this.receive(provider, from, tail)),
+    );
+    entry.unlisten.push(
+      provider.on("status", (status) => {
+        // `synced`, not `connected`. The relay stamps the sender's client id
+        // into every asset frame from the awareness it has seen, and until the
+        // handshake is through it has seen none — so a frame sent any earlier is
+        // dropped by the relay with nothing said (D-28).
+        if (status === "synced") void this.opened(provider);
+        else this.closed(provider);
+      }),
+    );
+    if (provider.synced) void this.opened(provider);
+  }
+
+  /**
+   * Let a wire go for good — the mesh replacing a moved peer, or shutting down.
+   *
+   * Distinct from the wire merely closing: a drop keeps the subscription so the
+   * reconnect is heard, where this stops listening entirely. Without it a mesh
+   * that churned addresses for an afternoon would leave a listener per corpse.
+   */
+  detach(provider: SyncProvider): void {
+    const entry = this.attached.get(provider);
+    if (entry === undefined) return;
+    this.closed(provider);
+    for (const off of entry.unlisten) off();
+    this.attached.delete(provider);
+  }
+
+  /** Whether anybody can hear us at all. */
+  private get open(): boolean {
+    for (const entry of this.attached.values()) if (entry.open) return true;
+    return false;
   }
 
   private async reannounce(): Promise<void> {
@@ -189,7 +261,7 @@ export class AssetExchange {
   }
 
   /**
-   * Tell the room what this machine holds.
+   * Tell the room what this machine holds — every room, down every open wire.
    *
    * Called on connect with everything, and with a single hash whenever one is
    * ingested — a photograph pasted here is one somebody else is about to want,
@@ -197,8 +269,11 @@ export class AssetExchange {
    * for no reason.
    */
   announce(hashes: readonly string[]): void {
-    if (!this.open || hashes.length === 0) return;
-    this.provider.send(encodeAsset(0, encodeHave(hashes)));
+    if (hashes.length === 0) return;
+    const frame = encodeAsset(0, encodeHave(hashes));
+    for (const [provider, entry] of this.attached) {
+      if (entry.open) provider.send(frame);
+    }
   }
 
   /**
@@ -226,45 +301,77 @@ export class AssetExchange {
 
   destroy(): void {
     this.destroyed = true;
-    this.closed();
-    this.provider.awareness.off("change", this.onPeers);
-    for (const off of this.unlisten) off();
-    this.unlisten.length = 0;
+    for (const provider of [...this.attached.keys()]) this.detach(provider);
+    this.awareness.off("change", this.onPeers);
   }
 
   // --- the wire ------------------------------------------------------------
 
-  private async opened(): Promise<void> {
-    this.open = true;
+  /**
+   * Put a frame on the wire that reaches this peer, if one does.
+   *
+   * The route is the connection the peer was last heard on. No route, or a
+   * route that has since closed, is `false` — which every caller already treats
+   * exactly like a send the provider refused.
+   */
+  private sendTo(peer: number, tail: Uint8Array): boolean {
+    const via = this.routes.get(peer);
+    if (via === undefined) return false;
+    if (this.attached.get(via)?.open !== true) return false;
+    return via.send(encodeAsset(peer, tail));
+  }
+
+  private async opened(provider: SyncProvider): Promise<void> {
+    const entry = this.attached.get(provider);
+    if (entry === undefined || entry.open) return;
+    entry.open = true;
     // Everything we hold, so peers can ask us; then re-ask for everything we
     // still want, since a transfer that was in flight when the socket went is
     // not coming back on its own.
+    //
+    // Announced down this wire alone: the peers on the others heard it when
+    // theirs opened, and a re-broadcast to them is chatter about nothing new.
     const held = await this.native.peerHaveSummary();
-    if (this.destroyed) return;
-    this.announce(held);
+    if (this.destroyed || this.attached.get(provider)?.open !== true) return;
+    if (held.length > 0) provider.send(encodeAsset(0, encodeHave(held)));
     for (const want of this.wanted.values()) want.tried.clear();
     this.pump();
   }
 
-  private closed(): void {
-    this.open = false;
-    // The holders map is knowledge about peers on a connection that has gone,
-    // and a client id is not stable across one. Keeping it would send the next
-    // session's WANTs to nobody.
-    this.holders.clear();
+  private closed(provider: SyncProvider): void {
+    const entry = this.attached.get(provider);
+    if (entry !== undefined) entry.open = false;
+    // Everything known through this connection went with it — and only that: a
+    // client id is not stable across a connection, but the peers on the *other*
+    // wires are on connections that are still up, and forgetting them too would
+    // stall every transfer on the board because one link blinked.
+    const gone = new Set<number>();
+    for (const [client, via] of this.routes) {
+      if (via === provider) gone.add(client);
+    }
+    if (gone.size === 0) return;
+    for (const client of gone) this.routes.delete(client);
+    for (const [prefix, peers] of this.holders) {
+      for (const client of gone) peers.delete(client);
+      if (peers.size === 0) this.holders.delete(prefix);
+    }
     // The partials stay on the disk. This is the case T-265 is named for: a
     // connection that drops in the middle of a 400 MB interview is the flaky
     // LAN, not a peer saying no, and throwing the file away here is what made
     // the transfer unable to survive one.
-    for (const live of this.inFlight.values()) {
+    for (const [sha256, live] of this.inFlight) {
+      if (!gone.has(live.peer)) continue;
       clearTimeout(live.silence);
+      this.inFlight.delete(sha256);
     }
-    this.inFlight.clear();
+    this.pump();
   }
 
-  private receive(from: number, tail: Uint8Array): void {
+  private receive(provider: SyncProvider, from: number, tail: Uint8Array): void {
     const message = decodeAsset(tail);
     if (message === null) return;
+    // However this frame got here, this wire reaches whoever sent it.
+    this.routes.set(from, provider);
 
     switch (message.kind) {
       case "have":
@@ -332,7 +439,7 @@ export class AssetExchange {
     const size = await this.native.assetSize(sha256);
     if (this.destroyed) return;
     if (size <= 0) {
-      this.provider.send(encodeAsset(to, encodeNack(sha256)));
+      this.sendTo(to, encodeNack(sha256));
       return;
     }
 
@@ -350,9 +457,9 @@ export class AssetExchange {
       // timer is what recovers — sending a NACK now would be a lie about the
       // chunks already sent.
       if (bytes.length === 0) return;
-      if (!this.provider.send(encodeAsset(to, encodeData(sha256, index, total, bytes)))) return;
+      if (!this.sendTo(to, encodeData(sha256, index, total, bytes))) return;
     }
-    this.provider.send(encodeAsset(to, encodeDone(sha256)));
+    this.sendTo(to, encodeDone(sha256));
   }
 
   private async commit(sha256: string, from: number): Promise<void> {
@@ -495,7 +602,7 @@ export class AssetExchange {
     // So the percentage is about the asset rather than about this attempt at
     // it: a transfer resumed at 90% must not report 0%.
     live.received = from;
-    if (!this.provider.send(encodeAsset(live.peer, encodeWant(sha256, live.priority, from)))) {
+    if (!this.sendTo(live.peer, encodeWant(sha256, live.priority, from))) {
       this.inFlight.delete(sha256);
       return;
     }

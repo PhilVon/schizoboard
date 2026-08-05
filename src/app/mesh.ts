@@ -23,17 +23,20 @@
  * network went away" — three hard problems bought in exchange for one fewer
  * socket per peer.
  *
- * ## Why this needs no `AssetExchange` of its own
+ * ## The exchange must ride these links (T-388)
  *
- * Because discovery is symmetric. If this client can see a peer, that peer can
- * see this client, so it dials *our* relay as we dial theirs — which puts it in
- * the room our existing exchange is already talking to. The photographs travel
- * over the link the other machine opened, not the one this file opens.
+ * This header used to claim the opposite — that no `AssetExchange` wiring was
+ * needed here, because a symmetric peer dials our relay and lands in the room
+ * our exchange already talks to. That was true of the *room* and false of the
+ * *exchange*: it subscribed to one provider, so every asset frame arriving on a
+ * mesh link fell on the floor, and it never sent down one either. On a real
+ * network the mesh links are the only connections that cross machines at all,
+ * so the symptom was exactly the one this paragraph predicted for a different
+ * cause — a fully synced board of blank film.
  *
- * That is a real dependency and not a happy accident: if discovery ever becomes
- * one-way — a seed that advertises but does not browse, say — assets stop
- * flowing to it while the document keeps syncing, and the symptom will be a
- * fully synced board of blank film.
+ * Hence `app/main.ts` attaches every provider this file opens to the one
+ * exchange (`AssetExchange.attach`), and `disconnect` below tells it when one
+ * is about to be destroyed so it can let the subscription go.
  */
 
 import type { SyncProvider } from "@/crdt/sync/provider";
@@ -56,6 +59,13 @@ export interface MeshOptions {
    * dialled and how often — none of which involves a socket.
    */
   connect(url: string): SyncProvider;
+  /**
+   * Told just before a provider this mesh opened is destroyed — a peer that
+   * moved address, or the whole mesh shutting down. The undo of `connect`, and
+   * what lets whoever subscribed to the provider (the asset exchange, T-388)
+   * unsubscribe rather than hold a listener on a corpse.
+   */
+  disconnect?(provider: SyncProvider): void;
   max?: number;
   /** Told what was dropped, and why. Defaults to `console.warn`. */
   onDropped?(reason: string): void;
@@ -70,12 +80,14 @@ interface Link {
 export class Mesh {
   private readonly links = new Map<string, Link>();
   private readonly connect: (url: string) => SyncProvider;
+  private readonly disconnect: (provider: SyncProvider) => void;
   private readonly max: number;
   private readonly onDropped: (reason: string) => void;
   private destroyed = false;
 
   constructor(options: MeshOptions) {
     this.connect = options.connect;
+    this.disconnect = options.disconnect ?? (() => {});
     this.max = options.max ?? MAX_PEERS;
     this.onDropped = options.onDropped ?? ((reason) => console.warn(`[mesh] ${reason}`));
   }
@@ -107,6 +119,7 @@ export class Mesh {
       // Same peer, different address. It moved — off the dock and onto wifi, or
       // its relay restarted on a new port — and the connection we hold is to
       // somewhere it no longer is.
+      this.disconnect(existing.provider);
       existing.provider.destroy();
       this.links.delete(peer.instance);
     }
@@ -127,7 +140,10 @@ export class Mesh {
    */
   destroy(): void {
     this.destroyed = true;
-    for (const link of this.links.values()) link.provider.destroy();
+    for (const link of this.links.values()) {
+      this.disconnect(link.provider);
+      link.provider.destroy();
+    }
     this.links.clear();
   }
 }

@@ -3830,11 +3830,45 @@ async function boot(): Promise<void> {
   provider?.on("denied", (reason) => console.warn(`[sync] denied: ${reason}`));
 
   /**
+   * The bytes behind the document (T-74).
+   *
+   * The document syncs an item saying "a 4032x3024 JPEG, sha256 abc…"; nothing
+   * in it says what the pixels are, so without this a fully synced board is a
+   * wall of empty frames.
+   *
+   * Built before the mesh, because the mesh's providers are attached to it as
+   * they open (T-388) — on a LAN they are the only connections that cross
+   * machines at all, and an exchange that came second could miss one found in
+   * between.
+   */
+  if (provider !== null) {
+    exchange = new AssetExchange(provider, native, {
+      onProgress: (sha256, received, total) => {
+        assets.transferring(sha256, received, total);
+        // Bytes are moving, so whatever the notice said about this hash is over.
+        // On `transferring` rather than on `ready` for the reason `assets` also
+        // clears its sticky `unavailable` there: somebody who holds it has
+        // turned up, and that is the news, not the last chunk.
+        missing.arrived(sha256);
+      },
+      onUnavailable: (sha256, tried) => {
+        assets.unavailable(sha256);
+        // Who claimed it and could not produce it, kept so the board can say so
+        // (DESIGN 7.5). This is the only moment those ids exist — the exchange
+        // drops the want, and the set with it, on the line after this call.
+        missing.unavailable(sha256, tried);
+        console.warn(`[sync] nobody on this board has ${sha256.slice(0, 8)}`);
+      },
+    });
+  }
+
+  /**
    * The peers this client finds for itself (T-70).
    *
    * One more provider per board the shell finds on the network, on this same
    * document and sharing this same awareness — see `app/mesh.ts` for why nobody
-   * is elected and why no second `AssetExchange` is needed.
+   * is elected. Each is attached to the exchange, because these links are the
+   * ones the photographs actually cross (T-388).
    *
    * Only where there is already a provider, because the awareness object to
    * share comes from it: with no wire at all there is nothing to join a peer
@@ -3849,8 +3883,10 @@ async function boot(): Promise<void> {
             const found = new WireProvider(board.doc, url, { awareness: provider.awareness });
             found.on("denied", (reason) => console.warn(`[sync] a found peer refused us: ${reason}`));
             found.on("error", (error) => console.warn("[sync] found peer error", error));
+            exchange?.attach(found);
             return found;
           },
+          disconnect: (gone) => exchange?.detach(gone),
         });
   // Awaited for the same reason `asset:ready` is: `listen` is a round trip, and
   // a peer announced before it resolves is a peer this window never dials.
@@ -3925,34 +3961,6 @@ async function boot(): Promise<void> {
     flash.say("Joining that board…");
     window.location.search = search;
   });
-
-  /**
-   * The bytes behind the document (T-74).
-   *
-   * The document syncs an item saying "a 4032x3024 JPEG, sha256 abc…"; nothing
-   * in it says what the pixels are, so without this a fully synced board is a
-   * wall of empty frames.
-   */
-  if (provider !== null) {
-    exchange = new AssetExchange(provider, native, {
-      onProgress: (sha256, received, total) => {
-        assets.transferring(sha256, received, total);
-        // Bytes are moving, so whatever the notice said about this hash is over.
-        // On `transferring` rather than on `ready` for the reason `assets` also
-        // clears its sticky `unavailable` there: somebody who holds it has
-        // turned up, and that is the news, not the last chunk.
-        missing.arrived(sha256);
-      },
-      onUnavailable: (sha256, tried) => {
-        assets.unavailable(sha256);
-        // Who claimed it and could not produce it, kept so the board can say so
-        // (DESIGN 7.5). This is the only moment those ids exist — the exchange
-        // drops the want, and the set with it, on the line after this call.
-        missing.unavailable(sha256, tried);
-        console.warn(`[sync] nobody on this board has ${sha256.slice(0, 8)}`);
-      },
-    });
-  }
 
   /**
    * What this client tells everybody else, every other frame (T-71).
