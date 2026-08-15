@@ -23,7 +23,7 @@ import {
   setItemPoses,
   resizeItems,
 } from "@/crdt/ops";
-import { readAsset, readItem, readPin, SCHEMA_VERSION } from "@/crdt/schema";
+import { readAsset, readItem, readPin, SCHEMA_BASELINE } from "@/crdt/schema";
 import { compareOrder } from "@/crdt/zindex";
 import { SCATTER_DEGREES } from "@/lib/seed";
 
@@ -60,7 +60,9 @@ describe("board document", () => {
   it("initialises meta once and does not overwrite it", () => {
     const b = board();
     const seed = b.meta.get("corkSeed");
-    expect(b.meta.get("schemaVersion")).toBe(SCHEMA_VERSION);
+    // The baseline — D-73. A board with nothing new on it stays shared with
+    // 1.0.2; the first timer is what raises this to `SCHEMA_VERSION`.
+    expect(b.meta.get("schemaVersion")).toBe(SCHEMA_BASELINE);
     initialiseBoard(b, "different title");
     expect(b.meta.get("corkSeed")).toBe(seed);
     expect(b.meta.get("title")).toBe("Untitled board");

@@ -25,7 +25,7 @@ import {
 } from "@/crdt/doc";
 import { applyPersisted } from "@/crdt/ops/load";
 import { attachPoster, attachTranscript, createItems, deleteItems } from "@/crdt/ops/items";
-import { readAsset, SCHEMA_VERSION } from "@/crdt/schema";
+import { readAsset, SCHEMA_BASELINE, SCHEMA_VERSION } from "@/crdt/schema";
 import { assetKind } from "@/lib/objects";
 
 const PHOTO = "a".repeat(64);
@@ -79,7 +79,11 @@ describe("what a board is called", () => {
 
   it("reports the schema version, and this build's when there is not one", () => {
     const doc = board();
-    expect(boardSchemaVersion(doc)).toBe(SCHEMA_VERSION);
+    // The *baseline*, not what this build understands — D-73. A fresh board has
+    // nothing on it an older build cannot read, so it says so and seals nobody.
+    // `crdt/ops/timers.ts` is what raises it, when the first timer arrives.
+    expect(boardSchemaVersion(doc)).toBe(SCHEMA_BASELINE);
+    expect(SCHEMA_BASELINE).toBeLessThan(SCHEMA_VERSION);
     doc.meta.set("schemaVersion", 99);
     expect(boardSchemaVersion(doc)).toBe(99);
     doc.meta.set("schemaVersion", "next");

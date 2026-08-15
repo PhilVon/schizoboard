@@ -12,7 +12,7 @@ import * as Y from "yjs";
 import { newId } from "@/lib/ids";
 import type { AssetKind } from "@/lib/objects";
 import { Origin, type OriginTag } from "@/crdt/origins";
-import { SCHEMA_VERSION, readAsset, readItem, type YMap } from "@/crdt/schema";
+import { SCHEMA_BASELINE, SCHEMA_VERSION, readAsset, readItem, type YMap } from "@/crdt/schema";
 
 export interface BoardDoc {
   readonly doc: Y.Doc;
@@ -52,11 +52,23 @@ export function openBoardDoc(doc: Y.Doc = new Y.Doc()): BoardDoc {
  * values twice merges to the same result, except `corkSeed` — so whichever
  * write lands second wins and both peers converge on one cork. That is
  * last-write-wins doing exactly what it should.
+ *
+ * ## The baseline, and not what this build understands
+ *
+ * `SCHEMA_BASELINE` is what a board with nothing new on it needs, and stamping
+ * that here is the whole reason the constant is split. A board this build makes
+ * and never puts a timer on is still fully shared with 1.0.2 — it seals nobody,
+ * because there is nothing on it an older build cannot read.
+ *
+ * The version is raised to `SCHEMA_VERSION` by the first thing that actually
+ * needs it, in the transaction that writes that thing — `crdt/ops/timers.ts`.
+ * Writing the higher number here instead would seal every older peer on every
+ * board made after the release, for a feature nobody on it had used.
  */
 export function initialiseBoard(board: BoardDoc, title = "Untitled board"): void {
   if (typeof board.meta.get("schemaVersion") === "number") return;
   board.doc.transact(() => {
-    board.meta.set("schemaVersion", SCHEMA_VERSION);
+    board.meta.set("schemaVersion", SCHEMA_BASELINE);
     board.meta.set("title", title);
     board.meta.set("corkSeed", newSeedValue());
     board.meta.set("createdAt", Date.now());
@@ -149,6 +161,24 @@ export function boardSchemaVersion(board: BoardDoc): number {
 }
 
 /**
+ * Say that this board now holds something an older build cannot read — D-73.
+ *
+ * **Call it inside the transaction that writes the thing**, never before and
+ * never after. The seal and its cause have to reach a peer in one update, or
+ * there is a window in which an older build has the item and not the version,
+ * which is precisely the silent state the split exists to abolish.
+ *
+ * A no-op when the board already says this or more. That matters: the first
+ * timer raises the version and the second must put nothing on the wire, and a
+ * board someone has already brought forward must not be dragged back by a build
+ * that only needs 2.
+ */
+export function noteSchemaNeeds(board: BoardDoc, version: number): void {
+  if (boardSchemaVersion(board) >= version) return;
+  board.meta.set("schemaVersion", version);
+}
+
+/**
  * Was this document written by a build newer than this one?
  *
  * DATA-MODEL section 12 specifies migration for a *lower* version — the first
@@ -167,6 +197,16 @@ export function boardSchemaVersion(board: BoardDoc): number {
  *
  * A missing or unusable `schemaVersion` reads as this build's own, so a board
  * from before the field was written is not a board from the future.
+ *
+ * ## The keep-set half does not apply to every future type
+ *
+ * It applies to every one that carries bytes, which was all of them when this
+ * was written. A timer holds no `assetId`, so it contributes nothing to the
+ * keep-set whether it is read or not and there is nothing of its own for a
+ * sweep to reclaim — D-73 turns on exactly that asymmetry. What is left for a
+ * timer is the invisibility above, which is enough on its own: an older build
+ * that cannot see an item will happily edit around it, and this is what stops
+ * it writing at all.
  */
 export function futureSchema(board: BoardDoc): boolean {
   return boardSchemaVersion(board) > SCHEMA_VERSION;

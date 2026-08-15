@@ -86,8 +86,10 @@ import {
   insertPinIntoString,
   insertStringNode,
   movePins,
+  pauseTimer,
   removeStringNodes,
   reparentPin,
+  resetTimer,
   resizeItems,
   scaleNodeSlack,
   scaleStringSlack,
@@ -96,6 +98,8 @@ import {
   setNodeSlack,
   setStringSlack,
   setStringStyle,
+  setTimerMode,
+  startTimer,
   type StringAnchor,
 } from "@/crdt/ops";
 import { isRenderableString, readString, type YMap } from "@/crdt/schema";
@@ -189,9 +193,24 @@ function seedCrypto(rng: Rng): () => void {
 const itemIds = (board: BoardDoc): string[] => [...board.items.keys()];
 const pinIds = (board: BoardDoc): string[] => [...board.pins.keys()];
 const stringIds = (board: BoardDoc): string[] => [...board.strings.keys()];
+/** The timers, which the four ops below are the only things that can act on —
+ *  a run whose board happened to make none must not report having worked them. */
+const timerIds = (board: BoardDoc): string[] =>
+  [...board.items].filter(([, map]) => map.get("type") === "timer").map(([id]) => id);
 
 /** A coordinate anywhere on a board a person might plausibly have made. */
 const coord = (rng: Rng): number => rng.range(-2000, 2000);
+
+/**
+ * An epoch instant to hand a timer op, drawn from the seeded generator rather
+ * than from the clock — the reproducibility argument in this file's header,
+ * which `Date.now()` in an op's arguments would quietly undo.
+ *
+ * A four-hour window, so two draws can land either way round: a pause before its
+ * own start is real skew between two machines, and the clamp that turns it into
+ * a zero-length run is the thing worth reaching.
+ */
+const instant = (rng: Rng): number => Math.floor(rng.range(1_770_000_000_000, 1_770_014_400_000));
 
 /**
  * One operation, named so a failure can say what happened rather than only what
@@ -236,7 +255,15 @@ const OPERATIONS: readonly Operation[] = [
     run: (board, rng) => {
       const many = 1 + rng.int(3);
       const inputs = Array.from({ length: many }, () => ({
-        type: rng.pick(["polaroid", "note", "scrap", "card"] as const)!,
+        // The fifth type is in the mix rather than in a test of its own, which
+        // is the point of a fuzz harness: a timer has to survive being merged
+        // *beside* everything else, pinned, strung, inked and deleted, not only
+        // being started and stopped in a quiet corner.
+        type: rng.pick(["polaroid", "note", "scrap", "card", "timer"] as const)!,
+        timer: {
+          mode: rng.pick(["clock", "countdown", "stopwatch"] as const)!,
+          runsFor: rng.range(0, 3_600_000),
+        },
         x: coord(rng),
         y: coord(rng),
         w: rng.range(20, 400),
@@ -245,6 +272,53 @@ const OPERATIONS: readonly Operation[] = [
         withPin: rng.chance(0.7),
       }));
       return `createItems x${createItems(board, inputs).length}`;
+    },
+  },
+  {
+    name: "setTimerMode",
+    weight: 1,
+    run: (board, rng) => {
+      const ids = rng.some(timerIds(board), 2);
+      if (ids.length === 0) return null;
+      const mode = rng.pick(["clock", "countdown", "stopwatch"] as const)!;
+      setTimerMode(board, ids, mode);
+      return `setTimerMode ${mode} ${ids.join(",")}`;
+    },
+  },
+  {
+    name: "startTimer",
+    weight: 2,
+    run: (board, rng) => {
+      const ids = rng.some(timerIds(board), 2);
+      if (ids.length === 0) return null;
+      const now = instant(rng);
+      startTimer(board, ids, now);
+      return `startTimer @${now} ${ids.join(",")}`;
+    },
+  },
+  {
+    name: "pauseTimer",
+    weight: 2,
+    run: (board, rng) => {
+      const ids = rng.some(timerIds(board), 2);
+      if (ids.length === 0) return null;
+      // Its own instant, drawn independently of whatever the start was given, so
+      // the mix reaches a pause *before* the run began — which is the clock skew
+      // D-73 accepts and the clamp in `pauseTimer` is there for. A harness that
+      // threaded one monotonic clock through both would never produce it.
+      const now = instant(rng);
+      pauseTimer(board, ids, now);
+      return `pauseTimer @${now} ${ids.join(",")}`;
+    },
+  },
+  {
+    name: "resetTimer",
+    weight: 1,
+    run: (board, rng) => {
+      const ids = rng.some(timerIds(board), 2);
+      if (ids.length === 0) return null;
+      resetTimer(board, ids);
+      return `resetTimer ${ids.join(",")}`;
     },
   },
   {
@@ -901,6 +975,16 @@ describe("fuzz — two documents, concurrent operations, all nine invariants", (
       expect(board.pins.size).toBeGreaterThan(3);
       expect(board.strings.size).toBeGreaterThan(0);
       expect(board.boardInk.size).toBeGreaterThan(0);
+      // Timers specifically, and not only that some exist: the four ops above
+      // are the only writers of `runFrom` and `banked`, so a mix that made
+      // timers and never worked them would merge five keys nobody had touched
+      // and report a covered feature.
+      expect(timerIds(board).length).toBeGreaterThan(0);
+      const worked = timerIds(board).filter((id) => {
+        const map = board.items.get(id)!;
+        return map.get("runFrom") !== undefined || map.get("banked") !== undefined;
+      });
+      expect(worked.length).toBeGreaterThan(0);
       // And every operation has to have been reachable at least once, or one of
       // them is quietly returning null for the whole run.
       const reached = new Set<string>();

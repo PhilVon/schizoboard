@@ -39,11 +39,40 @@ import {
   type ItemStyle,
   type PaperStock,
 } from "@/lib/style";
-
-export const SCHEMA_VERSION = 1;
+import { isTimerMode, type TimerFields, type TimerMode } from "@/lib/timer";
 
 /**
- * Two of these four cannot be created, and both facts are decisions.
+ * What this build understands, and what a board needs before it may be opened
+ * read-write. Raised to 2 by D-73, which put a fifth item type in the union
+ * below.
+ *
+ * ## Why this is two constants and not one
+ *
+ * `initialiseBoard` writes `meta.schemaVersion` only when the key is absent, so
+ * raising this alone would leave every board already in existence at version 1.
+ * An older peer would never be sealed, and the silent drop D-73 spent this
+ * version on avoiding would happen anyway — on every board but the ones made
+ * after the release.
+ *
+ * So a new board is stamped with the **baseline** instead: what a board with
+ * nothing new on it actually needs, which is still 1. A board this build makes
+ * and never puts a timer on stays fully shared with 1.0.2, which is the common
+ * case and the one that must not be broken to protect the rare one.
+ *
+ * The version is raised to `SCHEMA_VERSION` by the *first timer*, in the same
+ * transaction that writes it — `crdt/ops/timers.ts`. The seal and its cause
+ * therefore reach a peer together, and `sealIfFuture` (`app/main.ts`) is watched
+ * through a `meta` observer rather than checked once, so an older build goes
+ * read-only and loud on the merge rather than quietly losing an item.
+ *
+ * Raise the baseline only for a change an older build cannot survive *reading* —
+ * never for one it merely does not use.
+ */
+export const SCHEMA_VERSION = 2;
+export const SCHEMA_BASELINE = 1;
+
+/**
+ * Two of the first four cannot be created, and both facts are decisions.
  *
  * `scrap` is what DESIGN section 2.1 calls a blank sheet, and the note tool
  * makes one — as a `note` with no text in it, which is what the section says a
@@ -51,12 +80,27 @@ export const SCHEMA_VERSION = 1;
  * index card is a *stock*, and any sheet's Paper strip will give you one.
  *
  * Both stay in the union anyway, and that is the point rather than the
- * leftover. `readItem` returns `undefined` for a type it does not know, so a
- * board written by anything that ever made one would lose the item rather than
- * keep a sheet of paper. A type is cheap to keep accepting and expensive to
- * stop.
+ * leftover. `readItem` returns `null` for a type it does not know, so a board
+ * written by anything that ever made one would lose the item rather than keep a
+ * sheet of paper. A type is cheap to keep accepting and expensive to stop.
+ *
+ * ## And a fifth, which cost a schema version — D-73
+ *
+ * `timer` is the exception to the sentence above, taken knowingly. D-46 section
+ * 2 said no new item types and chose the face from the asset's mime, and it
+ * still stands for everything that arrives as **bytes** — a folder, a VHS and a
+ * cassette are read off the mime, and a card off `source`. A timer has no asset
+ * and no mime, so there is nothing for `archetypeOf` to read, and a `device`
+ * field on a polaroid would be a face field wearing a fact's clothes.
+ *
+ * The cost D-46 named cannot be charged to it either: that argument was about
+ * `referencedAssets` walking `readItem`, so an unknown type takes its asset's
+ * bytes down with it. A timer holds no `assetId`, so there is nothing on disk
+ * for an older build's sweep to collect. What is left is the item going
+ * invisible — and `SCHEMA_VERSION` above turns that from silent into read-only
+ * and loud.
  */
-export type ItemType = "polaroid" | "note" | "scrap" | "card";
+export type ItemType = "polaroid" | "note" | "scrap" | "card" | "timer";
 /**
  * `tape` is the odd one and the oddness is deliberate — Q-286.
  *
@@ -85,7 +129,7 @@ export type StringLayer = "over" | "under";
 export type StringMaterial = "string" | "yarn" | "wire";
 export type StrokeTool = "marker" | "highlighter" | "erase";
 
-const ITEM_TYPES: ReadonlySet<string> = new Set(["polaroid", "note", "scrap", "card"]);
+const ITEM_TYPES: ReadonlySet<string> = new Set(["polaroid", "note", "scrap", "card", "timer"]);
 /**
  * The kinds, as a list, so the renderer's own copy of the union can be held
  * against this one — `tests/pin-kinds.test.ts`. `render/` does not import from
@@ -155,6 +199,25 @@ export interface ItemFields {
    * "chosen nothing, or not read yet?", and the answer is always the first.
    */
   style: ItemStyle;
+  /**
+   * The five plain values a `timer` carries — `lib/timer.ts` — or `null` for
+   * every item that is not one.
+   *
+   * Null rather than a filled-in record, and the opposite choice from `style`
+   * one line above, because the question a reader asks is a different one.
+   * "Which of the seed's answers were overridden" has a sensible empty answer
+   * for every item on the board; "how is this timer set" has no answer at all
+   * for a photograph, and handing back a clock face's worth of defaults would
+   * invite somebody to draw one.
+   *
+   * Stored flat on the item map — `mode`, `runsFor`, `runFrom`, `banked`,
+   * `lights` — and grouped only here, on the way out. They are plain values
+   * under DATA-MODEL section 1 rather than a nested `Y.Map` like `style`: no
+   * part of any of them is separately editable by two people, so two peers
+   * setting a countdown to five minutes and to ten must land on one of the two
+   * and never on a merged seven and a half.
+   */
+  timer: TimerFields | null;
   createdBy: number;
   createdAt: number;
 }
@@ -486,8 +549,45 @@ export function readItem(id: string, map: YMap): ItemFields | null {
     // film", and every answer short of yes is no.
     sourceAbout: map.get("sourceAbout") === "media" ? "media" : "page",
     style: readStyle(map.get("style")),
+    // Only a timer has these, and asking a photograph for them would put five
+    // meaningless keys on every item on the board — see `ItemFields.timer`.
+    timer: type === "timer" ? readTimer(map) : null,
     createdBy: num(map.get("createdBy"), 0),
     createdAt: num(map.get("createdAt"), 0),
+  };
+}
+
+/**
+ * The five off a timer's map — D-73, and `lib/timer.ts` for what each one means.
+ *
+ * Coerced on the way past, the way every other reader here coerces: section
+ * 8.1's rule is that malformed data is tolerated and rendered gracefully, and a
+ * timer whose `banked` arrived as a string should still be a clock somebody can
+ * grab and delete rather than a face reading `NaN:NaN`. `crdt/invariants.ts`
+ * reads the raw map and not this, so nothing here can hide a bad write from the
+ * checker.
+ */
+function readTimer(map: YMap): TimerFields {
+  const mode = map.get("mode");
+  const runFrom = map.get("runFrom");
+  return {
+    // Absent is `clock` and so is anything unrecognised — a mode a later build
+    // invented, or a peer's nonsense. `sourceAbout`'s rule above, for the same
+    // reason: the default is the answer for most of them, so it is never
+    // written, and every answer short of a mode we know is the default.
+    mode: isTimerMode(mode) ? (mode as TimerMode) : "clock",
+    runsFor: Math.max(0, num(map.get("runsFor"), 0)),
+    // Not `num(..., 0)` like the two durations either side of it, and the
+    // asymmetry is the point: zero is a perfectly good duration and a
+    // catastrophic *instant*. Repairing a nonsense start to the epoch would put
+    // fifty-six years on the face, so a start this build cannot believe reads as
+    // no start at all — which is the paused state, and the honest one.
+    runFrom: typeof runFrom === "number" && Number.isFinite(runFrom) && runFrom > 0 ? runFrom : null,
+    banked: Math.max(0, num(map.get("banked"), 0)),
+    // May dangle, and is never repaired here — DATA-MODEL section 8.1. The item
+    // it names may have been deleted by a peer, which is a timer that lights
+    // nothing rather than an error.
+    lights: typeof map.get("lights") === "string" ? (map.get("lights") as string) : null,
   };
 }
 
