@@ -208,6 +208,17 @@ export class Binding {
         // branch below ends in `syncItem` — so choosing a paper stock rebuilds
         // the item's view with no new observer and no new dirty flag.
         style: fields.style,
+        // The five a timer is set by, or null for the four types that are not
+        // one (D-73). Every one of them is a plain key on this same map, so all
+        // six writes in `crdt/ops/timers.ts` already arrive as a top-level event
+        // and land here — a timer needs no observer of its own, which is half of
+        // why it is five plain values rather than a nested map.
+        //
+        // What does *not* come through here is the running of it. Nothing is
+        // written per second, so between a start and a pause this line does not
+        // fire at all and the mirror does not change; what the face says is
+        // derived per frame from these five and a `now` that is never stored.
+        timer: fields.timer,
       },
       { x: fields.x, y: fields.y, rot: fields.rot, w: fields.w, h: fields.h },
     );

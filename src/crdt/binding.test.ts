@@ -7,8 +7,15 @@ import {
   createItems,
   createPin,
   deleteItems,
+  pauseTimer,
   reparentPin,
+  resetTimer,
   setItemPoses,
+  setTimerLength,
+  setTimerLights,
+  setTimerMode,
+  startTimer,
+  type TimerInput,
 } from "@/crdt/ops";
 import { DirtySets } from "@/state/dirty";
 import { Scene } from "@/state/scene";
@@ -159,5 +166,136 @@ describe("Binding", () => {
     binding.resync();
     expect(scene.size).toBe(2);
     expect(dirty.all).toBe(true);
+  });
+});
+
+/**
+ * The clock, in the mirror — T-393.
+ *
+ * The mirror is where `state/` and `render/` meet a timer, because neither may
+ * read a document (ARCHITECTURE section 2.1). So what is proved here is that all
+ * five fields survive the crossing, that every one of the six writes arrives, and
+ * that a photograph carries `null` rather than a clock face's worth of defaults.
+ */
+describe("Binding — timers", () => {
+  /** A travel clock, at the size `lib/objects.ts` cuts one. */
+  function timer(set: TimerInput = {}): string {
+    return createItems(board, [{ type: "timer", x: 0, y: 0, w: 90, h: 70, timer: set }])[0]!.itemId;
+  }
+
+  it("carries all five fields across", () => {
+    const lit = createItems(board, [{ type: "note", x: 500, y: 0, w: 100, h: 100 }])[0]!.itemId;
+    const id = timer({ mode: "countdown", runsFor: 300_000, lights: lit });
+
+    expect(scene.cold(id)!.timer).toEqual({
+      mode: "countdown",
+      runsFor: 300_000,
+      // A new timer is put on the wall stopped, and `CreateItemInput.timer`
+      // cannot say otherwise — so these two are the reset state and not an
+      // omission from the test.
+      runFrom: null,
+      banked: 0,
+      lights: lit,
+    });
+  });
+
+  it("carries null for every item that is not one", () => {
+    // All four, and not a representative one: `readItem` decides this off the
+    // type, so a fifth branch appearing under any of them is the failure.
+    for (const type of ["polaroid", "note", "scrap", "card"] as const) {
+      const { itemId } = createItems(board, [{ type, x: 0, y: 0, w: 100, h: 100 }])[0]!;
+      expect(scene.cold(itemId)!.timer).toBeNull();
+    }
+    expect(scene.timers.size).toBe(0);
+  });
+
+  it("follows every one of the six writes", () => {
+    const other = timer();
+    const id = timer();
+    const at = 1_700_000_000_000;
+
+    setTimerMode(board, [id], "countdown");
+    expect(scene.cold(id)!.timer!.mode).toBe("countdown");
+
+    setTimerLength(board, [id], 90_000);
+    expect(scene.cold(id)!.timer!.runsFor).toBe(90_000);
+
+    startTimer(board, [id], at);
+    expect(scene.cold(id)!.timer!.runFrom).toBe(at);
+
+    pauseTimer(board, [id], at + 4_000);
+    // The two halves of the pause both arrive, and they arrive together: a
+    // mirror that had seen only the cleared `runFrom` would read a timer that
+    // had jumped back to nothing.
+    expect(scene.cold(id)!.timer).toMatchObject({ runFrom: null, banked: 4_000 });
+
+    resetTimer(board, [id]);
+    expect(scene.cold(id)!.timer).toMatchObject({ runFrom: null, banked: 0, runsFor: 90_000 });
+
+    setTimerLights(board, id, other);
+    expect(scene.cold(id)!.timer!.lights).toBe(other);
+  });
+
+  it("mints a fresh cold record on a timer write, so the face rebinds", () => {
+    const id = timer();
+    const before = scene.cold(id)!;
+
+    setTimerMode(board, [id], "stopwatch");
+
+    // Identity, not equality. `render/items/dom.ts` re-binds on
+    // `this.boundCold === cold` and nothing else, so a mirror that mutated the
+    // record in place would change the mode and leave the face reading a clock.
+    expect(scene.cold(id)).not.toBe(before);
+    expect(dirty.items.has(id)).toBe(true);
+  });
+
+  it("indexes the timers, and lets one go when its item does", () => {
+    createItems(board, [{ type: "note", x: 0, y: 0, w: 100, h: 100 }]);
+    const id = timer();
+
+    expect([...scene.timers]).toEqual([id]);
+
+    // Through the document rather than through `scene.removeItem`, because the
+    // observer is the only thing that empties the mirror in the running app.
+    deleteItems(board, [id]);
+    expect(scene.timers.size).toBe(0);
+  });
+
+  it("rebuilds the index on a resync", () => {
+    const id = timer();
+    scene.clear();
+    expect(scene.timers.size).toBe(0);
+
+    binding.resync();
+    expect([...scene.timers]).toEqual([id]);
+  });
+
+  it("takes a peer's timer the same way", () => {
+    const remote = openBoardDoc();
+    Y.applyUpdate(remote.doc, Y.encodeStateAsUpdate(board.doc));
+    const id = createItems(remote, [
+      { type: "timer", x: 0, y: 0, w: 90, h: 70, timer: { mode: "stopwatch" } },
+    ])[0]!.itemId;
+    startTimer(remote, [id], 1_700_000_000_000);
+
+    Y.applyUpdate(board.doc, Y.encodeStateAsUpdate(remote.doc));
+
+    expect(scene.cold(id)!.timer).toMatchObject({ mode: "stopwatch", runFrom: 1_700_000_000_000 });
+    expect([...scene.timers]).toEqual([id]);
+  });
+
+  it("does not move while a timer runs", () => {
+    const id = timer({ mode: "stopwatch" });
+    startTimer(board, [id], 1_700_000_000_000);
+    const running = scene.cold(id)!;
+    dirty.clear();
+
+    // Four seconds of a running stopwatch, as the document sees them: nothing.
+    // This is D-73's load-bearing rule seen from the mirror — the record a face
+    // was built from is still the record, so there is nothing here for a
+    // per-frame reading to be derived *against*, and `state/timers.ts` (T-394)
+    // must therefore get its `now` from the frame rather than from here.
+    expect(scene.cold(id)).toBe(running);
+    expect(dirty.items.size).toBe(0);
   });
 });

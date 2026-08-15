@@ -1674,3 +1674,58 @@ describe("tape holds a string to the paper and the paper to nothing", () => {
     expect([...scene.pinsOf("a")].sort()).toEqual(["p0", "p1"]);
   });
 });
+
+/**
+ * The one door into the mirror, on the field a timer arrives in - T-393.
+ *
+ * No document in here, which is the point (ARCHITECTURE 2.1): the defaults and
+ * the index are the mirror's own, not the binding's, so they hold for the spike
+ * and for every test that puts an item down by hand.
+ */
+describe("the clock in the cold record", () => {
+  const clock = { mode: "clock", runsFor: 0, runFrom: null, banked: 0, lights: null } as const;
+
+  it("fills a left-off timer in with null", () => {
+    const scene = new Scene();
+    scene.putItem(cold("a"), pose());
+    // Not undefined and not absent. Every reader may write `cold.timer !== null`
+    // without asking whether the field was omitted or merely unset, and this is
+    // where that is made true.
+    expect(scene.cold("a")!.timer).toBeNull();
+    expect(scene.timers.size).toBe(0);
+  });
+
+  it("keeps the record it was handed", () => {
+    const scene = new Scene();
+    scene.putItem(cold("t", { type: "timer", timer: { ...clock, mode: "stopwatch" } }), pose());
+    expect(scene.cold("t")!.timer).toEqual({ ...clock, mode: "stopwatch" });
+    expect([...scene.timers]).toEqual(["t"]);
+  });
+
+  it("lets a timer go when a put replaces it with something that is not one", () => {
+    // A put is how a record is *replaced*, not only how one arrives, and the
+    // type comes off a map a peer can write anything into. An id left in the
+    // index would have the tick stepping a photograph.
+    const scene = new Scene();
+    scene.putItem(cold("t", { type: "timer", timer: clock }), pose());
+    scene.putItem(cold("t", { type: "polaroid" }), pose());
+    expect(scene.cold("t")!.timer).toBeNull();
+    expect(scene.timers.size).toBe(0);
+  });
+
+  it("lets a timer go when its item is removed", () => {
+    const scene = new Scene();
+    scene.putItem(cold("t", { type: "timer", timer: clock }), pose());
+    scene.removeItem("t");
+    expect(scene.timers.size).toBe(0);
+  });
+
+  it("empties the index on a clear", () => {
+    // scene.clear() runs before every resync, and a timer left behind here would
+    // be an id the tick kept stepping with no record to read it from.
+    const scene = new Scene();
+    scene.putItem(cold("t", { type: "timer", timer: clock }), pose());
+    scene.clear();
+    expect(scene.timers.size).toBe(0);
+  });
+});
