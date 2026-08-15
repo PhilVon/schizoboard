@@ -28,6 +28,7 @@ function cold(over: Partial<ItemCold> = {}): ItemCold {
     createdAt: 0,
     text: "",
     style: {},
+    timer: null,
     ...over,
   };
 }

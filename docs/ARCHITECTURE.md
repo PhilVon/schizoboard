@@ -121,6 +121,10 @@ src-tauri/
 
 This exists so that `sim/` and `render/` can run at 60 fps against tight typed-array loops without ever touching Yjs, and so that either can be tested with no document at all.
 
+**Hot and cold is a claim about writes, not about reads** — and a `timer`'s five fields (T-393, D-73) are the case that makes the distinction worth stating. Its face is read on every frame it is running, which sounds like the definition of hot; the fields behind it change six times in the object's whole life, which is the definition of cold. They are cold, because what the frame loop reads is not `runFrom` but `banked + (now − runFrom)`, derived per frame from a `now` that is never stored. Nothing is written per second, so there is nothing for a typed array to make cheap — and `runFrom` is an epoch millisecond, eleven significant digits against a `Float32Array`'s seven, so storing it hot would quantise a timer to about a minute. Anything derived from a cold field plus the frame's clock belongs on the cold record.
+
+The Scene also keeps a small number of **derived indexes** — which pins hold each item, which strings run through each pin, which items have ink on a page, which items are timers. None is authoritative and each is maintained by the setters that are the only doors into the mirror, so none can drift from what it describes. They exist where the alternative is a per-frame walk of the whole board to discover that almost nothing changed.
+
 `crdt/binding.ts` is the sole translator: it is the only thing that subscribes to the document's **content** — `items`, `pins`, `strings` — and the only thing that writes the Scene. It is not the only `observe` in the repo, and the claim used to say so: `persistence.ts` and `sync/provider.ts` take the doc's raw `update` event because batching and syncing are about frames rather than about meaning, and `app/main.ts` observes `meta` alone to notice a schema version from a newer build. None of those reads content or touches the Scene.
 
 ### 2.2 Why `platform/tauri.ts` is one module
@@ -134,6 +138,8 @@ There is no `platform/clipboard.ts` and no `platform/files.ts`, and there was ne
 ## 3. The frame
 
 One `requestAnimationFrame`, in `render/loop.ts`. Nothing else animates independently — no CSS transitions on board content, no per-item timers.
+
+"No per-item timers" means no `setInterval` and no `setTimeout`, and the fifth item type does not bend it. A `timer` on the board is a *thing that is drawn*, and it is stepped from the frame like everything else that moves: its `now` is the frame's argument, never a clock of its own. So the board gained an object called a timer without gaining a second thing that ticks.
 
 ```
 frame(t):

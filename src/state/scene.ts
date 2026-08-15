@@ -36,6 +36,7 @@ import type { InkSample, InkSurface } from "@/lib/ink";
 import type { SourceAbout } from "@/lib/objects";
 import { rotateIn, rotateOut, type Point } from "@/lib/rotate";
 import { NO_STYLE, type ItemStyle } from "@/lib/style";
+import type { TimerFields } from "@/lib/timer";
 
 const INITIAL_CAPACITY = 256;
 
@@ -171,22 +172,47 @@ export interface ItemCold {
    * Always an object. `{}` is the state of nearly every item on the board.
    */
   style: ItemStyle;
+  /**
+   * The five values a `timer` is set by — `lib/timer.ts` — or `null` for every
+   * item that is not one (D-73).
+   *
+   * **Cold, and that is the whole of the decision.** Nothing here changes per
+   * second: `crdt/ops/timers.ts` is six writes over a timer's whole life, and
+   * what the face *says* is derived per frame from these five and a `now` that is
+   * never stored. So this belongs beside `style` and `source` — read when a view
+   * is built or rebuilt — and emphatically not in a `Float32Array` beside `x`.
+   * Putting `runFrom` in a hot array would say the opposite of the rule the
+   * feature is built on, and would be a lie about the field besides: it is an
+   * epoch millisecond, which is eleven significant digits, and `Float32Array`
+   * holds seven. A timer stored hot would be quantised to about a minute.
+   *
+   * `null` rather than a filled-in record for the four types that are not timers,
+   * mirroring `ItemFields.timer` exactly, and for the reason given there: a
+   * photograph has no answer to "how is this set", and handing back a clock
+   * face's worth of defaults would invite somebody to draw one.
+   *
+   * A fresh record on every sync, like `style`, so the identity check every view
+   * already makes (`this.boundCold === cold`) rebinds the face when a mode or a
+   * length changes — no new observer and no new dirty flag.
+   */
+  timer: TimerFields | null;
 }
 
 /**
- * What [`Scene.putItem`] will take: a cold record whose `style` and `source` may
- * be left off, because an item with nothing overridden and nowhere it came from
- * is the ordinary one.
+ * What [`Scene.putItem`] will take: a cold record whose `style`, `source` and
+ * `timer` may be left off, because an item with nothing overridden, nowhere it
+ * came from and no clock in it is the ordinary one.
  *
- * Both are filled in at the door — see [`Scene.putItem`] — so that the
+ * All of them are filled in at the door — see [`Scene.putItem`] — so that the
  * *stored* record still has every field and no reader anywhere has to ask
  * whether an absent `source` means "no source" or "not read yet". The answer is
  * always the first, and this is where it is given.
  */
-export type ItemColdInput = Omit<ItemCold, "style" | "source" | "sourceAbout"> & {
+export type ItemColdInput = Omit<ItemCold, "style" | "source" | "sourceAbout" | "timer"> & {
   style?: ItemStyle;
   source?: string | null;
   sourceAbout?: SourceAbout;
+  timer?: TimerFields | null;
 };
 
 /**
@@ -571,6 +597,27 @@ export class Scene {
 
   /** The same idea for pins — see [`pagedPins`], which is its reader. */
   private readonly pagedPinIds = new Set<string>();
+
+  /**
+   * Which items are timers — [`paged`]'s shape, for the same reason and with the
+   * same one writer.
+   *
+   * The tick that steps them (T-394) is **ungated by the viewport**, because a
+   * timer panned off screen still has to go off, so it is the one per-frame
+   * reader on this board that cannot be narrowed to what is visible. Without
+   * this it would have to walk `slotLimit` and ask every photograph on the board
+   * whether it was a clock, sixty times a second, on every board — including the
+   * overwhelming majority that have never had a timer put on them. With it, that
+   * board pays a `size === 0` test and the module returns on its first line.
+   *
+   * Ids and not slots, because a slot is only meaningful while its item exists
+   * and the tick's output is `dirty.item(id)`.
+   *
+   * Live, like [`pins`]: read it and let it go, and do not hold it across a
+   * frame. Maintained by `putItem`/`removeItem`/`clear`, which are the only
+   * doors, so it cannot drift from the records it describes.
+   */
+  private readonly timerIds = new Set<string>();
 
   /**
    * The reverse of `PinNode.parent`: which pins hold each item.
@@ -1069,6 +1116,17 @@ export class Scene {
     return slot === undefined ? null : (this.coldBySlot[slot] ?? null);
   }
 
+  /**
+   * Every timer on the board, by id — [`timerIds`] for why the mirror keeps the
+   * list rather than letting its reader find them.
+   *
+   * Empty on nearly every board there has ever been, and that emptiness is the
+   * point: it is the whole cost of the tick on a board with no clock on it.
+   */
+  get timers(): ReadonlySet<string> {
+    return this.timerIds;
+  }
+
   private grow(): void {
     const next = this.capacity * 2;
     const copy = (source: Float32Array): Float32Array => {
@@ -1096,23 +1154,34 @@ export class Scene {
    * Insert or replace. Returns the slot.
    *
    * `style` may be left off and is filled in with `NO_STYLE`, `source` with
-   * `null`, and `sourceAbout` with `page`. The invariant that a stored
-   * `ItemCold` always carries all three is worth having — it is what lets every
-   * reader write `cold.style.paperStock ?? seedAnswer` and `if (cold.source)`
-   * without asking whether the field was absent or merely unset — but it is
-   * worth having *here*, at the one door into the mirror, rather than restated
-   * by every literal that builds one.
+   * `null`, `sourceAbout` with `page`, and `timer` with `null`. The invariant
+   * that a stored `ItemCold` always carries all four is worth having — it is
+   * what lets every reader write `cold.style.paperStock ?? seedAnswer` and
+   * `if (cold.source)` without asking whether the field was absent or merely
+   * unset — but it is worth having *here*, at the one door into the mirror,
+   * rather than restated by every literal that builds one.
    */
   putItem(input: ItemColdInput, pose: ItemPose): number {
     const cold: ItemCold =
-      input.style !== undefined && input.source !== undefined && input.sourceAbout !== undefined
+      input.style !== undefined &&
+      input.source !== undefined &&
+      input.sourceAbout !== undefined &&
+      input.timer !== undefined
         ? (input as ItemCold)
         : {
             ...input,
             source: input.source ?? null,
             sourceAbout: input.sourceAbout ?? "page",
             style: input.style ?? NO_STYLE,
+            timer: input.timer ?? null,
           };
+    // Filed on the way in, and the membership is re-decided on every put rather
+    // than only on the insert: a put is also how a record is *replaced*, and the
+    // type arrives from a document a peer can write anything into. An item that
+    // stopped reading as a timer must leave, or the tick would go on stepping a
+    // photograph.
+    if (cold.timer !== null) this.timerIds.add(cold.id);
+    else this.timerIds.delete(cold.id);
     // Geometry in, so what is over what may have changed.
     this.overStale = true;
     let slot = this.slots.get(cold.id);
@@ -1165,6 +1234,7 @@ export class Scene {
     this.unfile(this.strokes.get(id));
     this.strokes.delete(id);
     this.paged.delete(id);
+    this.timerIds.delete(id);
     // Dropped rather than cleared, unlike every other frame: `layoutOver`
     // rebuilds from `slots`, and an item that has left it would never be visited
     // again — so a set left behind would answer `pinCount` with the pins that
@@ -2164,6 +2234,7 @@ export class Scene {
     this.strings.clear();
     this.strokes.clear();
     this.paged.clear();
+    this.timerIds.clear();
     this.boardInk.clear();
     this.strokeAt.clear();
     this.byParent.clear();
