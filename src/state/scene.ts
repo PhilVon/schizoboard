@@ -2228,12 +2228,37 @@ export class Scene {
     return this.slots.keys();
   }
 
+  /**
+   * Empty the mirror — what `crdt/binding.ts` does at the top of every resync.
+   *
+   * ## Everything a setter maintains has to be named here
+   *
+   * This empties the maps by hand rather than going through `removeItem` and
+   * `removePin`, which is right — a resync of a five-hundred-item board should
+   * not be five hundred index updates against structures that are about to be
+   * thrown away — but it means the two halves can drift, and they had (T-401).
+   * Two things were missing and each was missing for the same reason: a line was
+   * added to a setter and not to this list.
+   *
+   * When adding state to this class, the question is not "does `removeItem`
+   * clear it" but "does this method". A quick way to check: every `private
+   * readonly` collection above and every field that survives a frame should
+   * appear below.
+   */
   clear(): void {
     this.slots.clear();
     this.pins.clear();
     this.strings.clear();
     this.strokes.clear();
     this.paged.clear();
+    // `pins` is emptied two lines up and this is the index *of* those pins.
+    // Cleared through this list rather than through `removePin`, which is what
+    // maintains it everywhere else and which a resync never calls — so before
+    // T-401 `pagedPins` could name pins from a document that had been thrown
+    // away. A leak rather than a visible fault, since both readers test the pin
+    // before asking anything more expensive, but it is the same slow lie the
+    // `stringsByPin` note in `crdt/binding.ts` calls out about the same moment.
+    this.pagedPinIds.clear();
     this.timerIds.clear();
     this.boardInk.clear();
     this.strokeAt.clear();
@@ -2249,6 +2274,19 @@ export class Scene {
     this.driftY.fill(0);
     this.lift.fill(0);
     this.setFlatten(null, 0);
+    // And the open turn beside it, which is not a tidiness fix.
+    //
+    // `openSlot` is a *slot number*, slots are reused, and this method runs at
+    // the top of every resync. So: turn a case file up to read it, take a
+    // resync — a schema event, a load, `DirtySets.everything()` — and the next
+    // item into that slot is born with a folder's quarter turn it never asked
+    // for, plus `openDX`/`openDY` holding it at a pivot that belonged to an item
+    // which no longer exists.
+    //
+    // `removeItem` has carried both of these lines since T-273, and the comment
+    // beside its second one says in as many words that it is "the same hazard,
+    // and the same one line". It was added there and not here.
+    this.setOpen(null, 0);
     this.freeSlots.length = 0;
     this.highWater = 0;
   }
