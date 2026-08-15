@@ -55,12 +55,9 @@
  * first would make a countdown at the card tier go off up to a minute late.
  */
 
-import { elapsedOf, type TimerFields } from "@/lib/timer";
+import { elapsedOf, readingQuantum, type TimerFields } from "@/lib/timer";
 import type { DirtySets } from "@/state/dirty";
 import type { Scene } from "@/state/scene";
-
-/** One minute, which is both the clock face's quantum and the coarse one. */
-const MINUTE_MS = 60_000;
 
 /** What a countdown that has gone off says about itself. */
 export interface Expiry {
@@ -175,7 +172,12 @@ export class Timers {
       if (cold === null || cold === undefined || fields === null || fields === undefined) continue;
 
       const first = !this.shown.has(id);
-      const reading = quantise(fields, now, detailed);
+      // `lib/timer.ts`'s, and shared with the face rather than restated here.
+      // The face writes its digits when this moves and this module dirties the
+      // item when it moves, so two definitions would be a digit written on a
+      // frame nothing dirtied — a clock that never updates — or an item dirtied
+      // every frame for a face that will not change.
+      const reading = readingQuantum(fields, now, detailed);
       if (this.shown.get(id) !== reading) {
         this.shown.set(id, reading);
         // Not on the first sight: the item is already dirty from the binding
@@ -236,8 +238,10 @@ export class Timers {
     }
     // Exact, and never the quantised reading — see the file header. A `runsFor`
     // of zero is a countdown nobody set rather than one that finished instantly,
-    // and firing on it would go off the moment the mode chip was pressed.
-    const runsFor = ms(fields.runsFor);
+    // and firing on it would go off the moment the mode chip was pressed. The
+    // guard also covers a length that is not a number, which is what a peer's
+    // nonsense arrives as — `Number.isFinite` fails and it reads as unset.
+    const runsFor = Number.isFinite(fields.runsFor) && fields.runsFor > 0 ? fields.runsFor : 0;
     if (runsFor === 0 || elapsedOf(fields, now) < runsFor) {
       // Not expired, so there is nothing to have already said: a reset, a longer
       // length or a fresh start all arrive here and all give the edge back.
@@ -260,37 +264,6 @@ export class Timers {
     const caption = text.trim();
     for (const listener of this.listeners) listener({ id, caption, lights: fields.lights });
   }
-}
-
-/**
- * The integer a face would print, at this instant and this tier.
- *
- * Compared for equality and never shown, so what matters is only that it moves
- * exactly when the printed reading would.
- */
-function quantise(fields: TimerFields, now: number, detailed: boolean): number {
-  if (fields.mode === "clock") {
-    // The wall clock, whatever anybody has or has not started. Minutes, because
-    // `clockLabel` prints `hh:mm` — and the minute of the epoch is the minute of
-    // the day everywhere with a whole-minute offset from it, which is
-    // everywhere.
-    return Number.isFinite(now) ? Math.floor(now / MINUTE_MS) : 0;
-  }
-  const step = detailed ? 1000 : MINUTE_MS;
-  const elapsed = elapsedOf(fields, now);
-  // Floored for a stopwatch and ceiled for a countdown, matching `timerReading`
-  // exactly — a stopwatch must never claim a second that has not happened, and a
-  // countdown must not read zero while there is still time on it. Getting either
-  // the wrong way round here would dirty the item on the frame *next to* the one
-  // the face changes on, which is a digit that flickers a frame late.
-  if (fields.mode === "stopwatch") return Math.floor(elapsed / step);
-  return Math.ceil(Math.max(0, ms(fields.runsFor) - elapsed) / step);
-}
-
-/** `lib/timer.ts`'s `ms`, which is not exported and is two lines. A duration off
- *  a document that is not one reads as zero. */
-function ms(value: number): number {
-  return Number.isFinite(value) && value > 0 ? value : 0;
 }
 
 function prune(map: Map<string, unknown>, live: ReadonlySet<string>): void {

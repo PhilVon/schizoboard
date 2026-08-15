@@ -116,6 +116,7 @@ import { Camera, type Bounds, type ScreenBox } from "@/state/camera";
 import { DirtySets } from "@/state/dirty";
 import { dirtyFacing } from "@/state/facing";
 import { Flashes } from "@/state/flash";
+import { timerFace } from "@/lib/timer";
 import { Timers } from "@/state/timers";
 import { PaperTurn, TURN_UP } from "@/state/turn";
 import { Flight } from "@/state/flight";
@@ -663,6 +664,25 @@ async function boot(): Promise<void> {
    */
   const timers = new Timers();
   /**
+   * The wall-clock instant this frame is being drawn at, and the tier it is
+   * being drawn at — both written once, in the SIM phase, and read by the item
+   * layer in the DOM phase four phases later.
+   *
+   * **One reading of the clock per frame, shared, and that is the point rather
+   * than a saving.** `state/timers.ts` decides an item is worth redrawing by
+   * quantising `now`, and `TimerView` decides what to print by quantising the
+   * same `now`; two calls to `Date.now()` a few microseconds apart can land on
+   * either side of a second boundary, and when they do the face writes the digit
+   * the tick did not dirty it for — a clock that is intermittently one second
+   * stale. The tier is here for the same reason: at the `card` tier the quantum
+   * is a minute, so a tick and a face that disagreed about the tier would
+   * disagree about the whole resolution of the reading.
+   *
+   * Epoch milliseconds, and never `frame.now` — see the SIM handler.
+   */
+  let frameNow = 0;
+  let frameDetailed = true;
+  /**
    * Assigned near the bottom of this function, where there is somewhere to say
    * a sentence — T-282. Declared here because the tool machine is built long
    * before that and has to be handed something to call.
@@ -733,7 +753,23 @@ async function boot(): Promise<void> {
   // And which face each item is showing (T-278) — the same function the pen is
   // handed, deliberately: what a mark is filed against and what is drawn have to
   // be one answer. Declared below, hoisted to here.
-  (itemId) => shownPage(itemId));
+  (itemId) => shownPage(itemId),
+  // What each clock's face says (T-395). The layer holds no clock of its own —
+  // the same arrangement `AgeClock` has, and for a stronger reason: this instant
+  // has to be the one `state/timers.ts` stepped with on this frame, or the tick
+  // and the digits quantise either side of a second boundary. Both come off the
+  // two frame locals the SIM phase wrote a moment ago.
+  //
+  // Null for an item that has stopped being a timer between the two phases,
+  // which a peer's write can do — the mirror is re-read here rather than the
+  // record trusted, because it is one map lookup and the alternative is a face
+  // built out of a record the scene has thrown away.
+  (itemId) => {
+    const fields = scene.cold(itemId)?.timer;
+    return fields === null || fields === undefined
+      ? null
+      : timerFace(fields, frameNow, frameDetailed);
+  });
 
   /**
    * How old the board thinks its items are — DESIGN section 4.7, and Q-105,
@@ -4275,7 +4311,9 @@ async function boot(): Promise<void> {
     // decades on the face. It is read here, once a frame for the whole board,
     // rather than inside the module — which is what keeps every rule in there
     // testable as a table.
-    timers.step(scene, dirty, Date.now(), lod.detailed);
+    frameNow = Date.now();
+    frameDetailed = lod.detailed;
+    timers.step(scene, dirty, frameNow, frameDetailed);
     ropes.step(scene, dirty, frame.dt, simView);
   });
 

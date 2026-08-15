@@ -252,6 +252,76 @@ export function timerReading(fields: TimerFields, now: number): TimerReading {
   };
 }
 
+/** One minute. The clock face's resolution, and the coarse tier's. */
+const MINUTE_MS = 60_000;
+
+/**
+ * A reading with the number that decides whether it has *moved* — T-394, T-395.
+ *
+ * `quantum` is compared and never shown. It exists because two things have to
+ * agree about when a face changes and they sit in different layers: the tick
+ * (`state/timers.ts`) dirties an item when it moves, and the face
+ * (`render/items/dom.ts`) writes its digits when it moves. Two answers to that
+ * one question is a digit written on a frame nothing dirtied — which is a face
+ * that never updates — or an item dirtied every frame for a face that will not
+ * change. So there is one function and they both call it.
+ */
+export interface TimerFace extends TimerReading {
+  readonly quantum: number;
+}
+
+/**
+ * The integer a face would print, at this instant and this tier.
+ *
+ * **Its own function, and cheap on purpose.** The tick asks this of every timer
+ * on the board on every frame and must allocate nothing to do it, which is why
+ * this is not simply `timerFace(...).quantum` — that mints an object per timer
+ * per frame, which on a wall of clocks is thirty thousand a second and is the
+ * exact cost the whole feature exists to avoid.
+ *
+ * The tier is the second argument because a face's resolution is not fixed: at
+ * the `card` tier nobody can read a seconds digit, so a countdown quantises to
+ * the minute and the item is dirtied sixty times less often. A clock takes no
+ * notice of the tier — it shows `hh:mm` at every zoom, since this device has no
+ * sweep hand.
+ */
+export function readingQuantum(fields: TimerFields, now: number, detailed: boolean): number {
+  if (fields.mode === "clock") {
+    // The minute of the epoch, which is the minute of the day anywhere with a
+    // whole-minute offset from it — which is everywhere.
+    return Number.isFinite(now) ? Math.floor(now / MINUTE_MS) : 0;
+  }
+  const step = detailed ? 1000 : MINUTE_MS;
+  const elapsed = elapsedOf(fields, now);
+  // Floored for a stopwatch and ceiled for a countdown, which is `timerReading`'s
+  // split and has to stay it: a quantum that rounded the other way from the label
+  // would move on the frame *beside* the one the digits change on.
+  if (fields.mode === "stopwatch") return Math.floor(elapsed / step);
+  return Math.ceil(Math.max(0, ms(fields.runsFor) - elapsed) / step);
+}
+
+/**
+ * The reading, plus the number that says whether it moved — and, below the full
+ * tier, printed at the resolution it is actually being compared at.
+ *
+ * That last clause is the whole reason this is not `timerReading` with a field
+ * bolted on. At the `card` tier the tick dirties a running countdown once a
+ * minute; if the label were still built to the second, the face would show
+ * whatever second happened to be current on the one frame a minute it was
+ * allowed to write, and a stopwatch would read `4:17`, then `5:09`, then `6:02`.
+ * The digits have to be quantised by the same step that decides when they are
+ * written, or the coarse tier is not coarse — it is wrong.
+ */
+export function timerFace(fields: TimerFields, now: number, detailed: boolean): TimerFace {
+  const reading = timerReading(fields, now);
+  const quantum = readingQuantum(fields, now, detailed);
+  // A clock is already at minute resolution and a full-tier face is already at
+  // the second, so in both of those the label `timerReading` built is the one to
+  // print and nothing is rebuilt.
+  if (detailed || reading.mode === "clock") return { ...reading, quantum };
+  return { ...reading, quantum, label: runtimeLabel(quantum * 60) };
+}
+
 /**
  * The time of day, as a small travel clock says it — `09:05`.
  *
