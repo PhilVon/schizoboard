@@ -50,6 +50,16 @@ String comes in six colours, three materials and any thickness, and every one of
 
 ![String weights](docs/images/03-Different-String-Weights.png)
 
+## Putting a clock on it
+
+Right-click the cork and **Put up a timer** — a small travel clock, pinned to the cork like everything else on the board. Its own right-click menu gives it a mode: **Clock** for the time of day, **Stopwatch**, or **Countdown** at 1, 3, 5, 10, 15 or 30 minutes, or an hour. **Enter** starts and stops it.
+
+![Timers on the board](docs/images/10-Timers.png)
+
+When a countdown runs out the clock lights amber and says so on the board. Select the timer *and* one other thing, right-click the timer, and **Light the other one when it goes off**: the countdown you set for a phone call lights the phone call. The board menu will also **Fly to a timer when it goes off**, so whatever you were looking at, the board takes you to the thing that just fired.
+
+Whatever you write on the dial is what it says when it goes off. Nothing is written once a second — a timer is a start and a length, so it ticks on every peer's screen without the document changing at all.
+
 ## Working the board
 
 | | |
@@ -61,7 +71,7 @@ String comes in six colours, three materials and any thickness, and every one of
 | **Ctrl+Z / Ctrl+Y** | undo / redo |
 | **Alt + drag a pin** | pull a new string out of it |
 | **Ctrl+Alt + click a string** | scissors |
-| **Enter / Escape** | open a case file or play a tape / put it back |
+| **Enter / Escape** | open a case file, play a tape, start a timer / put it back |
 
 Right-click the cork for the board menu; right-click anything on it to restyle it, reorder it, or get the original file back byte-for-byte.
 
