@@ -7,6 +7,7 @@ import {
   createItems,
   createPin,
   deleteItems,
+  deletePins,
   pauseTimer,
   reparentPin,
   resetTimer,
@@ -166,6 +167,71 @@ describe("Binding", () => {
     binding.resync();
     expect(scene.size).toBe(2);
     expect(dirty.all).toBe(true);
+  });
+});
+
+/**
+ * What a resync has to put back to nothing — T-401.
+ *
+ * `Binding.resync` calls `scene.clear()` and then rebuilds from the document, so
+ * anything `clear()` forgets is state from a board that no longer exists,
+ * carried into one that does. Both of these were found by reading the method
+ * beside a third line being added to it, and both are the same shape: a line
+ * that went into a *setter* and not into that list.
+ *
+ * Driven through `resync` rather than by calling `clear()` directly, because the
+ * resync is the real caller and it is what makes a slot get reused.
+ */
+describe("Binding — what a resync puts back", () => {
+  it("leaves no slot marked open, so a folder's turn cannot land on a stranger", () => {
+    const a = polaroid(0, 0).itemId;
+    const b = polaroid(500, 0).itemId;
+    // Turned up to be read, which is a purely local transient — nothing about it
+    // is in the document, so a resync cannot restore it and must not leave it.
+    scene.setOpen(b, 1);
+    expect(scene.openOf(scene.slotOf(b)!)).toBe(1);
+
+    binding.resync();
+
+    // Every slot, and not merely `b`'s: the point is that slots are *reused*, so
+    // the item that inherits the number is whichever one the rebuild hands it
+    // to. Asserting on `b` alone would pass on a build where the numbering
+    // happened to put `b` back where it was.
+    for (let slot = 0; slot < scene.slotLimit; slot += 1) {
+      expect(scene.openOf(slot)).toBe(0);
+    }
+    // And the translation that held the turn's pivot still, which is the other
+    // half of it: a slot left open is also a slot offset by up to a hundred and
+    // fifty units toward a pin that belonged to something else.
+    for (const id of [a, b]) {
+      const slot = scene.slotOf(id)!;
+      expect(scene.renderX(slot)).toBe(scene.settledX(slot));
+      expect(scene.renderRot(slot)).toBe(scene.settledRot(slot));
+    }
+  });
+
+  it("empties the paged-pin index rather than carrying a dead board's tapes", () => {
+    const { itemId } = polaroid();
+    const pinId = createPin(board, { parent: itemId, lx: 10, ly: 10, kind: "tape", page: 4 });
+    expect([...scene.pagedPins]).toEqual([pinId]);
+
+    // Taken out of the document with nobody listening, which is what a document
+    // being *replaced* looks like from the mirror's side — the observer never
+    // sees the removal, so `removePin` (the only other thing that maintains this
+    // index) never runs.
+    binding.stop();
+    deletePins(board, [pinId]);
+    binding.resync();
+
+    // One left, and it is the item's own — `createItems` gives every item a pin
+    // and that one was never taped to a page. The tape is what has gone.
+    expect(scene.pins.size).toBe(1);
+    // A leak rather than a wrong picture — `render/ropes/paint.ts` tests each
+    // pin before asking anything more expensive. But it is a leak that defeats
+    // the fast path that file's `findTucked` is built on: "on every board it has
+    // ever run the first line returns", which stops being true for the rest of
+    // the session the moment one dead id is left here.
+    expect(scene.pagedPins.size).toBe(0);
   });
 });
 
