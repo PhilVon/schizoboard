@@ -116,6 +116,7 @@ import { Camera, type Bounds, type ScreenBox } from "@/state/camera";
 import { DirtySets } from "@/state/dirty";
 import { dirtyFacing } from "@/state/facing";
 import { Flashes } from "@/state/flash";
+import { Timers } from "@/state/timers";
 import { PaperTurn, TURN_UP } from "@/state/turn";
 import { Flight } from "@/state/flight";
 import { chromeFrame, emptyFrame, handleAt, handleCursor } from "@/state/handles";
@@ -399,6 +400,11 @@ async function boot(): Promise<void> {
    * gives the reason: `changedBounds()` below reads that map back to work out
    * where an undo should fly the camera, and a note you merely searched for is
    * not something an undo changed.
+   *
+   * A timer going off raises into here too (T-394), and the name has outlived
+   * the search a little as a result. What the two have in common is the whole
+   * reason they share an instance: neither is a thing an undo changed, and both
+   * mean the same sentence — *the board pointing at one item*.
    */
   const found = new Flashes();
   /**
@@ -647,6 +653,15 @@ async function boot(): Promise<void> {
    * item, and nothing has to enforce that — a case file has no text to edit.
    */
   const opening = new PaperTurn(TURN_UP);
+  /**
+   * Phase 3, beside those two: the clocks on the wall (T-394).
+   *
+   * Ungated by the viewport, unlike the torsion and the ropes either side of it,
+   * because a timer panned off the screen still has to go off — `state/timers.ts`
+   * makes the whole argument. Its listener is wired further down, where there is
+   * a flash line to say something in.
+   */
+  const timers = new Timers();
   /**
    * Assigned near the bottom of this function, where there is somewhere to say
    * a sentence — T-282. Declared here because the tool machine is built long
@@ -3324,6 +3339,36 @@ async function boot(): Promise<void> {
   const flash = new Flash(world.layers.ui);
 
   /**
+   * A countdown going off, on the two surfaces this board already has for
+   * pointing at something — T-394, and D-73 section 3 for why it is only these
+   * two.
+   *
+   * **The line says the caption**, which is not a shortcut. A caption already is
+   * what a timer is for — you write *tea* on it, or *call back at four* — so the
+   * timer naming itself is the timer telling you what it was set for. Only when
+   * nobody wrote anything does this have to invent a sentence.
+   *
+   * **The amber goes into `found` and not into `flashes`.** `changedBounds()`
+   * reads the undo instance back to work out where an undo should fly the
+   * camera, so a timer's light sitting in that map would widen the box an undo
+   * aims at to include an item the undo did not touch — the same argument
+   * `state/flash.ts` makes for search, and the same conclusion. `found` is read
+   * by nothing but the painter, and what it has always meant is *the board
+   * pointing at one item*, which is exactly this.
+   *
+   * A third instance would be a third thing to step and paint for a distinction
+   * nobody can see: two ambers on the board at once mean "look here" twice.
+   *
+   * The timer lights *itself* when it has been given nothing to light. It is the
+   * thing that went off, and an announcement with nowhere to look is the one
+   * case where pointing at the announcer is the answer.
+   */
+  timers.onExpire(({ id, caption, lights }) => {
+    flash.say(caption === "" ? "A timer has gone off" : caption);
+    found.raise(lights ?? id, scene);
+  });
+
+  /**
    * The stretch of the open page a rectangle has hold of, or null.
    *
    * The one call in the quoting feature that needs a *document*, and both
@@ -4218,6 +4263,19 @@ async function boot(): Promise<void> {
     // Beside it and for the same reasons: after the torsion, because the
     // translation that holds the pin still is computed from the settled angle.
     opening.step(scene, dirty, frame.dt);
+    // Beside them and pointedly NOT handed `simView`. A kitchen timer put on the
+    // far side of the board and panned away from is exactly the one somebody is
+    // waiting on, and a device that goes off only while you are looking at it is
+    // not a timer. `state/timers.ts` argues it at length; what is load-bearing
+    // here is that the argument was made where the gate would have gone.
+    //
+    // `Date.now()` and not `frame.now`: the rAF timestamp is a monotonic clock
+    // that starts at page load, and `runFrom` is a wall-clock instant written by
+    // whichever machine pressed start. Subtracting one from the other would put
+    // decades on the face. It is read here, once a frame for the whole board,
+    // rather than inside the module — which is what keeps every rule in there
+    // testable as a table.
+    timers.step(scene, dirty, Date.now(), lod.detailed);
     ropes.step(scene, dirty, frame.dt, simView);
   });
 
