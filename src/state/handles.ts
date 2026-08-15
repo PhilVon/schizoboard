@@ -44,6 +44,34 @@ import type { Scene } from "@/state/scene";
 import type { Selection } from "@/state/selection";
 
 /**
+ * Which item types have no resize at all — a **list**, since T-396, rather than
+ * the one exception it started as.
+ *
+ * > There is no resize handle on a polaroid — a photograph is the size it is —
+ * > but notes, cards and scraps resize from their edges. — DESIGN section 3.2
+ *
+ * A `timer` is the second, and the reason is the same sentence with a different
+ * noun: a travel clock is the size it is. It is not paper cut to fit what is on
+ * it, it is a manufactured object with one size (`TIMER_UNITS`), like a cassette
+ * and a folder — and unlike those two it is the only one somebody can create
+ * directly, so it is the only one where a resize handle would ever be reached
+ * for.
+ *
+ * It is also the answer with the least in it. All of the case's furniture — the
+ * bezel, the dial's inset, the caption's size — is a percentage of the object in
+ * `items.css`, so an 800-by-40 timer is a *stretched* clock rather than a big
+ * one, and there is no aspect-lock machinery anywhere on this board to add
+ * cheaply. Refusing costs nothing: rotation is not gated on this, and a clock
+ * hanging crooked is rather the point.
+ *
+ * A predicate over the type and not a field on the item, because it is a fact
+ * about the *kind of object* rather than about any one of them — the same
+ * standing `archetypeOf` has, one layer along.
+ */
+const RESIZABLE = (type: string | undefined): boolean =>
+  type !== "polaroid" && type !== "timer";
+
+/**
  * The eight compass points are resize handles; `rotate` is the knob on its stalk.
  * Compass directions are in the item's **own** frame, so `n` is the edge towards
  * the top of the paper however the paper is turned.
@@ -134,7 +162,7 @@ export function chromeFrame(
   out.hw = (scene.w[slot]! * camera.zoom * scale) / 2 + SELECT_PAD;
   out.hh = (scene.h[slot]! * camera.zoom * scale) / 2 + SELECT_PAD;
   out.angle = scene.renderRot(slot);
-  out.resizable = scene.coldAt(slot)?.type !== "polaroid";
+  out.resizable = RESIZABLE(scene.coldAt(slot)?.type);
   return out;
 }
 

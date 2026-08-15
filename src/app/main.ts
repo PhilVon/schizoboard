@@ -88,6 +88,7 @@ import {
   caseNumber,
   filesLabel,
   PAGE_TEXT_SIZE,
+  TIMER_UNITS,
   titleWorthWriting,
   type AssetKind,
 } from "@/lib/objects";
@@ -1179,6 +1180,33 @@ async function boot(): Promise<void> {
       });
       // A new sheet is minted above everything, so any pin it lands on is now
       // pushed through it.
+      rehome();
+    },
+    /**
+     * A clock on the wall — T-396, D-73.
+     *
+     * `createNote` above, with the size taken out: a travel clock is a
+     * manufactured object at one size (`TIMER_UNITS`, 90 by 70 mm at the
+     * family's 1.55 units to the millimetre) rather than a piece of paper cut to
+     * fit what is on it.
+     *
+     * `timer: {}` and not a mode, which matters more than it looks: it is what
+     * takes `createItems` down the `writeNewTimer` path, and that is the one
+     * place a timer enters a document *and the one place that raises
+     * `meta.schemaVersion`*. Left off, this would put a timer on a board still
+     * claiming to be readable by 1.0.2 — the exact silent state D-73 spent a
+     * schema version abolishing. An empty record writes no keys at all: a clock
+     * is the default and every one of the five fields is absent-means-default.
+     */
+    createTimer: (x, y) => {
+      queued.push(() => {
+        const made = createItems(board, [
+          { type: "timer", x, y, w: TIMER_UNITS.w, h: TIMER_UNITS.h, timer: {} },
+        ]);
+        if (made.length > 0) selection.replace(made.map((item) => item.itemId));
+      });
+      // Minted above everything, like a new sheet, so any pin it lands on is now
+      // through it.
       rehome();
     },
     /**
@@ -3141,6 +3169,10 @@ async function boot(): Promise<void> {
                 tidy: null,
               }
             : null,
+          // Absent on a read-only board, like every other verb on this menu:
+          // this build may not write to the document in front of it, and a row
+          // that cannot work is the disabled row this file refuses to draw.
+          null,
         ),
       );
       return;
@@ -3311,6 +3343,12 @@ async function boot(): Promise<void> {
               tidy: worthTidying ? () => void tidyBoard() : null,
             }
           : null,
+        // Where the right-click landed, held in the closure rather than passed
+        // through the menu module - oardMenuRows has no question to answer
+        // about the point, so carrying coordinates in would be threading them
+        // through a file purely to hand them back to the one that measured them.
+        // oard here is the *point*, shadowing the document a few frames up.
+        () => writer.createTimer(board.x, board.y),
       ),
     );
   });

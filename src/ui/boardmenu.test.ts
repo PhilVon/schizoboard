@@ -1094,13 +1094,13 @@ describe("the board menu on bare cork", () => {
     // The whole of Q-76: a right-click here reached for something and found
     // nothing, which made it the one free surface on the board.
     const { invite } = sharing(LINK);
-    const rows = boardMenuRows(scene, write, [], [], invite, switching(true).ageing, null) as MenuRow[];
+    const rows = boardMenuRows(scene, write, [], [], invite, switching(true).ageing, null, null) as MenuRow[];
     expect(rows.map((r) => r.label)).toEqual([AGE_ON, "Copy invite link"]);
   });
 
   it("hands over the link the board was opened with", () => {
     const { invite, copied } = sharing(LINK);
-    const rows = boardMenuRows(scene, write, [], [], invite, switching(true).ageing, null) as MenuRow[];
+    const rows = boardMenuRows(scene, write, [], [], invite, switching(true).ageing, null, null) as MenuRow[];
     rows.find((r) => r.label === "Copy invite link")!.run();
     expect(copied).toEqual([LINK]);
     // Sharing a board is not an edit to it.
@@ -1112,7 +1112,7 @@ describe("the board menu on bare cork", () => {
     // than disabled: a row you cannot use is a question nothing on screen can
     // answer.
     const { invite } = sharing(null);
-    const rows = boardMenuRows(scene, write, [], [], invite, switching(true).ageing, null) as MenuRow[];
+    const rows = boardMenuRows(scene, write, [], [], invite, switching(true).ageing, null, null) as MenuRow[];
     expect(rows.map((r) => r.label)).toEqual([AGE_ON]);
   });
 
@@ -1121,7 +1121,7 @@ describe("the board menu on bare cork", () => {
     // selection of strings is the much likelier thing to have meant.
     span("s", 0);
     const { invite } = sharing(LINK);
-    const rows = boardMenuRows(scene, write, ["s"], [], invite, switching(true).ageing, null);
+    const rows = boardMenuRows(scene, write, ["s"], [], invite, switching(true).ageing, null, null);
     const labels = rows.map((r) => r.label);
     expect(labels).toEqual([
       ...stringMenuRows(scene, write, ["s"]).map((r) => r.label),
@@ -1137,7 +1137,7 @@ describe("the board menu on bare cork", () => {
     // The rows are a snapshot and a peer may have deleted the selection since.
     // That empties the string half and must not take the board half with it.
     const { invite } = sharing(LINK);
-    const rows = boardMenuRows(scene, write, ["ghost"], [], invite, switching(true).ageing, null) as MenuRow[];
+    const rows = boardMenuRows(scene, write, ["ghost"], [], invite, switching(true).ageing, null, null) as MenuRow[];
     expect(rows.map((r) => r.label)).toEqual([AGE_ON, "Copy invite link"]);
     // Nothing to divide it from, so no rule.
     expect(rows[0]!.divided).toBe(false);
@@ -1159,6 +1159,7 @@ describe("the board menu on bare cork", () => {
       invite,
       switching(true).ageing,
       exporting().board,
+      null,
     ) as MenuRow[];
     expect(rows.map((r) => r.label)).toEqual([
       AGE_ON,
@@ -1188,6 +1189,7 @@ describe("the board menu on bare cork", () => {
       invite,
       switching(true).ageing,
       exporting().board,
+      null,
     ) as MenuRow[];
     expect(rows.map((r) => r.label)).not.toContain(HOME);
   });
@@ -1203,6 +1205,7 @@ describe("the board menu on bare cork", () => {
       invite,
       switching(true).ageing,
       shell.board,
+      null,
     ) as MenuRow[];
     // First among the file rows: it is the only one about a board that is *not*
     // in a file, and the three below it all make a new file out of one that is.
@@ -1227,6 +1230,7 @@ describe("the board menu on bare cork", () => {
       invite,
       switching(true).ageing,
       unhomed().board,
+      null,
     ) as MenuRow[];
     expect(rows.find((r) => r.label === HOME)!.label).not.toContain("…");
   });
@@ -1242,6 +1246,7 @@ describe("the board menu on bare cork", () => {
       invite,
       switching(true).ageing,
       shell.board,
+      null,
     ) as MenuRow[];
     rows.find((r) => r.label === SAVE_COPY)!.run();
     rows.find((r) => r.label === OPEN)!.run();
@@ -1287,6 +1292,7 @@ describe("the board menu on bare cork", () => {
         invite,
         switching(true).ageing,
         withRecents(recent("a".repeat(32), "The Redgrave file"), recent("b".repeat(32), "Cold cases")),
+        null,
       ) as MenuRow[];
 
       // Flat rows and not a picker: a `MenuChoice` is a chip with no text of
@@ -1319,6 +1325,7 @@ describe("the board menu on bare cork", () => {
         // Two, and the *second* is picked. With one row in the list a menu that
         // always opened `recents[0]` would pass this and be wrong.
         withRecents(recent(first, "The Redgrave file"), recent(second, "Cold cases")),
+        null,
       ) as MenuRow[];
 
       rows.find((r) => r.label === "Cold cases")!.run();
@@ -1347,6 +1354,7 @@ describe("the board menu on bare cork", () => {
           recent("b".repeat(32), "Untitled board", "Case files"),
           recent("c".repeat(32), "The Redgrave file", "Schizoboard"),
         ),
+        null,
       ) as MenuRow[];
       const labels = rows.map((r) => r.label);
 
@@ -1420,6 +1428,7 @@ describe("the board menu on bare cork", () => {
         invite,
         switching(true).ageing,
         exporting().board,
+        null,
       ) as MenuRow[];
 
       expect(rows.map((r) => r.label)).toEqual([AGE_ON, NEW, OPEN, SAVE_COPY, PDF, IMAGE]);
@@ -1441,6 +1450,7 @@ describe("the board menu on bare cork", () => {
       invite,
       switching(true).ageing,
       { ...board, new: null },
+      null,
     ) as MenuRow[];
 
     const labels = rows.map((r) => r.label);
@@ -1463,6 +1473,7 @@ describe("the board menu on bare cork", () => {
       invite,
       switching(true).ageing,
       shell.board,
+      null,
     ) as MenuRow[];
 
     rows.find((r) => r.label === NEW)!.run();
@@ -1486,6 +1497,7 @@ describe("the board menu on bare cork", () => {
       invite,
       switching(true).ageing,
       exporting().board,
+      null,
     ) as MenuRow[];
     expect(plain.map((r) => r.label)).not.toContain(TIDY);
 
@@ -1498,6 +1510,7 @@ describe("the board menu on bare cork", () => {
       invite,
       switching(true).ageing,
       { ...shell.board, tidy: () => void shell.asked.push("tidy") },
+      null,
     ) as MenuRow[];
 
     // Above the copies, because it is about the file this board already has
@@ -1523,6 +1536,7 @@ describe("the board menu on bare cork", () => {
       invite,
       switching(true).ageing,
       { ...exporting().board, tidy: () => {} },
+      null,
     ) as MenuRow[];
     expect(rows.find((r) => r.label === TIDY)!.label).not.toContain("…");
   });
@@ -1536,7 +1550,7 @@ describe("the board menu on bare cork", () => {
         boardMenuRows(scene, write, [], [], invite, switching(true).ageing, {
           ...shell.board,
           ...over,
-        }) as MenuRow[]
+        }, null) as MenuRow[]
       )
         .filter((r) => r.divided)
         // The ageing row divides the string rows above it and is not this.
@@ -1553,7 +1567,7 @@ describe("the board menu on bare cork", () => {
     // Removed rather than disabled, on the invite's terms: a row you cannot use
     // is a question nothing on screen can answer.
     const { invite } = sharing(LINK);
-    const rows = boardMenuRows(scene, write, [], [], invite, switching(true).ageing, null) as MenuRow[];
+    const rows = boardMenuRows(scene, write, [], [], invite, switching(true).ageing, null, null) as MenuRow[];
     expect(rows.map((r) => r.label)).not.toContain(SAVE_COPY);
     expect(rows.map((r) => r.label)).not.toContain(OPEN);
   });
@@ -1570,6 +1584,7 @@ describe("the board menu on bare cork", () => {
       invite,
       switching(true).ageing,
       exporting().board,
+      null,
     ) as MenuRow[];
     expect(rows.map((r) => r.label)).toEqual([AGE_ON, NEW, OPEN, SAVE_COPY, PDF, IMAGE]);
   });
@@ -1595,6 +1610,7 @@ describe("the board menu on bare cork", () => {
       invite,
       switching(true).ageing,
       { ...board, open: null },
+      null,
     ) as MenuRow[];
 
     const labels = rows.map((r) => r.label);
@@ -1622,6 +1638,7 @@ describe("the board menu on bare cork", () => {
       invite,
       switching(true).ageing,
       exporting().board,
+      null,
     ) as MenuRow[];
     const labels = rows.map((r) => r.label);
     expect(labels.at(-1)).not.toBe(OPEN);
@@ -1637,10 +1654,10 @@ describe("the board menu on bare cork", () => {
     const { invite } = sharing(null);
     const running = switching(true);
     const stopped = switching(false);
-    expect((boardMenuRows(scene, write, [], [], invite, running.ageing, null)[0] as MenuRow).label).toBe(
+    expect((boardMenuRows(scene, write, [], [], invite, running.ageing, null, null)[0] as MenuRow).label).toBe(
       AGE_ON,
     );
-    expect((boardMenuRows(scene, write, [], [], invite, stopped.ageing, null)[0] as MenuRow).label).toBe(
+    expect((boardMenuRows(scene, write, [], [], invite, stopped.ageing, null, null)[0] as MenuRow).label).toBe(
       AGE_OFF,
     );
   });
@@ -1648,11 +1665,11 @@ describe("the board menu on bare cork", () => {
   it("throws the switch the other way, and does not write to the document", () => {
     const { invite } = sharing(null);
     const running = switching(true);
-    (boardMenuRows(scene, write, [], [], invite, running.ageing, null)[0] as MenuRow).run();
+    (boardMenuRows(scene, write, [], [], invite, running.ageing, null, null)[0] as MenuRow).run();
     expect(running.set).toEqual([false]);
 
     const stopped = switching(false);
-    (boardMenuRows(scene, write, [], [], invite, stopped.ageing, null)[0] as MenuRow).run();
+    (boardMenuRows(scene, write, [], [], invite, stopped.ageing, null, null)[0] as MenuRow).run();
     expect(stopped.set).toEqual([true]);
 
     // A preference is not an edit. Nothing here has an undo entry.
@@ -1680,6 +1697,7 @@ describe("the board menu on bare cork", () => {
           invite,
           switching(true).ageing,
           exporting().board,
+          null,
         ) as MenuRow[]
       ).map((r) => r.label);
 
@@ -1707,6 +1725,7 @@ describe("the board menu on bare cork", () => {
           invite,
           switching(true).ageing,
           exporting().board,
+          null,
         ) as MenuRow[]
       ).map((r) => r.label);
 
@@ -1732,6 +1751,7 @@ describe("the board menu on bare cork", () => {
       invite,
       switching(true).ageing,
       shell.board,
+      null,
     ) as MenuRow[];
 
     rows.find((r) => r.label === IMAGE)!.run();
@@ -1752,6 +1772,7 @@ describe("the board menu on bare cork", () => {
       invite,
       switching(true).ageing,
       exporting().board,
+      null,
     ) as MenuRow[];
     expect(rows.find((r) => r.label === PDF_SELECTION)!.label).not.toMatch(/\d/);
   });
@@ -1767,6 +1788,7 @@ describe("the board menu on bare cork", () => {
       invite,
       switching(true).ageing,
       shell.board,
+      null,
     ) as MenuRow[];
     rows.find((r) => r.label === PDF)!.run();
     expect(shell.asked).toEqual(["pdf"]);
@@ -1785,6 +1807,7 @@ describe("the board menu on bare cork", () => {
       ["i1"],
       invite,
       switching(true).ageing,
+      null,
       null,
     ) as MenuRow[];
     expect(rows.map((r) => r.label)).toEqual([AGE_ON]);
@@ -1806,6 +1829,7 @@ describe("the board menu on bare cork", () => {
         invite,
         switching(true).ageing,
         exporting().board,
+        null,
       ) as MenuRow[]
     ).map((r) => r.label);
     expect(labels.indexOf(SAVE_COPY)).toBeLessThan(labels.indexOf(PDF));
@@ -1835,6 +1859,7 @@ describe("the board menu on bare cork", () => {
           invite,
           switching(true).ageing,
           withoutPdf().board,
+          null,
         ) as MenuRow[]
       ).map((r) => r.label);
       expect(labels).not.toContain(PDF);
@@ -1855,6 +1880,7 @@ describe("the board menu on bare cork", () => {
           invite,
           switching(true).ageing,
           withoutPdf().board,
+          null,
         ) as MenuRow[]
       ).map((r) => r.label);
       expect(labels).toContain(IMAGE_SELECTION);
@@ -1873,9 +1899,78 @@ describe("the board menu on bare cork", () => {
         invite,
         switching(true).ageing,
         shell.board,
+        null,
       ) as MenuRow[];
       rows.find((r) => r.label === IMAGE)!.run();
       expect(shell.asked).toEqual(["image"]);
+    });
+  });
+
+  /**
+   * Putting a clock on the wall — T-396, D-73.
+   *
+   * The verb lives on this menu rather than in the rail, and the reasoning is on
+   * the row itself: the drawer is the seven letters of DESIGN 3.9, D-44 settled it
+   * as those seven, and an eighth tool costs a letter, a `Tool`, a hint line and an
+   * amendment to that section for a verb somebody does twice a session.
+   */
+  describe("putting a timer up from the cork's own menu", () => {
+    const PUT = "Put up a timer";
+    const rowsWith = (put: (() => void) | null, strings: readonly string[] = []): MenuRow[] =>
+      boardMenuRows(
+        scene,
+        write,
+        strings,
+        [],
+        sharing(null).invite,
+        switching(true).ageing,
+        null,
+        put,
+      ) as MenuRow[];
+    it("offers the row first, above the settings and the files", () => {
+      // First because it is the only row on this menu that makes an object; the
+      // rest are preferences and files.
+      const rows = rowsWith(() => {});
+      expect(rows[0]!.label).toBe(PUT);
+      expect(rows.map((r) => r.label)).toContain(AGE_ON);
+    });
+    it("puts it at the point that was right-clicked, through the caller", () => {
+      // The row carries a closure rather than coordinates — the point is the
+      // caller's and this module has no question to answer about it.
+      let ran = 0;
+      rowsWith(() => {
+        ran += 1;
+      })[0]!.run();
+      expect(ran).toBe(1);
+      // And it is not an edit this module makes: everything about the write is on
+      // the far side of that closure.
+      expect(writes).toEqual([]);
+    });
+    it("is absent, not disabled, on a board this build may not write to", () => {
+      // The standing every other verb here is on. A row that cannot work is a
+      // question nothing on screen can answer.
+      expect(rowsWith(null).map((r) => r.label)).not.toContain(PUT);
+    });
+    it("takes the rule under the string rows, and hands one to the ageing switch", () => {
+      // One rule per group and never two in a row. With strings above it the
+      // timer row is divided and the ageing row below it is divided from *that*;
+      // with no strings the timer row opens the menu and takes no rule at all.
+      span("s", 0);
+      const withStrings = rowsWith(() => {}, ["s"]);
+      const put = withStrings.find((r) => r.label === PUT)!;
+      expect(put.divided).toBe(true);
+      expect(withStrings.find((r) => r.label === AGE_ON)!.divided).toBe(true);
+      scene.clear();
+      const bare = rowsWith(() => {});
+      // `false` rather than absent: the row always writes the key and the value
+    // is the question "is there anything above me".
+    expect(bare[0]!.divided).toBe(false);
+      expect(bare.find((r) => r.label === AGE_ON)!.divided).toBe(true);
+    });
+    it("leaves the ageing row undivided when it opens the menu on its own", () => {
+      // The state before this task, and it must not have changed: with no strings
+      // and no timer row, the switch is the first row and divides nothing.
+      expect(rowsWith(null)[0]!.divided).toBe(false);
     });
   });
 });

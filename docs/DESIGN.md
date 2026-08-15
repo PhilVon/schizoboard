@@ -228,6 +228,8 @@ Everything created this way gets **one pin**, placed at the top centre, and a sm
 
 Drag an item to move it. Drag its rotation handle, or hold `R` and drag, to rotate. There is no resize handle on a polaroid — a photograph is the size it is — but every sheet of paper resizes from its edges.
 
+**Nor on a timer, and it is the same sentence with a different noun** (T-396): a travel clock is the size it is. Paper is cut to fit what is on it and a manufactured object is not, so the split is between the two kinds of thing rather than between two lists — everything on this board that came out of a factory (a folder, a tape, a cassette, a clock) has one real size, and only the clock is one you can create directly, so it is the only one where the question comes up. Rotation is untouched: a clock hanging crooked is rather the point.
+
 Nothing snaps to anything. There is no grid, no alignment guide, no distribution tool. This is deliberate and it is not a missing feature.
 
 **And no held-modifier constraints.** No modifier holds a drag to an axis, a rotation to fixed steps, or a resize to its aspect ratio. All three are the same request — make my hand tidier than it is — and the answer to all three is the one above. The only `Ctrl`+drag on the board is the pin one in §3.3, which keeps a pin in the item it is already in and has nothing to do with alignment. See §1.4.
@@ -481,6 +483,8 @@ Everything in the table above was, until Phase 10, the *only* way to reach any o
 Two pieces of chrome answer it, and they are one piece of furniture: **which tool you are holding**, and **what it does**.
 
 **The drawer** is a rail of the seven tools down the left edge, vertically centred. Each button is a glyph with its key letter under it at half opacity, because the rail's job is to teach the keyboard rather than to replace it — somebody who finds the drawer finds the shortcuts. It holds the seven and nothing else: not the pens' colours and sizes, which the context menu and the bracket keys already own, and not undo, fit or actual size, which are history and camera rather than tools. A drawer holding all three would stop being a statement about what is in your hand.
+
+**It holds seven and it is going to keep holding seven** (D-44, and T-396 is the second refusal). The `Shift`+`E` smudge was declined on this ground and so was the timer: an eighth tool costs a letter of the keyboard map above, a `Tool` implementation, an info-bar line, a one-shot-or-sticky decision and an amendment to §3.9 — and a timer is a thing somebody puts up twice a session, not a thing they hold. Verbs that *make an object* and are not held belong on the cork's own right-click menu, which is where the invite and the ageing switch already live: a right-click on bare cork asks what is here, and on bare cork the honest answer is the board.
 
 **The info bar** is bottom left, where the old hint line was, and it is per tool. It leads with the tool, its key and its plain verb; then the gestures that need nothing held; then either the *chips* — `hold Shift · Ctrl · Alt` — or, while one of those is down, the gestures that key unlocks. Underneath, a quieter standing line for the camera, the search and undo, which belong to no tool.
 

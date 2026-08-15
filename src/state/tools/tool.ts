@@ -200,6 +200,25 @@ export interface BoardWriter {
    */
   createNote(boardX: number, boardY: number): void;
   /**
+   * A small travel clock at a board point — the fifth item type (T-396, D-73).
+   *
+   * Beside `createNote` and shaped like it, because putting one up is the same
+   * kind of act: an object arrives at a point, with one pin and a seeded scatter
+   * that `crdt/ops` defaults rather than the caller remembering.
+   *
+   * Unlike a note it takes **no size**, and the asymmetry is the interesting
+   * part. A note's dimensions are a function of what is written on it, so only
+   * `app/` can answer; a clock is a manufactured object with one size
+   * (`TIMER_UNITS`), the way a cassette and a folder are. There is nothing here
+   * for a caller to decide.
+   *
+   * No mode either. A new one is a **clock**, which is the reset state and what
+   * most people put on a wall — the mode strip (T-397) is how it becomes
+   * anything else, and offering three rows on the board menu would put a
+   * settings question in front of a gesture that should be one press.
+   */
+  createTimer(boardX: number, boardY: number): void;
+  /**
    * Push a pin in, parented to `parent` or free in the cork.
    *
    * `lx`/`ly` are already in the frame `parent` implies — item-local un-rotated

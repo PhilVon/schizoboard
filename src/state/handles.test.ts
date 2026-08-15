@@ -83,6 +83,23 @@ describe("whose handles", () => {
     selection.replace(["b"]);
     expect(frameOf().resizable).toBe(false);
   });
+
+  it("gives a timer no resize either, and its rotation knob all the same", () => {
+    // T-396. The same sentence DESIGN 3.2 says about a photograph, with a
+    // different noun: a travel clock is the size it is. Every dimension of the
+    // case is a percentage of the object in `items.css`, so a stretched one is
+    // not a big clock, it is a broken one.
+    scene.clear();
+    put("t", "timer");
+    selection.replace(["t"]);
+    expect(frameOf().resizable).toBe(false);
+
+    // And the knob stays, which is the half worth asserting rather than
+    // assuming: rotation is not gated on `resizable`, and a clock hanging
+    // crooked is the point rather than a side effect.
+    const knob = rotateHandle(frameOf(), { x: 0, y: 0 });
+    expect(handleAt(frameOf(), knob.x, knob.y)).toBe("rotate");
+  });
 });
 
 describe("the rotation handle", () => {
