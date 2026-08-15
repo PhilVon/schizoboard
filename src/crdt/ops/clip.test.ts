@@ -471,3 +471,80 @@ describe("invariant 1 — every number in the document is finite", () => {
     }
   });
 });
+
+/**
+ * Where a copy came from — T-400, and it is the *face* that is at stake.
+ *
+ * `render/items/dom.ts` chooses a card over a photograph on `source` being set
+ * and `sourceAbout` not being `media`, so an item rebuilt without those two is a
+ * different object on the far board: a business card comes back a photograph,
+ * losing the printed face, the address under it and the way back to the page.
+ *
+ * These assert on the *document* rather than on the drawn face, which is the
+ * right side of the boundary for this file — but the reason they are worth
+ * having is entirely about the renderer, so it is said here rather than left to
+ * be rediscovered.
+ */
+describe("what a copy remembers about where an item came from", () => {
+  /** An item that stands in for a page: a `source`, and what that page was. */
+  function fromPage(about: "page" | "media", url = "https://example.com/a/thing"): string {
+    const [made] = createItems(board, [
+      { type: "polaroid", x: 0, y: 0, w: 132, h: 85, source: url, sourceAbout: about },
+    ]);
+    return made!.itemId;
+  }
+
+  const copyOf = (id: string, to = { x: 700, y: 700 }): string => {
+    const clip = copySubgraph(board, { items: [id], pins: [] })!;
+    return pasteClip(board, clip, to).items[0]!;
+  };
+
+  it("keeps a business card a business card", () => {
+    const original = fromPage("page");
+    const copy = item(copyOf(original));
+    expect(copy.source).toBe("https://example.com/a/thing");
+    // `page` is the default and is therefore absent from the map, exactly as a
+    // freshly created card has it — the read is what has to agree, not the key.
+    expect(copy.sourceAbout).toBe("page");
+    expect(board.items.get(copy.id)!.has("sourceAbout")).toBe(false);
+  });
+
+  it("keeps a printed still a printed still", () => {
+    // The same bug in the other direction, and the reason both fields are
+    // carried rather than just `source`: an item about a film the page would not
+    // hand over is a photograph with an address under it, and a copy that lost
+    // `sourceAbout` would come back as a *card* (T-342).
+    const original = fromPage("media", "https://example.com/watch?v=x");
+    const copy = item(copyOf(original));
+    expect(copy.source).toBe("https://example.com/watch?v=x");
+    expect(copy.sourceAbout).toBe("media");
+    // Written, because it is not the default — the convention `createItems`
+    // follows, restated by the paste so the two writers cannot drift.
+    expect(board.items.get(copy.id)!.get("sourceAbout")).toBe("media");
+  });
+
+  it("leaves an item that came from nowhere with no key at all", () => {
+    // Nearly every item on every board. A paste that wrote `source: null` would
+    // put a key saying nothing on every sheet of paper anybody ever duplicated.
+    const { itemId } = note(0, 0);
+    const copy = item(copyOf(itemId));
+    expect(copy.source).toBeNull();
+    expect(copy.sourceAbout).toBe("page");
+    expect(board.items.get(copy.id)!.has("source")).toBe(false);
+    expect(board.items.get(copy.id)!.has("sourceAbout")).toBe(false);
+  });
+
+  it("carries both across a clip put down on a board that has never seen it", () => {
+    // The case the whole clip format exists for, and the one the in-memory
+    // token hides: a clip is closed under its own references, so it has to
+    // survive being pasted into a *different document*.
+    const original = fromPage("media", "https://example.com/watch?v=y");
+    const clip = copySubgraph(board, { items: [original], pins: [] })!;
+
+    const far = openBoardDoc();
+    const pasted = pasteClip(far, clip, { x: 0, y: 0 });
+    const copy = readItem(pasted.items[0]!, far.items.get(pasted.items[0]!)!)!;
+    expect(copy.source).toBe("https://example.com/watch?v=y");
+    expect(copy.sourceAbout).toBe("media");
+  });
+});

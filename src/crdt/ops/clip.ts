@@ -81,6 +81,7 @@ import {
   type YMap,
 } from "@/crdt/schema";
 import { keyAbove } from "@/crdt/zindex";
+import type { SourceAbout } from "@/lib/objects";
 import type { ItemStyle } from "@/lib/style";
 import type { TimerMode } from "@/lib/timer";
 
@@ -132,6 +133,34 @@ export interface ClipItem {
    */
   readonly asset: AssetInput | null;
   readonly style: ItemStyle;
+  /**
+   * Where the item came from, when it stands in for a page — and it is here
+   * because **the face is chosen from it** (T-400).
+   *
+   * `render/items/dom.ts`'s `archetypeOf` ends on `cold.source && sourceAbout
+   * !== "media"`, so an item rebuilt without this falls through to `polaroid`.
+   * A copied business card therefore came back a *photograph*: the wrong face,
+   * no address under it, and no way back to the page. This file was written
+   * before D-63 and T-342 made `source` load-bearing for the face, which is how
+   * it was missed — every other field here was already carried.
+   *
+   * Copied rather than dropped, unlike a timer's `runFrom`, and the two are not
+   * in tension. What a copy resets is *state somebody set going*; what it keeps
+   * is what the object **is**. Where a card came from is the second kind: a
+   * duplicate of a business card is a second copy of that card, not a blank one.
+   */
+  readonly source: string | null;
+  /**
+   * The other half of the same question — `lib/objects.ts`'s `SourceAbout`, and
+   * `source` above for why both are carried.
+   *
+   * Never null and never absent, the way the document keeps it: `page` is the
+   * answer for everything that did not come from a page at all. Without it a
+   * copied *still* — an item about a film the page would not hand over — comes
+   * back as a business card, which is the same bug in the other direction and
+   * is exactly what T-342 separated the two objects to stop.
+   */
+  readonly sourceAbout: SourceAbout;
   readonly text: string;
   readonly strokes: readonly ClipStroke[];
   /**
@@ -316,6 +345,11 @@ export function copySubgraph(board: BoardDoc, selection: ClipSelection): BoardCl
               lights: item.timer.lights === null ? null : (itemAt.get(item.timer.lights) ?? null),
             },
       style: { ...item.style },
+      // Both, and both off `readItem` rather than the map — see `ClipItem`. The
+      // face comes off these two, so an item rebuilt without them is a different
+      // object on the far board.
+      source: item.source,
+      sourceAbout: item.sourceAbout,
       text: textOf(board.items.get(item.id)),
       strokes: strokesOf(board.items.get(item.id)),
     })),
@@ -383,6 +417,14 @@ export function pasteClip(
       if (clipped.type === "timer" && clipped.timer !== null) {
         writeNewTimer(board, item, { mode: clipped.timer.mode, runsFor: clipped.timer.runsFor });
       }
+      // Where it came from, written exactly as `createItems` writes it — only
+      // when there is one, and `sourceAbout` only when it is not the default.
+      // Restated here rather than shared because these two lines *are* the
+      // convention (a key holding the default on every object is a key nobody
+      // can read anything from), and the two writers have to agree about it or
+      // a pasted card and a fresh one are different records saying one thing.
+      if (clipped.source) item.set("source", clipped.source);
+      if (clipped.sourceAbout === "media") item.set("sourceAbout", "media");
       item.set("text", new Y.Text(clipped.text));
       const style = new Y.Map<unknown>();
       for (const [key, value] of Object.entries(clipped.style)) style.set(key, value);
