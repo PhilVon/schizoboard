@@ -36,6 +36,7 @@ import {
 } from "@/ui/boardmenu";
 import type { MenuChoice, MenuEntry, MenuRow } from "@/ui/menu";
 import type { ItemStyle } from "@/lib/style";
+import { NO_TIMER, type TimerFields, type TimerMode } from "@/lib/timer";
 import type { AssetKind } from "@/lib/objects";
 
 type Settle = [string, WritePose][];
@@ -48,7 +49,11 @@ type Write =
   | { kind: "createPin"; parent: string | null; lx: number; ly: number; settle: Settle }
   | { kind: "deletePins"; ids: string[]; settle: Settle }
   | { kind: "stack"; ids: string[]; end: "front" | "back" }
-  | { kind: "itemStyle"; ids: string[]; patch: Partial<ItemStyle> };
+  | { kind: "itemStyle"; ids: string[]; patch: Partial<ItemStyle> }
+  | { kind: "timerMode"; ids: string[]; mode: TimerMode }
+  | { kind: "timerLength"; ids: string[]; runsFor: number }
+  | { kind: "timerRun"; ids: string[]; verb: "start" | "pause" | "reset" }
+  | { kind: "timerLights"; id: string; target: string | null };
 
 let scene: Scene;
 let writes: Write[];
@@ -152,6 +157,12 @@ beforeEach(() => {
     | "bringToFront"
     | "sendToBack"
     | "setItemStyle"
+    | "setTimerMode"
+    | "setTimerLength"
+    | "startTimer"
+    | "pauseTimer"
+    | "resetTimer"
+    | "setTimerLights"
   > = {
     setStringLayer: (stringIds, layer) =>
       writes.push({ kind: "layer", stringIds: [...stringIds], layer }),
@@ -167,6 +178,12 @@ beforeEach(() => {
     sendToBack: (ids) => writes.push({ kind: "stack", ids: [...ids], end: "back" }),
     setItemStyle: (ids, patch) =>
       writes.push({ kind: "itemStyle", ids: [...ids], patch: { ...patch } }),
+    setTimerMode: (ids, mode) => writes.push({ kind: "timerMode", ids: [...ids], mode }),
+    setTimerLength: (ids, runsFor) => writes.push({ kind: "timerLength", ids: [...ids], runsFor }),
+    startTimer: (ids) => writes.push({ kind: "timerRun", ids: [...ids], verb: "start" }),
+    pauseTimer: (ids) => writes.push({ kind: "timerRun", ids: [...ids], verb: "pause" }),
+    resetTimer: (ids) => writes.push({ kind: "timerRun", ids: [...ids], verb: "reset" }),
+    setTimerLights: (id, target) => writes.push({ kind: "timerLights", id, target }),
   };
   // The rows only ever reach these. Everything else on the interface is a
   // write no menu offers, and stubbing the rest would say otherwise.
@@ -1971,6 +1988,241 @@ describe("the board menu on bare cork", () => {
       // The state before this task, and it must not have changed: with no strings
       // and no timer row, the switch is the first row and divides nothing.
       expect(rowsWith(null)[0]!.divided).toBe(false);
+    });
+  });
+});
+
+/**
+ * Working a timer, from the item's own menu — T-397, D-73.
+ *
+ * All of it is `itemMenuRows` gated on the clicked item being a timer, which is
+ * why it is here rather than anywhere new: the function already reads the
+ * clicked item's style to decide what to mark, so reading its timer record keeps
+ * it a pure function of ids with no new plumbing.
+ */
+describe("working a timer", () => {
+  function clock(id: string, over: Partial<TimerFields> = {}, text = ""): void {
+    scene.putItem(
+      {
+        id,
+        type: "timer",
+        z: "a0",
+        seed: 1,
+        assetId: null,
+        createdBy: 1,
+        createdAt: 0,
+        text,
+        timer: { ...NO_TIMER, ...over },
+      },
+      { x: 0, y: 0, rot: 0, w: 140, h: 109 },
+    );
+  }
+
+  const rowsFor = (id: string, targets: readonly string[] = [id]): MenuEntry[] =>
+    itemMenuRows(scene, write, id, targets, 0, 0);
+
+  const labels = (entries: readonly MenuEntry[]): string[] => entries.map((e) => e.label);
+
+  /** The `open` hook, wired the way `app/main.ts` wires it. */
+  const opening = (can: (id: string) => boolean = () => true) => {
+    const ran: string[] = [];
+    return { hook: { can, run: (id: string) => void ran.push(id) }, ran };
+  };
+
+  describe("the mode strip", () => {
+    it("marks the mode the timer is in", () => {
+      clock("t", { mode: "stopwatch" });
+      const marked = chips(rowsFor("t"), "Mode").filter((c) => c.current);
+      expect(marked.map((c) => c.label)).toEqual(["Stopwatch"]);
+    });
+
+    it("carries no As it was chip", () => {
+      // D-73 rule 3, and the one way this strip differs from every other strip
+      // in this file. That chip exists because `style` is a veto over the seed
+      // and its absence is meaningful; a mode has no seed behind it, so absent
+      // MEANS clock and clock is itself one of the three real answers. A strip
+      // carrying both would show two chips meaning one thing, and picking
+      // either would mark both.
+      clock("t");
+      const strip = chips(rowsFor("t"), "Mode");
+      expect(strip.map((c) => c.label)).toEqual(["Clock", "Countdown", "Stopwatch"]);
+      expect(strip.map((c) => c.label)).not.toContain("As it was");
+      // And the default is marked as the real choice it is, rather than the
+      // strip going blank because nothing was written to the map.
+      expect(strip.filter((c) => c.current).map((c) => c.label)).toEqual(["Clock"]);
+    });
+
+    it("writes the mode to the whole selection", () => {
+      // Working three timers at once is one press and one undo entry, and the
+      // op skips whatever in the list is not a timer.
+      clock("t");
+      clock("u", { mode: "countdown" });
+      chips(rowsFor("t", ["t", "u"]), "Mode").find((c) => c.label === "Countdown")!.run();
+      expect(writes).toEqual([{ kind: "timerMode", ids: ["t", "u"], mode: "countdown" }]);
+    });
+
+    it("takes the appearance strips away, because a machine has no paper", () => {
+      // A correction as much as an addition: a timer holds no assetId, so it is
+      // not a case object, so it was falling through to the paper and the hand
+      // strips. There is no stock to choose and nothing on it is handwritten.
+      clock("t");
+      expect(labels(rowsFor("t"))).not.toContain("Paper");
+      expect(labels(rowsFor("t"))).not.toContain("Writing");
+      expect(labels(rowsFor("t"))).toContain("Mode");
+    });
+  });
+
+  describe("the length strip", () => {
+    it("is absent on a clock and on a stopwatch, rather than present and greyed", () => {
+      // This file's standing rule. Neither has anything to run out of, so a
+      // strip of durations under one is a question with no answer rather than a
+      // question with a disabled answer.
+      for (const mode of ["clock", "stopwatch"] as const) {
+        clock("t", { mode });
+        expect(labels(rowsFor("t"))).not.toContain("Length");
+      }
+    });
+
+    it("offers the presets on a countdown, marked against what is stored", () => {
+      clock("t", { mode: "countdown", runsFor: 15 * 60_000 });
+      const strip = chips(rowsFor("t"), "Length");
+      expect(strip.map((c) => c.label)).toEqual([
+        "1 min",
+        "3 min",
+        "5 min",
+        "10 min",
+        "15 min",
+        "30 min",
+        "1 hour",
+      ]);
+      expect(strip.filter((c) => c.current).map((c) => c.label)).toEqual(["15 min"]);
+    });
+
+    it("marks nothing when the length is one no preset offers", () => {
+      // `runsFor` takes any number and a peer or a later build can write one, so
+      // the strip has to survive a value it has no chip for. Blank rather than
+      // the nearest one marked, which would say you had picked five minutes when
+      // you had picked seven.
+      clock("t", { mode: "countdown", runsFor: 7 * 60_000 });
+      expect(chips(rowsFor("t"), "Length").filter((c) => c.current)).toEqual([]);
+    });
+
+    it("writes milliseconds, not minutes", () => {
+      clock("t", { mode: "countdown" });
+      chips(rowsFor("t"), "Length").find((c) => c.label === "1 hour")!.run();
+      expect(writes).toEqual([{ kind: "timerLength", ids: ["t"], runsFor: 3_600_000 }]);
+    });
+  });
+
+  describe("start, stop and reset", () => {
+    it("reads start or stop according to what the timer is doing", () => {
+      const o = opening();
+      clock("t", { mode: "countdown", runsFor: 60_000 });
+      expect(labels(itemMenuRows(scene, write, "t", ["t"], 0, 0, undefined, undefined, o.hook))).toContain(
+        "Start the timer",
+      );
+
+      clock("t", { mode: "countdown", runsFor: 60_000, runFrom: 1_700_000_000_000 });
+      expect(labels(itemMenuRows(scene, write, "t", ["t"], 0, 0, undefined, undefined, o.hook))).toContain(
+        "Stop the timer",
+      );
+    });
+
+    it("goes through the same hook Enter does, rather than a row of its own", () => {
+      // Two entry points to one verb is how the pointer and the keyboard start
+      // disagreeing about what a press does. The row calls `open.run`, which is
+      // the function `Enter` on a selection calls.
+      clock("t", { mode: "stopwatch" });
+      const o = opening();
+      const rows = itemMenuRows(scene, write, "t", ["t"], 0, 0, undefined, undefined, o.hook);
+      (rows.find((r) => r.label === "Start the timer") as MenuRow).run();
+      expect(o.ran).toEqual(["t"]);
+      // And the row itself writes nothing: the verb is on the far side of the
+      // hook, which is where `Enter` reaches it too.
+      expect(writes).toEqual([]);
+    });
+
+    it("says Open on everything that is not a timer", () => {
+      wearing("p", "sha");
+      const o = opening();
+      expect(labels(itemMenuRows(scene, write, "p", ["p"], 0, 0, undefined, undefined, o.hook))).toContain(
+        "Open",
+      );
+    });
+
+    it("says nothing at all when the caller will not open it", () => {
+      // A clock. `openable` answers false for one because there is nothing to
+      // start, so no row appears — the same answer a note gets, and the reason
+      // the label above does not have to know about modes.
+      clock("t");
+      const o = opening(() => false);
+      const rows = itemMenuRows(scene, write, "t", ["t"], 0, 0, undefined, undefined, o.hook);
+      expect(labels(rows)).not.toContain("Start the timer");
+      expect(labels(rows)).not.toContain("Open");
+    });
+
+    it("offers reset only when there is something to reset", () => {
+      clock("t", { mode: "stopwatch" });
+      expect(labels(rowsFor("t"))).not.toContain("Reset");
+
+      clock("t", { mode: "stopwatch", banked: 4_000 });
+      expect(labels(rowsFor("t"))).toContain("Reset");
+
+      clock("t", { mode: "stopwatch", runFrom: 1_700_000_000_000 });
+      expect(labels(rowsFor("t"))).toContain("Reset");
+    });
+
+    it("resets the whole selection", () => {
+      clock("t", { banked: 1 });
+      clock("u", { banked: 1 });
+      (rowsFor("t", ["t", "u"]).find((r) => r.label === "Reset") as MenuRow).run();
+      expect(writes).toEqual([{ kind: "timerRun", ids: ["t", "u"], verb: "reset" }]);
+    });
+  });
+
+  describe("what it lights", () => {
+    const POINT = "Light the other one when it goes off";
+
+    it("offers the row only when the selection is exactly two", () => {
+      clock("t");
+      put("n");
+      put("m");
+      expect(labels(rowsFor("t"))).not.toContain(POINT);
+      expect(labels(rowsFor("t", ["t", "n"]))).toContain(POINT);
+      // Three is the case that says "exactly two" rather than "more than one",
+      // and it is the one a build without the count still passes the other two
+      // on: "the other one" has no referent among three, and picking whichever
+      // the iteration reached first would aim the timer at an item nobody named.
+      expect(labels(rowsFor("t", ["t", "n", "m"]))).not.toContain(POINT);
+    });
+
+    it("points the clicked timer at the other item, and not at itself", () => {
+      clock("t");
+      put("n");
+      (rowsFor("t", ["t", "n"]).find((r) => r.label === POINT) as MenuRow).run();
+      expect(writes).toEqual([{ kind: "timerLights", id: "t", target: "n" }]);
+    });
+
+    it("offers the way back once something is pointed at", () => {
+      clock("t", { lights: "n" });
+      const rows = rowsFor("t");
+      expect(labels(rows)).toContain("Light nothing");
+      (rows.find((r) => r.label === "Light nothing") as MenuRow).run();
+      expect(writes).toEqual([{ kind: "timerLights", id: "t", target: null }]);
+    });
+
+    it("offers the way back even when the target has been deleted", () => {
+      // A dangling pointer is a timer that lights nothing (DATA-MODEL 8.1) and
+      // is never repaired on read. Being unable to clear it because the thing it
+      // named is gone would be the one state with no way out.
+      clock("t", { lights: "long-gone" });
+      expect(labels(rowsFor("t"))).toContain("Light nothing");
+    });
+
+    it("says nothing about lighting on an item that is not a timer", () => {
+      put("a");
+      put("b");
+      expect(labels(rowsFor("a", ["a", "b"]))).not.toContain(POINT);
     });
   });
 });

@@ -54,6 +54,12 @@ import {
   scaleStringSlack,
   setItemPoses,
   setItemStyle,
+  setTimerLength,
+  setTimerLights,
+  setTimerMode,
+  startTimer,
+  pauseTimer,
+  resetTimer,
   sendToBack,
   setNodeSlack,
   setStringSlack,
@@ -1143,6 +1149,49 @@ async function boot(): Promise<void> {
       queued.push(() => setItemStyle(board, snapshot, patch));
     },
     /**
+     * The four that work a timer — T-397, D-73.
+     *
+     * Copied and queued like every other write on this list. `crdt/ops/timers.ts`
+     * skips anything that is not a timer, so a mixed selection is safe without a
+     * filter here — and the filter belongs there rather than here anyway, since
+     * "is this a timer" is a question about the document.
+     */
+    setTimerMode: (ids, mode) => {
+      const snapshot = [...ids];
+      queued.push(() => setTimerMode(board, snapshot, mode));
+    },
+    setTimerLength: (ids, runsFor) => {
+      const snapshot = [...ids];
+      queued.push(() => setTimerLength(board, snapshot, runsFor));
+    },
+    /**
+     * `Date.now()` read **here, once, when the press happens** — not inside the
+     * queued closure and not per item.
+     *
+     * Per item would give three timers started by one press three different
+     * instants, which is a stopwatch race nobody entered. Inside the closure
+     * would date the run from phase 9 of whichever frame the queue drained on,
+     * which is up to a frame after the press and is a clock reading taken for
+     * the convenience of the writer rather than for the person.
+     */
+    startTimer: (ids) => {
+      const snapshot = [...ids];
+      const at = Date.now();
+      queued.push(() => startTimer(board, snapshot, at));
+    },
+    pauseTimer: (ids) => {
+      const snapshot = [...ids];
+      const at = Date.now();
+      queued.push(() => pauseTimer(board, snapshot, at));
+    },
+    resetTimer: (ids) => {
+      const snapshot = [...ids];
+      queued.push(() => resetTimer(board, snapshot));
+    },
+    setTimerLights: (id, target) => {
+      queued.push(() => setTimerLights(board, id, target));
+    },
+    /**
      * The two ends of the stack. Copied and queued like every other write here,
      * which matters more than usual for these two: the ops read the whole
      * board's keys to find the end they are generating against, and doing that
@@ -1585,6 +1634,22 @@ async function boot(): Promise<void> {
   const readable = (itemId: string): boolean => readableHash(itemId) !== null;
 
   const openable = (itemId: string): boolean => {
+    /**
+     * A timer, first, and before the asset test — T-397, D-73.
+     *
+     * It has to be first for the reason the archetype line in `render/items/
+     * dom.ts` has to be: a timer holds no `assetId`, so the line below answers
+     * false for one and the row would never appear. Which is also why this is a
+     * *leading* branch rather than an extra clause on the return.
+     *
+     * A **clock** is deliberately not openable. Starting one is meaningless —
+     * `mode: "clock"` reads the wall clock and ignores `runFrom` entirely — so
+     * `Enter` on one does nothing and the menu offers no row, which is the same
+     * answer a photograph gets and for the same reason: there is nothing there
+     * to start.
+     */
+    const timer = scene.cold(itemId)?.timer ?? null;
+    if (timer !== null) return timer.mode !== "clock";
     const sha256 = scene.cold(itemId)?.assetId ?? null;
     if (sha256 === null) return false;
     const map = board.assets.get(sha256);
@@ -1646,6 +1711,28 @@ async function boot(): Promise<void> {
      * before.
      */
     if (opening.itemId === itemId) return closeOpen();
+    /**
+     * A timer, above the kinds — T-397.
+     *
+     * Above them because a timer has no kind: it holds no `assetId`, so
+     * `kindOfItem` answers `unknown` for one and it would fall past both forks to
+     * `readItem`, which would try to turn a machine up on its pages.
+     *
+     * **Start and stop are one verb here**, which is what makes the menu row and
+     * `Enter` the same act rather than two that happen to agree today. The
+     * document's own reading decides which — `runFrom !== null` *is* running, and
+     * there is no second flag able to contradict it (`lib/timer.ts`).
+     *
+     * An expired countdown is still running by that reading and pressing it
+     * stops it, which is exactly what happens to a kitchen timer that has gone
+     * off: somebody picks it up and stops it. Expiry itself writes nothing.
+     */
+    const timer = scene.cold(itemId)?.timer ?? null;
+    if (timer !== null) {
+      if (timer.runFrom !== null) writer.pauseTimer([itemId]);
+      else writer.startTimer([itemId]);
+      return true;
+    }
     if (kindOfItem(itemId) === "video") return watchItem(itemId);
     // And the third object, which takes over nothing at all (T-277). A cassette
     // does not turn up to be read and does not go on a set: it plays where it

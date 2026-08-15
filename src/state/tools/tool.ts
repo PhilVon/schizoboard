@@ -19,6 +19,7 @@
 
 import type { InkSurface, WetStroke } from "@/lib/ink";
 import type { ItemStyle } from "@/lib/style";
+import type { TimerMode } from "@/lib/timer";
 import type { Bounds, Camera, Vec2 } from "@/state/camera";
 import type { DirtySets } from "@/state/dirty";
 import type { Scene } from "@/state/scene";
@@ -164,6 +165,41 @@ export interface BoardWriter {
    * rather than a stock name.
    */
   setItemStyle(ids: readonly string[], patch: Partial<ItemStyle>): void;
+  /**
+   * The four writes that *work* a timer — T-397, D-73.
+   *
+   * All four take a list, like `setItemStyle` above and unlike `createTimer`,
+   * because working a device is a verb a selection can take together: starting
+   * three timers at once is one press and one undo entry. `crdt/ops/timers.ts`
+   * skips anything in the list that is not a timer, which is what makes a mixed
+   * selection safe — starting two timers and a photograph starts the two timers.
+   *
+   * `lights` is the odd one and takes a single id, because it is a *pointer*
+   * rather than a setting: four timers all pointing at one object is a thing
+   * somebody could want and four objects lit by one timer is not, so the shape
+   * that reads correctly is one timer aimed at one target.
+   *
+   * **No stop, and no expiry write.** `startTimer` and `pauseTimer` are the two
+   * halves of running it, and an expired countdown writes nothing at all — it
+   * stays expired by arithmetic, so there is no fired flag for two peers to race
+   * over. That is the load-bearing rule of the whole feature and the reason this
+   * list is four rather than six.
+   */
+  setTimerMode(ids: readonly string[], mode: TimerMode): void;
+  setTimerLength(ids: readonly string[], runsFor: number): void;
+  /**
+   * Start or resume, and stop and keep what is on it.
+   *
+   * `now` is not a parameter: the wiring reads one `Date.now()` for the whole
+   * call, so one press starting three timers gives all three the same instant —
+   * and a tool has no business holding a clock (`state/tools/machine.ts` takes
+   * its own as an option for exactly that reason).
+   */
+  startTimer(ids: readonly string[]): void;
+  pauseTimer(ids: readonly string[]): void;
+  resetTimer(ids: readonly string[]): void;
+  /** What this timer lights amber when it goes off, or null for nothing. */
+  setTimerLights(id: string, target: string | null): void;
   /**
    * Move these items to one end of the stack — DESIGN section 2.1's z-order,
    * reached from the item context menu.

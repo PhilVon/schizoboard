@@ -74,6 +74,12 @@ beforeEach(() => {
     commitStrokes: () => {},
     eraseStrokes: () => {},
       createTimer: () => {},
+      setTimerMode: () => {},
+      setTimerLength: () => {},
+      startTimer: () => {},
+      pauseTimer: () => {},
+      resetTimer: () => {},
+      setTimerLights: () => {},
       createNote: (x, y) => created.push({ x, y }),
     },
   };
