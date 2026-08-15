@@ -3229,7 +3229,15 @@ async function boot(): Promise<void> {
           [],
           selection.toArray(),
           { link: invite, copy: copyInvite },
-          { on: prefs.ageing(), set: setAgeing },
+          {
+            ageing: { on: prefs.ageing(), set: setAgeing },
+            // Straight through to the store, with no `setTimerFlight` beside
+            // `setAgeing` above: turning ageing off has to hand the item layer a
+            // different clock and repaint every sheet, and this changes nothing
+            // that is on screen now. It is read at the moment a countdown fires
+            // and not before.
+            timerFlight: { on: prefs.timerFlight(), set: prefs.setTimerFlight },
+          },
           native.kind === "tauri"
             ? {
                 export: () => void exportBoard(),
@@ -3405,7 +3413,10 @@ async function boot(): Promise<void> {
         // it runs, which is a beat later and is the one that matters.
         selection.toArray(),
         { link: invite, copy: copyInvite },
-        { on: prefs.ageing(), set: setAgeing },
+        {
+          ageing: { on: prefs.ageing(), set: setAgeing },
+          timerFlight: { on: prefs.timerFlight(), set: prefs.setTimerFlight },
+        },
         native.kind === "tauri"
           ? {
               export: () => void exportBoard(),
@@ -3526,7 +3537,55 @@ async function boot(): Promise<void> {
    */
   timers.onExpire(({ id, caption, lights }) => {
     flash.say(caption === "" ? "A timer has gone off" : caption);
-    found.raise(lights ?? id, scene);
+    const at = lights ?? id;
+    found.raise(at, scene);
+    /**
+     * And the third surface, which is the only one you have to ask for — T-399.
+     *
+     * **The preference is read here and the flight is started here, and
+     * `state/timers.ts` is not told either fact.** That module takes a `now`, a
+     * scene and a dirty set, and the strongest thing about it is what it does
+     * not hold: no clock, no camera, nothing drawn. A `fly` flag threaded into
+     * `step` would put a taste from `localStorage` inside the tick, and the
+     * announcement is already the seam for exactly this — the flash line and
+     * the amber are both decided out here too.
+     *
+     * **Local, while what it lights is not.** `lights` is a document field, so
+     * both peers see the same item go amber the moment the countdown runs out;
+     * this carries one machine's camera, because two people at one board have
+     * two screens and two things they were in the middle of. Off by default for
+     * that reason (`app/prefs.ts`).
+     *
+     * The amber is raised above rather than held until the landing, which is
+     * where this deliberately parts company with the search. A match is lit
+     * when the flight arrives because the flight is *what the keystroke did*;
+     * here the timer went off at a moment the document can name, both peers are
+     * being shown it at once, and holding one of them back by 300ms so the
+     * light agreed with a camera the other one has not got would be inventing a
+     * difference between them.
+     *
+     * `READING_ZOOM` as a floor and not a target — Q-153's rule, and the reason
+     * is the same one search has: a timer you were carried to and cannot read
+     * is close to not having arrived. From 100% nothing about the zoom changes.
+     *
+     * Two countdowns going off on one frame is a second flight replacing the
+     * first, and a search flight already under way is likewise given up. Both
+     * are correct in the same one-liner: the last announcement is the one that
+     * has not been answered yet. A hand on the mouse outranks all of it, which
+     * is `Flight`'s version check and needs nothing here.
+     *
+     * Started in SIM and stepped from INPUT, so it takes off on the next frame
+     * rather than this one. That is a frame of nothing and not a bug — the
+     * alternative is stepping the flight after the tick, which would move the
+     * camera in the middle of a frame that has already decided what it can see.
+     */
+    if (!prefs.timerFlight()) return;
+    const box = scene.boundsOf(at, 0, foundBox);
+    // Null for an id the scene has just lost — a peer deleting the item this
+    // timer lights, in the frame it went off. The line and the amber have
+    // already handled that between them (`Flashes.raise` guards the same way),
+    // and there is nowhere to fly to.
+    if (box !== null) flight.toBox(camera, box, undefined, READING_ZOOM);
   });
 
   /**

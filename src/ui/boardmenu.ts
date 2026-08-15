@@ -953,6 +953,19 @@ export interface BoardRow {
 export const RECENT_BOARDS = 5;
 
 /**
+ * A local preference as this menu handles it — what it is now, and how to flip
+ * it (`app/prefs.ts`).
+ *
+ * Read when the menu opens, like every other row here, and written by the row.
+ * Nothing in this file knows where the value is kept or that it survives the
+ * window at all.
+ */
+export interface PrefSwitch {
+  readonly on: boolean;
+  set(on: boolean): void;
+}
+
+/**
  * The register, as the rows a menu can hold (T-364).
  *
  * Here rather than inline in `app/main.ts` because it is the only part of the
@@ -986,7 +999,22 @@ export function boardMenuRows(
   strings: readonly string[],
   selected: readonly string[],
   invite: { link: string | null; copy(link: string): void },
-  ageing: { on: boolean; set(on: boolean): void },
+  /**
+   * The local preferences this menu can flip — `app/prefs.ts`, and a bag rather
+   * than one parameter each.
+   *
+   * They arrived one at a time and the second is what settled the shape: two
+   * `{ on, set }` pairs side by side in a positional list are two arguments a
+   * call site can swap without the compiler noticing, and they would mean
+   * *stop ageing* and *fly to a timer*. Named fields cannot be transposed, and
+   * a third preference costs a line here instead of an argument everywhere.
+   */
+  prefs: {
+    /** DESIGN section 4.7's switch. */
+    ageing: PrefSwitch;
+    /** Whether a countdown going off carries this machine's camera (T-399). */
+    timerFlight: PrefSwitch;
+  },
   /**
    * `null` in a plain browser, where none of these four can happen at all.
    *
@@ -1137,16 +1165,46 @@ export function boardMenuRows(
      * for the same reason.
      */
     {
-      label: ageing.on ? "Stop the board ageing" : "Let the board age",
+      label: prefs.ageing.on ? "Stop the board ageing" : "Let the board age",
       // Divided from whatever is above it, whichever that turns out to be: the
       // string rows when there are some, the timer row when there is one, and
       // nothing when the menu opens with this at the top. It is a *preference*
       // and the two things it can follow are both edits, so the rule is the same
       // either way.
       divided: rows.length > 0 || putUpTimer !== null,
-      run: () => ageing.set(!ageing.on),
+      run: () => prefs.ageing.set(!prefs.ageing.on),
     },
   );
+  /**
+   * Whether a countdown going off carries the camera to it — T-399, and the
+   * second half of what a timer does when it fires.
+   *
+   * **Only when there is a timer on the board**, which is the one decision in
+   * this row and the difference between it and the ageing switch above. Every
+   * board on every machine can be told to stop ageing, because every board ages;
+   * a board with no clock on it cannot have one go off, so the row would be a
+   * setting for an event that has no way to happen. It appears the moment
+   * somebody puts one up — including a timer a *peer* put up, since a sealed or
+   * read-only board still gets this row: it writes nothing to the document, and
+   * being taken to somebody else's kitchen timer is exactly the case the switch
+   * is for.
+   *
+   * A verb and not a picker, and the label says what will happen rather than
+   * what is true now — the ageing row's reasoning, unchanged.
+   *
+   * Below the ageing switch rather than up beside *Put up a timer*, though it is
+   * about timers, because what it changes is this machine and not the board.
+   * The two preferences read as one group under one rule, and a row that comes
+   * and goes cannot then disturb the divider of one that does not.
+   */
+  if (scene.timers.size > 0) {
+    below.push({
+      label: prefs.timerFlight.on
+        ? "Stop flying to a timer that goes off"
+        : "Fly to a timer when it goes off",
+      run: () => prefs.timerFlight.set(!prefs.timerFlight.on),
+    });
+  }
   if (invite.link !== null) {
     below.push({
       /**
