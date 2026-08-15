@@ -24,6 +24,7 @@
 
 const AGEING = "schizo.ageing";
 const TOOLBAR = "schizo.toolbar";
+const TIMER_FLIGHT = "schizo.timerflight";
 
 /**
  * Whether items age (DESIGN section 4.7).
@@ -80,5 +81,46 @@ export function setToolbar(open: boolean): void {
   } catch {
     // As above. The drawer is already shut on screen; what is lost is it being
     // shut next time.
+  }
+}
+
+/**
+ * Whether a countdown going off carries *your* camera to it (T-399).
+ *
+ * Local for the reason at the top of this file, and the timer is the sharpest
+ * case of it yet: what a timer lights is written down and both people see it,
+ * because that is a fact about the board, while being taken there is a thing
+ * done to one person's screen. Somebody watching a countdown wants the trip;
+ * somebody working at the other end of the board while a colleague's kitchen
+ * timer runs out very much does not, and neither of them is wrong.
+ *
+ * ## It is the one preference here stored as *presence*, and deliberately
+ *
+ * Ageing and the drawer both store their default as **absence**, so a machine
+ * with site data switched off gets the intended look. This one defaults to
+ * **off**, so the same reasoning inverts: the failure to read a preference must
+ * not move somebody's camera. A board that quietly stopped ageing is a bug
+ * nobody reports; a board that quietly flies away from what you are doing is one
+ * you would report immediately, and it would be this line that did it.
+ *
+ * So the comparison is `=== "on"` rather than `!== "off"`, and every way of
+ * failing — unreadable store, first run, a value some other build wrote — lands
+ * on the camera staying where the hand left it.
+ */
+export function timerFlight(): boolean {
+  try {
+    return localStorage.getItem(TIMER_FLIGHT) === "on";
+  } catch {
+    return false;
+  }
+}
+
+export function setTimerFlight(on: boolean): void {
+  try {
+    if (on) localStorage.setItem(TIMER_FLIGHT, "on");
+    else localStorage.removeItem(TIMER_FLIGHT);
+  } catch {
+    // As above, and with less to lose than either: the switch holds for this
+    // session, and a timer going off is the kind of thing you are present for.
   }
 }
