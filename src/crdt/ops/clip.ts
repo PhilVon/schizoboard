@@ -65,6 +65,7 @@ import { pinsOfItems } from "@/crdt/ops/cascade";
 import { registerAsset, type AssetInput } from "@/crdt/ops/items";
 import { buildPin } from "@/crdt/ops/pins";
 import { buildString } from "@/crdt/ops/strings";
+import { writeNewTimer } from "@/crdt/ops/timers";
 import { highestZ } from "@/crdt/ops/z";
 import {
   readAsset,
@@ -81,6 +82,7 @@ import {
 } from "@/crdt/schema";
 import { keyAbove } from "@/crdt/zindex";
 import type { ItemStyle } from "@/lib/style";
+import type { TimerMode } from "@/lib/timer";
 
 /** One committed stroke, carried by the bytes it is already stored as. */
 export interface ClipStroke {
@@ -132,6 +134,31 @@ export interface ClipItem {
   readonly style: ItemStyle;
   readonly text: string;
   readonly strokes: readonly ClipStroke[];
+  /**
+   * How a copied timer was set — its mode and its length, and nothing else.
+   *
+   * Null for every item that is not a timer. **`runFrom` and `banked` are
+   * deliberately not carried**: a copy is a new object, and a pasted countdown
+   * should arrive set to five minutes and ready to be started, not five minutes
+   * into a run somebody else began on another board. Duplicating a running
+   * stopwatch and getting two of them running is the reading nobody wants.
+   */
+  readonly timer: ClipTimer | null;
+}
+
+export interface ClipTimer {
+  readonly mode: TimerMode;
+  readonly runsFor: number;
+  /**
+   * **An index into the clip's `items`**, the way `ClipPin.parent` is, or null.
+   *
+   * An item id would be meaningless on another board and wrong on this one — it
+   * would point at the original rather than at the copy, so duplicating a timer
+   * and its target would leave the copy lighting the original. Resolved back to
+   * an id on paste, and dropped when the item it named was not part of what was
+   * copied, exactly as a string whose pin did not come is dropped.
+   */
+  readonly lights: number | null;
 }
 
 export interface ClipPin {
@@ -276,6 +303,18 @@ export function copySubgraph(board: BoardDoc, selection: ClipSelection): BoardCl
       seed: item.seed,
       assetId: item.assetId,
       asset: item.assetId === null ? null : assetInput(board, item.assetId),
+      // The mode and the length, and the target as an *index* — `ClipTimer`.
+      // `itemAt` is the same map the pins are resolved through, so a timer
+      // lighting something that stayed behind loses the pointer here rather
+      // than carrying an id that means nothing on the far board.
+      timer:
+        item.timer === null
+          ? null
+          : {
+              mode: item.timer.mode,
+              runsFor: item.timer.runsFor,
+              lights: item.timer.lights === null ? null : (itemAt.get(item.timer.lights) ?? null),
+            },
       style: { ...item.style },
       text: textOf(board.items.get(item.id)),
       strokes: strokesOf(board.items.get(item.id)),
@@ -336,6 +375,14 @@ export function pasteClip(
       item.set("z", z);
       item.set("seed", clipped.seed);
       item.set("assetId", clipped.assetId);
+      // The mode and the length now; `lights` in the pass below, because the
+      // item it points at may not have been built yet. `writeNewTimer` is also
+      // what raises `meta.schemaVersion` — a pasted timer is as much a first
+      // timer as one somebody put up, and this is the second of the two places
+      // an item map is written.
+      if (clipped.type === "timer" && clipped.timer !== null) {
+        writeNewTimer(board, item, { mode: clipped.timer.mode, runsFor: clipped.timer.runsFor });
+      }
       item.set("text", new Y.Text(clipped.text));
       const style = new Y.Map<unknown>();
       for (const [key, value] of Object.entries(clipped.style)) style.set(key, value);
@@ -380,6 +427,20 @@ export function pasteClip(
 
       itemIds.push(id);
     }
+
+    // A second pass, because a timer may light an item later in the clip than
+    // itself and an id cannot be written before it has been minted. Dropped when
+    // the target was not copied, or was refused by the guard above — the same
+    // all-or-nothing a string whose pin did not come gets, and the reason
+    // `ClipTimer.lights` is an index rather than an id.
+    clip.items.forEach((clipped, index) => {
+      const lights = clipped.timer?.lights;
+      if (lights === undefined || lights === null) return;
+      const id = itemIds[index];
+      const target = itemIds[lights];
+      if (id === undefined || id === null || target === undefined || target === null) return;
+      board.items.get(id)?.set("lights", target);
+    });
 
     const pinIds: (string | null)[] = [];
     const freePins: string[] = [];

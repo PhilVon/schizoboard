@@ -48,6 +48,7 @@ items: {
   [itemId]: Y.Map {
     type, x, y, rot, w, h, z, seed,
     assetId, source,
+    mode, runsFor, runFrom, banked, lights,   // timer only
     text:    Y.Text,
     style:   Y.Map,
     strokes: Y.Map<strokeId, Y.Map>,
@@ -58,7 +59,7 @@ items: {
 
 | Field | CRDT type | Rationale |
 |---|---|---|
-| `type` | plain string | `'polaroid' \| 'note' \| 'scrap' \| 'card'`. Immutable after creation. Two of the four are never written: a scrap is a `note` with no text in it, and `card` was struck as an archetype on Q-179. Both stay accepted, because `readItem` drops an item whose type it does not know. |
+| `type` | plain string | `'polaroid' \| 'note' \| 'scrap' \| 'card' \| 'timer'`. Immutable after creation. Two of the first four are never written: a scrap is a `note` with no text in it, and `card` was struck as an archetype on Q-179. Both stay accepted, because `readItem` drops an item whose type it does not know. `timer` is the fifth and the one that cost a schema version — D-73, and §12.4. |
 | `x`, `y` | plain number | Board coordinates of the item's **centre**. LWW is exactly right — two concurrent drags must resolve to one of them, never a midpoint. |
 | `rot` | plain number | Authored rotation in radians. The physics swing is a **local visual offset** and is never stored here. |
 | `w`, `h` | plain number | Intrinsic size in board units. **Present even when the asset is missing**, so layout never reflows when bytes arrive. |
@@ -69,7 +70,14 @@ items: {
 | `text` | **`Y.Text`** | Note body or polaroid caption. Character-level concurrent editing. |
 | `style` | **`Y.Map`** | `paperStock`, `tint`, `tapeStyle`, `fontFamily`, `torn` — the five `lib/style.ts` defines and `setItemStyle` can write. A `Y.Map` so two people adjusting different properties don't clobber each other. This row also listed `fontSize` and `agingEnabled` until a re-survey found neither had ever existed: no reader, no writer, and nothing in DESIGN asking for a per-item text size or a per-item ageing switch. They are struck rather than left as a promise. |
 | `strokes` | **`Y.Map`** | Nested deliberately — see below. |
+| `mode` | plain string | **`timer` only.** `'countdown' \| 'stopwatch'`, and absent means `clock` — the `sourceAbout` convention, so a key is never written to state the default. |
+| `runsFor` | plain number | **`timer` only.** How long a countdown runs for, in **milliseconds**. Named away from `AssetFields.duration`, which is seconds off a container header: one word, one unit. |
+| `runFrom` | plain number \| absent | **`timer` only.** Epoch ms when the current run began. **Absence is the paused state**, so there is no second flag able to contradict the first and no way to store "running" with no start. |
+| `banked` | plain number | **`timer` only.** Milliseconds already on the clock before this run. Named `banked` and not `elapsed` because `elapsed` reads as the total and is not: `elapsed(now) = banked + (runFrom === null ? 0 : max(0, now - runFrom))`. |
+| `lights` | plain string \| absent | **`timer` only.** The item flashed amber on expiry. May dangle — §8.1, never repaired on read. |
 | `createdBy`, `createdAt` | plain | Provenance and tie-breaking. |
+
+**None of the five timer fields is a CRDT type, and that is §1's rule rather than an omission.** Two people setting a countdown to five minutes and to ten must land on one of the two, never on a merged seven and a half. **Nothing is written per second**: six writes over a timer's whole life, all of them user actions, and an expiry writes *nothing at all* — an expired countdown stays expired by arithmetic, so there is no fired flag to converge and no race to set it. `lib\timer.ts` holds the arithmetic and `crdt\ops\timers.ts` the six writes.
 
 **`crop` was struck (T-240, Q-190).** It was here from the beginning as `{sx, sy, sw, sh}` and nothing ever wrote one: `createItems` set it to `null`, the clipboard round-tripped it faithfully, `readItem` validated it — and `state/scene.ts`'s `ItemCold`, the only item record a painter reads, never carried the field at all. So it was inert from the document to the screen rather than merely unproduced, and §3.4 of DESIGN has never asked for a cropping gesture. It is struck rather than reserved because nothing is lost by striking it: a `crop` key left on an item by an older build is simply ignored on read, which is not true of an unknown `type` (see the row above — that is why `card` had to stay). The photograph a polaroid frame trims to fit is a different thing entirely and is not stored: it is `object-fit: cover` at draw time (`render/items/items.css`).
 
@@ -531,6 +539,20 @@ A `packId` is 128 bits naming *the file*, minted when a pack is first written an
 **Additive migration is still the policy**, which is what makes this the conservative answer rather than the obvious one: a version-2 board is usually perfectly editable by a version-1 build. It is refused anyway because editing around an item you cannot see is a mistake nothing announces — not to the person making it, and not to the person whose item it was.
 
 **A pack from a newer build is no longer refused at the door, and the reason it used to be is gone** (T-356). Opening one used to *replace* the board in this window — it wrote the incoming snapshot over the only document there was — so a future board had to be turned away before that line, because past it there was nothing to go back to. Nothing is written over now: the board opens in its own file, this window seals it exactly as it seals one a peer raised mid-session, and the board you were on is still in its own file. So the check that has to happen is the one at boot, which was always there. Rust still deliberately does not judge `manifest.schemaVersion` (`bundle.rs`), on the standing that migration is the frontend's.
+
+### 12.4 The version a build understands, and the version a board needs
+
+**Two constants, and the split is what makes §12.3 usable at all** (D-73, T-392). `SCHEMA_VERSION` is what this build understands; `SCHEMA_BASELINE` is what a board with nothing new on it actually needs.
+
+`initialiseBoard` writes `meta.schemaVersion` **only when the key is absent**, so raising a single constant would have left every board already in existence at its old version — an older peer would never be sealed and the silent drop would happen anyway, on every board but the ones made after the release. Meanwhile it *would* have sealed an older peer on every new board, for a feature nobody on it had used.
+
+So: **a new board is stamped with the baseline**, and the version is raised to `SCHEMA_VERSION` by the first thing that needs it, **in the same transaction that writes that thing**. The seal and its cause therefore reach a peer in one update; there is no window in which a peer holds an item it cannot read and does not know it. `noteSchemaNeeds` is a no-op once the board says as much or more, so the first timer raises the version and the second puts nothing on the wire.
+
+A board this build makes and never puts a timer on stays fully shared with 1.0.2, and its pack says version 1 — because `packSpec` reads the *board's* version, not the build's.
+
+**Raise the baseline only for a change an older build cannot survive reading — never for one it merely does not use.**
+
+**The keep-set half of §12.3 does not apply to every future type.** It applies to every one that carries bytes, which was all of them when §12.3 was written. A timer holds no `assetId`, so it contributes nothing to the keep-set whether it is read or not and there is nothing of its own for a sweep to reclaim. What is left for it is the invisibility, which is enough on its own: an older build that cannot see an item will happily edit around it, and the seal is what stops it writing at all.
 
 ---
 

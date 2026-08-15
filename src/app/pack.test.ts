@@ -17,7 +17,7 @@ import { HOME_DELAY_MS, homeBoard, Pack, packSpec } from "@/app/pack";
 import { ASSET_SWEEP_DELAY_MS } from "@/app/assetgc";
 import { boardTitle, initialiseBoard, openBoardDoc, type BoardDoc } from "@/crdt/doc";
 import { createItems } from "@/crdt/ops";
-import { SCHEMA_VERSION } from "@/crdt/schema";
+import { SCHEMA_BASELINE } from "@/crdt/schema";
 import type { BoardCard, BundleSpec, BundleWritten, Platform } from "@/platform/types";
 
 const PHOTO = "a".repeat(64);
@@ -85,7 +85,11 @@ describe("the spec every writer of a pack builds", () => {
 
     const spec = packSpec(doc);
 
-    expect(spec.schemaVersion).toBe(SCHEMA_VERSION);
+    // The *board's* version and not the build's, which since D-73 are two
+    // different numbers: a pack of a board with no timer on it says 1, so the
+    // bundle somebody hands over opens on 1.0.2. `packSpec` was already reading
+    // `boardSchemaVersion`, so this is the split arriving rather than a change.
+    expect(spec.schemaVersion).toBe(SCHEMA_BASELINE);
     expect(spec.title).toBe("Case one");
     expect([...spec.assets].sort()).toEqual([PHOTO, OTHER].sort());
   });

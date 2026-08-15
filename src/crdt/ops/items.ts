@@ -13,6 +13,7 @@ import { freshId, mutate, type BoardDoc } from "@/crdt/doc";
 import { Origin } from "@/crdt/origins";
 import { boardToLocal, localToBoard, pinsOfItems, removePinsFromStrings } from "@/crdt/ops/cascade";
 import { buildPin, DEFAULT_PIN_INSET } from "@/crdt/ops/pins";
+import { writeNewTimer, type TimerInput } from "@/crdt/ops/timers";
 import { MIN_ITEM_SIZE, readItem, readPin, type ItemType, type YMap } from "@/crdt/schema";
 import type { SourceAbout } from "@/lib/objects";
 import { keyAbove } from "@/crdt/zindex";
@@ -70,6 +71,16 @@ export interface CreateItemInput {
   rot?: number;
   /** DESIGN section 3.1 — everything created by paste gets one pin. */
   withPin?: boolean;
+  /**
+   * How a `timer` arrives set — D-73, and ignored on every other type.
+   *
+   * Only the three a *new* timer can meaningfully have. `runFrom` and `banked`
+   * are not here and must not be: a timer is put on the wall stopped, and a
+   * creation op that could hand one a run already in progress would be the one
+   * way to get a document saying "running since" an instant nobody pressed
+   * anything at.
+   */
+  timer?: TimerInput;
 }
 
 /** DATA-MODEL section 10. `addedBy` and `addedAt` are filled in here. */
@@ -322,6 +333,7 @@ export function createItems(
       // source at all bar a handful, so writing it would be a key saying the
       // default on nearly every object on the board.
       if (input.sourceAbout === "media") item.set("sourceAbout", "media");
+      if (input.type === "timer") writeNewTimer(board, item, input.timer);
       // Y.Text and Y.Map because two people can type into the same note, and
       // adjust different style properties, without clobbering each other.
       item.set("text", new Y.Text(input.text ?? ""));
