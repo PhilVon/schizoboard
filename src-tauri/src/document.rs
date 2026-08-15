@@ -1250,7 +1250,7 @@ fn decide(
         // dropped and the reader got the caption and a blank space.
         let figures = images
             .iter()
-            .filter(|placed| page_area > 0.0 && placed.area() / page_area >= FIGURE_COVERAGE)
+            .filter(|placed| covers(doc, placed, page_area) >= FIGURE_COVERAGE)
             .take(MAX_FIGURES_PER_PAGE)
             .map(|placed| Figure {
                 x: placed.x,
@@ -1285,23 +1285,41 @@ fn decide(
         }
     }
 
-    // The largest thing drawn on the page, which is the only candidate for
-    // being the page.
+    // The largest thing actually drawn on the page, which is the only candidate
+    // for being the page. Largest by what it *shows*, not by the rectangle it
+    // was placed in — a page-sized image behind a mask that hides it covers
+    // nothing, and picking it because of its box is how a printed board came
+    // back as a solid black sheet (T-403).
     let biggest = images
-        .into_iter()
-        .max_by(|a, b| a.area().total_cmp(&b.area()));
+        .iter()
+        .max_by(|a, b| covers(doc, a, page_area).total_cmp(&covers(doc, b, page_area)));
 
     let Some(candidate) = biggest else {
         return nothing(undecodable);
     };
-    if page_area <= 0.0 || candidate.area() / page_area < SCAN_COVERAGE {
+    if covers(doc, candidate, page_area) < SCAN_COVERAGE {
+        // A page-sized image that shows nothing is a different statement from a
+        // page with a logo on it, and Q-365 says it has to make it. What is
+        // really drawn on a page like that is vector artwork — D-46 section 4
+        // refuses a page renderer, so it can never be shown — and calling it
+        // blank is AC-682's own failure: a person looking at the sheet can see
+        // it is not.
+        if images
+            .iter()
+            .any(|placed| page_area > 0.0 && placed.area() / page_area >= SCAN_COVERAGE)
+        {
+            return PageContent::Unsupported(
+                "the page is drawn as artwork this build does not render, and the image that covers it is hidden by its own mask"
+                    .into(),
+            );
+        }
         // Something is drawn here, but it is not the page — a logo, a rule, a
         // signature block. There is no readable text either, so the page is
         // blank in every sense that matters to a reader.
         return nothing(undecodable);
     }
 
-    match candidate.source {
+    match &candidate.source {
         Source::Inline => PageContent::Unsupported(
             "the page is an image written inline in its content stream, which this build does not lift"
                 .into(),
@@ -1311,6 +1329,65 @@ fn decide(
             Err(why) => PageContent::Unsupported(why),
         },
     }
+}
+
+/// How much of the page an image *shows*: the fraction of the sheet it was
+/// placed over, times the fraction of its own pixels its soft mask lets
+/// through.
+///
+/// A `/SMask` is an alpha channel carried as a second image, and a browser
+/// printing anything with transparency in it emits one per compositing layer —
+/// page-sized, black, and masked out to nothing. This application's print of
+/// its own overlay canvas is exactly that, and it is why a printed board filed
+/// back on the board opened as a solid black page (T-403): the mask decides
+/// whether the image is *there*, and everything downstream of the choice —
+/// `SCAN_COVERAGE`, `FIGURE_COVERAGE`, [`lift`] — only ever looked at the box
+/// it was drawn in.
+///
+/// The mask is read as a count rather than as a mean: what is being asked is
+/// how much of the image reaches the page at all, and a scan behind an even
+/// half-strength veil is still a whole scan. That also keeps the reading
+/// robust at 1 bit per component, where the samples are 0 or 255 and a mean
+/// would say the same thing more slowly.
+///
+/// Conservative wherever it cannot tell — no mask, a mask it cannot
+/// decompress, or a `/Decode` array that may invert the samples all count as
+/// fully visible. Being wrong the other way means a page silently refusing to
+/// show a scan that is really on it.
+fn covers(doc: &Document, placed: &Placement<'_>, page_area: f32) -> f32 {
+    if page_area <= 0.0 {
+        return 0.0;
+    }
+    placed.area() / page_area * visible(doc, placed)
+}
+
+/// The fraction of an image's own samples its soft mask lets through — see
+/// [`covers`], which is the only caller.
+fn visible(doc: &Document, placed: &Placement<'_>) -> f32 {
+    let Source::XObject(stream) = &placed.source else {
+        return 1.0;
+    };
+    let Ok(object) = stream.dict.get_deref(b"SMask", doc) else {
+        return 1.0;
+    };
+    let Ok(mask) = object.as_stream() else {
+        return 1.0;
+    };
+    if mask.dict.get_deref(b"Decode", doc).is_ok() {
+        return 1.0;
+    }
+    let Ok(samples) = mask.decompressed_content_with_limit(MAX_IMAGE_SAMPLE_BYTES) else {
+        return 1.0;
+    };
+    if samples.is_empty() {
+        return 1.0;
+    }
+    // Zero is zero at 1, 2, 4 and 8 bits per component alike, and a row padded
+    // to a byte boundary pads with zero, so counting bytes needs no stride and
+    // no depth. A byte holding eight bits of a bilevel mask is one sample here
+    // and eight in the file, which rounds *towards* visible — the safe side.
+    let lit = samples.iter().filter(|&&sample| sample != 0).count();
+    lit as f32 / samples.len() as f32
 }
 
 // ---------------------------------------------------------------------------
@@ -3051,6 +3128,137 @@ mod tests {
             ),
             other => panic!("a fax scan must not read as {other:?}"),
         }
+    }
+
+    /// A full-page image behind a soft mask that lets `lit` of its sixteen
+    /// pixels through — which is what a browser puts in a PDF for a
+    /// transparency layer, and what this application's own print puts there for
+    /// the overlay canvas.
+    fn masked_out_page(builder: &mut Builder, lit: usize) -> Dictionary {
+        let mut samples = vec![0u8; 16];
+        for sample in samples.iter_mut().take(lit) {
+            *sample = 255;
+        }
+        let mut mask = Stream::new(
+            dictionary! {
+                "Type" => "XObject",
+                "Subtype" => "Image",
+                "Width" => 4,
+                "Height" => 4,
+                "ColorSpace" => "DeviceGray",
+                "BitsPerComponent" => 8,
+            },
+            samples,
+        );
+        mask.compress().expect("mask should compress");
+        let mask = builder.doc.add_object(mask);
+        let mut image = Stream::new(
+            dictionary! {
+                "Type" => "XObject",
+                "Subtype" => "Image",
+                "Width" => 4,
+                "Height" => 4,
+                "ColorSpace" => "DeviceRGB",
+                "BitsPerComponent" => 8,
+                "SMask" => mask,
+            },
+            // Black, which is what it paints if the mask is ignored.
+            vec![0u8; 48],
+        );
+        image.compress().expect("image should compress");
+        let image = builder.doc.add_object(image);
+        scanned_page(builder, image, vec![])
+    }
+
+    #[test]
+    fn a_page_covered_by_an_image_its_mask_hides_says_so_rather_than_lifting_it() {
+        // T-403, and the exact shape of it: our own printed board read back as
+        // a solid black page. The print emits the board's empty overlay canvas
+        // as a page-sized image of black behind a mask that lets 350 of its
+        // 1,296,000 samples through, the biggest-image rule picked it because
+        // of the box it was drawn in, and the lift painted the samples. The
+        // fixture is that at four by four — one lit pixel in sixteen, which is
+        // six percent and two orders of magnitude *more* generous than the real
+        // file.
+        let mut builder = Builder::new();
+        let page = masked_out_page(&mut builder, 1);
+        builder.page(page);
+
+        let reading = read_pdf_bytes(&builder.finish()).expect("fixture should read");
+        match &reading.pages[0].content {
+            // Q-365: not `Empty`. A page with two clocks drawn on it in vector
+            // is not blank, and D-46 refuses the renderer that could show them,
+            // so the one honest thing left is to say which of those it is.
+            PageContent::Unsupported(why) => assert!(
+                why.contains("does not render") && why.contains("mask"),
+                "the reason should name both halves: {why}"
+            ),
+            other => panic!("a page whose only image is masked away must not read as {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_scan_behind_a_mask_that_hides_nothing_is_still_a_scan() {
+        // The other side of it, and the reason the test above is not simply
+        // "an image with an `/SMask` is refused": a soft mask is ordinary, and
+        // one that lets the picture through hides nothing at all.
+        let mut builder = Builder::new();
+        let page = masked_out_page(&mut builder, 16);
+        builder.page(page);
+
+        let reading = read_pdf_bytes(&builder.finish()).expect("fixture should read");
+        assert!(
+            matches!(reading.pages[0].content, PageContent::Image(_)),
+            "an opaque mask must not cost the page its scan: {:?}",
+            reading.pages[0].content
+        );
+    }
+
+    #[test]
+    fn a_figure_its_mask_hides_is_not_carried_onto_our_paper() {
+        // The same reading one level down. A figure that paints nothing on the
+        // page it came from must not become a box on our sheet — T-329 lifts
+        // figures precisely so a caption is not left over a blank space, and an
+        // invented picture is the same error the other way up.
+        let mut builder = Builder::new();
+        let font = builder.courier();
+        let hidden = masked_out_page(&mut builder, 0);
+        let Ok(Object::Dictionary(resources)) = hidden.get(b"Resources").cloned() else {
+            panic!("the fixture page should carry its resources");
+        };
+        let content = builder.stream(
+            Dictionary::new(),
+            ops(vec![
+                Operation::new("q", vec![]),
+                Operation::new(
+                    "cm",
+                    vec![612.into(), 0.into(), 0.into(), 792.into(), 0.into(), 0.into()],
+                ),
+                Operation::new("Do", vec![Object::Name(b"Im0".to_vec())]),
+                Operation::new("Q", vec![]),
+                Operation::new("BT", vec![]),
+                Operation::new("Tf", vec![Object::Name(b"F1".to_vec()), 12.into()]),
+                Operation::new("Td", vec![100.into(), 700.into()]),
+                tj("A page with something written on it"),
+                Operation::new("ET", vec![]),
+            ]),
+        );
+        let mut resources = resources;
+        resources.set("Font", dictionary! { "F1" => font });
+        builder.page(dictionary! {
+            "Contents" => content,
+            "Resources" => resources,
+        });
+
+        let reading = read_pdf_bytes(&builder.finish()).expect("fixture should read");
+        let PageContent::Text { runs, figures } = &reading.pages[0].content else {
+            panic!("expected a text page, got {:?}", reading.pages[0].content);
+        };
+        assert!(!runs.is_empty(), "the line should still be read");
+        assert!(
+            figures.is_empty(),
+            "a figure hidden by its own mask must not be carried: {figures:?}"
+        );
     }
 
     #[test]
