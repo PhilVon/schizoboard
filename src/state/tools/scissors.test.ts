@@ -135,6 +135,7 @@ beforeEach(() => {
       setItemStyle: () => writes.push({ kind: "other" }),
       bringToFront: () => writes.push({ kind: "other" }),
       sendToBack: () => writes.push({ kind: "other" }),
+      createTimer: () => {},
       createNote: () => writes.push({ kind: "other" }),
       createPin: () => writes.push({ kind: "other" }),
       placePin: () => writes.push({ kind: "other" }),

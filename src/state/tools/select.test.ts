@@ -319,6 +319,7 @@ beforeEach(() => {
         writes.push({ kind: "unpin", ids: [...ids], settle: [...(settle ?? [])] }),
       // The select tool never creates anything; a sheet arrives from the note
       // tool or from paste, and a pin from the pin tool.
+      createTimer: () => {},
       createNote: () => {
         throw new Error("select must not create items");
       },

@@ -875,9 +875,52 @@ export function boardMenuRows(
      */
     tidy: (() => void) | null;
   } | null,
+  /**
+   * Put a clock on the wall at the point that was right-clicked — T-396, D-73.
+   *
+   * **A closure and not a pair of coordinates**, which is the one decision in
+   * this parameter. The obvious shape was `boardX`/`boardY` beside the row, the
+   * way `itemMenuRows` already takes them — but that function needs the point to
+   * *answer a question about the item under it* (`itemLocal`), and this one has
+   * no question to answer. It would be carrying board coordinates through a menu
+   * module purely to hand them back to the caller that measured them, and the
+   * caller already holds them.
+   *
+   * `null` on a read-only board, which is the standing every other verb here is
+   * on: absent rather than disabled. A row that cannot write is a question
+   * nothing on screen can answer.
+   */
+  putUpTimer: (() => void) | null,
 ): MenuEntry[] {
   const rows = stringMenuRows(scene, write, strings);
-  const below: MenuEntry[] = [
+  const below: MenuEntry[] = [];
+  if (putUpTimer !== null) {
+    below.push({
+      /**
+       * **A menu row and not an eighth rail tool**, which is the whole shape of
+       * this task.
+       *
+       * The drawer is the seven letters of DESIGN section 3.9 and D-44 settled
+       * it as those seven; the comment in `toolbar.ts` records the `Shift`+`E`
+       * smudge being refused on exactly this ground. An eighth tool costs a
+       * letter, a `Tool` implementation, a hint line, a one-shot-or-sticky
+       * decision and an amendment to section 3.9 — for a verb somebody does
+       * twice a session.
+       *
+       * It belongs here for a positive reason as well as that one. A right-click
+       * on bare cork asks *what is here*, and the honest answer on bare cork is
+       * the board — which is why the invite and the ageing switch live here.
+       * Putting something *on* the board is the same kind of answer.
+       *
+       * First, and above the settings and the file rows: it is the only row on
+       * this menu that makes an object, and the rest are preferences and files.
+       */
+      label: "Put up a timer",
+      divided: rows.length > 0,
+      run: putUpTimer,
+    });
+  }
+  below.push(
     /**
      * DESIGN section 4.7's "ageing can be turned off entirely for anyone who
      * finds it precious", and a right-click on bare cork is the only gesture on
@@ -895,10 +938,15 @@ export function boardMenuRows(
      */
     {
       label: ageing.on ? "Stop the board ageing" : "Let the board age",
-      divided: rows.length > 0,
+      // Divided from whatever is above it, whichever that turns out to be: the
+      // string rows when there are some, the timer row when there is one, and
+      // nothing when the menu opens with this at the top. It is a *preference*
+      // and the two things it can follow are both edits, so the rule is the same
+      // either way.
+      divided: rows.length > 0 || putUpTimer !== null,
       run: () => ageing.set(!ageing.on),
     },
-  ];
+  );
   if (invite.link !== null) {
     below.push({
       /**

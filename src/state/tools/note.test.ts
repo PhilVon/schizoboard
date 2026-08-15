@@ -73,6 +73,7 @@ beforeEach(() => {
     movePins: () => {},
     commitStrokes: () => {},
     eraseStrokes: () => {},
+      createTimer: () => {},
       createNote: (x, y) => created.push({ x, y }),
     },
   };

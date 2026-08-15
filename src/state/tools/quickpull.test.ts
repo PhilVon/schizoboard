@@ -118,6 +118,7 @@ beforeEach(() => {
       setItemStyle: () => {},
       bringToFront: () => {},
       sendToBack: () => {},
+      createTimer: () => {},
       createNote: (x, y) => writes.push({ kind: "note", x, y }),
       createPin: (parent) => writes.push({ kind: "pin", parent }),
       placePin: () => {},

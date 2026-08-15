@@ -223,6 +223,7 @@ beforeEach(() => {
       setItemStyle: () => {},
       bringToFront: () => {},
       sendToBack: () => {},
+      createTimer: () => {},
       createNote: () => {},
       createPin: () => {},
       placePin: () => {},
