@@ -1925,8 +1925,11 @@ class TimerView implements View {
     this.dial.append(this.digits, this.caption);
     // The glass last inside the case, over the dial: a reflection is on top of
     // what it reflects. `.timer-lamp` is the amber wash an expired countdown
-    // wears, under the glass because the bulb is inside the machine.
-    this.body.append(div("timer-lamp"), this.dial, div("timer-glass"));
+    // wears, under the glass because the bulb is inside the machine — and *over*
+    // the dial, which is the whole of T-402: the dial's background is opaque, so
+    // a lamp painted before it lit nothing but the ring of bezel outside it and
+    // the face of a clock that had gone off stayed cream.
+    this.body.append(this.dial, div("timer-lamp"), div("timer-glass"));
     // Tape over the case, where a strip put on afterwards would be.
     this.el.append(this.shadow.el, this.body, ...this.tape.nodes);
   }

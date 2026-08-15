@@ -4465,13 +4465,24 @@ textarea.item-field::-webkit-scrollbar {
 }
 
 /*
- * The bulb, behind the dial and dark until the countdown runs out.
+ * The bulb, over the dial and dark until the countdown runs out.
  *
  * Under the glass because it is inside the machine, and painted as a wash over
  * the whole case rather than as a lamp in a corner: what has gone off is the
  * clock, and a board glanced at from across the room should show *which object*
  * rather than a detail on it. The same amber the flash uses, for the reason
  * DESIGN 7.6 gives — the board pointing at one item means one thing.
+ *
+ * Over the dial and not behind it, which is T-402 and is a correction. A bulb
+ * inside a machine is behind the printed card, and that is what this was: the
+ * lamp appended before `.timer-dial`. But the dial's background is opaque
+ * `--timer-dial`, so it painted the wash straight out again and the only amber
+ * left was the ring of bezel outside the dial — where the case's own dark ramp
+ * already is. The face of a clock that had gone off read 246,241,230, the dial's
+ * own cream. Physical truth lost to the thing the object is for: what the lamp
+ * says is *this one went off*, and it has to say it on the part of the clock a
+ * person looks at. It washes the figures with it, which is exactly why the rule
+ * below puts the zero in the lamp's own ink.
  *
  * No animation, and that is deliberate rather than missing. Nothing on this
  * board animates outside the frame loop (ARCHITECTURE section 3), and a pulsing

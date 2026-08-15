@@ -139,6 +139,23 @@ describe("the clock's face", () => {
     expect(faceOf().classList.contains("is-expired")).toBe(true);
   });
 
+  it("hangs the lamp over the dial and under the glass", () => {
+    // T-402, and the reason it is asserted on the *order* rather than on a
+    // colour: `.timer-dial`'s background is opaque, so a lamp appended before it
+    // is painted and then painted straight out again. Nothing throws, no class
+    // is missing, `is-expired` still reaches the export — the clock simply never
+    // lights, and the only amber left is the ring of bezel outside the dial.
+    //
+    // Under the glass still, because the reflection is on top of what it
+    // reflects and a bulb that outshone it would be a lamp on the window.
+    put("t", { mode: "countdown", runsFor: 1, runFrom: T0 });
+    frame();
+    const inside = [...faceOf().querySelector(".timer-body")!.children].map(
+      (child) => child.className,
+    );
+    expect(inside).toEqual(["timer-dial", "timer-lamp", "timer-glass"]);
+  });
+
   it("wears its mode, so the stylesheet can dress the three differently", () => {
     put("t", { mode: "stopwatch", runFrom: T0 });
     frame();
