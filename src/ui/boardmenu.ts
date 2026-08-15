@@ -33,6 +33,7 @@ import { STRING_MATERIALS } from "@/lib/material";
 import { fileNoun, isCaseObject, type AssetKind } from "@/lib/objects";
 import { STRING_COLORS, STRING_THICKNESSES } from "@/lib/palette";
 import { PAPER_STOCKS, STOCK_BASE, STOCK_NAMES, type ItemStyle } from "@/lib/style";
+import { TIMER_MODES, type TimerFields, type TimerMode } from "@/lib/timer";
 import type { BoardCard } from "@/platform/types";
 import type { Scene } from "@/state/scene";
 import { itemLocal, settleOnPin, settleOnUnpin } from "@/state/tools/frame";
@@ -263,6 +264,162 @@ function appearanceRows(
   };
   return writingOnly ? [writing] : [paper, writing];
 }
+
+/**
+ * The lengths a countdown is offered, in minutes — T-397.
+ *
+ * A picker of presets and not a field, which is the same answer the *Weight*
+ * strip gives for a string's thickness: a strip of chips is UI this menu already
+ * has, and a number entry is a whole input, a caret, a validation story and a
+ * keyboard trap on a surface whose entire argument is that it has no forms on
+ * it. `runsFor` takes any number, so somebody wanting seven minutes is a later
+ * task rather than a door closed.
+ *
+ * Seven of them, ending at an hour. The short end is a kettle and the long end
+ * is an afternoon's work; past an hour a countdown stops being a thing you watch
+ * and starts being a calendar, which DESIGN section 1.4 lists as a non-goal.
+ */
+const TIMER_PRESETS: readonly { readonly minutes: number; readonly label: string }[] = [
+  { minutes: 1, label: "1 min" },
+  { minutes: 3, label: "3 min" },
+  { minutes: 5, label: "5 min" },
+  { minutes: 10, label: "10 min" },
+  { minutes: 15, label: "15 min" },
+  { minutes: 30, label: "30 min" },
+  { minutes: 60, label: "1 hour" },
+];
+
+/** What each mode is called on the strip. The nouns rather than the ids, which
+ *  are what `crdt/` stores and not what anybody would read. */
+const TIMER_MODE_NAMES: Readonly<Record<TimerMode, string>> = {
+  clock: "Clock",
+  countdown: "Countdown",
+  stopwatch: "Stopwatch",
+};
+
+/**
+ * How a timer is worked — T-397, D-73.
+ *
+ * These replace the paper and writing strips rather than joining them, and that
+ * is a correction as much as an addition: a timer is not a case object, so it
+ * fell through `isCaseObject` and was being offered a paper stock and a
+ * handwriting face. It is a moulded machine with a printed dial and it has
+ * neither.
+ *
+ * ## The mode strip drops the *As it was* chip
+ *
+ * Every other strip in this file leads with it, and this one must not — D-73
+ * rule 3. That chip exists because `style` is a **veto over the seed**: its
+ * absence is meaningful, and without a way back an item could be styled and
+ * never put right. A mode has no seed behind it. Absent *means* `clock`, and
+ * `clock` is itself one of the three real choices, so a strip carrying both
+ * would show two chips meaning one thing — and picking either would mark both.
+ *
+ * ## The length strip is absent on a clock and on a stopwatch
+ *
+ * Not present and greyed, which is this file's standing rule for a row that does
+ * not apply. Neither of those two has anything to run out of, and a strip of
+ * durations under a stopwatch would be a question with no answer rather than a
+ * question with a disabled answer.
+ *
+ * ## The whole selection, except the pointer
+ *
+ * The four working verbs take `live`, because working three timers at once is
+ * one press and one undo entry, and `crdt/ops/timers.ts` skips whatever in the
+ * list is not a timer. *What it lights* takes `clicked` alone, because it is a
+ * pointer rather than a setting: four timers aimed at one object is a thing
+ * somebody could want, and one timer aimed at four is not.
+ */
+function timerRows(
+  write: BoardWriter,
+  live: readonly string[],
+  clicked: string,
+  timer: TimerFields,
+): MenuEntry[] {
+  const rows: MenuEntry[] = [];
+
+  rows.push({
+    label: "Mode",
+    divided: true,
+    choices: TIMER_MODES.map(
+      (mode): MenuChoice => ({
+        label: TIMER_MODE_NAMES[mode],
+        // The clicked timer's own mode decides what is marked, like every other
+        // strip here: a mixed selection has no single answer and inventing one
+        // would make the strip blank the moment two timers differed.
+        current: timer.mode === mode,
+        run: () => write.setTimerMode(live, mode),
+      }),
+    ),
+  });
+
+  if (timer.mode === "countdown") {
+    rows.push({
+      label: "Length",
+      choices: TIMER_PRESETS.map(
+        ({ minutes, label }): MenuChoice => ({
+          label,
+          current: timer.runsFor === minutes * 60_000,
+          run: () => write.setTimerLength(live, minutes * 60_000),
+        }),
+      ),
+    });
+  }
+
+  /**
+   * Back to nothing, and only when there is something to go back from.
+   *
+   * `runFrom` or `banked`, which between them are the whole of "this has been
+   * run" — a timer that has never been started has neither, and a *Reset* row on
+   * one would be a verb that does nothing dressed as a verb that does something.
+   *
+   * Resetting is not un-choosing: the mode and the length stay, so a countdown
+   * you reset is the same countdown ready to run again, which is what the button
+   * on a kitchen timer does.
+   */
+  if (timer.runFrom !== null || timer.banked > 0) {
+    rows.push({ label: "Reset", divided: true, run: () => write.resetTimer(live) });
+  }
+
+  /**
+   * What it lights when it goes off — the tier-one minimum, honestly drawn.
+   *
+   * The row appears only when the selection is **exactly two items**, and points
+   * the clicked one at the other. That is a narrow gesture and it is the narrow
+   * one on purpose: the alternative is a submenu listing every item on the board
+   * by a name most of them do not have, which is a picker over an unnamed set —
+   * the thing DESIGN section 2.5 refuses when it refuses a result list.
+   *
+   * Two selected items is also how somebody would already say "this one and that
+   * one" on this board, so the gesture is one they have: select the timer and
+   * the thing, right-click the timer, point it.
+   *
+   * A timer may not light *itself*, which `setTimerLights` enforces at the
+   * writer — it is already the thing that went off and is already saying so.
+   */
+  const other = live.length === 2 ? live.find((id) => id !== clicked) : undefined;
+  if (other !== undefined) {
+    rows.push({
+      label: "Light the other one when it goes off",
+      divided: true,
+      run: () => write.setTimerLights(clicked, other),
+    });
+  }
+  if (timer.lights !== null) {
+    rows.push({
+      // The way back, and it is offered whether or not the thing it points at is
+      // still on the board — a dangling pointer is a timer that lights nothing
+      // (DATA-MODEL 8.1), and being unable to clear it because its target was
+      // deleted would be the one state with no way out.
+      label: "Light nothing",
+      divided: other === undefined,
+      run: () => write.setTimerLights(clicked, null),
+    });
+  }
+
+  return rows;
+}
+
 export function itemMenuRows(
   scene: Scene,
   write: BoardWriter,
@@ -380,9 +537,40 @@ export function itemMenuRows(
    * file's standing rule for a row that does not apply — a photograph and a
    * note simply do not have it.
    */
+  /**
+   * How this timer is set, or null for the six kinds of item that are not one —
+   * T-397. Read once, here, because four things below ask about it.
+   */
+  const timer = scene.cold(clicked)?.timer ?? null;
+
   if (open?.can(clicked) === true) {
     const target = clicked;
-    rows.push({ label: "Open", run: () => open.run(target) });
+    rows.push({
+      /**
+       * **One row whose label changes**, which is `Read the transcript`'s
+       * precedent a few lines down and its argument word for word: two rows, one
+       * of which does nothing most of the time, is the greying-out this file
+       * refuses everywhere else.
+       *
+       * It goes through `open` rather than being a row of its own, and that is
+       * the load-bearing half. `Enter` on a selected item and this row are one
+       * verb with two entry points, and `open.can` is the *stated contract* of
+       * which items have it — a second row here would be a second answer to
+       * "what does pressing this thing do", and the pointer and the keyboard
+       * would start disagreeing the first time one of them was changed.
+       *
+       * Absent on a **clock**, and that is `openable`'s doing rather than this
+       * row's: a clock has nothing to start. `open.can` already answers false
+       * for it, so nothing here has to know.
+       */
+      label:
+        timer === null
+          ? "Open"
+          : timer.runFrom !== null
+            ? "Stop the timer"
+            : "Start the timer",
+      run: () => open.run(target),
+    });
   }
 
   /**
@@ -535,7 +723,19 @@ export function itemMenuRows(
    * cursor is the one the menu is about.
    */
   const kind = kindOf?.(clicked) ?? "unknown";
-  if (!isCaseObject(kind)) {
+  if (timer !== null) {
+    /**
+     * A timer takes the working strips **instead of** the appearance ones, and
+     * that half is a correction rather than an addition (T-397).
+     *
+     * A timer has no `assetId`, so `kindOf` answers `unknown`, so it is not a
+     * case object, so it was falling into the branch below and being offered a
+     * paper stock and a handwriting face. It is a moulded machine with a printed
+     * dial: there is no stock to choose and nothing on it is in anybody's hand.
+     * The same sentence T-317 wrote about a folder, one object further along.
+     */
+    rows.push(...timerRows(write, live, clicked, timer));
+  } else if (!isCaseObject(kind)) {
     rows.push(...appearanceRows(scene, write, live, clicked));
   } else if (kind === "document") {
     // The one case object with something to read inside it (T-320). A tape and

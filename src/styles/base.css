@@ -498,6 +498,38 @@ body {
 }
 
 /*
+ * A chip whose value is a word rather than a picture — a timer's mode and its
+ * length (T-397).
+ *
+ * The three marks above are all the same 26-pixel box because a swatch, a bar
+ * and a fibre are all things you look *at*. A word has to be read, and the
+ * words here are between four and nine characters, so this is the one chip that
+ * sizes itself to its content: the box grows and the strip stays a strip.
+ *
+ * Small and letterspaced, which is what stops seven of them reading as a
+ * sentence — a strip of chips is a set of alternatives and the eye has to see
+ * the gaps before it reads the words.
+ */
+.menu-chip:has(.menu-word) {
+  width: auto;
+  padding: 0 7px;
+}
+
+.menu-word {
+  font-size: 11px;
+  font-style: normal;
+  letter-spacing: 0.02em;
+  white-space: nowrap;
+  color: #d6cbbd;
+}
+
+/* The current one reads a shade brighter as well as wearing the ring, because
+   on a word the ring alone is easy to miss between two longer neighbours. */
+.menu-chip.menu-on .menu-word {
+  color: #f2ece2;
+}
+
+/*
  * A sample of what a string is made of — `lib/material.ts`'s three.
  *
  * Sixteen pixels of a horizontal strand, and the job is not accuracy, it is

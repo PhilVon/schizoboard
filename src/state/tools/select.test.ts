@@ -320,6 +320,12 @@ beforeEach(() => {
       // The select tool never creates anything; a sheet arrives from the note
       // tool or from paste, and a pin from the pin tool.
       createTimer: () => {},
+      setTimerMode: () => {},
+      setTimerLength: () => {},
+      startTimer: () => {},
+      pauseTimer: () => {},
+      resetTimer: () => {},
+      setTimerLights: () => {},
       createNote: () => {
         throw new Error("select must not create items");
       },

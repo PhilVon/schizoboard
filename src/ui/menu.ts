@@ -237,9 +237,32 @@ export class ContextMenu {
         // that a fibre is described where the other textures on the board are
         // and not as five inline style properties assembled here.
         mark.className = `menu-fibre menu-fibre-${choice.fibre}`;
-      } else {
+      } else if (choice.weight !== undefined) {
         mark.className = "menu-bar";
-        mark.style.height = `${choice.weight ?? 1}px`;
+        mark.style.height = `${choice.weight}px`;
+      } else {
+        /**
+         * **A chip that says its own name** — T-397, and it is a correction as
+         * much as an addition.
+         *
+         * The three above are chips whose *paint is the value*: which red the
+         * red is, how thick five pixels looks, what yarn looks like next to
+         * wire. All three are things you recognise on sight and cannot picture
+         * from a noun, which is the whole argument for a swatch.
+         *
+         * A timer's mode and its length are not like that. There is no picture
+         * of "countdown" and none of "fifteen minutes" — the word *is* the
+         * value. Before this, a chip with none of the three fell into the
+         * weight branch and was painted as a bar `choice.weight ?? 1` pixels
+         * tall, so a strip of seven durations came out as seven identical
+         * one-pixel lines. Which is what it did in the running app, and is not
+         * something any test would have said.
+         *
+         * The `title` and `aria-label` above already carried the word, so the
+         * screen reader was right the whole time and only the screen was wrong.
+         */
+        mark.className = "menu-word";
+        mark.textContent = choice.label;
       }
       chip.append(mark);
       strip.append(chip);

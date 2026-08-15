@@ -227,6 +227,51 @@ describe("the context menu", () => {
       expect(host.querySelectorAll(".menu-swatch")).toHaveLength(0);
     });
 
+    /**
+     * The fourth way, and it exists because the fallback was wrong — T-397.
+     *
+     * A swatch, a bar and a fibre are all chips whose *paint is the value*:
+     * which red the red is, how thick five pixels looks, what yarn looks like
+     * next to wire. A timer's mode and its length are not like that — there is
+     * no picture of "countdown" and none of "fifteen minutes", so the word is
+     * the value.
+     *
+     * Before this, a chip with none of the three fell into the bar branch and
+     * was painted `choice.weight ?? 1` pixels tall, so a strip of seven
+     * durations came out as **seven identical one-pixel lines**. It rendered, it
+     * passed everything, and it said nothing at all — the exact failure the
+     * fibre test one block up was written about, one branch further down.
+     */
+    it("paints a chip with no mark of its own as its word", () => {
+      menu.openAt(10, 10, [
+        {
+          label: "Length",
+          choices: [
+            { label: "1 min", run: () => {} },
+            { label: "1 hour", current: true, run: () => {} },
+          ],
+        },
+      ]);
+      const marks = [...host.querySelectorAll<HTMLElement>(".menu-chip i")];
+      expect(marks.map((el) => el.className)).toEqual(["menu-word", "menu-word"]);
+      expect(marks.map((el) => el.textContent)).toEqual(["1 min", "1 hour"]);
+      // And not as a hairline, which is what it did.
+      expect(host.querySelectorAll(".menu-bar")).toHaveLength(0);
+    });
+
+    it("still paints a weight as a bar of that thickness", () => {
+      // The branch the word chip was carved out of. A weight of zero is the
+      // interesting one: it is falsy, and a fallback written as `weight ?? 1`
+      // survives it while `weight !== undefined` is what actually separates the
+      // two kinds of chip.
+      menu.openAt(10, 10, [
+        { label: "Weight", choices: [{ label: "3 px", weight: 3, run: () => {} }] },
+      ]);
+      const mark = host.querySelector<HTMLElement>(".menu-chip i")!;
+      expect(mark.className).toBe("menu-bar");
+      expect(mark.style.height).toBe("3px");
+    });
+
     /** A swatch has no text of its own, so the name has to be somewhere a
      *  screen reader can reach it. */
     it("names each chip out loud, and says which one is on", () => {
