@@ -63,6 +63,7 @@ import {
 } from "@/lib/objects";
 import { rotateIn, type Point } from "@/lib/rotate";
 import { valueAt } from "@/lib/seed";
+import type { TimerFace } from "@/lib/timer";
 import { grainPosition, paperGrainUrl, stockBase, stockRuling } from "@/render/items/paper";
 import {
   faceOf,
@@ -231,6 +232,23 @@ export type FirstSight = (itemId: string) => boolean;
 export type PageResolver = (sha256: string) => PageView | null;
 
 /**
+ * What a timer's face says right now — T-395.
+ *
+ * Takes the item id, because unlike a page or an asset view this is a fact about
+ * *this clock* rather than about a file two objects might share. Null for
+ * anything that is not a timer, and for a caller that has no clock behind it.
+ *
+ * A resolver rather than a `now` threaded through `sync`, and the two reasons
+ * are worth separating. The mechanical one is that `sync` has close to three
+ * hundred call sites in this repository and a fourth required argument would
+ * rewrite every one of them. The real one is that the reading is not the
+ * renderer's to compute: it is `lib/timer.ts`'s arithmetic over a wall-clock
+ * instant, and this layer has no business holding a clock — the same reason
+ * `AgeClock` is injected rather than read here.
+ */
+export type ReadingResolver = (itemId: string) => TimerFace | null;
+
+/**
  * Which face an item is showing — `render/facing.ts`, and re-exported here
  * because this layer was its first caller and is where everything still looks
  * for it. It moved when a *pin* learned the same question (T-330) and a
@@ -306,7 +324,7 @@ export const NO_FACTS: AssetFacts = {
 export type AssetLookup = (sha256: string) => AssetFacts;
 
 /**
- * The six faces.
+ * The seven faces.
  *
  * Three of them arrived together (T-267) and share one class, for the reason
  * five paper stocks share `PaperView`: what differs between a folder, a tape and
@@ -318,8 +336,14 @@ export type AssetLookup = (sha256: string) => AssetFacts;
  *
  * `card` is the sixth and the odd one (T-339) — the only face not chosen from a
  * mime. See [`archetypeOf`].
+ *
+ * `timer` is the seventh and is odd in a different way (T-395, D-73): it is the
+ * only face chosen from the item's **type**, because a timer is the only object
+ * on this board that is a type rather than a thing with a file in it. It is also
+ * the only one of the seven that is not paper or a case for paper — a machine,
+ * with a case and a glass.
  */
-type Archetype = "polaroid" | "paper" | "folder" | "vhs" | "cassette" | "card";
+type Archetype = "polaroid" | "paper" | "folder" | "vhs" | "cassette" | "card" | "timer";
 
 /** The three of them, as the one type that means "an object with a file in it". */
 type CaseArchetype = "folder" | "vhs" | "cassette";
@@ -397,6 +421,22 @@ const MAX_RASTERS_PER_FRAME = 3;
  * and the record is what every caller already has in its hand.
  */
 function archetypeOf(cold: ItemCold, kind: AssetKind): Archetype {
+  /**
+   * First, before the polaroid test and before the mime switch — T-395, D-73.
+   *
+   * It is first for two reasons and both are about not putting the answer
+   * somewhere else. A timer carrying a stray `assetId` a peer wrote is still a
+   * timer, so the type has to beat the mime rather than be a case inside it; and
+   * the face coming off the *type* at all is exactly the exception D-46's rule
+   * opens for this one object, which belongs written down in the one function
+   * that chooses faces rather than hidden in a branch of a view.
+   *
+   * It also makes the silhouette right for free. `sheet` asks `archetypeOf` for
+   * anything that is not paper, gets `timer`, and returns null — so the rectangle
+   * stands and a machine-cased object has no torn edge. That is the answer rather
+   * than the absence of one.
+   */
+  if (cold.type === "timer") return "timer";
   if (cold.type !== "polaroid") return "paper";
   switch (kind) {
     case "document":
@@ -529,6 +569,23 @@ interface View {
    * `setPage` one paragraph below.
    */
   setReeled(reeled: number): void;
+  /**
+   * What this timer's face says right now, or null for the six faces that are
+   * not one — T-395.
+   *
+   * Offered on the transform pass rather than written at `bind`, and that is the
+   * whole shape of this method. `bind` is guarded on the cold record's identity,
+   * and a running timer's record does not change — nothing is written to the
+   * document per second (D-73) — so a reading written there would be written
+   * once, when the timer was put up, and never again.
+   *
+   * It arrives as a whole [`TimerFace`] rather than a string because the face
+   * draws three of its fields: the digits, which mode's chrome to wear, and
+   * whether it has gone off. The **fourth** is what makes it cheap — `quantum`
+   * is the number `state/timers.ts` dirtied the item on, so the view can refuse
+   * to touch the DOM by comparing one integer.
+   */
+  setReading(face: TimerFace | null): void;
   /**
    * How curled each of the four corners is, clockwise from the top left
    * (`curl.ts`). Offered rather than computed here, because the answer is a
@@ -1271,6 +1328,10 @@ class PolaroidView implements View {
 
   setReeled(_reeled: number): void {}
 
+  /** Not a timer. See the interface — every view is offered this and each
+   *  answers for its own material. */
+  setReading(_face: TimerFace | null): void {}
+
   /**
    * How big the caption is written — **which depends on what it says** (T-338).
    *
@@ -1704,6 +1765,10 @@ class CardView implements View {
 
   setReeled(_reeled: number): void {}
 
+  /** Not a timer. See the interface — every view is offered this and each
+   *  answers for its own material. */
+  setReading(_face: TimerFace | null): void {}
+
   setTape(seed: number, corners: number): void {
     this.tape.bind(seed, corners);
   }
@@ -1760,6 +1825,343 @@ class CardView implements View {
     this.ink.release();
   }
 }
+
+/**
+ * A small travel clock — the seventh face, and the only object on this board
+ * that is a machine (T-395, D-73).
+ *
+ * About 90 by 70 millimetres of moulded case with a glass over a printed dial,
+ * hanging from a pin like everything else. It is the one item whose *face
+ * changes on its own*, and almost everything in this class is about making that
+ * cost as close to nothing as it can be.
+ *
+ * ## The reading is written on the transform pass, not at `bind`
+ *
+ * `bind` is guarded on the cold record's identity, and a running timer's record
+ * does not change — nothing is written to the document per second (D-73). So a
+ * face written there would be written when the clock was put up and never again.
+ * [`setReading`] is the per-frame door, and it is offered the reading rather
+ * than working it out: `state/timers.ts` decided the item was worth redrawing,
+ * and it decided that off `readingQuantum`, which is the same number this
+ * compares. One definition, two readers, and no way for the tick and the digits
+ * to disagree about when a face has moved.
+ *
+ * ## Four traps, three of them avoided rather than solved
+ *
+ * **No seven-segment font.** `raster.ts` inlines every face in
+ * `BOARD_FONT_URLS` as *bytes* into each export, and a relative font URL inside
+ * a data SVG resolves to nothing at all — silently. D-34 measured that failure
+ * as every note on the board coming out in the wrong hand and wrapping
+ * differently. The digits therefore wear the bundled face with `tabular-nums`,
+ * which is the only thing a segment font was ever buying: figures that do not
+ * shuffle sideways as they change.
+ *
+ * **The digits go down as a text node** and never through `writeHand`. A clock's
+ * numerals are printed on a dial, like a card's three lines, so the LOD tier's
+ * `plain` argument is ignored here for the reason `CardView` ignores it.
+ *
+ * **The light is counter-rotated.** The bezel's highlight and the reflection on
+ * the glass are directional gradients declared in the element's own frame, so
+ * without `writeLight` a clock hanging at 40 degrees is lit from its own private
+ * sun — the T-313 finding, which DESIGN 4.1 calls the fastest way to break a
+ * surface.
+ *
+ * The fourth is the pool, and it is handled by `ItemLayer.destroy` iterating the
+ * record by value rather than naming buckets — written that way in T-339 so that
+ * the seventh face would not be the fourth thing that line forgot.
+ */
+class TimerView implements View {
+  readonly archetype = "timer" as const;
+  readonly el: HTMLDivElement;
+  readonly ink: ItemInk;
+  /** A moulded case has no torn silhouette and therefore no corner to fold. */
+  readonly folded = -1;
+
+  private readonly shadow = new ShadowNode();
+  private readonly tape = new TapeSet();
+  private readonly body: HTMLDivElement;
+  private readonly dial: HTMLDivElement;
+  private readonly digits: HTMLDivElement;
+  private readonly caption: HTMLDivElement;
+
+  private boundCold: ItemCold | null = null;
+  private boundWear = -1;
+  /** The width the dial's type was sized for. */
+  private sizedFor = -1;
+  /**
+   * The quantum last written, and the digits that went with it.
+   *
+   * Two and not one, and the pair is the whole of [`setReading`]'s guard. The
+   * quantum is what moves; the string is what a *released* node has to be able
+   * to say it no longer holds. `Number.NaN` compares unequal to everything
+   * including itself, which is exactly the reset a pooled node needs — the first
+   * reading after a release always writes.
+   */
+  private boundQuantum = Number.NaN;
+  private boundMode = "";
+  private boundExpired = false;
+  /** The digit scale last written — see [`fit`]. `-1` so the first reading
+   *  writes, and cleared in `release` with the rest of the guard. */
+  private fitted = -1;
+  private field: HTMLTextAreaElement | null = null;
+  private readonly writtenLight = new Float32Array(3).fill(-9);
+
+  constructor() {
+    this.el = document.createElement("div");
+    this.el.className = "item item-timer";
+    this.ink = new ItemInk(this.el);
+
+    // The case, inside the item, so the shadow can sit outside it — `.card-body`
+    // and `.pol-frame` for the same arrangement and the same reason.
+    this.body = div("timer-body");
+    this.dial = div("timer-dial");
+    this.digits = div("timer-digits");
+    // Read out as well as drawn. A clock is one of the few objects here whose
+    // whole content is a string, and it is the only one that changes without
+    // anybody touching it — so a screen reader that was told once at mount would
+    // be told a time that has since been wrong for an hour.
+    this.digits.setAttribute("role", "status");
+    this.caption = div("timer-caption");
+    this.dial.append(this.digits, this.caption);
+    // The glass last inside the case, over the dial: a reflection is on top of
+    // what it reflects. `.timer-lamp` is the amber wash an expired countdown
+    // wears, under the glass because the bulb is inside the machine.
+    this.body.append(div("timer-lamp"), this.dial, div("timer-glass"));
+    // Tape over the case, where a strip put on afterwards would be.
+    this.el.append(this.shadow.el, this.body, ...this.tape.nodes);
+  }
+
+  bind(
+    cold: ItemCold,
+    _facts: AssetFacts,
+    _assetUrl: AssetResolver,
+    _screenPx: number,
+    wear: number,
+    _plain: boolean,
+  ): void {
+    // `plain` ignored, and `assetUrl` with it — a timer holds no `assetId` at
+    // all (D-73), which is also why `referencedAssets` skips it and why no sweep
+    // can ever take anything of its.
+    const worn = Math.round(wear * 100);
+    const sameWear = worn === this.boundWear;
+    if (this.boundCold === cold && sameWear) return;
+
+    if (!sameWear) {
+      this.boundWear = worn;
+      this.paintAge(worn / 100);
+    }
+    this.boundCold = cold;
+    // What somebody wrote on it — *tea*, *call back at four* — and the message
+    // the flash line says when it goes off. Printed rather than in a hand: this
+    // is a label on a machine, and the one hand-written thing on this board is a
+    // caption on paper.
+    this.caption.textContent = cold.text.trim();
+    this.caption.classList.toggle("is-empty", this.caption.textContent === "");
+  }
+
+  /**
+   * What a clock is when it has been on a wall for years: the printing on the
+   * dial goes, and the case does not.
+   *
+   * `CardView.paintAge`'s split, and `CaseView`'s before it — what ages by
+   * *gaining* takes its years as a background layer in `items.css`, and what
+   * ages by *losing* is the ink. A moulded case yellows; the numerals under the
+   * glass fade.
+   */
+  private paintAge(wear: number): void {
+    this.el.classList.toggle(IS_AGED, wear > 0);
+    if (wear > 0) this.el.style.setProperty("--age", wear.toFixed(2));
+    else this.el.style.removeProperty("--age");
+    const filter = wearFilter(wear);
+    this.digits.style.filter = filter;
+    this.caption.style.filter = filter;
+    if (this.field) this.field.style.filter = filter;
+  }
+
+  /**
+   * The digits, and the two classes that dress them — AC-1106.
+   *
+   * **Quantise before the compare, and return before touching the DOM**, which
+   * is `CaseView.setReeled`'s shape exactly. The comparison is on the integer
+   * `state/timers.ts` decided this item was worth redrawing for, so a frame that
+   * dirtied this item for some other reason — a drag, a peer's edit, a tier
+   * change — costs one number and writes nothing.
+   *
+   * `mode` and `expired` are in the guard beside the quantum because they are
+   * the other two things written here, and a guard that named fewer inputs than
+   * the writes below it is the bug `setReeled`'s comment describes: a face that
+   * has stopped being a countdown and still says so.
+   */
+  setReading(face: TimerFace | null): void {
+    if (face === null) return;
+    if (
+      face.quantum === this.boundQuantum &&
+      face.mode === this.boundMode &&
+      face.expired === this.boundExpired
+    ) {
+      return;
+    }
+    if (face.mode !== this.boundMode) {
+      this.boundMode = face.mode;
+      this.el.dataset["mode"] = face.mode;
+    }
+    if (face.expired !== this.boundExpired) {
+      this.boundExpired = face.expired;
+      this.el.classList.toggle("is-expired", face.expired);
+    }
+    this.boundQuantum = face.quantum;
+    // A text node, never `writeHand`: these are printed numerals on a dial. The
+    // stylesheet's `font-variant-numeric: tabular-nums` is what stops them
+    // shuffling sideways from one second to the next, and it is the whole of
+    // what a seven-segment face would have been for.
+    this.digits.textContent = face.label;
+    this.fit(face.label.length);
+  }
+
+  /**
+   * Shrink the figures when there are too many of them for the dial.
+   *
+   * A clock and a short countdown are four or five characters — `09:05`, `1:30`
+   * — and the dial is cut for five. A countdown somebody set for two hours is
+   * seven (`1:07:05`), and at the size five fit it runs off both edges of the
+   * dial and is clipped by the case. That is not a rare setting; it is what a
+   * timer for an afternoon's work looks like.
+   *
+   * A ratio rather than a table of sizes, because the answer is arithmetic and
+   * one number cannot drift from another: the dial holds `FITS` figures at the
+   * full size, so anything longer takes `FITS / length` of it. It is a custom
+   * property rather than an inline `font-size` for the reason the card's relief
+   * is one — the card tier's rule multiplies the same `em`, and an inline size
+   * would beat it and leave the coarse face at the full tier's proportions.
+   *
+   * Tabular figures are what make this exact rather than a guess: every glyph
+   * has the same advance, so the measure really is proportional to the count.
+   * The colon is narrower, which the ratio ignores — that error is in the safe
+   * direction and buys a little air at each end.
+   */
+  private fit(length: number): void {
+    const FITS = 5;
+    const scale = length > FITS ? FITS / length : 1;
+    if (scale === this.fitted) return;
+    this.fitted = scale;
+    if (scale === 1) this.el.style.removeProperty("--digit-fit");
+    else this.el.style.setProperty("--digit-fit", scale.toFixed(3));
+  }
+
+  transform(
+    x: number,
+    y: number,
+    rot: number,
+    w: number,
+    h: number,
+    lift: number,
+    _open: number,
+  ): void {
+    if (w !== this.sizedFor) {
+      this.sizedFor = w;
+      // One size on the dial and `em` multiples in the stylesheet, so a clock
+      // somebody has resized keeps its proportions. The floor is a clock drawn
+      // at a wall-of-clocks zoom, where a sub-pixel size costs a layout for
+      // nothing — `CardView` sets the same floor for the same reason.
+      this.dial.style.fontSize = `${Math.max(3, w * TIMER_TEXT).toFixed(2)}px`;
+    }
+    writeTransform(this.el, x, y, rot, w, h, lift);
+    setCarried(this.el, this.shadow, lift);
+    this.shadow.update(rot);
+    this.tape.update(rot);
+    // The bezel's highlight and the reflection on the glass are the lit things
+    // on this object, and there is one light on this board. Without the
+    // counter-rotation a clock hanging crooked is lit from its own private sun
+    // (T-313, DESIGN 4.1) — and on a curved glass that is more obvious than on
+    // anything else here, because a reflection is where the eye goes.
+    writeLight(this.el, rot, this.writtenLight);
+  }
+
+  /** No silhouette to curl, and nothing inside. See the interface. */
+  setCurl(): void {}
+
+  setPage(): void {}
+
+  hold(_audio: HTMLAudioElement | null): void {}
+
+  setReeled(_reeled: number): void {}
+
+  setTape(seed: number, corners: number): void {
+    this.tape.bind(seed, corners);
+  }
+
+  /**
+   * The caret goes on the **caption**, which is the only thing about a timer
+   * anybody types.
+   *
+   * The digits are derived and the mode is a chip — neither is text. What a
+   * person writes on a kitchen timer is what it is for, and D-73 made that the
+   * expiry message rather than adding a sixth field, precisely so that the
+   * caret path already reaches it.
+   */
+  adopt(field: HTMLTextAreaElement | null): void {
+    if (field === null) {
+      this.el.classList.remove("is-editing");
+      this.field?.remove();
+      this.field = null;
+      return;
+    }
+    this.el.classList.add("is-editing");
+    if (this.field === field && field.parentNode === this.dial) return;
+    this.field = field;
+    field.className = "item-field timer-caption";
+    field.style.filter = wearFilter(this.boundWear > 0 ? this.boundWear / 100 : 0);
+    this.dial.append(field);
+  }
+
+  release(): void {
+    this.boundCold = null;
+    this.adopt(null);
+    // Every input the guards above name, and in the same breath as naming them —
+    // which is `CaseView.release`'s rule and the reason this face cannot come
+    // back out of the pool wearing the last clock's time. `NaN` for the quantum
+    // rather than a sentinel integer, because it compares unequal to itself and
+    // so cannot collide with a real reading.
+    //
+    // The three are *individually* redundant and that is not an argument for
+    // dropping any of them. Mutating away the quantum's reset alone changes
+    // nothing observable, because the mode's reset to `""` already fails the
+    // guard on the next bind — and the same the other way round. What the set
+    // buys is that the rule above stays true under a change to the guard: take
+    // one field out of the comparison and whichever reset was carrying it is
+    // suddenly the only thing standing between a pooled node and the last
+    // clock's face. Both were toggled off and no test moved, which is the honest
+    // result and the reason it is written here rather than tested around.
+    this.boundQuantum = Number.NaN;
+    this.boundMode = "";
+    this.boundExpired = false;
+    this.fitted = -1;
+    this.el.style.removeProperty("--digit-fit");
+    this.digits.textContent = "";
+    this.caption.textContent = "";
+    this.el.classList.remove("is-expired");
+    delete this.el.dataset["mode"];
+    this.boundWear = -1;
+    this.sizedFor = -1;
+    this.el.classList.remove(IS_AGED, "is-lifted");
+    this.el.style.removeProperty("--age");
+    this.digits.style.removeProperty("filter");
+    this.caption.style.removeProperty("filter");
+    this.tape.release();
+    this.shadow.reset();
+    this.ink.release();
+  }
+}
+
+/**
+ * The dial's type, as a fraction of the case's width — `items.css` takes every
+ * other size on this face as an `em` of it.
+ *
+ * A clock is a device you read at a glance, so the figures are a much larger
+ * share of the object than a card's title is of a card: at 90 units wide this is
+ * about 25 units of cap height, which is the number on a real travel clock.
+ */
+const TIMER_TEXT = 0.28;
 
 /**
  * The shadow has exactly two bakes — resting and lifted — because they are
@@ -2144,6 +2546,10 @@ class PaperView implements View {
   hold(_audio: HTMLAudioElement | null): void {}
 
   setReeled(_reeled: number): void {}
+
+  /** Not a timer. See the interface — every view is offered this and each
+   *  answers for its own material. */
+  setReading(_face: TimerFace | null): void {}
 
   release(): void {
     clearHand(this.body);
@@ -3221,6 +3627,9 @@ class CaseView implements View {
     else this.el.style.setProperty("--reeled", wound.toFixed(3));
   }
 
+  /** Nothing to read. A case has a spine and a label; the clock is next door. */
+  setReading(_face: TimerFace | null): void {}
+
   release(): void {
     clearHand(this.title);
     clearHand(this.caption);
@@ -3825,6 +4234,7 @@ export class DomItemLayer implements ItemLayer {
     vhs: [],
     cassette: [],
     card: [],
+    timer: [],
   };
 
   /**
@@ -3997,6 +4407,7 @@ export class DomItemLayer implements ItemLayer {
     editor?: ItemEditorHooks,
     pageOf: PageResolver = () => null,
     shownPage: ShownPage = () => null,
+    readingOf: ReadingResolver = () => null,
   ) {
     this.host = host;
     this.assetUrl = assetUrl;
@@ -4004,7 +4415,19 @@ export class DomItemLayer implements ItemLayer {
     this.editor = editor ? new TextEditor(editor) : null;
     this.pageOf = pageOf;
     this.shownPage = shownPage;
+    this.readingOf = readingOf;
   }
+
+  /**
+   * What each timer's face says — T-395.
+   *
+   * Defaults to "no reading", which draws a clock with a blank dial. That is the
+   * right default for a caller with no wall clock behind it — the spike rig and
+   * the tests here — and it fails *visibly*: a blank face says "nobody wired the
+   * clock", where a default of zero would have said half past one on the first
+   * of January 1970 and looked like a working timer set wrong.
+   */
+  private readonly readingOf: ReadingResolver;
 
   /**
    * Which page of a case file is the face on show — T-278, and the same
@@ -4578,6 +5001,19 @@ export class DomItemLayer implements ItemLayer {
       // a folder being shut has to do or the next one opened inherits the last
       // one's page.
       view.setPage(open > 0 && cold.assetId ? this.pageOf(cold.assetId) : null);
+      // And the reading, for the one item in a thousand that is a clock. Guarded
+      // on the record rather than offered to every view the way `setPage` is,
+      // because unlike a page this costs a *call* per item and the answer is
+      // already in the record's hand: `cold.timer` is null for the four types
+      // that are not timers (T-393), so a board of photographs pays one null
+      // test each and no resolver call at all.
+      //
+      // Inside the dirty branch, which is the whole cost model. `state/timers.ts`
+      // dirties a running clock once a second at the full tier and once a minute
+      // below it, so this is how often a face is even *asked*; the view's own
+      // guard then refuses the DOM write on any other frame that happened to
+      // dirty the item.
+      if (cold.timer !== null) view.setReading(this.readingOf(id));
     }
 
     // After the transform, not before: `cornerCurl` reads the pose the sheet is
@@ -4763,9 +5199,15 @@ export class DomItemLayer implements ItemLayer {
     // A sheet of paper is the only thing on this board with a silhouette. The
     // question is the *type* on its own and never the asset, which is why this
     // is the one caller that does not need a lookup: nothing with a file behind
-    // it is cut to a ragged edge, and `archetypeOf` maps every non-`polaroid`
-    // type to paper whatever kind is passed and whatever the record says about
-    // where it came from.
+    // it is cut to a ragged edge, and `archetypeOf` maps every paper type to
+    // paper whatever kind is passed and whatever the record says about where it
+    // came from.
+    //
+    // "Every non-`polaroid` type", which is what this said until T-395, is now
+    // one type short: a `timer` answers `timer` and lands here as a null, and
+    // that is the right answer arrived at rather than a gap. A travel clock is a
+    // machine in a case — it has no torn edge, and the rectangle standing is
+    // exactly what it should have.
     if (cold === null || archetypeOf(cold, "unknown") !== "paper") return null;
     const worn = Math.round(wearOf(cold.seed, this.ageDays(cold)) * 100) / 100;
     const w = scene.w[slot]!;
@@ -4980,6 +5422,7 @@ export class DomItemLayer implements ItemLayer {
   private create(archetype: Archetype): View {
     if (isCase(archetype)) return new CaseView(archetype);
     if (archetype === "card") return new CardView();
+    if (archetype === "timer") return new TimerView();
     return archetype === "polaroid" ? new PolaroidView(this.firstSight) : new PaperView();
   }
 

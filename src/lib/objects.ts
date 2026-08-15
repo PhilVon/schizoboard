@@ -350,6 +350,29 @@ export function objectSizeFor(kind: AssetKind): ObjectSize | null {
 export const CARD_UNITS: ObjectSize = units({ w: 85, h: 55 });
 
 /**
+ * A small travel clock: 90 by 70 mm, at the family's 1.55 units to the
+ * millimetre — 140 by 109 units (T-395, D-73).
+ *
+ * Beside the card and the folder because it is the same kind of fact: a real
+ * object with a real size, in true proportion to the rest of the family. The
+ * kind that folds shut into its own case and stands on a bedside table, which is
+ * the object D-73 chose — not a wall clock, which would be the largest thing on
+ * the board and would claim to be the room's clock rather than one somebody
+ * pinned up.
+ *
+ * A little wider than a business card and half again as tall, which is right in
+ * both directions: it is a machine rather than a piece of card, and the face has
+ * to hold four figures at a size you can read across a desk.
+ *
+ * **Millimetres and not units, which is the mistake this constant exists to
+ * stop.** D-73 says "about 90 by 70 mm", and a first pass at the face was drawn
+ * at 90 by 70 *units* — 58 by 45 mm, smaller than a business card, with digits
+ * two thirds the size they should be. The whole family is written in millimetres
+ * through `units()` for exactly this reason.
+ */
+export const TIMER_UNITS: ObjectSize = units({ w: 90, h: 70 });
+
+/**
  * What the page an item stands in for was **about** — T-342, and the one bit
  * that separates the two objects a link can become.
  *

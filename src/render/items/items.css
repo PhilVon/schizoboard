@@ -4248,3 +4248,318 @@ textarea.item-field::-webkit-scrollbar {
 .item.is-editing .card-type > div.card-title {
   visibility: hidden;
 }
+
+/* --- the travel clock, T-395 ---------------------------------------------- */
+
+/*
+ * A small travel clock: moulded case, printed dial, glass over it.
+ *
+ * The seventh face and the only object on this board that is a machine. Almost
+ * everything here follows the card's arrangement one file-section up — a body
+ * inside the item box so the shadow is not clipped, the ink over it, an age
+ * layer that yellows the case while a filter fades the printing — because those
+ * are decisions about being an item rather than about being paper.
+ *
+ * What is different is the glass, and it is the reason this object needed its
+ * own face at all. A reflection is the strongest cue a surface is hard, and it
+ * is the one thing on this board that has to be *lit* rather than merely drawn:
+ * `writeLight` publishes `--lx`/`--ly`/`--turn` in the clock's own frame, so a
+ * clock hanging crooked catches the same light as the photograph beside it.
+ */
+.item-timer {
+  /*
+   * **The case is dark and the dial is pale, and that contrast is the whole
+   * design.** The first version was ivory on ivory — a pale case a shade darker
+   * than its dial — and driven at 100% it read as a small white *card*, not as a
+   * machine. On a board where every other object is paper, the thing that says
+   * "this was manufactured" is a hard tonal step at the rim.
+   *
+   * It also does the work at the far end. At 5% zoom a 140-unit case is seven
+   * pixels across and there is no detail left at all; what is left is a dark
+   * rectangle with a bright middle, which is a silhouette nothing else on this
+   * board has. A pale clock at that zoom is a note.
+   *
+   * Warm graphite rather than the cassettes' near-black (`.case-shell`), and
+   * deliberately a step lighter than those: this is moulded ABS from a bedside
+   * table rather than the polystyrene of a tape shell, and two objects that
+   * sampled the same colour would be claiming to be the same material.
+   */
+  --timer-case: #6b6158;
+  --timer-case-lit: #857a6e;
+  --timer-case-dark: #4a423b;
+  /* The dial: a separate piece of printed card behind the glass, and the
+     brightest thing on the object. */
+  --timer-dial: #f6f1e6;
+  /* Near-black warm, DESIGN 4.1's rule about never using pure black. */
+  --timer-ink: #26211a;
+  /* The bezel's width, as a fraction of the case. About six millimetres of rim
+     on a 90 mm case, which is what a moulded bezel actually is — and thick
+     enough that it survives as a ring rather than a hairline when the whole
+     object is a few pixels wide. */
+  --timer-bezel: 9%;
+  /* How bright the reflection on the glass is. Low, on purpose: a reflection
+     that competes with the digits is a clock you cannot read, which is the one
+     thing this object may not be. */
+  --timer-sheen: 0.18;
+}
+
+/*
+ * The case. Its own box inside the item, like `.card-body`.
+ *
+ * Rounded much harder than a card — six board units at 90 across is about four
+ * millimetres, which is a moulded corner rather than a guillotined one. The
+ * inset shadow is the bezel: a rim standing proud of the dial, lit on the flank
+ * that faces the light and shaded on the one that does not, off the same two
+ * numbers the emboss on a card uses and with the same sign convention.
+ */
+.timer-body {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  border-radius: 6px;
+  /* A moulded ramp rather than a flat fill, and counter-turned (T-313): the ramp
+     down a plastic case is the light on it, so a clock hanging crooked must not
+     carry its own highlight round with it. The same construction `.case-shell`
+     uses for the two tapes, at this object's own lighter colour. */
+  background: linear-gradient(
+    calc(158deg + var(--turn, 0deg)),
+    var(--timer-case-lit) 0%,
+    var(--timer-case) 46%,
+    var(--timer-case-dark) 100%
+  );
+  box-shadow:
+    inset calc(var(--lx, 0.5) * -0.9px) calc(var(--ly, 0.87) * -0.9px) 0 0 rgba(255, 252, 245, 0.35),
+    inset calc(var(--lx, 0.5) * 0.9px) calc(var(--ly, 0.87) * 0.9px) 0 0 rgba(24, 18, 10, 0.4);
+}
+
+/*
+ * The dial: the printed card behind the glass.
+ *
+ * Inset by the bezel on every side, and set out as two rows — the figures, and
+ * whatever somebody wrote on it. `1fr auto` rather than a fixed split so a clock
+ * with no caption gives the whole dial to its digits, which is what a clock with
+ * nothing written on it should look like.
+ *
+ * The font size is written per item by `dom.ts` (`TIMER_TEXT`) and everything
+ * below is an `em` of it, so one number sizes the whole face and a clock
+ * somebody has resized keeps its proportions.
+ */
+.timer-dial {
+  position: absolute;
+  inset: var(--timer-bezel);
+  border-radius: 3px;
+  background: var(--timer-dial);
+  /* The dial sits *behind* the bezel, so the rim throws a shade onto it along
+     the lit side — which is the cue that says the card is recessed rather than
+     printed on the case. Against the light, like the emboss on a business
+     card, and in the clock's own frame for the same reason. */
+  box-shadow: inset calc(var(--lx, 0.5) * 1.1px) calc(var(--ly, 0.87) * 1.1px) 1.4px rgba(40, 32, 20, 0.3);
+  display: grid;
+  /*
+   * Both rows sized to their content and the pair centred as a block, rather
+   * than the figures pushed to the foot of a `1fr` row.
+   *
+   * That was the first arrangement and a 3x crop of the running app is what
+   * settled it: the figures sat low with a visible band of empty dial above them
+   * and none below, which reads as a dial printed wrong rather than as a clock.
+   * A real dial centres its reading and hangs whatever else it says under it.
+   */
+  grid-template-rows: auto auto;
+  align-content: center;
+  justify-items: center;
+  overflow: hidden;
+  padding: 0 0.12em;
+}
+
+/*
+ * The figures.
+ *
+ * `tabular-nums` is the whole of what a seven-segment font would have bought
+ * (T-395): figures on a fixed advance, so `12:09` becoming `12:10` does not
+ * shuffle the line sideways. A segment face would have meant a new font file,
+ * and `raster.ts` inlines every board font as bytes into each export — a
+ * relative font URL inside a data SVG resolves to nothing, silently, which D-34
+ * measured as every note on the board coming out in the wrong hand.
+ *
+ * `Source Sans 3` is already one of the two bundled faces, and its figures are
+ * near-monoline with open counters, which is what stays legible when the whole
+ * clock is nine pixels tall.
+ */
+.timer-digits {
+  grid-row: 1;
+  font-family: "Source Sans 3", ui-sans-serif, system-ui, sans-serif;
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: "tnum" 1;
+  /* `--digit-fit` is 1 for the four and five figure readings the dial is cut
+     for, and `5 / length` for a countdown long enough to carry an hours field —
+     `TimerView.fit`. A custom property and not an inline size, so the card
+     tier's rule below still multiplies it. */
+  font-size: calc(1em * var(--digit-fit, 1));
+  font-weight: 600;
+  line-height: 1;
+  /* Tightened, because tabular figures are set on a generous advance and a
+     clock's numerals sit closer together than a sentence's would. */
+  letter-spacing: -0.02em;
+  color: var(--timer-ink);
+  white-space: nowrap;
+}
+
+/*
+ * What somebody wrote on it — *tea*, *call back at four*.
+ *
+ * Small, and printed rather than in a hand: this is a label on a machine. One
+ * line, clipped, because a caption that wrapped would push the figures off the
+ * dial and the figures are what the object is for. It is also the sentence the
+ * flash line says when the countdown goes off (D-73), so it is worth being able
+ * to read on the object as well as in the corner.
+ */
+.timer-caption {
+  grid-row: 2;
+  font-family: "Source Sans 3", ui-sans-serif, system-ui, sans-serif;
+  font-size: 0.26em;
+  font-weight: 500;
+  letter-spacing: 0.04em;
+  line-height: 1.2;
+  padding-bottom: 0.35em;
+  color: var(--timer-ink);
+  opacity: 0.72;
+  max-width: 100%;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.timer-caption.is-empty {
+  display: none;
+}
+
+/*
+ * The glass.
+ *
+ * Over everything inside the case, because a reflection is on top of what it
+ * reflects — and `pointer-events: none` like every other decoration here, so the
+ * hit test still lands on the item.
+ *
+ * The angle is `calc(... + var(--turn))`, which is the counter-rotation: a broad
+ * wash across a face is not a feature of the object, it is the light falling on
+ * it, so its angle belongs in board space. That is the distinction `writeLight`
+ * draws between `--turn` and a crease, and getting it the other way round is the
+ * T-313 finding — every clock on the wall lit from its own private sun.
+ *
+ * Two stops and a hard edge between them: real glass over a small dial catches
+ * one band, not a soft vignette. The band is placed off-centre so it crosses a
+ * corner of the dial rather than the middle of the figures.
+ */
+.timer-glass {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  border-radius: inherit;
+  background: linear-gradient(
+    calc(118deg + var(--turn, 0deg)),
+    rgba(255, 255, 255, 0) 26%,
+    rgba(255, 255, 255, var(--timer-sheen)) 27%,
+    rgba(255, 255, 255, var(--timer-sheen)) 39%,
+    rgba(255, 255, 255, 0) 40%
+  );
+}
+
+/*
+ * The bulb, behind the dial and dark until the countdown runs out.
+ *
+ * Under the glass because it is inside the machine, and painted as a wash over
+ * the whole case rather than as a lamp in a corner: what has gone off is the
+ * clock, and a board glanced at from across the room should show *which object*
+ * rather than a detail on it. The same amber the flash uses, for the reason
+ * DESIGN 7.6 gives — the board pointing at one item means one thing.
+ *
+ * No animation, and that is deliberate rather than missing. Nothing on this
+ * board animates outside the frame loop (ARCHITECTURE section 3), and a pulsing
+ * clock would be a CSS transition on board content — the one thing DESIGN 6.6's
+ * paint rules forbid. The amber on the item itself is the flash's job and it is
+ * already stepped by `dt`; this is the object's own lamp, and a lamp is on or
+ * off.
+ */
+.timer-lamp {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  border-radius: inherit;
+  background: radial-gradient(
+    circle at 50% 62%,
+    rgba(255, 176, 46, 0.55),
+    rgba(255, 158, 30, 0.16) 62%,
+    rgba(255, 150, 20, 0) 100%
+  );
+  opacity: 0;
+}
+
+.item-timer.is-expired .timer-lamp {
+  opacity: 1;
+}
+
+/* A countdown that has run out reads its zero in the lamp's own ink, so the
+   figures do not sit pale on an amber ground. */
+.item-timer.is-expired .timer-digits {
+  color: #3a2408;
+}
+
+/* The years, on the case. `--paper-yellowing` is the board's one ageing wash and
+   this object takes it like every other — a moulded case in a room yellows the
+   same way paper does. The printing's fade is a filter written inline by
+   `TimerView.paintAge`, which is the ages-by-losing half of the same split. */
+.item-timer.is-aged .timer-body::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  border-radius: inherit;
+  opacity: var(--age, 0);
+  background: var(--paper-yellowing);
+}
+
+/* The caret takes the caption's row, and the static line steps aside by going
+   invisible rather than by leaving the grid — `.card-title`'s arrangement. */
+.item-field.timer-caption {
+  display: block;
+  grid-row: 2;
+  text-align: center;
+}
+
+.item.is-editing .timer-dial > div.timer-caption {
+  visibility: hidden;
+}
+
+/*
+ * The card tier — below 35% zoom, and the third of this face that is about
+ * being readable at a wall-of-clocks zoom rather than about being a clock.
+ *
+ * The grain, the lamp's soft edge and the caption go: at 30% a 90-unit case is
+ * 27 pixels across, the caption is under two pixels tall, and the radial
+ * gradient's falloff is smaller than a device pixel. What stays is the case, the
+ * glass and the digits — because a clock you cannot read the time on is not a
+ * simplified clock, it is a beige rectangle, and telling one from a note at that
+ * zoom is the whole of what the face is for.
+ *
+ * The digits then take a **larger share of the case and more weight**. That is
+ * not a stylistic choice: at 5% the figures are about four device pixels tall,
+ * and 600-weight glyphs at four pixels are a grey smear where 700 at a third
+ * more size still has counters in it. The caption's row is gone, so the space it
+ * held is exactly what pays for the size.
+ */
+:is(.layer-world[data-lod], .item.is-coarse) .timer-caption {
+  display: none;
+}
+
+:is(.layer-world[data-lod], .item.is-coarse) .timer-digits {
+  font-size: calc(1.34em * var(--digit-fit, 1));
+  font-weight: 700;
+  align-self: center;
+}
+
+/* The lamp survives, flattened to a plain amber wash: what it says — *this one
+   went off* — is exactly the thing that has to survive being zoomed out, and a
+   flat fill is one paint where a radial gradient is a per-pixel evaluation. */
+:is(.layer-world[data-lod], .item.is-coarse) .timer-lamp {
+  background: rgba(255, 168, 38, 0.42);
+}
