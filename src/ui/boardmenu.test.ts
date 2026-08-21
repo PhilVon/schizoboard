@@ -14,7 +14,7 @@ import type { BoardCard } from "@/platform/types";
 import { Scene, type ItemPose } from "@/state/scene";
 import type { BoardWriter, StringStyle, WritePose } from "@/state/tools/tool";
 import { STRING_MATERIALS } from "@/lib/material";
-import { DEFAULT_STRING_COLOR, STRING_COLORS, STRING_THICKNESSES } from "@/lib/palette";
+import { DEFAULT_STRING_COLOR, STRING_COLORS, STRING_THICKNESSES, CORK_COLORS } from "@/lib/palette";
 import {
   DEFAULT_HIGHLIGHTER_COLOR,
   DEFAULT_HIGHLIGHTER_SIZE,
@@ -1184,6 +1184,33 @@ describe("the board menu on bare cork", () => {
     it("writes the id it was given", () => {
       strip(null).choices.find((c) => c.label === "Moss")!.run();
       expect(corkWrites()).toEqual(["moss"]);
+    });
+
+    it("offers a colour of your own beside the five", () => {
+      // Q-369's kickback: the five are a judgement about somebody else's board.
+      const chips = strip(null).choices;
+      expect(chips).toHaveLength(CORK_COLORS.length + 1);
+      expect(chips.at(-1)!.label).toBe("Choose a colour…");
+      expect(chips.at(-1)!.pick).toBe("#ad8254");
+    });
+
+    it("starts the picker from the wall you are looking at", () => {
+      // Rather than from a fixed rainbow, so opening it is a nudge to what is
+      // there rather than a jump to somewhere else.
+      expect(strip("slate").choices.at(-1)!.pick).toBe("#747676");
+      expect(strip("#3366ff").choices.at(-1)!.pick).toBe("#3366ff");
+    });
+
+    it("marks the picker, and none of the five, for a colour of your own", () => {
+      const chosen = strip("#3366ff");
+      expect(chosen.choices.filter((c) => c.current).map((c) => c.label)).toEqual([
+        "Choose a colour…",
+      ]);
+    });
+
+    it("writes the hex the picker hands back", () => {
+      strip(null).choices.at(-1)!.picked!("#3366ff");
+      expect(corkWrites()).toEqual(["#3366ff"]);
     });
 
     it("writes null to go back, rather than the default's own id", () => {

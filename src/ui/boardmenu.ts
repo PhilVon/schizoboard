@@ -34,6 +34,8 @@ import { fileNoun, isCaseObject, type AssetKind } from "@/lib/objects";
 import {
   CORK_COLORS,
   corkColorOf,
+  corkHex,
+  customCork,
   DEFAULT_CORK,
   STRING_COLORS,
   STRING_THICKNESSES,
@@ -1192,13 +1194,40 @@ export function boardMenuRows(
   below.push({
     label: "Board",
     divided: rows.length > 0 && putUpTimer === null,
-    choices: CORK_COLORS.map(
-      (colour): MenuChoice => ({
-        label: colour.label,
-        current: corkColorOf(cork).id === colour.id,
-        run: () => write.setCorkColor(colour.id === DEFAULT_CORK.id ? null : colour.id),
-      }),
-    ),
+    choices: [
+      ...CORK_COLORS.map(
+        (colour): MenuChoice => ({
+          label: colour.label,
+          swatch: corkHex(colour.base),
+          current: corkColorOf(cork).id === colour.id,
+          run: () => write.setCorkColor(colour.id === DEFAULT_CORK.id ? null : colour.id),
+        }),
+      ),
+      /**
+       * And one the person chooses themselves — Q-369's kickback.
+       *
+       * The five above are a judgement about somebody else's board, and this is
+       * the way out of it. It may well produce a wall that fights the paper on
+       * it; that is the choice being offered rather than a flaw in offering it.
+       *
+       * Marked when the board is wearing a colour none of the five names, which
+       * falls out of `corkColorOf` giving a hex its own id: no curated chip
+       * matches, so none is marked and this one is.
+       *
+       * Its `swatch` shows what the board currently *is* rather than a fixed
+       * rainbow, so opening the picker starts from the wall you are looking at.
+       */
+      {
+        label: "Choose a colour…",
+        pick: corkHex(corkColorOf(cork).base),
+        current: customCork(cork) !== null,
+        // Activating from the keyboard cannot open a native picker, so the
+        // chip's own `change` is what commits and this is the no-op that keeps
+        // the menu's contract whole.
+        run: () => {},
+        picked: (hex) => write.setCorkColor(hex),
+      },
+    ],
   });
   below.push(
     /**

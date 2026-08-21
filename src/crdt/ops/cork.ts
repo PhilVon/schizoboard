@@ -38,7 +38,7 @@
 
 import { mutate, type BoardDoc } from "@/crdt/doc";
 import { Origin } from "@/crdt/origins";
-import { corkColorOf, DEFAULT_CORK } from "@/lib/palette";
+import { CORK_COLORS, corkColorOf, customCork, DEFAULT_CORK } from "@/lib/palette";
 
 /**
  * Paint the cork, or put it back to what it was.
@@ -55,9 +55,22 @@ import { corkColorOf, DEFAULT_CORK } from "@/lib/palette";
  * of them asked for.
  */
 export function setCorkColor(board: BoardDoc, id: string | null): void {
+  // Refused rather than written when it is neither a colour we name nor a
+  // colour anybody could mean. That is not the same as refusing a *taste*: a
+  // person choosing a colour that fights the board is exercising judgement and
+  // is allowed to, while `#zzz` is a bug in whatever produced it.
   const chosen = id === null ? DEFAULT_CORK : corkColorOf(id);
+  const custom = customCork(id);
+  if (id !== null && custom === null && chosen.id !== id) return;
   mutate(board, Origin.LOCAL_USER, () => {
-    if (chosen.id === DEFAULT_CORK.id) board.meta.delete("corkColor");
-    else board.meta.set("corkColor", chosen.id);
+    // A hex that *is* one of the five is written as the id, so two boards that
+    // chose the same colour by different routes hold the same string and a
+    // later re-tune of `slate` reaches both.
+    const named = CORK_COLORS.find(
+      (c) => custom !== null && c.base.r === custom.r && c.base.g === custom.g && c.base.b === custom.b,
+    );
+    const value = named?.id ?? chosen.id;
+    if (value === DEFAULT_CORK.id) board.meta.delete("corkColor");
+    else board.meta.set("corkColor", value);
   });
 }

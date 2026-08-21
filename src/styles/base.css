@@ -491,6 +491,37 @@ body {
   box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.45);
 }
 
+/*
+ * The one chip that is an input — T-408, and the board's own colour is the one
+ * value on this menu nobody picked in advance.
+ *
+ * A native `<input type="color">` paints its own swatch and every browser does
+ * it differently: a bevelled well on one, a flat block with padding on another.
+ * So the padding is taken out and the two shadow parts of the control are made
+ * to fill it, which leaves a square of colour the same size as the five beside
+ * it — the point being that it reads as a sixth chip rather than as a form
+ * control that wandered into a menu.
+ */
+.menu-pick {
+  width: 15px;
+  height: 15px;
+  padding: 0;
+  border-radius: 3px;
+  cursor: pointer;
+  /* The swatch's edge, for the reason `.menu-swatch` has one: a dark colour on
+     a near-black menu reads as a hole rather than as a colour. */
+  box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.45);
+}
+
+.menu-pick::-webkit-color-swatch-wrapper {
+  padding: 0;
+}
+
+.menu-pick::-webkit-color-swatch {
+  border: none;
+  border-radius: 2px;
+}
+
 .menu-bar {
   width: 16px;
   border-radius: 3px;

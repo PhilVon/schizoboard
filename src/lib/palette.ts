@@ -145,12 +145,49 @@ export const CORK_COLORS: readonly CorkColor[] = [
 export const DEFAULT_CORK = CORK_COLORS[0]!;
 
 /**
- * The colour an id names, or the default — never null.
+ * A colour somebody chose themselves, as `#rrggbb` — or null if that is not
+ * what this string is.
  *
- * Total on purpose, so no caller has to decide what an unrecognised id means.
- * There is one answer and it is the same one absence gives.
+ * Six digits only. Three-digit shorthand and the eight-digit form with alpha
+ * are both real CSS and neither is written here: a *board* has no transparency
+ * to have, and one canonical spelling is what lets `meta.corkColor` be compared
+ * for equality rather than parsed to be compared.
+ */
+export function customCork(value: unknown): { r: number; g: number; b: number } | null {
+  if (typeof value !== "string" || !/^#[0-9a-fA-F]{6}$/.test(value)) return null;
+  return {
+    r: parseInt(value.slice(1, 3), 16),
+    g: parseInt(value.slice(3, 5), 16),
+    b: parseInt(value.slice(5, 7), 16),
+  };
+}
+
+/** A base as the `#rrggbb` an `<input type="color">` wants. */
+export function corkHex(base: { r: number; g: number; b: number }): string {
+  const hex = (c: number): string => Math.max(0, Math.min(255, Math.round(c))).toString(16).padStart(2, "0");
+  return `#${hex(base.r)}${hex(base.g)}${hex(base.b)}`;
+}
+
+/**
+ * The colour a stored value names, or the default — never null.
+ *
+ * Total on purpose, so no caller has to decide what an unrecognised value
+ * means. There is one answer and it is the same one absence gives.
+ *
+ * **Two kinds of value, one field.** A curated id like `slate`, or a hex
+ * somebody picked for themselves — `meta.corkColor` holds whichever, and stays
+ * one string. The id form is preferred where it exists so a later build can
+ * re-tune what `slate` is; a hex is a person overruling the curation, which is
+ * a thing they are allowed to do (Q-369's kickback) and which nothing here
+ * should quietly round back toward a palette.
+ *
+ * A custom colour is its own `id`, which is what makes the marking in the menu
+ * fall out: no curated chip matches a hex, so none is marked and the picker is.
  */
 export function corkColorOf(id: unknown): CorkColor {
   if (typeof id !== "string") return DEFAULT_CORK;
-  return CORK_COLORS.find((c) => c.id === id) ?? DEFAULT_CORK;
+  const named = CORK_COLORS.find((c) => c.id === id);
+  if (named !== undefined) return named;
+  const custom = customCork(id);
+  return custom === null ? DEFAULT_CORK : { id, label: "Chosen", base: custom };
 }

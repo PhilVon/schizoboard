@@ -23,6 +23,7 @@ import {
   setItemPoses,
   resizeItems,
 } from "@/crdt/ops";
+import { setCorkColor } from "@/crdt/ops/cork";
 import { readAsset, readItem, readPin, SCHEMA_BASELINE } from "@/crdt/schema";
 import { compareOrder } from "@/crdt/zindex";
 import { SCATTER_DEGREES } from "@/lib/seed";
@@ -1019,5 +1020,60 @@ describe("concurrent editing", () => {
 
     // Invariant 9 — the total order is identical on both documents.
     expect(order(alpha)).toEqual(order(beta));
+  });
+});
+
+describe("painting the cork", () => {
+  /** T-408, and Q-369's kickback for the hex half. */
+  function fresh(): BoardDoc {
+    const board = openBoardDoc();
+    initialiseBoard(board, "test");
+    return board;
+  }
+
+  it("writes nothing for the cork we ship, so an unpainted board stays bare", () => {
+    const board = fresh();
+    setCorkColor(board, "slate");
+    expect(board.meta.get("corkColor")).toBe("slate");
+    setCorkColor(board, null);
+    expect(board.meta.has("corkColor")).toBe(false);
+    // And choosing it by name is the same as choosing nothing.
+    setCorkColor(board, "slate");
+    setCorkColor(board, "natural");
+    expect(board.meta.has("corkColor")).toBe(false);
+  });
+
+  it("does not raise the schema version, because an older build survives it", () => {
+    // The contrast is the timer, whose unknown TYPE reads as null and is
+    // skipped by the binding. A build that does not know this key opens a
+    // painted board as the beige it always was — see the file header.
+    const board = fresh();
+    const before = board.meta.get("schemaVersion");
+    setCorkColor(board, "oxblood");
+    expect(board.meta.get("schemaVersion")).toBe(before);
+  });
+
+  it("takes a colour somebody chose themselves", () => {
+    const board = fresh();
+    setCorkColor(board, "#3366ff");
+    expect(board.meta.get("corkColor")).toBe("#3366ff");
+  });
+
+  it("keeps a chosen colour that happens to be one of the five as its name", () => {
+    // So two boards that arrived at the same colour by different routes hold
+    // the same string, and a later re-tune of `slate` reaches both.
+    const board = fresh();
+    setCorkColor(board, "#747676");
+    expect(board.meta.get("corkColor")).toBe("slate");
+  });
+
+  it("refuses nonsense without touching what is there", () => {
+    // Refusing a bad *value* is not the same as refusing a taste: somebody
+    // choosing a colour that fights the board is exercising judgement, and
+    // `#zzz` is a bug in whatever produced it.
+    const board = fresh();
+    setCorkColor(board, "moss");
+    for (const bad of ["#zzzzzz", "#36f", "chartreuse", ""]) setCorkColor(board, bad);
+    expect(board.meta.get("corkColor")).toBe("moss");
   });
 });

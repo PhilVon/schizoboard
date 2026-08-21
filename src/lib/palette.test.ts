@@ -17,6 +17,8 @@ import {
   STRING_THICKNESSES,
   CORK_COLORS,
   corkColorOf,
+  corkHex,
+  customCork,
   DEFAULT_CORK,
 } from "@/lib/palette";
 
@@ -114,6 +116,43 @@ describe("what a board is made of", () => {
       expect(max, `${id} is too dark to pin against`).toBeGreaterThan(80);
       // Chroma, as the plainest possible measure of it.
       expect(max - min, `${id} is too saturated for a ground`).toBeLessThan(100);
+    }
+  });
+});
+
+describe("a colour somebody chose themselves", () => {
+  /**
+   * Q-369's kickback: the five are a judgement about somebody else's board, and
+   * a person is allowed to overrule it. What is still refused is nonsense,
+   * which is a different thing from a taste.
+   */
+  it("reads a six-digit hex as a colour in its own right", () => {
+    expect(customCork("#3366ff")).toEqual({ r: 0x33, g: 0x66, b: 0xff });
+    expect(corkColorOf("#3366ff").base).toEqual({ r: 0x33, g: 0x66, b: 0xff });
+    // Its own id, which is what makes no curated chip mark itself for it.
+    expect(corkColorOf("#3366ff").id).toBe("#3366ff");
+  });
+
+  it("takes one spelling and not three", () => {
+    // A board has no transparency to have, and one canonical form is what lets
+    // the stored value be compared rather than parsed to be compared.
+    expect(customCork("#36f")).toBeNull();
+    expect(customCork("#3366ffcc")).toBeNull();
+    expect(customCork("3366ff")).toBeNull();
+    expect(customCork("rebeccapurple")).toBeNull();
+  });
+
+  it("falls back to the cork we ship for a string that is neither", () => {
+    for (const nonsense of ["#zzzzzz", "#", "slat", 7, null]) {
+      expect(corkColorOf(nonsense).id).toBe(DEFAULT_CORK.id);
+    }
+  });
+
+  it("round-trips every curated colour through the input's own spelling", () => {
+    // The picker chip shows what the board currently is, so this is the path
+    // that puts a named colour into it and reads a hex back out.
+    for (const colour of CORK_COLORS) {
+      expect(customCork(corkHex(colour.base))).toEqual(colour.base);
     }
   });
 });
