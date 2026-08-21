@@ -41,11 +41,22 @@
  *   - A **clock** shows `hh:mm` and never seconds — this device has no sweep
  *     hand — so one dirty per clock per minute, at any zoom. That is what makes a
  *     wall of clocks free.
- *   - A running **countdown** or **stopwatch** quantises to one second at the
- *     full tier and to one minute below it. At 30% zoom nobody can read a
- *     seconds digit, and five hundred items dirtied once a second at the zoom
- *     D-33 measured as the expensive one is precisely the frame that must not
- *     exist.
+ *   - A running **countdown** or **stopwatch** quantises to one second while its
+ *     figures are large enough on screen to read, and to one minute when they
+ *     are not. That used to be the board's LOD tier — one boolean, `card` below
+ *     35% zoom — and it was wrong for any timer somebody had made large: a
+ *     wall-sized countdown at 32% held the same digits for forty-eight seconds
+ *     and then jumped a minute (T-405). The tier is a function of camera zoom
+ *     alone; legibility is camera zoom *times item size*. So the caller answers
+ *     it per timer, and `render/items/dom.ts` owns the arithmetic, because the
+ *     numbers that decide it are the ones that size the type.
+ *
+ *     What the coarse answer is for is unchanged and still the point: five
+ *     hundred faces dirtied once a second at the zoom D-33 measured as the
+ *     expensive one is the frame that must not exist. It is simply asked about
+ *     the right thing now — and a wall of *clocks*, which is the case that
+ *     motivated it, is untouched either way, because a clock shows `hh:mm` and
+ *     quantises to the minute at every zoom.
  *   - A **paused or unstarted** countdown or stopwatch dirties nothing at all,
  *     ever, and needs no special case to do it: its reading is constant, so the
  *     quantised value never moves.
@@ -142,11 +153,20 @@ export class Timers {
    * pressed start. The two are different clocks and subtracting one from the
    * other would put decades on a face.
    *
-   * `detailed` is the LOD tier — `Lod.detailed`, true at `full` — and it is the
-   * whole of what the camera is allowed to decide here. A plain boolean rather
-   * than the camera itself, for the reason `simView` is a plain rectangle.
+   * `detailedFor` answers, for one timer, whether its seconds can be read where
+   * it is drawn — T-405. A function rather than the camera itself, for exactly
+   * the reason `simView` is a plain rectangle and for the reason the boolean it
+   * replaced was one: this module holds no camera, and what it needs is the
+   * answer rather than the means to work one out. The caller must hand the
+   * *same* function to the face, or the digits and the dirty flag part company.
    */
-  step(scene: Scene, dirty: DirtySets, now: number, detailed: boolean, ahead: number): void {
+  step(
+    scene: Scene,
+    dirty: DirtySets,
+    now: number,
+    detailedFor: (id: string) => boolean,
+    ahead: number,
+  ): void {
     const timers = scene.timers;
     if (timers.size === 0) {
       // Nothing to step, and nothing to remember about nothing. A board whose
@@ -177,7 +197,13 @@ export class Timers {
       // item when it moves, so two definitions would be a digit written on a
       // frame nothing dirtied — a clock that never updates — or an item dirtied
       // every frame for a face that will not change.
-      const reading = readingQuantum(fields, now, detailed, ahead);
+      // Asked per timer rather than once for the board — T-405. A face's
+      // resolution is a question about how large *this* clock is drawn, and the
+      // camera alone cannot answer it: a timer somebody made wall-sized is
+      // legible at a zoom where an ordinary one is a smudge. The caller decides
+      // and the face asks the same function, which is what keeps the digits and
+      // the dirty flag on one frame.
+      const reading = readingQuantum(fields, now, detailedFor(id), ahead);
       if (this.shown.get(id) !== reading) {
         this.shown.set(id, reading);
         // Not on the first sight: the item is already dirty from the binding

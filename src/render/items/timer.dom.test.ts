@@ -12,7 +12,7 @@
 import { beforeEach, describe, expect, it } from "vitest";
 
 import { NO_TIMER, timerFace, type TimerFace, type TimerFields } from "@/lib/timer";
-import { DomItemLayer } from "@/render/items/dom";
+import { COARSE_DIGIT_SCALE, DomItemLayer, TIMER_TEXT, secondsAreReadable } from "@/render/items/dom";
 import { DirtySets } from "@/state/dirty";
 import { Scene, type ItemCold } from "@/state/scene";
 
@@ -465,5 +465,63 @@ describe("the reading the face is handed", () => {
     // and one that moved every sample would be thirty-one.
     expect(seen.size).toBe(4);
     expect([...seen.values()]).toEqual(["1:30", "1:29", "1:28", "1:27"]);
+  });
+});
+
+describe("whether a face's seconds can be read where it is drawn", () => {
+  /**
+   * T-405. This replaced `Lod.detailed` — one answer for the whole board — and
+   * the reason is the first test below: the tier is a function of camera zoom
+   * alone, and the same zoom over a bigger clock is a different question.
+   *
+   * The numbers are derived rather than written down, so that moving
+   * `TIMER_TEXT` or `READABLE_PX` moves the tests with the code instead of
+   * failing them.
+   */
+  const digitsOf = (w: number, coarse: boolean): number =>
+    w * TIMER_TEXT * (coarse ? COARSE_DIGIT_SCALE : 1);
+
+  it("is the defect, as the report described it", () => {
+    // The measured case: a 1400-unit countdown at 32% zoom, which is below
+    // CARD_ZOOM and so was quantised to the minute — it sat on 9:00 for
+    // forty-eight seconds and then jumped. Its figures are 168 screen pixels
+    // tall. Nobody could call that unreadable.
+    expect(secondsAreReadable(1400, 0.32, true)).toBe(true);
+    expect(Math.round(digitsOf(1400, true) * 0.32)).toBe(168);
+  });
+
+  it("still refuses a clock that really is too small to read", () => {
+    // A 90-unit case — the size of a real travel clock — at a fifth. Its
+    // figures are under seven pixels, which is the smear the coarse quantum
+    // exists for, and it is still refused.
+    expect(secondsAreReadable(90, 0.2, true)).toBe(false);
+    expect(digitsOf(90, true) * 0.2).toBeLessThan(7);
+  });
+
+  it("answers differently for two timers at one camera", () => {
+    // The whole of what a board-wide boolean could not say.
+    const zoom = 0.32;
+    expect(secondsAreReadable(1400, zoom, true)).toBe(true);
+    expect(secondsAreReadable(60, zoom, true)).toBe(false);
+  });
+
+  it("takes the coarse tier's larger figures into account", () => {
+    // Below the threshold the stylesheet drops the caption and gives the space
+    // to the digits, so a clock can be readable coarse and not full at one
+    // zoom. Getting this backwards would lose seconds the board is drawing.
+    const w = 100;
+    const between = 1 / digitsOf(w, false) * 10.5 - 0.001;
+    expect(secondsAreReadable(w, between, true)).toBe(true);
+    expect(secondsAreReadable(w, between, false)).toBe(false);
+  });
+
+  it("says no to a size or a zoom that is not a number", () => {
+    // `readItem` clamps a nonsense size rather than dropping the item, so a
+    // zero-width timer is a thing a peer can write. `readingZoomFor(0)` is
+    // Infinity, which would park that face on minute resolution forever — the
+    // same answer, but arrived at by accident rather than on purpose.
+    expect(secondsAreReadable(0, 1, false)).toBe(false);
+    expect(secondsAreReadable(Number.NaN, 1, false)).toBe(false);
+    expect(secondsAreReadable(220, Number.NaN, false)).toBe(false);
   });
 });

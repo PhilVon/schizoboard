@@ -4563,6 +4563,11 @@ textarea.item-field::-webkit-scrollbar {
 }
 
 :is(.layer-world[data-lod], .item.is-coarse) .timer-digits {
+  /* 1.34 is COARSE_DIGIT_SCALE in `render/items/dom.ts`, and the two are one
+     number stated twice because a stylesheet cannot be imported. The tick reads
+     it to work out whether a second is worth writing on this face (T-405), so
+     changing it here without changing it there makes the digits and the
+     decision to draw them disagree. */
   font-size: calc(1.34em * var(--digit-fit, 1));
   font-weight: 700;
   align-self: center;

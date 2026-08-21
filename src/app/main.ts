@@ -103,7 +103,13 @@ import { variantFor } from "@/platform/types";
 import { Cork } from "@/render/cork";
 import { Culler } from "@/render/cull";
 import { BoardInkLayer } from "@/render/ink/board";
-import { DomItemLayer, NO_FACTS, type AssetFacts, type AssetView } from "@/render/items/dom";
+import {
+  DomItemLayer,
+  NO_FACTS,
+  secondsAreReadable,
+  type AssetFacts,
+  type AssetView,
+} from "@/render/items/dom";
 import { NO_AGEING, WALL_CLOCK } from "@/render/items/wear";
 import { Lod, readingZoomFor, READING_ZOOM } from "@/render/lod";
 import { FrameLoop } from "@/render/loop";
@@ -695,14 +701,14 @@ async function boot(): Promise<void> {
    * same `now`; two calls to `Date.now()` a few microseconds apart can land on
    * either side of a second boundary, and when they do the face writes the digit
    * the tick did not dirty it for — a clock that is intermittently one second
-   * stale. The tier is here for the same reason: at the `card` tier the quantum
-   * is a minute, so a tick and a face that disagreed about the tier would
-   * disagree about the whole resolution of the reading.
+   * stale. The camera below is here for the same reason: a face whose figures
+   * are too small to read quantises to the minute, so a tick and a face that
+   * disagreed about the zoom would disagree about the whole resolution of the
+   * reading.
    *
    * Epoch milliseconds, and never `frame.now` — see the SIM handler.
    */
   let frameNow = 0;
-  let frameDetailed = true;
   /**
    * How far this machine's wall clock runs ahead of the base every peer
    * measures a run against — `state/clock.ts`, T-404.
@@ -715,6 +721,38 @@ async function boot(): Promise<void> {
    * application has ever opened alone.
    */
   let frameAhead = 0;
+  /**
+   * The camera's zoom as the SIM phase saw it, and the tier it was in — T-405.
+   *
+   * Two more frame locals beside the three above, written once in SIM and read
+   * in the DOM phase four phases later, for the reason `frameNow` is: the tick
+   * decides whether a face has moved and the face writes its digits, and the
+   * two must be answering out of the same frame or a digit lands on a frame
+   * nothing dirtied.
+   */
+  let frameZoom = 1;
+  let frameCoarse = false;
+  /**
+   * Whether this timer's seconds can be read where it is drawn — the whole of
+   * T-405, and the one function both the tick and the face ask.
+   *
+   * It replaced `lod.detailed`, which was one answer for the whole board: the
+   * tier is a function of camera zoom alone, and legibility is camera zoom
+   * *times item size*, so a timer somebody had made wall-sized sat on the same
+   * digits for the best part of a minute at 32% while being perfectly readable.
+   *
+   * Declared here — beside the frame locals it reads and above both of its
+   * callers — and defined once rather than per frame, so the tick asking it of
+   * every timer allocates nothing.
+   *
+   * A timer the mirror has lost its pose for answers `false`: minute resolution
+   * is the cheap answer, and a face nobody can locate is not one whose seconds
+   * anybody is reading.
+   */
+  const timerSeconds = (id: string): boolean => {
+    const pose = scene.poseOf(id);
+    return pose === null ? false : secondsAreReadable(pose.w, frameZoom, frameCoarse);
+  };
   /**
    * Assigned near the bottom of this function, where there is somewhere to say
    * a sentence — T-282. Declared here because the tool machine is built long
@@ -801,7 +839,7 @@ async function boot(): Promise<void> {
     const fields = scene.cold(itemId)?.timer;
     return fields === null || fields === undefined
       ? null
-      : timerFace(fields, frameNow, frameDetailed, frameAhead);
+      : timerFace(fields, frameNow, timerSeconds(itemId), frameAhead);
   });
 
   /**
@@ -4562,12 +4600,17 @@ async function boot(): Promise<void> {
     // rather than inside the module — which is what keeps every rule in there
     // testable as a table.
     frameNow = Date.now();
-    frameDetailed = lod.detailed;
+    // The two `timerSeconds` reads, taken here with the frame's clock so that
+    // the tick and the face four phases later are answering out of one camera
+    // rather than two. The tier still matters, but only because the coarse
+    // stylesheet draws the figures *larger* — see `secondsAreReadable`.
+    frameZoom = camera.zoom;
+    frameCoarse = !lod.detailed;
     // Read here rather than inside the tick, like the two above it: a value
     // that moved between the tick and the face would put the digits and the
     // dirty flag on different frames.
     frameAhead = sharedClock.ahead;
-    timers.step(scene, dirty, frameNow, frameDetailed, frameAhead);
+    timers.step(scene, dirty, frameNow, timerSeconds, frameAhead);
     ropes.step(scene, dirty, frame.dt, simView);
   });
 

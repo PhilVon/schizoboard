@@ -111,7 +111,7 @@ import {
   tapeClipPath,
   tapeFlip,
 } from "@/render/items/tape";
-import { DETAIL, type Tier } from "@/render/lod";
+import { DETAIL, readingZoomFor, type Tier } from "@/render/lod";
 import type { ItemLayer } from "@/render/items/view";
 import {
   creaseFace,
@@ -2164,7 +2164,62 @@ class TimerView implements View {
  * share of the object than a card's title is of a card: at 90 units wide this is
  * about 25 units of cap height, which is the number on a real travel clock.
  */
-const TIMER_TEXT = 0.28;
+export const TIMER_TEXT = 0.28;
+
+/**
+ * What the coarse tier's stylesheet multiplies the figures by.
+ *
+ * `items.css`, `:is(.layer-world[data-lod], .item.is-coarse) .timer-digits` —
+ * the caption's row is gone below the threshold and the space it held pays for
+ * larger, heavier figures, because a clock you cannot read the time on is not a
+ * simplified clock but a beige rectangle.
+ *
+ * **Duplicated from CSS, which cannot be imported, so it is stated twice on
+ * purpose.** Kept here rather than only there because the tick has to know how
+ * large the digits actually are to know whether a second is worth writing, and
+ * a stylesheet is not reachable from `state/`. The rule in `items.css` names
+ * this constant so that a change to either is a change somebody is told to make
+ * to both.
+ */
+export const COARSE_DIGIT_SCALE = 1.34;
+
+/**
+ * Can a person read the *seconds* on this timer's face — T-405.
+ *
+ * The question the tick asks of every timer on every frame to decide whether a
+ * running countdown quantises to the second or to the minute, and the question
+ * the face asks to decide which digits to print. One function, because two
+ * answers would be a digit written on a frame nothing dirtied.
+ *
+ * ## Why this replaced a board-wide tier
+ *
+ * It used to be `Lod.detailed` — one boolean for the whole board, `card` below
+ * 35% zoom — on the stated grounds that at that zoom nobody can read a seconds
+ * digit. That is false for any timer somebody has made large. Driven: a
+ * 1400x900 countdown at 32% zoom, perfectly legible, sat on `9:00` for
+ * forty-eight seconds and then jumped to `8:00`. The tier is a function of
+ * camera zoom alone; legibility is camera zoom *times item size*, and the
+ * stylesheet beside it already knew — it *enlarges* the figures below the
+ * threshold precisely so they can still be read.
+ *
+ * ## The approximation, stated
+ *
+ * `--digit-fit` shrinks the figures to `5 / length` for a reading long enough
+ * to carry an hours field, and is not accounted for here: it depends on the
+ * label, and the label is what this decides whether to build. The effect is to
+ * hold seconds slightly past true legibility on a countdown of hours — where
+ * the seconds digit is the least interesting thing on the dial — and never the
+ * other way round, which is the direction to be wrong in.
+ */
+export function secondsAreReadable(widthUnits: number, zoom: number, coarse: boolean): boolean {
+  const digits = widthUnits * TIMER_TEXT * (coarse ? COARSE_DIGIT_SCALE : 1);
+  // Guarded rather than trusted: a zero-width item is nonsense a peer can write
+  // (`readItem` clamps a nonsense size, it does not drop the item), and
+  // `readingZoomFor(0)` is Infinity — which would answer "never readable" and
+  // quietly park that timer on minute resolution forever.
+  if (!Number.isFinite(digits) || digits <= 0 || !Number.isFinite(zoom)) return false;
+  return zoom >= readingZoomFor(digits);
+}
 
 /**
  * The shadow has exactly two bakes — resting and lifted — because they are
