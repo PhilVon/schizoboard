@@ -1061,16 +1061,21 @@ describe("the board menu on bare cork", () => {
     return { invite: { link, copy: (l: string) => copied.push(l) }, copied };
   };
   /** The ageing switch, recording which way it was thrown. */
-  const switching = (on: boolean, flying = false) => {
+  const switching = (on: boolean, flying = false, ringing = true) => {
     const set: boolean[] = [];
     const flew: boolean[] = [];
+    const rang: boolean[] = [];
     return {
       prefs: {
         ageing: { on, set: (next: boolean) => set.push(next) },
         timerFlight: { on: flying, set: (next: boolean) => flew.push(next) },
+        // Defaults to on, unlike the flight beside it — `app/prefs.ts` argues
+        // why the two store their defaults on opposite sides.
+        chime: { on: ringing, set: (next: boolean) => rang.push(next) },
       },
       set,
       flew,
+      rang,
     };
   };
   /** A shell that can read and write a file, recording what it was asked for. */
@@ -2010,6 +2015,8 @@ describe("the board menu on bare cork", () => {
   describe("flying to a timer that goes off", () => {
     const FLY_ON = "Fly to a timer when it goes off";
     const FLY_OFF = "Stop flying to a timer that goes off";
+    const RING_ON = "Ring a timer when it goes off";
+    const RING_OFF = "Silence a timer that goes off";
 
     /** A clock on the wall, which is all this row asks about. */
     function timerUp(id: string): void {
@@ -2061,6 +2068,57 @@ describe("the board menu on bare cork", () => {
       timerUp("t");
       expect(rowsWith(false).rows.map((r) => r.label)).toContain(FLY_ON);
       expect(rowsWith(true).rows.map((r) => r.label)).toContain(FLY_OFF);
+    });
+
+    /**
+     * The bell — T-406, and the same gate for the same reason.
+     *
+     * `rowsWith` builds its switches through `switching(true, flying)`, whose
+     * third argument defaults to the bell being ON — which is the real default
+     * and the one place in these tests it differs from the flight beside it.
+     */
+    const ringRows = (ringing: boolean): { rows: MenuRow[]; rang: boolean[] } => {
+      const switched = switching(true, false, ringing);
+      const rows = boardMenuRows(
+        scene,
+        write,
+        [],
+        [],
+        sharing(null).invite,
+        switched.prefs,
+        null,
+        () => {},
+      ) as MenuRow[];
+      return { rows, rang: switched.rang };
+    };
+
+    it("offers the bell only once there is a timer, like the flight above it", () => {
+      expect(ringRows(true).rows.map((r) => r.label)).not.toContain(RING_OFF);
+      timerUp("t");
+      expect(ringRows(true).rows.map((r) => r.label)).toContain(RING_OFF);
+    });
+
+    it("says what pressing it will do, in both positions", () => {
+      timerUp("t");
+      expect(ringRows(true).rows.map((r) => r.label)).toContain(RING_OFF);
+      expect(ringRows(false).rows.map((r) => r.label)).toContain(RING_ON);
+    });
+
+    it("puts the noise above the flight", () => {
+      // The order a timer uses them: the bell is what reaches you when you are
+      // not looking, and the flight is what happens once you are.
+      timerUp("t");
+      const labels = ringRows(true).rows.map((r) => r.label);
+      expect(labels.indexOf(FLY_ON)).toBeLessThan(labels.indexOf(RING_OFF));
+    });
+
+    it("flips the preference and writes nothing to the board", () => {
+      timerUp("t");
+      const { rows, rang } = ringRows(true);
+      rows.find((r) => r.label === RING_OFF)!.run();
+      expect(rang).toEqual([false]);
+      // A taste about this machine is not an edit to the document.
+      expect(writes).toEqual([]);
     });
 
     it("throws the switch the other way, and writes nothing to the document", () => {
