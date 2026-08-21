@@ -33,7 +33,7 @@
 import { mutate, noteSchemaNeeds, type BoardDoc } from "@/crdt/doc";
 import { Origin } from "@/crdt/origins";
 import { SCHEMA_VERSION, type YMap } from "@/crdt/schema";
-import { type TimerMode } from "@/lib/timer";
+import { MAX_COUNTDOWN_MS, type TimerMode } from "@/lib/timer";
 
 /**
  * Put the settable fields on a brand-new timer, and seal the board behind it.
@@ -94,7 +94,18 @@ function setOrClear(map: YMap, key: string, value: unknown, fallback: unknown): 
  * one as already expired.
  */
 function duration(value: number): number | null {
-  return Number.isFinite(value) && value >= 0 ? value : null;
+  if (!Number.isFinite(value) || value < 0) return null;
+  // Capped rather than refused at the top end — T-407, Q-368. A week is the
+  // longest this build offers to set, and a caller asking for more is a slider
+  // run off its end or a gesture wound past its stop, not a person meaning a
+  // fortnight. Refusing would leave the previous length silently in place while
+  // the hand went on moving; clamping puts the dial against the stop, which is
+  // what a dial does.
+  //
+  // The *reader* has no such cap and must not grow one: a peer on a later build
+  // may write longer, and DATA-MODEL section 8.1's rule is that what arrives is
+  // rendered rather than corrected.
+  return Math.min(value, MAX_COUNTDOWN_MS);
 }
 
 /**
@@ -118,8 +129,9 @@ export function setTimerMode(board: BoardDoc, ids: readonly string[], mode: Time
   });
 }
 
-/** How long a countdown runs for, in milliseconds. Refused rather than clamped
- *  when it is not a duration — see `duration`. */
+/** How long a countdown runs for, in milliseconds. Refused when it is not a
+ *  duration at all and clamped at a week when it is too long a one — see
+ *  `duration` for why those two answers differ. */
 export function setTimerLength(board: BoardDoc, ids: readonly string[], runsFor: number): void {
   const length = duration(runsFor);
   if (length === null) return;

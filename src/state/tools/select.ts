@@ -49,6 +49,7 @@
 
 import { rotateIn, rotateOut, type Point } from "@/lib/rotate";
 import { presetSlack, toggleTaut } from "@/lib/slack";
+import { windOf, windTo } from "@/lib/timer";
 import type { Bounds, Vec2 } from "@/state/camera";
 import {
   chromeFrame,
@@ -191,6 +192,22 @@ const SLACK_ROLL_IDLE_MS = 250;
  */
 export const MIN_RESIZE = 24;
 
+/**
+ * How much of a timer's half-extent counts as rim rather than dial — T-411.
+ *
+ * A third, so the middle two thirds of the case move the clock and the outer
+ * ring winds it. **Generous on purpose, and wider than the bezel that is
+ * drawn**: `items.css` insets the dial by 9% of the case, and a 9% ring on a
+ * 90-unit travel clock is eight units of target — findable with a mouse on a
+ * still object and not with a hand on a swinging one. `HANDLE_GRAB` makes the
+ * same trade against `HANDLE_RADIUS` for the same reason.
+ *
+ * The cost is paid in the right place: what is lost is dragging the clock by a
+ * corner of its case, and what is kept is dragging it by its face, which is the
+ * bigger target and the one a hand reaches for.
+ */
+const WIND_RIM = 1 / 3;
+
 type GesturePhase =
   | "idle"
   | "pending"
@@ -204,6 +221,9 @@ type GesturePhase =
   /** Drag over the page of an open case file: a rectangle being cut out of it
    *  as a clipping — T-282. Square with the *page*, never with the screen. */
   | "clip"
+  /** Drag around the rim of a selected countdown: winding its length — T-411.
+   *  Measured in the item's own frame, so a clock hanging crooked winds true. */
+  | "wind"
   | "pin";
 
 function approach(current: number, target: number, dt: number, tau: number): number {
@@ -362,6 +382,24 @@ export class SelectTool implements Tool {
   };
 
   private phase: GesturePhase = "idle";
+
+  /**
+   * The wind in progress — T-411.
+   *
+   * `windTurns` is where the dial stood when it was grabbed and `windBy` is how
+   * far it has been turned since, kept apart so the gesture is **relative**: an
+   * absolute reading would snap the countdown to wherever the pointer happened
+   * to land the instant the rim was touched.
+   *
+   * `windAngle` is the last raw angle, and it exists only to unwrap the next
+   * one. An angle that crossed from just under pi to just over minus pi would
+   * otherwise read as most of a turn backwards, which on this curve is the
+   * difference between four days and nothing.
+   */
+  private windItem: string | null = null;
+  private windTurns = 0;
+  private windBy = 0;
+  private windAngle = 0;
 
   /** `Alt` on a pin, which is nobody's tool — `state/tools/quickpull.ts`. */
   private readonly pull = new QuickPull();
@@ -994,6 +1032,23 @@ export class SelectTool implements Tool {
 
     const hit = ctx.hitTest(board.x, board.y);
 
+    /**
+     * The rim of a **selected** countdown winds it — T-411.
+     *
+     * Selected first, which is the string wheel's rule (`slackTarget`) and is
+     * here for a reason of its own: a press on the rim of an unselected timer
+     * must still pick it up. Without that, the first grab of a clock would set
+     * its length instead of moving it, and the object would be unusable in the
+     * one way nobody would guess.
+     *
+     * So the middle moves it and the rim winds it, which is also what the two
+     * parts of a real one do.
+     */
+    if (hit !== null && ctx.selection.has(hit) && this.beginWind(hit, board.x, board.y, ctx)) {
+      this.phase = "wind";
+      return;
+    }
+
     if (hit === null) {
       // Empty cork: a marquee. Without Shift it starts from nothing, which is
       // also what makes a plain click on the cork a deselect.
@@ -1053,12 +1108,33 @@ export class SelectTool implements Tool {
       case "clip":
         this.applyClip(at, ctx);
         return;
+      case "wind":
+        this.applyWind(ctx);
+        return;
       default:
         return;
     }
   }
 
   private onUp(at: PointerSample, ctx: ToolContext): void {
+    /**
+     * A wind is finished by letting go and there is nothing to commit — T-411.
+     *
+     * Every frame of it already wrote the length, so the document holds the
+     * dial's position the moment the hand stops. No release write, because a
+     * final `setTimerLength` with the value already there is a second identical
+     * write, and `setOrClear` would put it on the wire for nothing.
+     *
+     * The undo entry is single because those writes were within 400ms of each
+     * other — `crdt/undo.ts`'s `captureTimeout`, and the same thing that makes
+     * dragging an item across the board one entry rather than sixty.
+     */
+    if (this.phase === "wind") {
+      this.resetWind();
+      this.phase = "idle";
+      return;
+    }
+
     /**
      * The two ends of the string gesture, and the same shape as the `Alt` one
      * above. A loop that got as far as moving writes the new pin and the node
@@ -1679,6 +1755,76 @@ export class SelectTool implements Tool {
    * space and converting at the release would hand the harvest a rectangle
    * measured against wherever the paper happened to be when the press landed.
    */
+  /**
+   * Take hold of a countdown's rim, if that is what this press is — T-411.
+   *
+   * Returns whether it took the press. Three things have to be true and each
+   * refusal falls through to the ordinary drag, which is what keeps a timer an
+   * item you can move: it has to be a timer, it has to be in countdown mode
+   * (a clock and a stopwatch have nothing to run out of — AC-1157), and the
+   * press has to be on the rim rather than the dial.
+   */
+  private beginWind(id: string, boardX: number, boardY: number, ctx: ToolContext): boolean {
+    const cold = ctx.scene.cold(id);
+    if (cold?.timer == null || cold.timer.mode !== "countdown") return false;
+    const pose = ctx.scene.poseOf(id);
+    if (pose === null || !(pose.w > 0) || !(pose.h > 0)) return false;
+
+    // Centre-relative and already turned into the item's own frame, so a clock
+    // hanging crooked winds true and the rim test is not skewed by the swing.
+    const local = itemLocal(ctx.scene, id, boardX, boardY);
+    if (local === null) return false;
+    if (Math.abs(local.x) < pose.w * WIND_RIM && Math.abs(local.y) < pose.h * WIND_RIM) {
+      return false;
+    }
+
+    this.windItem = id;
+    this.windTurns = windOf(cold.timer.runsFor);
+    this.windBy = 0;
+    this.windAngle = Math.atan2(local.y, local.x);
+    return true;
+  }
+
+  /**
+   * One frame of winding.
+   *
+   * The angle is unwrapped against the last one before it is accumulated —
+   * `atan2` is discontinuous at pi, and a hand crossing that line would
+   * otherwise be read as very nearly a whole turn in the opposite direction,
+   * which on this curve is the difference between four days and nothing.
+   *
+   * **Written every frame, and that is not the rule D-73 protects.** "Nothing
+   * is written per second" is about a timer *running* — a document nobody is
+   * touching. This is a hand on the object, and it writes exactly as an item
+   * being dragged does, for the same reason: the other peer should see the dial
+   * turn rather than jump when the hand lets go. The undo entry stays single
+   * because `crdt/undo.ts` coalesces on a 400ms `captureTimeout`, which is the
+   * same thing that makes a drag one entry.
+   */
+  private applyWind(ctx: ToolContext): void {
+    const id = this.windItem;
+    if (id === null) return;
+    const board = ctx.camera.screenToBoard(this.lastX, this.lastY, this.board);
+    const local = itemLocal(ctx.scene, id, board.x, board.y);
+    if (local === null) return;
+
+    const angle = Math.atan2(local.y, local.x);
+    let step = angle - this.windAngle;
+    if (step > Math.PI) step -= 2 * Math.PI;
+    else if (step < -Math.PI) step += 2 * Math.PI;
+    this.windAngle = angle;
+    this.windBy += step / (2 * Math.PI);
+
+    ctx.write.setTimerLength([id], windTo(this.windTurns + this.windBy));
+  }
+
+  private resetWind(): void {
+    this.windItem = null;
+    this.windTurns = 0;
+    this.windBy = 0;
+    this.windAngle = 0;
+  }
+
   private applyClip(at: PointerSample, ctx: ToolContext): void {
     const item = this.clipItem;
     if (item === null) return;
@@ -1966,6 +2112,14 @@ export class SelectTool implements Tool {
      */
     this.pendingString = null;
     this.resetLoop();
+    /**
+     * A wind, on the other hand, **cannot** be reverted by forgetting it: it
+     * has been writing the length every frame, so `Esc` mid-wind leaves the
+     * dial wherever the hand had got to. That is the honest behaviour rather
+     * than a gap — the same is true of `Esc` mid-drag on an item, whose pose
+     * has been written all the way along, and undo is what takes back either.
+     */
+    this.resetWind();
     // Nothing was written, so putting the pin back is the whole of the revert.
     if (this.phase === "pin") {
       this.pinDrag.cancel(ctx);
