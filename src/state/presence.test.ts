@@ -110,6 +110,9 @@ describe("what it says", () => {
     // Key-set equality, not a subset check. The point of this test is to fail
     // the day somebody adds a field by handing an object to a setter.
     expect(Object.keys(channel.last).sort()).toEqual([
+      // T-410, and DATA-MODEL section 9 carries it now. The field a clock needs
+      // to be readable on another machine, on its own slow cadence.
+      "clockAt",
       "cursor",
       "grab",
       "locks",

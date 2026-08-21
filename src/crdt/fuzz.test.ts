@@ -307,7 +307,7 @@ const OPERATIONS: readonly Operation[] = [
       // D-73 accepts and the clamp in `pauseTimer` is there for. A harness that
       // threaded one monotonic clock through both would never produce it.
       const now = instant(rng);
-      pauseTimer(board, ids, now);
+      pauseTimer(board, ids, () => now);
       return `pauseTimer @${now} ${ids.join(",")}`;
     },
   },

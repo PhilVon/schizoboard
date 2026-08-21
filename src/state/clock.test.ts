@@ -27,11 +27,11 @@ beforeEach(() => {
 });
 
 function countdown(runFrom: number, runsFor = 300_000): TimerFields {
-  return { mode: "countdown", runsFor, runFrom, banked: 0, lights: null };
+  return { mode: "countdown", runsFor, runFrom, runBy: null, banked: 0, lights: null };
 }
 
 function stopwatch(runFrom: number | null): TimerFields {
-  return { mode: "stopwatch", runsFor: 0, runFrom, banked: 0, lights: null };
+  return { mode: "stopwatch", runsFor: 0, runFrom, runBy: null, banked: 0, lights: null };
 }
 
 describe("SharedClock", () => {
@@ -156,5 +156,85 @@ describe("the reading two machines take of one timer", () => {
     b.learn(600_000);
     const face: TimerFields = { ...stopwatch(null), mode: "clock" };
     expect(readOn(face, T0, b.ahead).label).toBe(timerReading(face, T0, 0).label);
+  });
+});
+
+describe("a peer's own clock, heard over awareness", () => {
+  /**
+   * T-410. A discovered-peer mesh has no single base to be ahead of, and does
+   * not need one: every peer holds a direct link to every other, so each timer
+   * can be read in the frame its own writer keeps.
+   */
+  const PEER = 4242;
+
+  it("measures how far this machine is ahead of a peer", () => {
+    // The peer says 90s ago by our clock, and the message took nothing.
+    clock.hear(PEER, T0 - 90_000, T0);
+    expect(clock.aheadOf(PEER)).toBe(90_000);
+  });
+
+  it("keeps the smallest reading, because delay is never negative", () => {
+    // Every sample is the true offset plus a delay, so the minimum is the one
+    // with the least delay in it. An average would be biased by the mean
+    // latency and would get worse on a busy network rather than better.
+    clock.hear(PEER, T0 - 90_000, T0 + 400);
+    expect(clock.aheadOf(PEER)).toBe(90_400);
+    clock.hear(PEER, T0 - 90_000, T0 + 12);
+    expect(clock.aheadOf(PEER)).toBe(90_012);
+    // And a slower one after it does not spoil what was measured.
+    clock.hear(PEER, T0 - 90_000, T0 + 900);
+    expect(clock.aheadOf(PEER)).toBe(90_012);
+  });
+
+  it("believes a clock that has actually moved", () => {
+    // A minimum that could only fall would pin the estimate for the session,
+    // and a machine that slept for an hour would never be believed again. Past
+    // PEER_RESET_MS no plausible delay explains the gap.
+    clock.hear(PEER, T0, T0);
+    expect(clock.aheadOf(PEER)).toBe(0);
+    clock.hear(PEER, T0 - 3_600_000, T0);
+    expect(clock.aheadOf(PEER)).toBe(3_600_000);
+  });
+
+  it("falls back to this machine's base for a peer it has not heard", () => {
+    // Which is the whole of how the two topologies live together: a mesh has
+    // the writer's offset, and the relay topology has one base for everybody
+    // and an empty table.
+    clock.learn(5_000);
+    expect(clock.aheadOf(PEER)).toBe(5_000);
+    expect(clock.aheadOf(null)).toBe(5_000);
+  });
+
+  it("lets a peer's offset go when the peer does", () => {
+    // The next client to take that id is a different machine.
+    clock.hear(PEER, T0 - 90_000, T0);
+    expect(clock.heard).toBe(1);
+    clock.lost(PEER);
+    expect(clock.heard).toBe(0);
+    expect(clock.aheadOf(PEER)).toBe(0);
+  });
+
+  it("refuses a stamp it cannot believe", () => {
+    clock.hear(PEER, Number.NaN, T0);
+    clock.hear(PEER, 0, T0);
+    clock.hear(PEER, T0 - 20 * 60 * 60 * 1000, T0);
+    expect(clock.heard).toBe(0);
+  });
+
+  it("reads two peers' timers each in its own frame", () => {
+    // The case a single base cannot serve: two machines, each wrong in a
+    // different direction, and a timer from each.
+    const A = 11;
+    const B = 22;
+    clock.hear(A, T0 - 90_000, T0);
+    clock.hear(B, T0 + 30_000, T0);
+
+    const fromA: TimerFields = { ...stopwatch(T0 - 90_000), runBy: A };
+    const fromB: TimerFields = { ...stopwatch(T0 + 30_000), runBy: B };
+    // Both were started at the same real moment, so fifteen seconds later both
+    // must read the same thing on this machine.
+    const at = T0 + 15_000;
+    expect(timerReading(fromA, at, clock.aheadOf(fromA.runBy)).label).toBe("0:15");
+    expect(timerReading(fromB, at, clock.aheadOf(fromB.runBy)).label).toBe("0:15");
   });
 });

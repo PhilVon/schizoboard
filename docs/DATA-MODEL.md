@@ -350,7 +350,8 @@ One state object per client, flushed at most every other frame. Never persisted;
   selection: { items: [...], strings: [...], pins: [...] },
   grab:      null | { kind, ids, poses: [...], seq, t, phase },
   wet:       [ { id, item, page?, tool, color, size, opacity, base, pts: [...] }, ... ],
-  locks:     { segments: [...] }
+  locks:     { segments: [...] },
+  clockAt:   1787322535218
 }
 ```
 
@@ -360,7 +361,13 @@ One state object per client, flushed at most every other frame. Never persisted;
 
 **`cam` is gone** (T-226, Q-171). It carried `{ x, y, zoom }` every other frame on one sentence: that it lets a seeding peer push assets a collaborator is about to look at, before they ask. Nothing ever consumed it. The asset exchange is *pull-only by construction* — `exchange.ts` drops unsolicited `DATA` outright, because a peer being helpful is a peer interleaving two streams into one file — so the push path is not a reader bolted onto this field but a new direction of travel plus a relaxed receive guard on the one boundary that guard exists for. Three numbers every other frame were never the cost; a stated justification that is not true was. Putting the field back is four lines, and belongs to whatever builds the offer path.
 
-**Panning is not a change.** With `cam` off it, nothing in this object moves when the camera does — `cursor` is in board coordinates — so a peer scrolling around a board with a still hand now publishes nothing at all.
+**`clockAt` is this peer's wall clock, and it is the one field with a cadence of its own** (T-410). It is `Date.now()` — not `grab.t`, which is `performance.now()` and whose epoch means nothing on another machine — and it exists so a peer can be read *in the frame its own clock keeps*. A timer's `runFrom` is an instant written by one machine and subtracted on another, and without this the two disagree by exactly however far their clocks do.
+
+It is the field `cam`'s removal describes the conditions for: that note ends "putting the field back is four lines, and belongs to whatever builds the offer path", and the objection to `cam` was never the three numbers but a stated justification that was not true. This one has a consumer — `state/clock.ts` keeps a per-peer offset table and `crdt/ops/timers.ts` names the writer of every start in `runBy`, so the two meet at a subtraction that is now correct.
+
+**It is refreshed at most every 30 seconds**, which is what makes it affordable. A field that changed on every publish would make every publish happen, because `flush` short-circuits on an unchanged payload — that is the cost `cam` actually had. A wall clock does not drift on any timescale a board cares about; what it does is *jump*, when a machine wakes or an NTP correction lands, and half a minute bounds how long a timer reads wrongly after one.
+
+**Panning is not a change.** With `cam` off it, nothing in this object moves when the camera does — `cursor` is in board coordinates — so a peer scrolling around a board with a still hand publishes nothing at all *except* `clockAt`, which is one small message every half minute and is deliberate: a peer sitting perfectly still is exactly the peer whose clock nobody would otherwise hear about, and no less likely to have started the countdown everybody is watching.
 
 ### 9.1 Wet ink over a last-write-wins channel
 

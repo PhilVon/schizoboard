@@ -133,6 +133,7 @@ describe("the first timer", () => {
       mode: "countdown",
       runsFor: 300_000,
       runFrom: null,
+      runBy: null,
       banked: 0,
       lights: null,
     });
@@ -167,6 +168,7 @@ describe("reading a timer back", () => {
       mode: "stopwatch",
       runsFor: 0,
       runFrom: null,
+      runBy: null,
       banked: 0,
       lights: null,
     });
@@ -246,7 +248,7 @@ describe("nothing is written per second", () => {
     setTimerMode(b, [id], "countdown");
     setTimerLength(b, [id], 300_000);
     startTimer(b, [id], T);
-    pauseTimer(b, [id], T + 60_000);
+    pauseTimer(b, [id], () => T + 60_000);
     resetTimer(b, [id]);
     setTimerLights(b, id, "some-other-item");
 
@@ -282,7 +284,7 @@ describe("working a timer", () => {
     const running = readItem(id, mapOf(b, id))!.timer!;
     expect(elapsedOf(running, T + 90_000)).toBe(90_000);
 
-    pauseTimer(b, [id], T + 90_000);
+    pauseTimer(b, [id], () => T + 90_000);
     const paused = readItem(id, mapOf(b, id))!.timer!;
     expect(paused.runFrom).toBeNull();
     expect(paused.banked).toBe(90_000);
@@ -296,7 +298,7 @@ describe("working a timer", () => {
     const b = board();
     const id = putTimer(b, { mode: "stopwatch" });
     startTimer(b, [id], T);
-    pauseTimer(b, [id], T + 30_000);
+    pauseTimer(b, [id], () => T + 30_000);
     startTimer(b, [id], T + 100_000);
     expect(elapsedOf(readItem(id, mapOf(b, id))!.timer!, T + 130_000)).toBe(60_000);
   });
@@ -316,7 +318,7 @@ describe("working a timer", () => {
     const b = board();
     const id = putTimer(b, { mode: "stopwatch" });
     startTimer(b, [id], T + 4_000);
-    pauseTimer(b, [id], T);
+    pauseTimer(b, [id], () => T);
     const timer = readItem(id, mapOf(b, id))!.timer!;
     expect(timer.banked).toBe(0);
     expect(timer.runFrom).toBeNull();
@@ -326,8 +328,8 @@ describe("working a timer", () => {
     const b = board();
     const id = putTimer(b, { mode: "stopwatch" });
     startTimer(b, [id], T);
-    pauseTimer(b, [id], T + 30_000);
-    pauseTimer(b, [id], T + 90_000);
+    pauseTimer(b, [id], () => T + 30_000);
+    pauseTimer(b, [id], () => T + 90_000);
     expect(readItem(id, mapOf(b, id))!.timer!.banked).toBe(30_000);
   });
 
@@ -335,12 +337,13 @@ describe("working a timer", () => {
     const b = board();
     const id = putTimer(b, { mode: "countdown", runsFor: 300_000 });
     startTimer(b, [id], T);
-    pauseTimer(b, [id], T + 30_000);
+    pauseTimer(b, [id], () => T + 30_000);
     resetTimer(b, [id]);
     expect(readItem(id, mapOf(b, id))!.timer).toEqual({
       mode: "countdown",
       runsFor: 300_000,
       runFrom: null,
+      runBy: null,
       banked: 0,
       lights: null,
     });
@@ -382,7 +385,7 @@ describe("copying a timer", () => {
     const b = board();
     const id = putTimer(b, { mode: "countdown", runsFor: 300_000 });
     startTimer(b, [id], T);
-    pauseTimer(b, [id], T + 120_000);
+    pauseTimer(b, [id], () => T + 120_000);
 
     const clip = copySubgraph(b, { items: [id], pins: [] })!;
     const pasted = pasteClip(b, clip, { x: 500, y: 500 });
@@ -393,6 +396,7 @@ describe("copying a timer", () => {
       mode: "countdown",
       runsFor: 300_000,
       runFrom: null,
+      runBy: null,
       banked: 0,
       lights: null,
     });
@@ -446,5 +450,50 @@ describe("copying a timer", () => {
     const target = board();
     pasteClip(target, clip, { x: 0, y: 0 });
     expect(boardSchemaVersion(target)).toBe(SCHEMA_BASELINE);
+  });
+});
+
+describe("a timer one person starts and another stops", () => {
+  /**
+   * T-410. `banked` is a duration and has to come out clock-free, but it is
+   * computed as `now - runFrom` — and those are two machines' clocks the moment
+   * the person who stops a timer is not the person who started it.
+   */
+  const T0 = 1_787_322_535_218;
+  const SKEW = 90_000;
+
+  it("banks the run and not the skew between the two machines", () => {
+    const board = openBoardDoc();
+    initialiseBoard(board, "test");
+    const id = createItems(board, [
+      { type: "timer", x: 0, y: 0, w: 220, h: 150, timer: { mode: "stopwatch" } },
+    ])[0]!.itemId;
+
+    // Started by a peer whose clock reads 90 seconds behind ours, in its own
+    // frame — which is what `startTimer` writes now.
+    const map = board.items.get(id)!;
+    map.set("runFrom", T0 - SKEW);
+    map.set("runBy", 777);
+
+    // We stop it fifteen seconds later by our clock, converting into theirs.
+    pauseTimer(board, [id], (writer) => (writer === 777 ? T0 + 15_000 - SKEW : T0 + 15_000));
+    expect(map.get("banked")).toBe(15_000);
+  });
+
+  it("banks the skew if the conversion is skipped, which is the bug", () => {
+    // The negative control, so the test above cannot pass for the wrong reason:
+    // handing the op this machine's raw clock banks a quarter of an hour that
+    // nobody spent, and `banked` is what survives every later pause and resume.
+    const board = openBoardDoc();
+    initialiseBoard(board, "test");
+    const id = createItems(board, [
+      { type: "timer", x: 0, y: 0, w: 220, h: 150, timer: { mode: "stopwatch" } },
+    ])[0]!.itemId;
+    const map = board.items.get(id)!;
+    map.set("runFrom", T0 - SKEW);
+    map.set("runBy", 777);
+
+    pauseTimer(board, [id], () => T0 + 15_000);
+    expect(map.get("banked")).toBe(15_000 + SKEW);
   });
 });

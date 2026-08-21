@@ -260,6 +260,7 @@ describe("Binding — timers", () => {
       // cannot say otherwise — so these two are the reset state and not an
       // omission from the test.
       runFrom: null,
+      runBy: null,
       banked: 0,
       lights: lit,
     });
@@ -289,7 +290,7 @@ describe("Binding — timers", () => {
     startTimer(board, [id], at);
     expect(scene.cold(id)!.timer!.runFrom).toBe(at);
 
-    pauseTimer(board, [id], at + 4_000);
+    pauseTimer(board, [id], () => at + 4_000);
     // The two halves of the pause both arrive, and they arrive together: a
     // mirror that had seen only the cleared `runFrom` would read a timer that
     // had jumped back to nothing.

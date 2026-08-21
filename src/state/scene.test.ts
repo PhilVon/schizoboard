@@ -1683,7 +1683,7 @@ describe("tape holds a string to the paper and the paper to nothing", () => {
  * and for every test that puts an item down by hand.
  */
 describe("the clock in the cold record", () => {
-  const clock = { mode: "clock", runsFor: 0, runFrom: null, banked: 0, lights: null } as const;
+  const clock = { mode: "clock", runsFor: 0, runFrom: null, runBy: null, banked: 0, lights: null } as const;
 
   it("fills a left-off timer in with null", () => {
     const scene = new Scene();

@@ -170,11 +170,53 @@ export interface PresenceLock {
   b: string;
 }
 
+/**
+ * How often a peer says what its wall clock reads — T-410.
+ *
+ * Half a minute, and deliberately slow. A wall clock does not drift on any
+ * timescale a board cares about; what it does is *jump*, when a machine wakes
+ * from sleep or an NTP correction lands, and this is what bounds how long a
+ * timer can read wrongly after one of those. The same argument the relay's own
+ * clock exchange makes for its minute, one notch tighter because this one also
+ * has to cover a peer arriving.
+ *
+ * It is not a cadence for the awareness wire: a publish that carries nothing
+ * else new is one small message every thirty seconds per peer.
+ */
+export const CLOCK_EVERY_MS = 30_000;
+
 export interface PresenceState {
   user: PresenceUser;
   cursor: PresenceCursor | null;
   selection: PresenceSelection;
   grab: PresenceGrab | null;
+  /**
+   * This peer's **wall clock** when the state was published — T-410.
+   *
+   * Not `grab.t`, which is `performance.now()` and whose epoch means nothing on
+   * another machine. This is `Date.now()`, the same clock a timer's `runFrom`
+   * is written in, so a reader can measure how far its own wall clock is from
+   * this peer's and read that peer's timers in the frame they were written.
+   *
+   * ## Why a clock is allowed on this wire now
+   *
+   * `cam` came off it (T-226) because it was published every other frame and
+   * **read by nobody** — that note says in as many words that putting a field
+   * back belongs to whichever task builds a consumer. This has one, and it is
+   * the whole of what makes a discovered-peer mesh work without electing
+   * anybody (`app/mesh.ts` refuses an election, for three reasons that are all
+   * problems about a shared base).
+   *
+   * ## And why it does not cost what `cam` cost
+   *
+   * A field that changed every publish would make every publish happen: `flush`
+   * short-circuits on an unchanged payload, and a live timestamp would defeat
+   * that for the whole board. So this is refreshed at most every
+   * [`CLOCK_EVERY_MS`], which is what a wall clock actually needs — it does not
+   * drift on a frame timescale, and what it does is jump, when a machine wakes
+   * or an NTP correction lands.
+   */
+  clockAt: number;
   /**
    * > `locks: { segments: [...] }` — docs/DATA-MODEL.md section 9
    *
@@ -215,6 +257,9 @@ export interface PresencePoses {
 }
 
 export interface PresenceOptions {
+  /** The wall clock, for [`PresenceState.clockAt`]. Injected so a test can make
+   *  two peers disagree on purpose. */
+  wallNow?: () => number;
   /**
    * Publish on every nth frame. Two is section 9's "at most every other frame";
    * a slower peer or a busier board can be given a larger number without
@@ -328,6 +373,11 @@ export class Presence {
   private readonly wet = new WetWire();
 
   private readonly now: () => number;
+  private readonly wallNow: () => number;
+  /** The wall instant last published, and the thing [`CLOCK_EVERY_MS`] paces.
+   *  Zero until the first flush, which is never a believable instant and is
+   *  therefore always stale. */
+  private clockAt = 0;
   /**
    * The grab as it stands, rebuilt by `grabbing` and published from here.
    *
@@ -363,6 +413,10 @@ export class Presence {
     this.user = user;
     this.everyNthFrame = Math.max(1, Math.floor(options.everyNthFrame ?? 2));
     this.now = options.now ?? (() => performance.now());
+    // The wall clock, separately from the monotonic one above, because they
+    // answer different questions and only one of them means anything on another
+    // machine. Injected for the reason every clock in this application is.
+    this.wallNow = options.wallNow ?? (() => Date.now());
   }
 
   /**
@@ -487,8 +541,20 @@ export class Presence {
     if (this.stopped) return;
     if (frameIndex % this.everyNthFrame !== 0) return;
 
+    /**
+     * The clock stamp, refreshed on its own slow schedule — T-410.
+     *
+     * Read *before* the short-circuit below and allowed to defeat it, because
+     * a peer sitting perfectly still is exactly the peer whose clock nobody
+     * would otherwise ever hear about — and a still peer is no less likely to
+     * have started the countdown everybody is watching.
+     */
+    const wall = this.wallNow();
+    const stale = !Number.isFinite(this.clockAt) || Math.abs(wall - this.clockAt) >= CLOCK_EVERY_MS;
+    if (stale) this.clockAt = wall;
+
     const cursor = this.pointer;
-    if (this.published && !this.changed(cursor)) return;
+    if (this.published && !stale && !this.changed(cursor)) return;
 
     this.cursor = cursor;
     this.selected = this.selection.snapshot();
@@ -562,6 +628,7 @@ export class Presence {
       // `selection` above: naming the fields again here would copy an object
       // this module has just made and nobody else can reach.
       grab: this.grabWire,
+      clockAt: this.clockAt,
       // Field by field like everything else, and a fresh single-entry array
       // rather than one held anywhere: the claim is three strings and the point
       // of naming them here is that nothing else can arrive by this route.

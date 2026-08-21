@@ -150,6 +150,25 @@ export interface TimerFields {
    */
   banked: number;
   /**
+   * The Yjs client id whose clock `runFrom` is written in — T-410, or `null`.
+   *
+   * A timer's only *instant* is `runFrom` (`banked` is a duration and needs no
+   * clock at all), and it has exactly one writer at a time — so naming that
+   * writer is enough to read every timer in the frame it was written in.
+   *
+   * That is what lets a discovered-peer mesh work without electing anybody.
+   * `app/mesh.ts` refuses an election for three stated reasons, all of them
+   * problems about a *shared base*: who won, what happens when they close their
+   * laptop, and telling that apart from the network going. Per-writer offsets
+   * have no shared base, so none of the three arises.
+   *
+   * Null on every timer started before this existed, and by any build that does
+   * not write it — which reads as "use whatever base this machine has", and is
+   * exactly right in the topology T-404 fixed, where there is one base for
+   * everybody.
+   */
+  runBy: number | null;
+  /**
    * The item this timer lights amber when it expires, or `null`.
    *
    * May dangle. DATA-MODEL section 8.1 tolerates a dangling reference and never
@@ -166,6 +185,7 @@ export const NO_TIMER: TimerFields = Object.freeze({
   mode: "clock",
   runsFor: 0,
   runFrom: null,
+  runBy: null,
   banked: 0,
   lights: null,
 });
