@@ -263,18 +263,35 @@ export class ContextMenu {
        * person has chosen one.
        */
       if (choice.pick !== undefined) {
+        /**
+         * A `span` carrying the chip and the input carrying the colour — the
+         * same two-part shape every other chip here has, where the box is one
+         * element and the mark inside it is another.
+         *
+         * A `span` and not a `button`, which is the whole reason this branch
+         * exists: nesting a control in a control is how one click comes to mean
+         * two things, and the delegated handler on this menu would find the
+         * button's `data-run` and close before the picker ever opened. A span
+         * is not focusable, carries no `data-run`, and lets the press through
+         * to the input underneath it.
+         */
+        const box = document.createElement("span");
+        box.className = `menu-chip menu-chip-colour${choice.current === true ? " menu-on" : ""}`;
+        box.title = choice.label;
+
         const input = document.createElement("input");
         input.type = "color";
         input.value = choice.pick;
-        input.className = `menu-item menu-chip menu-pick${choice.current === true ? " menu-on" : ""}`;
+        input.className = "menu-colour";
         input.setAttribute("aria-label", choice.label);
-        input.title = choice.label;
         input.addEventListener("change", () => {
           const hex = input.value;
           this.close();
           choice.picked?.(hex);
         });
-        strip.append(input);
+
+        box.append(input);
+        strip.append(box);
         continue;
       }
 
