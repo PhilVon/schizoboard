@@ -124,6 +124,7 @@ import { DirtySets } from "@/state/dirty";
 import { dirtyFacing } from "@/state/facing";
 import { Flashes } from "@/state/flash";
 import { timerFace } from "@/lib/timer";
+import { SharedClock } from "@/state/clock";
 import { Timers } from "@/state/timers";
 import { PaperTurn, TURN_UP } from "@/state/turn";
 import { Flight } from "@/state/flight";
@@ -671,6 +672,19 @@ async function boot(): Promise<void> {
    */
   const timers = new Timers();
   /**
+   * The board's clock, as distinct from this machine's — T-404.
+   *
+   * Held here because both halves of the correction are read from this
+   * function: the two instants a timer is *written* with, and the offset the
+   * SIM phase hands to the tick and the face. Nothing else in the application
+   * needs it, and `state/clock.ts` reads no clock of its own.
+   *
+   * Untaught, so zero, so every reading below is exactly what this build
+   * produced before — a board with no wire has nobody to disagree with. What
+   * measures a real offset is Q-370's business and is not wired yet.
+   */
+  const sharedClock = new SharedClock();
+  /**
    * The wall-clock instant this frame is being drawn at, and the tier it is
    * being drawn at — both written once, in the SIM phase, and read by the item
    * layer in the DOM phase four phases later.
@@ -689,6 +703,18 @@ async function boot(): Promise<void> {
    */
   let frameNow = 0;
   let frameDetailed = true;
+  /**
+   * How far this machine's wall clock runs ahead of the base every peer
+   * measures a run against — `state/clock.ts`, T-404.
+   *
+   * A third frame local beside the other two, and read in the same breath, for
+   * the reason those two are: the tick and the face must correct by the same
+   * amount on the same frame, or they quantise either side of a second.
+   *
+   * Zero on a board with nobody to disagree with, which is every board this
+   * application has ever opened alone.
+   */
+  let frameAhead = 0;
   /**
    * Assigned near the bottom of this function, where there is somewhere to say
    * a sentence — T-282. Declared here because the tool machine is built long
@@ -775,7 +801,7 @@ async function boot(): Promise<void> {
     const fields = scene.cold(itemId)?.timer;
     return fields === null || fields === undefined
       ? null
-      : timerFace(fields, frameNow, frameDetailed);
+      : timerFace(fields, frameNow, frameDetailed, frameAhead);
   });
 
   /**
@@ -1176,12 +1202,18 @@ async function boot(): Promise<void> {
      */
     startTimer: (ids) => {
       const snapshot = [...ids];
-      const at = Date.now();
+      // In the shared base and not this machine's clock — T-404. The instant
+      // goes into a document another machine reads, so it has to mean the same
+      // thing there; a raw `Date.now()` here is what froze a countdown on the
+      // second peer for as long as the two clocks disagreed.
+      const at = sharedClock.shared(Date.now());
       queued.push(() => startTimer(board, snapshot, at));
     },
     pauseTimer: (ids) => {
       const snapshot = [...ids];
-      const at = Date.now();
+      // The same base as the start it is banking, necessarily: `pauseTimer`
+      // subtracts one from the other, and two bases would bank the skew.
+      const at = sharedClock.shared(Date.now());
       queued.push(() => pauseTimer(board, snapshot, at));
     },
     resetTimer: (ids) => {
@@ -4093,6 +4125,40 @@ async function boot(): Promise<void> {
   else console.info(`[sync] ${plan.config.mode} · ${address}`);
   provider?.on("error", (error) => console.warn("[sync] error", error));
   provider?.on("denied", (reason) => console.warn(`[sync] denied: ${reason}`));
+  /**
+   * The board's clock, learned from the relay — T-404, Q-370.
+   *
+   * **This provider only, and never a mesh peer.** A base is only a base if
+   * there is one of it. In the topology a person actually joins a board
+   * through, there is: the host dials its own embedded relay on loopback and
+   * measures an offset of nothing, a guest dials that same relay through an
+   * invite, and both are then reading their timers against the host's clock.
+   * That is the whole of the reported case, and it is fixed.
+   *
+   * The discovered-peer mesh is **not** covered, and the reason is the one
+   * `app/mesh.ts` gives for electing nobody: there, each machine's primary
+   * provider is its *own* loopback relay, so every peer measures an offset of
+   * zero against itself and the skew between them stands. Correcting each
+   * toward the other's relay would be worse than leaving it — two peers would
+   * each apply the full offset and overshoot by twice the skew — and choosing
+   * one of them to be the clock is an election this application has decided
+   * not to hold. Written down rather than half-done; see T-410.
+   *
+   * `forget` on losing the wire and not merely on `offline`: an offset measured
+   * against a relay we are no longer talking to is a stale correction, and a
+   * stale correction to a running timer is the bug this fixes wearing a
+   * different hat.
+   */
+  provider?.on("clock", ({ ahead, roundTripMs }) => {
+    if (!sharedClock.learn(ahead)) {
+      console.warn(`[sync] refused a clock offset of ${Math.round(ahead)}ms`);
+      return;
+    }
+    console.info(`[sync] board clock: this machine is ${Math.round(ahead)}ms ahead (round trip ${Math.round(roundTripMs)}ms)`);
+  });
+  provider?.on("status", (state) => {
+    if (state === "offline") sharedClock.forget();
+  });
 
   /**
    * The bytes behind the document (T-74).
@@ -4497,7 +4563,11 @@ async function boot(): Promise<void> {
     // testable as a table.
     frameNow = Date.now();
     frameDetailed = lod.detailed;
-    timers.step(scene, dirty, frameNow, frameDetailed);
+    // Read here rather than inside the tick, like the two above it: a value
+    // that moved between the tick and the face would put the digits and the
+    // dirty flag on different frames.
+    frameAhead = sharedClock.ahead;
+    timers.step(scene, dirty, frameNow, frameDetailed, frameAhead);
     ropes.step(scene, dirty, frame.dt, simView);
   });
 
@@ -5220,6 +5290,16 @@ async function boot(): Promise<void> {
       remoteDebug,
       scene,
       camera,
+      /**
+       * The board's clock against this machine's — T-404.
+       *
+       * Here for exactly the reason `flashes` is: an offset is by design not
+       * drawn anywhere, and two peers disagreeing about the time is invisible
+       * on screen until a timer has already frozen on one of them. It is also
+       * the only way a driven run can make two clocks disagree on purpose,
+       * which is what the bug needed and no unit test could supply.
+       */
+      sharedClock,
       ropes,
       dirty,
       /**

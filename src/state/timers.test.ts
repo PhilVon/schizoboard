@@ -53,8 +53,12 @@ function board(fields: Partial<TimerFields>, text = "", primeAt: number | null =
   dirty: DirtySets;
   timers: Timers;
   fired: Expiry[];
-  /** One frame at `now`, at the full tier unless told otherwise. */
-  frame: (now: number, detailed?: boolean) => void;
+  /**
+   * One frame at `now`, at the full tier unless told otherwise, and on a
+   * machine whose clock agrees with whoever pressed start unless told
+   * otherwise (T-404).
+   */
+  frame: (now: number, detailed?: boolean, ahead?: number) => void;
   set: (next: Partial<TimerFields>) => void;
 } {
   const scene = new Scene();
@@ -66,8 +70,8 @@ function board(fields: Partial<TimerFields>, text = "", primeAt: number | null =
     scene.putItem(cold("t", { ...NO_TIMER, ...fields, ...next }, text), pose());
   };
   set({});
-  const frame = (now: number, detailed = true): void =>
-    timers.step(scene, dirty, now, detailed);
+  const frame = (now: number, detailed = true, ahead = 0): void =>
+    timers.step(scene, dirty, now, detailed, ahead);
   if (primeAt !== null) frame(primeAt);
   dirty.clear();
   return { scene, dirty, timers, fired, frame, set };
@@ -271,7 +275,7 @@ describe("the dirty rule", () => {
     scene.putItem(cold("t", { ...NO_TIMER, mode: "stopwatch", runFrom: T0 }), pose());
     dirty.clear();
 
-    new Timers().step(scene, dirty, T0 + 5_000, true);
+    new Timers().step(scene, dirty, T0 + 5_000, true, 0);
     expect(dirty.items.size).toBe(0);
   });
 
@@ -281,10 +285,10 @@ describe("the dirty rule", () => {
     const timers = new Timers();
     scene.putItem(cold("run", { ...NO_TIMER, mode: "stopwatch", runFrom: T0 }), pose());
     scene.putItem(cold("held", { ...NO_TIMER, mode: "stopwatch", banked: 4_000 }), pose());
-    timers.step(scene, dirty, T0, true);
+    timers.step(scene, dirty, T0, true, 0);
     dirty.clear();
 
-    timers.step(scene, dirty, T0 + 1_000, true);
+    timers.step(scene, dirty, T0 + 1_000, true, 0);
     // Split by id rather than counted: a run that dirtied both, or the wrong
     // one, reports the same total as the right answer.
     expect(dirty.items.has("run")).toBe(true);
@@ -342,7 +346,7 @@ describe("what the tick refuses to depend on", () => {
         pose(),
       );
 
-      for (let i = 0; i < 100; i += 1) timers.step(scene, dirty, T0 + i * 16, true);
+      for (let i = 0; i < 100; i += 1) timers.step(scene, dirty, T0 + i * 16, true, 0);
       expect(fired).toHaveLength(1);
       // ARCHITECTURE section 3: one rAF, and nothing animates on its own. `now`
       // arrives as an argument, which is also the whole reason every assertion
@@ -365,7 +369,7 @@ describe("what the tick refuses to depend on", () => {
     // a state this could not read, so the assertion is that nothing happens at
     // all - which is what a board with no clock on it should cost.
     const look = vi.spyOn(scene, "cold");
-    new Timers().step(scene, dirty, T0, true);
+    new Timers().step(scene, dirty, T0, true, 0);
     expect(look).not.toHaveBeenCalled();
     expect(dirty.items.size).toBe(0);
     look.mockRestore();
@@ -379,20 +383,55 @@ describe("what the tick refuses to depend on", () => {
     timers.onExpire((e) => fired.push(e));
 
     scene.putItem(cold("t", { ...NO_TIMER, mode: "countdown", runsFor: 1_000, runFrom: T0 }), pose());
-    timers.step(scene, dirty, T0, true);
-    timers.step(scene, dirty, T0 + 1_000, true);
+    timers.step(scene, dirty, T0, true, 0);
+    timers.step(scene, dirty, T0 + 1_000, true, 0);
     expect(fired).toHaveLength(1);
 
     scene.removeItem("t");
-    timers.step(scene, dirty, T0 + 2_000, true);
+    timers.step(scene, dirty, T0 + 2_000, true, 0);
 
     // Put back, with the same id and the same run. An id whose fired edge had
     // been kept would sit there expired and silent; an id whose reading had been
     // kept would be first-sighted wrongly. Slots are reused and so are ids after
     // an undo, so this is the ordinary case rather than a contrived one.
     scene.putItem(cold("t", { ...NO_TIMER, mode: "countdown", runsFor: 1_000, runFrom: T0 }), pose());
-    timers.step(scene, dirty, T0 + 3_000, true);
+    timers.step(scene, dirty, T0 + 3_000, true, 0);
     // First sight again: recorded, not announced.
+    expect(fired).toHaveLength(1);
+  });
+
+  /**
+   * Expiry, on a machine whose clock disagrees with the one that pressed start
+   * — T-404.
+   *
+   * The two halves of the tick correct together or not at all. `check` reads
+   * the exact elapsed and never the quantised one, so a skew it did not know
+   * about would put the going-off up to that skew early or late — which for a
+   * countdown shorter than the skew means firing the moment the start arrives,
+   * and for the other sign means never firing while somebody watches the face
+   * sit still.
+   */
+  it("goes off at the same moment on a peer whose clock is behind", () => {
+    const AHEAD = -90_000;
+    const { fired, frame } = board({ mode: "countdown", runsFor: 10_000, runFrom: T0 });
+    // This peer's wall clock reads ninety seconds earlier than the machine that
+    // started it, so its own `Date.now()` at the ten-second mark is this.
+    const localAtExpiry = T0 + 10_000 + AHEAD;
+    frame(localAtExpiry - 1_000, true, AHEAD);
+    expect(fired).toHaveLength(0);
+    frame(localAtExpiry, true, AHEAD);
+    expect(fired).toHaveLength(1);
+  });
+
+  it("does not go off early on a peer whose clock is ahead", () => {
+    // Two hundred seconds ahead against a countdown of sixty. Uncorrected this
+    // fires on the frame the start arrives; corrected it has fifty-nine seconds
+    // still to run.
+    const AHEAD = 200_000;
+    const { fired, frame } = board({ mode: "countdown", runsFor: 60_000, runFrom: T0 });
+    frame(T0 + AHEAD + 1_000, true, AHEAD);
+    expect(fired).toHaveLength(0);
+    frame(T0 + AHEAD + 60_000, true, AHEAD);
     expect(fired).toHaveLength(1);
   });
 
@@ -405,7 +444,7 @@ describe("what the tick refuses to depend on", () => {
     // mode of the alternative is a thrown error inside the frame loop, which
     // takes the whole board down rather than one clock.
     const look = vi.spyOn(scene, "cold").mockReturnValue(null);
-    expect(() => new Timers().step(scene, dirty, T0, true)).not.toThrow();
+    expect(() => new Timers().step(scene, dirty, T0, true, 0)).not.toThrow();
     look.mockRestore();
   });
 });

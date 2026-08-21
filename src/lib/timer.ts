@@ -36,16 +36,45 @@
  * is what a timer is for, it is already a `Y.Text` two people can type into, and
  * it is already reachable through the caret path.
  *
- * ## Clock skew is accepted, on a precedent already in the building
+ * ## Clock skew was accepted, and it should not have been — T-404
  *
- * `runFrom` is `Date.now()` on the writing machine and the subtraction happens
- * on the reading one, so a peer whose clock is fast sees a countdown further
- * along. `render/items/wear.ts` already ages every item from `Date.now()` on
- * each machine with no correction (DESIGN section 4.7, Q-105), and awareness
- * carries no clock and must not learn one — T-226 took the camera off it. Two
- * real clocks on two real walls disagree, and this board has already decided
- * that is fine. What is refused is *nonsense* rather than skew: a `runFrom` from
- * the future clamps to "just started" rather than running the elapsed negative.
+ * This file used to argue that `runFrom` being `Date.now()` on the writing
+ * machine, subtracted on the reading one, was a tolerable inaccuracy — on the
+ * precedent of `render/items/wear.ts`, which ages every item from each
+ * machine's own clock with no correction (DESIGN section 4.7, Q-105). The
+ * precedent was borrowed from a domain where the error is invisible into the
+ * one domain where it is the entire feature. A ninety-second error in how brown
+ * a note has gone is not noticeable; a ninety-second error in a stopwatch is
+ * the stopwatch.
+ *
+ * And it did not degrade gently. The clamp below reads a negative elapsed as
+ * zero, so a peer whose clock is *behind* the one that pressed start did not
+ * see the countdown slightly early — it saw it as never started, frozen on its
+ * opening digits until the skew ran out. Measured on two real peers, with one
+ * clock put ninety seconds back: a stopwatch reading `0:15` on one machine and
+ * `0:00` on the other, both holding a byte-identical `runFrom`. D-74 has the
+ * runs.
+ *
+ * So `runFrom` is now an instant in a base every peer measures against, and
+ * `ahead` is how far this machine's wall clock runs ahead of that base
+ * (`state/clock.ts`). Zero — the default on every function here — is a board
+ * with nobody to disagree with, and is exactly this build's old behaviour.
+ *
+ * **A clock face is exempt and takes the raw `now`.** It shows what time it is
+ * here, on the same wall as the taskbar; a countdown and a stopwatch measure a
+ * duration against an instant somebody else may have written, and only those
+ * two are corrected.
+ *
+ * What is still refused is *nonsense* rather than skew: a `runFrom` from the
+ * future clamps to "just started" rather than running the elapsed negative.
+ *
+ * One correction while here, because the sentence this replaces cited it: it
+ * said awareness "carries no clock and must not learn one — T-226 took the
+ * camera off it". T-226 did no such thing. `cam` came off the wire because it
+ * was published every other frame and *read by nobody* (`state/presence.ts`),
+ * and that note says in as many words that putting it back belongs to whichever
+ * task builds a consumer. The precedent is against an unconsumed field, not
+ * against a clock.
  *
  * ## Why here
  *
@@ -171,12 +200,17 @@ function ms(value: number): number {
  * perfectly good duration and a catastrophic instant, and reading a `NaN` start
  * as the epoch would put fifty-six years on the face.
  */
-export function elapsedOf(fields: TimerFields, now: number): number {
+export function elapsedOf(fields: TimerFields, now: number, ahead = 0): number {
   const banked = ms(fields.banked);
   const from = fields.runFrom;
   if (from === null || !Number.isFinite(from) || from <= 0) return banked;
   if (!Number.isFinite(now)) return banked;
-  return banked + Math.max(0, now - from);
+  // `runFrom` is an instant in the base every peer measures against, and `now`
+  // is this machine's wall clock — so the clock comes to the instant rather
+  // than the instant being rewritten to the clock. See `state/clock.ts` for why
+  // that direction and not the other.
+  const since = Number.isFinite(ahead) ? now - ahead : now;
+  return banked + Math.max(0, since - from);
 }
 
 /** What a face needs, and nothing a face does not. */
@@ -214,8 +248,8 @@ export interface TimerReading {
  * Pure and total: same arguments, same answer, no clock read, no DOM, no
  * document. That is what makes the whole feature testable as a table.
  */
-export function timerReading(fields: TimerFields, now: number): TimerReading {
-  const elapsed = elapsedOf(fields, now);
+export function timerReading(fields: TimerFields, now: number, ahead = 0): TimerReading {
+  const elapsed = elapsedOf(fields, now, ahead);
   const running = fields.runFrom !== null;
   if (fields.mode === "clock") {
     return { mode: "clock", running, elapsed, remaining: 0, expired: false, label: clockLabel(now) };
@@ -285,14 +319,19 @@ export interface TimerFace extends TimerReading {
  * notice of the tier — it shows `hh:mm` at every zoom, since this device has no
  * sweep hand.
  */
-export function readingQuantum(fields: TimerFields, now: number, detailed: boolean): number {
+export function readingQuantum(
+  fields: TimerFields,
+  now: number,
+  detailed: boolean,
+  ahead = 0,
+): number {
   if (fields.mode === "clock") {
     // The minute of the epoch, which is the minute of the day anywhere with a
     // whole-minute offset from it — which is everywhere.
     return Number.isFinite(now) ? Math.floor(now / MINUTE_MS) : 0;
   }
   const step = detailed ? 1000 : MINUTE_MS;
-  const elapsed = elapsedOf(fields, now);
+  const elapsed = elapsedOf(fields, now, ahead);
   // Floored for a stopwatch and ceiled for a countdown, which is `timerReading`'s
   // split and has to stay it: a quantum that rounded the other way from the label
   // would move on the frame *beside* the one the digits change on.
@@ -312,9 +351,14 @@ export function readingQuantum(fields: TimerFields, now: number, detailed: boole
  * The digits have to be quantised by the same step that decides when they are
  * written, or the coarse tier is not coarse — it is wrong.
  */
-export function timerFace(fields: TimerFields, now: number, detailed: boolean): TimerFace {
-  const reading = timerReading(fields, now);
-  const quantum = readingQuantum(fields, now, detailed);
+export function timerFace(
+  fields: TimerFields,
+  now: number,
+  detailed: boolean,
+  ahead = 0,
+): TimerFace {
+  const reading = timerReading(fields, now, ahead);
+  const quantum = readingQuantum(fields, now, detailed, ahead);
   // A clock is already at minute resolution and a full-tier face is already at
   // the second, so in both of those the label `timerReading` built is the one to
   // print and nothing is rebuilt.

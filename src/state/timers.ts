@@ -146,7 +146,7 @@ export class Timers {
    * whole of what the camera is allowed to decide here. A plain boolean rather
    * than the camera itself, for the reason `simView` is a plain rectangle.
    */
-  step(scene: Scene, dirty: DirtySets, now: number, detailed: boolean): void {
+  step(scene: Scene, dirty: DirtySets, now: number, detailed: boolean, ahead: number): void {
     const timers = scene.timers;
     if (timers.size === 0) {
       // Nothing to step, and nothing to remember about nothing. A board whose
@@ -177,7 +177,7 @@ export class Timers {
       // item when it moves, so two definitions would be a digit written on a
       // frame nothing dirtied — a clock that never updates — or an item dirtied
       // every frame for a face that will not change.
-      const reading = readingQuantum(fields, now, detailed);
+      const reading = readingQuantum(fields, now, detailed, ahead);
       if (this.shown.get(id) !== reading) {
         this.shown.set(id, reading);
         // Not on the first sight: the item is already dirty from the binding
@@ -195,7 +195,7 @@ export class Timers {
         if (!first) dirty.item(id);
       }
 
-      this.check(id, fields, cold.text, now, first);
+      this.check(id, fields, cold.text, now, ahead, first);
     }
 
     // Timers that have left the board, dropped from both maps. Walked over the
@@ -227,6 +227,7 @@ export class Timers {
     fields: TimerFields,
     text: string,
     now: number,
+    ahead: number,
     first: boolean,
   ): void {
     if (fields.mode !== "countdown") {
@@ -242,7 +243,7 @@ export class Timers {
     // guard also covers a length that is not a number, which is what a peer's
     // nonsense arrives as — `Number.isFinite` fails and it reads as unset.
     const runsFor = Number.isFinite(fields.runsFor) && fields.runsFor > 0 ? fields.runsFor : 0;
-    if (runsFor === 0 || elapsedOf(fields, now) < runsFor) {
+    if (runsFor === 0 || elapsedOf(fields, now, ahead) < runsFor) {
       // Not expired, so there is nothing to have already said: a reset, a longer
       // length or a fresh start all arrive here and all give the edge back.
       this.fired.delete(id);

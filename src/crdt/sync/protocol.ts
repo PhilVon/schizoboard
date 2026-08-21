@@ -74,6 +74,39 @@ export const MessageType = {
    * board hosted on one syncs and simply never trades bytes.
    */
   ASSET: 4,
+  /**
+   * The clock exchange — ours, and five is the next number after `ASSET` — T-404.
+   *
+   * ```
+   * [ CLOCK ][ ASK  ][ t0 : varUint ]              client -> relay
+   * [ CLOCK ][ TELL ][ t0 : varUint ][ t1 : varUint ]  relay -> client
+   * ```
+   *
+   * `t0` is the asking machine's clock when it asked and is echoed back
+   * untouched — the relay holds no state for this and does not need to. `t1` is
+   * the relay's clock when the ask arrived. The asker reads its own clock again
+   * on receipt and takes the midpoint of the two, which is what cancels a
+   * symmetric round trip; see `SyncEvents.clock`.
+   *
+   * **Why the relay and not the peers.** A base has to survive somebody
+   * leaving. Elect one peer as the authority and every running timer's reading
+   * jumps when that peer closes their laptop; the relay is the one clock in the
+   * room that everybody is already talking to and that nobody's departure
+   * removes.
+   *
+   * A stock `y-websocket` server drops a type it does not know, so a board
+   * hosted on one exchanges no clocks and every peer keeps its own — which is
+   * this application's behaviour before T-404, and is therefore a degradation
+   * to the status quo rather than a new way to fail.
+   */
+  CLOCK: 5,
+} as const;
+
+/** The two sides of a clock exchange. Sub-typed like `AUTH` rather than told
+ *  apart by counting fields, so a third kind is a number and not a rewrite. */
+export const ClockKind = {
+  ASK: 0,
+  TELL: 1,
 } as const;
 
 export type MessageTypeValue = (typeof MessageType)[keyof typeof MessageType];
@@ -143,6 +176,37 @@ export function encodeAsset(to: number, tail: Uint8Array): Uint8Array {
   return encoding.toUint8Array(encoder);
 }
 
+/**
+ * "What does your clock say?" — the client half of the exchange.
+ *
+ * `at` is passed in rather than read here for the reason every instant in this
+ * application is passed in: this file is pure functions over bytes, and a clock
+ * read inside one of them is the thing that would make the exchange untestable.
+ */
+export function encodeClockAsk(at: number): Uint8Array {
+  const encoder = encoding.createEncoder();
+  encoding.writeVarUint(encoder, MessageType.CLOCK);
+  encoding.writeVarUint(encoder, ClockKind.ASK);
+  encoding.writeVarUint(encoder, at);
+  return encoding.toUint8Array(encoder);
+}
+
+/**
+ * The relay's answer: the asker's own instant, echoed, and the relay's.
+ *
+ * Here rather than only in Rust because the frame is one of the two files that
+ * have to agree byte for byte (D-26), and a decoder with no encoder beside it
+ * can only be tested against a hand-written array of bytes.
+ */
+export function encodeClockTell(asked: number, at: number): Uint8Array {
+  const encoder = encoding.createEncoder();
+  encoding.writeVarUint(encoder, MessageType.CLOCK);
+  encoding.writeVarUint(encoder, ClockKind.TELL);
+  encoding.writeVarUint(encoder, asked);
+  encoding.writeVarUint(encoder, at);
+  return encoding.toUint8Array(encoder);
+}
+
 /** A refusal, with a reason a human can read. What a relay sends, not a client. */
 export function encodePermissionDenied(reason: string): Uint8Array {
   const encoder = encoding.createEncoder();
@@ -180,6 +244,15 @@ export interface MessageSink {
    * one part of sync that a board without a provider does not have at all.
    */
   onAsset?(from: number, tail: Uint8Array): void;
+  /**
+   * The relay answered a clock ask — T-404.
+   *
+   * Both instants raw and uninterpreted, because the arithmetic that turns them
+   * into an offset needs a third one this file has no business reading: the
+   * clock at the moment the frame *arrived*. `provider.ts` has that and does
+   * the sum.
+   */
+  onClock?(asked: number, relayAt: number): void;
 }
 
 /**
@@ -217,6 +290,16 @@ export function readMessage(bytes: Uint8Array, sink: MessageSink): Uint8Array | 
         // second opinion about that from the receiver is a way to disagree.
         decoding.readVarUint(decoder);
         sink.onAsset?.(from, decoding.readTailAsUint8Array(decoder));
+        return null;
+      }
+      case MessageType.CLOCK: {
+        // Only the answer is ours to act on. A client has no business telling
+        // another client what time it is — the whole point of asking the relay
+        // is that there is one clock in the room rather than one per peer — so
+        // an `ASK` arriving here is read and dropped rather than answered.
+        if (decoding.readVarUint(decoder) !== ClockKind.TELL) return null;
+        const asked = decoding.readVarUint(decoder);
+        sink.onClock?.(asked, decoding.readVarUint(decoder));
         return null;
       }
       default:
