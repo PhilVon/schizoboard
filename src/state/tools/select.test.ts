@@ -328,6 +328,7 @@ beforeEach(() => {
       pauseTimer: () => {},
       resetTimer: () => {},
       setTimerLights: () => {},
+      setCorkColor: () => {},
       createNote: () => {
         throw new Error("select must not create items");
       },

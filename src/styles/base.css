@@ -491,6 +491,74 @@ body {
   box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.45);
 }
 
+/*
+ * The one swatch that is an input — T-408, and the board's own colour is the
+ * one value on this menu nobody picked in advance.
+ *
+ * **`menu-colour` and not `menu-pick`**, which is already the *picker line's*
+ * class a few rules above. Naming it that squashed every board menu to fifteen
+ * pixels wide: the rule landed on the whole row, the chip strip inside it was
+ * flexed down to nothing, and the input came out two pixels across — a thin
+ * vertical line, which is exactly what it was reported as.
+ *
+ * Sized like `.menu-swatch` and for the same reason: it is the mark *inside* a
+ * chip, not the chip. The chip box around it is the ordinary 26 by 22, so this
+ * sits in the strip at the same size as the five beside it rather than as a
+ * form control that wandered into a menu.
+ *
+ * A native `<input type="color">` paints its own swatch and every browser does
+ * it differently — a bevelled well on one, a flat block with padding on
+ * another — so the padding comes out and the two shadow parts are made to fill
+ * what is left.
+ */
+/*
+ * The chip *around* the colour input, and the reason it is not plain — T-408.
+ *
+ * The input shows what the board currently is, so that opening the picker
+ * starts from the wall you are looking at. The cost is that on an unpainted
+ * board it is the same beige as the *Cork* chip five places to its left, and a
+ * strip with two identical swatches in it does not say which one asks a
+ * question.
+ *
+ * So the ring the input does not cover carries a spectrum. It is the smallest
+ * mark that means "any colour" — quiet enough that the swatch is still the
+ * thing you read, and enough that the chip is never mistaken for a sixth
+ * preset.
+ */
+.menu-chip-colour {
+  background: conic-gradient(
+    from 210deg,
+    #b4736b,
+    #b4a86b,
+    #7fae86,
+    #6f97b8,
+    #9a7fb4,
+    #b4736b
+  );
+}
+
+.menu-colour {
+  width: 15px;
+  height: 15px;
+  padding: 0;
+  border: none;
+  border-radius: 3px;
+  background: none;
+  cursor: pointer;
+  /* The swatch's edge, for the reason `.menu-swatch` has one: a dark colour on
+     a near-black menu reads as a hole rather than as a colour. */
+  box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.45);
+}
+
+.menu-colour::-webkit-color-swatch-wrapper {
+  padding: 0;
+}
+
+.menu-colour::-webkit-color-swatch {
+  border: none;
+  border-radius: 2px;
+}
+
 .menu-bar {
   width: 16px;
   border-radius: 3px;

@@ -15,6 +15,11 @@ import {
   DEFAULT_STRING_THICKNESS,
   STRING_COLORS,
   STRING_THICKNESSES,
+  CORK_COLORS,
+  corkColorOf,
+  corkHex,
+  customCork,
+  DEFAULT_CORK,
 } from "@/lib/palette";
 
 describe("the string palette", () => {
@@ -74,4 +79,80 @@ describe("the string palette", () => {
   // `crdt/ops/strings.test.ts`, not here: `lib/` may not import `crdt/`, and a
   // test that reached across the seam would be the one import that made the
   // rule a suggestion. `lib/slack.test.ts` says the same about `MIN_SLACK`.
+});
+
+describe("what a board is made of", () => {
+  /** T-408, Q-369. */
+  it("keeps the cork this application was tuned against as its default", () => {
+    // `render/cork.ts`'s fleck tints, its 0.98 on blue and its pit and dust
+    // ratios were all found against this number. If it moves, that file's
+    // tuning stops meaning what its comments say it means.
+    expect(DEFAULT_CORK.id).toBe("natural");
+    expect(DEFAULT_CORK.base).toEqual({ r: 173, g: 130, b: 84 });
+  });
+
+  it("answers with the default for anything it does not know", () => {
+    // Total on purpose, so no caller has to decide what an unrecognised id
+    // means — and so a strip can never be drawn with nothing marked, which
+    // would read as a board made of nothing.
+    for (const nonsense of [null, undefined, 42, "", "mahogany", {}]) {
+      expect(corkColorOf(nonsense).id).toBe(DEFAULT_CORK.id);
+    }
+  });
+
+  it("gives every colour a distinct id, since the id is what a document holds", () => {
+    const ids = CORK_COLORS.map((c) => c.id);
+    expect(new Set(ids).size).toBe(ids.length);
+  });
+
+  it("keeps every one of them a ground rather than a statement", () => {
+    // A saturated board competes with the paper on it — DESIGN section 4.1
+    // tunes every stock, ink and shadow against the cork, and the surface has
+    // to stay the thing they are judged against.
+    for (const { id, base } of CORK_COLORS) {
+      const max = Math.max(base.r, base.g, base.b);
+      const min = Math.min(base.r, base.g, base.b);
+      expect(max, `${id} is too bright`).toBeLessThan(200);
+      expect(max, `${id} is too dark to pin against`).toBeGreaterThan(80);
+      // Chroma, as the plainest possible measure of it.
+      expect(max - min, `${id} is too saturated for a ground`).toBeLessThan(100);
+    }
+  });
+});
+
+describe("a colour somebody chose themselves", () => {
+  /**
+   * Q-369's kickback: the five are a judgement about somebody else's board, and
+   * a person is allowed to overrule it. What is still refused is nonsense,
+   * which is a different thing from a taste.
+   */
+  it("reads a six-digit hex as a colour in its own right", () => {
+    expect(customCork("#3366ff")).toEqual({ r: 0x33, g: 0x66, b: 0xff });
+    expect(corkColorOf("#3366ff").base).toEqual({ r: 0x33, g: 0x66, b: 0xff });
+    // Its own id, which is what makes no curated chip mark itself for it.
+    expect(corkColorOf("#3366ff").id).toBe("#3366ff");
+  });
+
+  it("takes one spelling and not three", () => {
+    // A board has no transparency to have, and one canonical form is what lets
+    // the stored value be compared rather than parsed to be compared.
+    expect(customCork("#36f")).toBeNull();
+    expect(customCork("#3366ffcc")).toBeNull();
+    expect(customCork("3366ff")).toBeNull();
+    expect(customCork("rebeccapurple")).toBeNull();
+  });
+
+  it("falls back to the cork we ship for a string that is neither", () => {
+    for (const nonsense of ["#zzzzzz", "#", "slat", 7, null]) {
+      expect(corkColorOf(nonsense).id).toBe(DEFAULT_CORK.id);
+    }
+  });
+
+  it("round-trips every curated colour through the input's own spelling", () => {
+    // The picker chip shows what the board currently is, so this is the path
+    // that puts a named colour into it and reads a hex back out.
+    for (const colour of CORK_COLORS) {
+      expect(customCork(corkHex(colour.base))).toEqual(colour.base);
+    }
+  });
 });

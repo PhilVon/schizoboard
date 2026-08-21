@@ -31,7 +31,15 @@
 import { inkColors, INK_SIZES, type InkTool } from "@/lib/ink";
 import { STRING_MATERIALS } from "@/lib/material";
 import { fileNoun, isCaseObject, type AssetKind } from "@/lib/objects";
-import { STRING_COLORS, STRING_THICKNESSES } from "@/lib/palette";
+import {
+  CORK_COLORS,
+  corkColorOf,
+  corkHex,
+  customCork,
+  DEFAULT_CORK,
+  STRING_COLORS,
+  STRING_THICKNESSES,
+} from "@/lib/palette";
 import { PAPER_STOCKS, STOCK_BASE, STOCK_NAMES, type ItemStyle } from "@/lib/style";
 import { TIMER_MODES, type TimerFields, type TimerMode } from "@/lib/timer";
 import type { BoardCard } from "@/platform/types";
@@ -1017,6 +1025,15 @@ export function boardMenuRows(
     chime: PrefSwitch;
   },
   /**
+   * What the board is made of, as `meta.corkColor` currently says — T-408.
+   *
+   * A plain value beside the preference bag rather than inside it, because it
+   * is not one: the bag holds tastes this machine keeps to itself, and this is
+   * a fact about the document that the other peer sees too. `null` is an
+   * unpainted board and reads as `natural`.
+   */
+  cork: string | null,
+  /**
    * `null` in a plain browser, where none of these four can happen at all.
    *
    * `pdf` is separately nullable, and it is the only one that is: PDF export is
@@ -1149,6 +1166,69 @@ export function boardMenuRows(
       run: putUpTimer,
     });
   }
+  /**
+   * What the board is made of — T-408, Q-369.
+   *
+   * **Above the preferences, with *Put up a timer*.** This menu reads top-down
+   * as things you do to the board, then how this machine chooses to show it,
+   * then files. A colour is a *document write* with an undo entry, exactly like
+   * putting a clock up, and the three switches below it write nothing to the
+   * document at all — so it belongs on the edit side of that line even though
+   * it looks like a setting.
+   *
+   * A strip of choices rather than a verb, unlike the switches: ageing, the
+   * flight and the bell are each one thing that is either happening or not, and
+   * this is a choice among five. `timerRows`' Length strip is the shape it
+   * borrows.
+   *
+   * *Cork* is marked when nothing is written, which is what makes it a way back
+   * rather than a sixth colour — the `As it was` chip's job on every other strip
+   * in this file. Choosing it *deletes* the key (`crdt/ops/cork.ts`).
+   *
+   * Divided from the string rows above it and **not** from *Put up a timer*:
+   * that is an edit too and the two read as one group. The rule between this
+   * group and the preferences below is the ageing switch's, which is where it
+   * already was — the menu reads strings, then edits to the board, then how
+   * this machine shows it, then files, with one rule at each seam.
+   */
+  below.push({
+    label: "Board",
+    divided: rows.length > 0 && putUpTimer === null,
+    choices: [
+      ...CORK_COLORS.map(
+        (colour): MenuChoice => ({
+          label: colour.label,
+          swatch: corkHex(colour.base),
+          current: corkColorOf(cork).id === colour.id,
+          run: () => write.setCorkColor(colour.id === DEFAULT_CORK.id ? null : colour.id),
+        }),
+      ),
+      /**
+       * And one the person chooses themselves — Q-369's kickback.
+       *
+       * The five above are a judgement about somebody else's board, and this is
+       * the way out of it. It may well produce a wall that fights the paper on
+       * it; that is the choice being offered rather than a flaw in offering it.
+       *
+       * Marked when the board is wearing a colour none of the five names, which
+       * falls out of `corkColorOf` giving a hex its own id: no curated chip
+       * matches, so none is marked and this one is.
+       *
+       * Its `swatch` shows what the board currently *is* rather than a fixed
+       * rainbow, so opening the picker starts from the wall you are looking at.
+       */
+      {
+        label: "Choose a colour…",
+        pick: corkHex(corkColorOf(cork).base),
+        current: customCork(cork) !== null,
+        // Activating from the keyboard cannot open a native picker, so the
+        // chip's own `change` is what commits and this is the no-op that keeps
+        // the menu's contract whole.
+        run: () => {},
+        picked: (hex) => write.setCorkColor(hex),
+      },
+    ],
+  });
   below.push(
     /**
      * DESIGN section 4.7's "ageing can be turned off entirely for anyone who
@@ -1167,12 +1247,11 @@ export function boardMenuRows(
      */
     {
       label: prefs.ageing.on ? "Stop the board ageing" : "Let the board age",
-      // Divided from whatever is above it, whichever that turns out to be: the
-      // string rows when there are some, the timer row when there is one, and
-      // nothing when the menu opens with this at the top. It is a *preference*
-      // and the two things it can follow are both edits, so the rule is the same
-      // either way.
-      divided: rows.length > 0 || putUpTimer !== null,
+      // Always divided now, and for the reason this line always gave: it is a
+      // *preference* and everything it can follow is an edit. T-408 put the
+      // *Board* strip above it on every board, so the "or nothing above me at
+      // all" case this used to cover can no longer happen.
+      divided: true,
       run: () => prefs.ageing.set(!prefs.ageing.on),
     },
   );

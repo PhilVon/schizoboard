@@ -80,6 +80,7 @@ beforeEach(() => {
       pauseTimer: () => {},
       resetTimer: () => {},
       setTimerLights: () => {},
+      setCorkColor: () => {},
       createNote: (x, y) => created.push({ x, y }),
     },
   };

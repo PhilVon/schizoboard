@@ -125,6 +125,7 @@ beforeEach(() => {
       pauseTimer: () => {},
       resetTimer: () => {},
       setTimerLights: () => {},
+      setCorkColor: () => {},
       createNote: (x, y) => writes.push({ kind: "note", x, y }),
       createPin: (parent) => writes.push({ kind: "pin", parent }),
       placePin: () => {},

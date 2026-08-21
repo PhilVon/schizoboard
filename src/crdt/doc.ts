@@ -87,6 +87,25 @@ export function boardSeed(board: BoardDoc): number {
   return typeof seed === "number" && Number.isFinite(seed) ? seed >>> 0 : 0;
 }
 
+/**
+ * What this board is made of — T-408, Q-369.
+ *
+ * A *document* field and not a local preference, which is the one decision this
+ * feature turned on. Ageing is local because two people can disagree about
+ * whether they want to watch paper go brown and neither is wrong; a board's
+ * colour is not a taste about your own screen, it is what the board looks like,
+ * and two peers seeing different walls would be two people describing different
+ * objects to each other.
+ *
+ * The id and not the colour, so a later build may re-tune what `slate` actually
+ * is without every board that chose it being stuck with this year's grey. An id
+ * nobody knows reads as the default — `corkColorOf` is total.
+ */
+export function boardCork(board: BoardDoc): string | null {
+  const id = board.meta.get("corkColor");
+  return typeof id === "string" ? id : null;
+}
+
 export function boardEpoch(board: BoardDoc): number {
   const epoch = board.meta.get("boardEpoch");
   return typeof epoch === "number" && Number.isFinite(epoch) ? epoch : Date.now();

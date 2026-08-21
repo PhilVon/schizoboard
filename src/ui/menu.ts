@@ -90,10 +90,32 @@ export interface MenuChoice {
    * box of CSS — so the stylesheet exaggerates, which is what a sample is for.
    */
   readonly fibre?: string;
+  /**
+   * Painted as a swatch the person can *change* — a native colour input wearing
+   * the chip, rather than a chip that runs something (T-408).
+   *
+   * The one choice on this menu whose value is not decided in advance. Every
+   * other chip here is a value somebody picked for you and named; this is the
+   * escape hatch from that, and it exists because a curated set is a judgement
+   * about somebody else's board.
+   *
+   * `run` is still required and still what a keyboard activation does, because
+   * a `<input type="color">` cannot be driven from the menu's own arrow keys —
+   * so it opens the picker instead, and the change is what commits.
+   */
+  readonly pick?: string;
   /** Already what every target has. Marked, and still pickable — re-picking a
    *  value is a harmless way to say "yes, that one". */
   readonly current?: boolean;
   readonly run: () => void;
+  /**
+   * What a [`pick`] chip commits, once the person has chosen — T-408.
+   *
+   * Separate from `run` because they are different moments: `run` opens the
+   * picker and this lands the answer, and a menu that closed on the first would
+   * take the second with it.
+   */
+  readonly picked?: (hex: string) => void;
 }
 
 export type MenuEntry = MenuRow | MenuPicker;
@@ -227,6 +249,51 @@ export class ContextMenu {
       chip.setAttribute("aria-checked", choice.current === true ? "true" : "false");
       chip.title = choice.label;
       chip.dataset.run = String(this.actions.push(choice.run) - 1);
+
+      /**
+       * A chip that *is* an input — T-408.
+       *
+       * Built instead of the button above rather than inside it: nesting a
+       * control in a control is how a click ends up meaning two things, and
+       * the delegated `click` handler on this menu would find the button's
+       * `data-run` first and close the menu before the picker ever opened.
+       *
+       * So it carries no `data-run` at all. Its own `change` is what commits,
+       * and closing is done there — after the value is in hand, not before the
+       * person has chosen one.
+       */
+      if (choice.pick !== undefined) {
+        /**
+         * A `span` carrying the chip and the input carrying the colour — the
+         * same two-part shape every other chip here has, where the box is one
+         * element and the mark inside it is another.
+         *
+         * A `span` and not a `button`, which is the whole reason this branch
+         * exists: nesting a control in a control is how one click comes to mean
+         * two things, and the delegated handler on this menu would find the
+         * button's `data-run` and close before the picker ever opened. A span
+         * is not focusable, carries no `data-run`, and lets the press through
+         * to the input underneath it.
+         */
+        const box = document.createElement("span");
+        box.className = `menu-chip menu-chip-colour${choice.current === true ? " menu-on" : ""}`;
+        box.title = choice.label;
+
+        const input = document.createElement("input");
+        input.type = "color";
+        input.value = choice.pick;
+        input.className = "menu-colour";
+        input.setAttribute("aria-label", choice.label);
+        input.addEventListener("change", () => {
+          const hex = input.value;
+          this.close();
+          choice.picked?.(hex);
+        });
+
+        box.append(input);
+        strip.append(box);
+        continue;
+      }
 
       const mark = document.createElement("i");
       if (choice.swatch !== undefined) {

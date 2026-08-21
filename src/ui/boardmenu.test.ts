@@ -14,7 +14,7 @@ import type { BoardCard } from "@/platform/types";
 import { Scene, type ItemPose } from "@/state/scene";
 import type { BoardWriter, StringStyle, WritePose } from "@/state/tools/tool";
 import { STRING_MATERIALS } from "@/lib/material";
-import { DEFAULT_STRING_COLOR, STRING_COLORS, STRING_THICKNESSES } from "@/lib/palette";
+import { DEFAULT_STRING_COLOR, STRING_COLORS, STRING_THICKNESSES, CORK_COLORS } from "@/lib/palette";
 import {
   DEFAULT_HIGHLIGHTER_COLOR,
   DEFAULT_HIGHLIGHTER_SIZE,
@@ -34,7 +34,7 @@ import {
   stringMenuRows,
   type Pen,
 } from "@/ui/boardmenu";
-import type { MenuChoice, MenuEntry, MenuRow } from "@/ui/menu";
+import type { MenuChoice, MenuEntry, MenuPicker, MenuRow } from "@/ui/menu";
 import type { ItemStyle } from "@/lib/style";
 import { NO_TIMER, type TimerFields, type TimerMode } from "@/lib/timer";
 import type { AssetKind } from "@/lib/objects";
@@ -53,7 +53,8 @@ type Write =
   | { kind: "timerMode"; ids: string[]; mode: TimerMode }
   | { kind: "timerLength"; ids: string[]; runsFor: number }
   | { kind: "timerRun"; ids: string[]; verb: "start" | "pause" | "reset" }
-  | { kind: "timerLights"; id: string; target: string | null };
+  | { kind: "timerLights"; id: string; target: string | null }
+  | { kind: "cork"; id: string | null };
 
 let scene: Scene;
 let writes: Write[];
@@ -163,6 +164,7 @@ beforeEach(() => {
     | "pauseTimer"
     | "resetTimer"
     | "setTimerLights"
+    | "setCorkColor"
   > = {
     setStringLayer: (stringIds, layer) =>
       writes.push({ kind: "layer", stringIds: [...stringIds], layer }),
@@ -184,6 +186,7 @@ beforeEach(() => {
     pauseTimer: (ids) => writes.push({ kind: "timerRun", ids: [...ids], verb: "pause" }),
     resetTimer: (ids) => writes.push({ kind: "timerRun", ids: [...ids], verb: "reset" }),
     setTimerLights: (id, target) => writes.push({ kind: "timerLights", id, target }),
+    setCorkColor: (id) => writes.push({ kind: "cork", id }),
   };
   // The rows only ever reach these. Everything else on the interface is a
   // write no menu offers, and stubbing the rest would say otherwise.
@@ -1108,6 +1111,8 @@ describe("the board menu on bare cork", () => {
       asked: shell.asked,
     };
   };
+  /** T-408 — the board's own colour, an edit, above the preferences. */
+  const BOARD = "Board";
   const AGE_ON = "Stop the board ageing";
   const AGE_OFF = "Let the board age";
   const SAVE_COPY = "Save a copy…";
@@ -1124,17 +1129,97 @@ describe("the board menu on bare cork", () => {
     // The whole of Q-76: a right-click here reached for something and found
     // nothing, which made it the one free surface on the board.
     const { invite } = sharing(LINK);
-    const rows = boardMenuRows(scene, write, [], [], invite, switching(true).prefs, null, null) as MenuRow[];
-    expect(rows.map((r) => r.label)).toEqual([AGE_ON, "Copy invite link"]);
+    const rows = boardMenuRows(scene, write, [], [], invite, switching(true).prefs, null, null, null) as MenuRow[];
+    expect(rows.map((r) => r.label)).toEqual([BOARD, AGE_ON, "Copy invite link"]);
   });
 
   it("hands over the link the board was opened with", () => {
     const { invite, copied } = sharing(LINK);
-    const rows = boardMenuRows(scene, write, [], [], invite, switching(true).prefs, null, null) as MenuRow[];
+    const rows = boardMenuRows(scene, write, [], [], invite, switching(true).prefs, null, null, null) as MenuRow[];
     rows.find((r) => r.label === "Copy invite link")!.run();
     expect(copied).toEqual([LINK]);
     // Sharing a board is not an edit to it.
     expect(writes).toEqual([]);
+  });
+
+  describe("what the board is made of", () => {
+    /**
+     * T-408, Q-369. A document write and not a preference, which is the one
+     * decision this feature turned on — so it sits with the edits above the
+     * switches, and unlike them it *does* reach the board.
+     */
+    const corkWrites = (): (string | null)[] =>
+      writes.filter((w) => w.kind === "cork").map((w) => (w as { id: string | null }).id);
+
+    const boardRows = (cork: string | null): MenuRow[] =>
+      boardMenuRows(scene, write, [], [], sharing(null).invite, switching(true).prefs, cork, null, null) as MenuRow[];
+
+    const strip = (cork: string | null): MenuPicker =>
+      boardMenuRows(scene, write, [], [], sharing(null).invite, switching(true).prefs, cork, null, null).find(
+        (r) => r.label === BOARD,
+      ) as MenuPicker;
+
+    it("is on every board, because every board is made of something", () => {
+      expect(boardRows(null).map((r) => r.label)).toContain(BOARD);
+    });
+
+    it("marks the cork we ship when nothing is written", () => {
+      // Which is what makes it a way back rather than a sixth colour.
+      const marked = strip(null).choices.filter((c) => c.current).map((c) => c.label);
+      expect(marked).toEqual(["Cork"]);
+    });
+
+    it("marks what a peer painted it, and only that", () => {
+      const marked = strip("slate").choices.filter((c) => c.current).map((c) => c.label);
+      expect(marked).toEqual(["Slate"]);
+    });
+
+    it("falls back to the cork we ship for an id from a later build", () => {
+      // `corkColorOf` is total, so a strip could never be drawn with nothing
+      // marked — which would read as a board made of nothing.
+      const marked = strip("mahogany").choices.filter((c) => c.current).map((c) => c.label);
+      expect(marked).toEqual(["Cork"]);
+    });
+
+    it("writes the id it was given", () => {
+      strip(null).choices.find((c) => c.label === "Moss")!.run();
+      expect(corkWrites()).toEqual(["moss"]);
+    });
+
+    it("offers a colour of your own beside the five", () => {
+      // Q-369's kickback: the five are a judgement about somebody else's board.
+      const chips = strip(null).choices;
+      expect(chips).toHaveLength(CORK_COLORS.length + 1);
+      expect(chips.at(-1)!.label).toBe("Choose a colour…");
+      expect(chips.at(-1)!.pick).toBe("#ad8254");
+    });
+
+    it("starts the picker from the wall you are looking at", () => {
+      // Rather than from a fixed rainbow, so opening it is a nudge to what is
+      // there rather than a jump to somewhere else.
+      expect(strip("slate").choices.at(-1)!.pick).toBe("#747676");
+      expect(strip("#3366ff").choices.at(-1)!.pick).toBe("#3366ff");
+    });
+
+    it("marks the picker, and none of the five, for a colour of your own", () => {
+      const chosen = strip("#3366ff");
+      expect(chosen.choices.filter((c) => c.current).map((c) => c.label)).toEqual([
+        "Choose a colour…",
+      ]);
+    });
+
+    it("writes the hex the picker hands back", () => {
+      strip(null).choices.at(-1)!.picked!("#3366ff");
+      expect(corkWrites()).toEqual(["#3366ff"]);
+    });
+
+    it("writes null to go back, rather than the default's own id", () => {
+      // The op turns the default into a delete, and handing it `natural` would
+      // work only because the op is careful. Saying null here means the menu is
+      // not relying on that.
+      strip("slate").choices.find((c) => c.label === "Cork")!.run();
+      expect(corkWrites()).toEqual([null]);
+    });
   });
 
   it("drops the invite entirely when there is nothing to give away", () => {
@@ -1142,8 +1227,8 @@ describe("the board menu on bare cork", () => {
     // than disabled: a row you cannot use is a question nothing on screen can
     // answer.
     const { invite } = sharing(null);
-    const rows = boardMenuRows(scene, write, [], [], invite, switching(true).prefs, null, null) as MenuRow[];
-    expect(rows.map((r) => r.label)).toEqual([AGE_ON]);
+    const rows = boardMenuRows(scene, write, [], [], invite, switching(true).prefs, null, null, null) as MenuRow[];
+    expect(rows.map((r) => r.label)).toEqual([BOARD, AGE_ON]);
   });
 
   it("keeps the string rows, and puts the board's own below them behind a rule", () => {
@@ -1151,14 +1236,19 @@ describe("the board menu on bare cork", () => {
     // selection of strings is the much likelier thing to have meant.
     span("s", 0);
     const { invite } = sharing(LINK);
-    const rows = boardMenuRows(scene, write, ["s"], [], invite, switching(true).prefs, null, null);
+    const rows = boardMenuRows(scene, write, ["s"], [], invite, switching(true).prefs, null, null, null);
     const labels = rows.map((r) => r.label);
     expect(labels).toEqual([
       ...stringMenuRows(scene, write, ["s"]).map((r) => r.label),
+      BOARD,
       AGE_ON,
       "Copy invite link",
     ]);
-    // One rule, under the strings, rather than one above every board row.
+    // One rule at each seam, rather than one above every board row. T-408 added
+    // a seam: the strings, then the board's own edits, then the preferences.
+    // The Board strip takes the rule under the strings and the ageing switch
+    // keeps the one between the edits and the tastes.
+    expect((rows.find((r) => r.label === BOARD) as MenuRow).divided).toBe(true);
     expect((rows.find((r) => r.label === AGE_ON) as MenuRow).divided).toBe(true);
     expect((rows.at(-1) as MenuRow).divided).toBeUndefined();
   });
@@ -1167,8 +1257,8 @@ describe("the board menu on bare cork", () => {
     // The rows are a snapshot and a peer may have deleted the selection since.
     // That empties the string half and must not take the board half with it.
     const { invite } = sharing(LINK);
-    const rows = boardMenuRows(scene, write, ["ghost"], [], invite, switching(true).prefs, null, null) as MenuRow[];
-    expect(rows.map((r) => r.label)).toEqual([AGE_ON, "Copy invite link"]);
+    const rows = boardMenuRows(scene, write, ["ghost"], [], invite, switching(true).prefs, null, null, null) as MenuRow[];
+    expect(rows.map((r) => r.label)).toEqual([BOARD, AGE_ON, "Copy invite link"]);
     // Nothing to divide it from, so no rule.
     expect(rows[0]!.divided).toBe(false);
   });
@@ -1187,11 +1277,12 @@ describe("the board menu on bare cork", () => {
       [],
       [],
       invite,
-      switching(true).prefs,
+      switching(true).prefs, null,
       exporting().board,
       null,
     ) as MenuRow[];
     expect(rows.map((r) => r.label)).toEqual([
+      BOARD,
       AGE_ON,
       "Copy invite link",
       NEW,
@@ -1217,7 +1308,7 @@ describe("the board menu on bare cork", () => {
       [],
       [],
       invite,
-      switching(true).prefs,
+      switching(true).prefs, null,
       exporting().board,
       null,
     ) as MenuRow[];
@@ -1233,13 +1324,15 @@ describe("the board menu on bare cork", () => {
       [],
       [],
       invite,
-      switching(true).prefs,
+      switching(true).prefs, null,
       shell.board,
       null,
     ) as MenuRow[];
     // First among the file rows: it is the only one about a board that is *not*
     // in a file, and the three below it all make a new file out of one that is.
-    expect(rows.map((r) => r.label)).toEqual([AGE_ON, NEW, OPEN, HOME, SAVE_COPY, PDF, IMAGE]);
+    expect(rows.map((r) => r.label)).toEqual([
+      BOARD,
+      AGE_ON, NEW, OPEN, HOME, SAVE_COPY, PDF, IMAGE]);
     rows.find((r) => r.label === HOME)!.run();
     expect(shell.asked).toEqual(["home"]);
   });
@@ -1258,7 +1351,7 @@ describe("the board menu on bare cork", () => {
       [],
       [],
       invite,
-      switching(true).prefs,
+      switching(true).prefs, null,
       unhomed().board,
       null,
     ) as MenuRow[];
@@ -1274,7 +1367,7 @@ describe("the board menu on bare cork", () => {
       [],
       [],
       invite,
-      switching(true).prefs,
+      switching(true).prefs, null,
       shell.board,
       null,
     ) as MenuRow[];
@@ -1320,7 +1413,7 @@ describe("the board menu on bare cork", () => {
         [],
         [],
         invite,
-        switching(true).prefs,
+        switching(true).prefs, null,
         withRecents(recent("a".repeat(32), "The Redgrave file"), recent("b".repeat(32), "Cold cases")),
         null,
       ) as MenuRow[];
@@ -1329,7 +1422,8 @@ describe("the board menu on bare cork", () => {
       // its own, painted by swatch, weight or fibre — right for a colour you
       // recognise on sight, wrong for a board whose identity *is* its name.
       expect(rows.map((r) => r.label)).toEqual([
-        AGE_ON,
+      BOARD,
+      AGE_ON,
         NEW,
         OPEN,
         "The Redgrave file",
@@ -1351,7 +1445,7 @@ describe("the board menu on bare cork", () => {
         [],
         [],
         invite,
-        switching(true).prefs,
+        switching(true).prefs, null,
         // Two, and the *second* is picked. With one row in the list a menu that
         // always opened `recents[0]` would pass this and be wrong.
         withRecents(recent(first, "The Redgrave file"), recent(second, "Cold cases")),
@@ -1378,7 +1472,7 @@ describe("the board menu on bare cork", () => {
         [],
         [],
         invite,
-        switching(true).prefs,
+        switching(true).prefs, null,
         withRecents(
           recent("a".repeat(32), "Untitled board", "Schizoboard"),
           recent("b".repeat(32), "Untitled board", "Case files"),
@@ -1456,12 +1550,14 @@ describe("the board menu on bare cork", () => {
         [],
         [],
         invite,
-        switching(true).prefs,
+        switching(true).prefs, null,
         exporting().board,
         null,
       ) as MenuRow[];
 
-      expect(rows.map((r) => r.label)).toEqual([AGE_ON, NEW, OPEN, SAVE_COPY, PDF, IMAGE]);
+      expect(rows.map((r) => r.label)).toEqual([
+      BOARD,
+      AGE_ON, NEW, OPEN, SAVE_COPY, PDF, IMAGE]);
     });
   });
 
@@ -1478,7 +1574,7 @@ describe("the board menu on bare cork", () => {
       [],
       [],
       invite,
-      switching(true).prefs,
+      switching(true).prefs, null,
       { ...board, new: null },
       null,
     ) as MenuRow[];
@@ -1501,7 +1597,7 @@ describe("the board menu on bare cork", () => {
       [],
       [],
       invite,
-      switching(true).prefs,
+      switching(true).prefs, null,
       shell.board,
       null,
     ) as MenuRow[];
@@ -1525,7 +1621,7 @@ describe("the board menu on bare cork", () => {
       [],
       [],
       invite,
-      switching(true).prefs,
+      switching(true).prefs, null,
       exporting().board,
       null,
     ) as MenuRow[];
@@ -1538,14 +1634,16 @@ describe("the board menu on bare cork", () => {
       [],
       [],
       invite,
-      switching(true).prefs,
+      switching(true).prefs, null,
       { ...shell.board, tidy: () => void shell.asked.push("tidy") },
       null,
     ) as MenuRow[];
 
     // Above the copies, because it is about the file this board already has
     // rather than about making a new one.
-    expect(grown.map((r) => r.label)).toEqual([AGE_ON, NEW, OPEN, TIDY, SAVE_COPY, PDF, IMAGE]);
+    expect(grown.map((r) => r.label)).toEqual([
+      BOARD,
+      AGE_ON, NEW, OPEN, TIDY, SAVE_COPY, PDF, IMAGE]);
     grown.find((r) => r.label === TIDY)!.run();
     expect(shell.asked).toEqual(["tidy"]);
   });
@@ -1564,7 +1662,7 @@ describe("the board menu on bare cork", () => {
       [],
       [],
       invite,
-      switching(true).prefs,
+      switching(true).prefs, null,
       { ...exporting().board, tidy: () => {} },
       null,
     ) as MenuRow[];
@@ -1577,7 +1675,7 @@ describe("the board menu on bare cork", () => {
     const shell = exporting();
     const divisions = (over: Record<string, unknown>) =>
       (
-        boardMenuRows(scene, write, [], [], invite, switching(true).prefs, {
+        boardMenuRows(scene, write, [], [], invite, switching(true).prefs, null, {
           ...shell.board,
           ...over,
         }, null) as MenuRow[]
@@ -1597,7 +1695,7 @@ describe("the board menu on bare cork", () => {
     // Removed rather than disabled, on the invite's terms: a row you cannot use
     // is a question nothing on screen can answer.
     const { invite } = sharing(LINK);
-    const rows = boardMenuRows(scene, write, [], [], invite, switching(true).prefs, null, null) as MenuRow[];
+    const rows = boardMenuRows(scene, write, [], [], invite, switching(true).prefs, null, null, null) as MenuRow[];
     expect(rows.map((r) => r.label)).not.toContain(SAVE_COPY);
     expect(rows.map((r) => r.label)).not.toContain(OPEN);
   });
@@ -1612,11 +1710,13 @@ describe("the board menu on bare cork", () => {
       [],
       [],
       invite,
-      switching(true).prefs,
+      switching(true).prefs, null,
       exporting().board,
       null,
     ) as MenuRow[];
-    expect(rows.map((r) => r.label)).toEqual([AGE_ON, NEW, OPEN, SAVE_COPY, PDF, IMAGE]);
+    expect(rows.map((r) => r.label)).toEqual([
+      BOARD,
+      AGE_ON, NEW, OPEN, SAVE_COPY, PDF, IMAGE]);
   });
 
   /**
@@ -1638,13 +1738,15 @@ describe("the board menu on bare cork", () => {
       [],
       [],
       invite,
-      switching(true).prefs,
+      switching(true).prefs, null,
       { ...board, open: null },
       null,
     ) as MenuRow[];
 
     const labels = rows.map((r) => r.label);
-    expect(labels).toEqual([AGE_ON, "Copy invite link", NEW, SAVE_COPY, PDF, IMAGE]);
+    expect(labels).toEqual([
+      BOARD,
+      AGE_ON, "Copy invite link", NEW, SAVE_COPY, PDF, IMAGE]);
     // And the rest of the menu is untouched — this is one row, not a mode.
     rows.find((r) => r.label === SAVE_COPY)!.run();
     rows.find((r) => r.label === IMAGE)!.run();
@@ -1666,7 +1768,7 @@ describe("the board menu on bare cork", () => {
       [],
       [],
       invite,
-      switching(true).prefs,
+      switching(true).prefs, null,
       exporting().board,
       null,
     ) as MenuRow[];
@@ -1684,10 +1786,10 @@ describe("the board menu on bare cork", () => {
     const { invite } = sharing(null);
     const running = switching(true);
     const stopped = switching(false);
-    expect((boardMenuRows(scene, write, [], [], invite, running.prefs, null, null)[0] as MenuRow).label).toBe(
+    expect((boardMenuRows(scene, write, [], [], invite, running.prefs, null, null, null)[1] as MenuRow).label).toBe(
       AGE_ON,
     );
-    expect((boardMenuRows(scene, write, [], [], invite, stopped.prefs, null, null)[0] as MenuRow).label).toBe(
+    expect((boardMenuRows(scene, write, [], [], invite, stopped.prefs, null, null, null)[1] as MenuRow).label).toBe(
       AGE_OFF,
     );
   });
@@ -1695,11 +1797,11 @@ describe("the board menu on bare cork", () => {
   it("throws the switch the other way, and does not write to the document", () => {
     const { invite } = sharing(null);
     const running = switching(true);
-    (boardMenuRows(scene, write, [], [], invite, running.prefs, null, null)[0] as MenuRow).run();
+    (boardMenuRows(scene, write, [], [], invite, running.prefs, null, null, null)[1] as MenuRow).run();
     expect(running.set).toEqual([false]);
 
     const stopped = switching(false);
-    (boardMenuRows(scene, write, [], [], invite, stopped.prefs, null, null)[0] as MenuRow).run();
+    (boardMenuRows(scene, write, [], [], invite, stopped.prefs, null, null, null)[1] as MenuRow).run();
     expect(stopped.set).toEqual([true]);
 
     // A preference is not an edit. Nothing here has an undo entry.
@@ -1725,7 +1827,7 @@ describe("the board menu on bare cork", () => {
           [],
           held,
           invite,
-          switching(true).prefs,
+          switching(true).prefs, null,
           exporting().board,
           null,
         ) as MenuRow[]
@@ -1753,7 +1855,7 @@ describe("the board menu on bare cork", () => {
           [],
           held,
           invite,
-          switching(true).prefs,
+          switching(true).prefs, null,
           exporting().board,
           null,
         ) as MenuRow[]
@@ -1779,7 +1881,7 @@ describe("the board menu on bare cork", () => {
       [],
       [],
       invite,
-      switching(true).prefs,
+      switching(true).prefs, null,
       shell.board,
       null,
     ) as MenuRow[];
@@ -1800,7 +1902,7 @@ describe("the board menu on bare cork", () => {
       [],
       ["i1", "i2", "i3"],
       invite,
-      switching(true).prefs,
+      switching(true).prefs, null,
       exporting().board,
       null,
     ) as MenuRow[];
@@ -1816,7 +1918,7 @@ describe("the board menu on bare cork", () => {
       [],
       [],
       invite,
-      switching(true).prefs,
+      switching(true).prefs, null,
       shell.board,
       null,
     ) as MenuRow[];
@@ -1836,11 +1938,11 @@ describe("the board menu on bare cork", () => {
       [],
       ["i1"],
       invite,
-      switching(true).prefs,
+      switching(true).prefs, null,
       null,
       null,
     ) as MenuRow[];
-    expect(rows.map((r) => r.label)).toEqual([AGE_ON]);
+    expect(rows.map((r) => r.label)).toEqual([BOARD, AGE_ON]);
   });
 
   /**
@@ -1857,7 +1959,7 @@ describe("the board menu on bare cork", () => {
         [],
         [],
         invite,
-        switching(true).prefs,
+        switching(true).prefs, null,
         exporting().board,
         null,
       ) as MenuRow[]
@@ -1887,7 +1989,7 @@ describe("the board menu on bare cork", () => {
           [],
           [],
           invite,
-          switching(true).prefs,
+          switching(true).prefs, null,
           withoutPdf().board,
           null,
         ) as MenuRow[]
@@ -1908,7 +2010,7 @@ describe("the board menu on bare cork", () => {
           [],
           ["i1", "i2"],
           invite,
-          switching(true).prefs,
+          switching(true).prefs, null,
           withoutPdf().board,
           null,
         ) as MenuRow[]
@@ -1927,7 +2029,7 @@ describe("the board menu on bare cork", () => {
         [],
         [],
         invite,
-        switching(true).prefs,
+        switching(true).prefs, null,
         shell.board,
         null,
       ) as MenuRow[];
@@ -1953,7 +2055,7 @@ describe("the board menu on bare cork", () => {
         strings,
         [],
         sharing(null).invite,
-        switching(true).prefs,
+        switching(true).prefs, null,
         null,
         put,
       ) as MenuRow[];
@@ -2047,7 +2149,7 @@ describe("the board menu on bare cork", () => {
         [],
         [],
         sharing(null).invite,
-        switched.prefs,
+        switched.prefs, null,
         null,
         put,
       ) as MenuRow[];
@@ -2085,7 +2187,7 @@ describe("the board menu on bare cork", () => {
         [],
         [],
         sharing(null).invite,
-        switched.prefs,
+        switched.prefs, null,
         null,
         () => {},
       ) as MenuRow[];

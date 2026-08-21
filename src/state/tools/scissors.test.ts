@@ -142,6 +142,7 @@ beforeEach(() => {
       pauseTimer: () => {},
       resetTimer: () => {},
       setTimerLights: () => {},
+      setCorkColor: () => {},
       createNote: () => writes.push({ kind: "other" }),
       createPin: () => writes.push({ kind: "other" }),
       placePin: () => writes.push({ kind: "other" }),

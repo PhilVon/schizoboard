@@ -15,6 +15,7 @@ import { Binding } from "@/crdt/binding";
 import {
   assetOrigName,
   boardSchemaVersion,
+  boardCork,
   boardSeed,
   boardTitle,
   encodedSize,
@@ -54,6 +55,7 @@ import {
   scaleStringSlack,
   setItemPoses,
   setItemStyle,
+  setCorkColor,
   setTimerLength,
   setTimerLights,
   setTimerMode,
@@ -440,7 +442,39 @@ async function boot(): Promise<void> {
   // T-231. The pin source is a thunk because the cork is built before the
   // document has finished loading and outlives every pin on it; `scene` is
   // declared below, and by the time a frame asks it is there.
-  const cork = new Cork(world.layers.cork, boardSeed(board), () => scene.pins.values());
+  const cork = new Cork(
+    world.layers.cork,
+    boardSeed(board),
+    () => scene.pins.values(),
+    // What this board is made of — T-408. A document field, so it arrives with
+    // the board rather than from this machine, and a peer who painted it
+    // yesterday is what this window opens onto.
+    boardCork(board),
+  );
+  /**
+   * Repaint the wall when somebody else does — T-408.
+   *
+   * **Its own observer, registered here rather than folded into the seal's
+   * above**, and the reason is ordering rather than tidiness: that one is
+   * installed a long way before this line, and a closure over `cork` would sit
+   * in the temporal dead zone until this statement ran. `initialiseBoard`
+   * writes `meta` on a board's first open, so that is not a hypothetical race —
+   * it is the first thing a new board does.
+   *
+   * `paint` is a no-op when the colour has not moved, so a title change or a
+   * schema raise costs one comparison rather than a re-raster of the tiles.
+   */
+  board.meta.observe(() => cork.paint(boardCork(board)));
+  /**
+   * What the board is currently made of, as a closure — T-408.
+   *
+   * The menu is built inside a handler that has its own `board`: the pointer's
+   * position in board space. Reading the document there would either shadow or
+   * be shadowed, and the compiler catches it now rather than a reader catching
+   * it later. Hoisting the question is the smaller of the two fixes; renaming
+   * either `board` would touch a great deal that has nothing to do with cork.
+   */
+  const corkNow = (): string | null => boardCork(board);
   /**
    * What this machine can show of each photograph, and how far off the rest are.
    *
@@ -1262,6 +1296,17 @@ async function boot(): Promise<void> {
     },
     setTimerLights: (id, target) => {
       queued.push(() => setTimerLights(board, id, target));
+    },
+    /**
+     * Painting the cork — T-408. Queued like every other write here, so it
+     * lands in phase 9 with the frame's other document changes.
+     *
+     * Nothing is snapshotted because there is nothing to snapshot: this names
+     * no selection, and the colour is a value rather than a list that a peer
+     * could have shortened while the menu was open.
+     */
+    setCorkColor: (id) => {
+      queued.push(() => setCorkColor(board, id));
     },
     /**
      * The two ends of the stack. Copied and queued like every other write here,
@@ -3311,6 +3356,7 @@ async function boot(): Promise<void> {
             timerFlight: { on: prefs.timerFlight(), set: prefs.setTimerFlight },
             chime: { on: prefs.chime(), set: prefs.setChime },
           },
+          corkNow(),
           native.kind === "tauri"
             ? {
                 export: () => void exportBoard(),
@@ -3491,6 +3537,7 @@ async function boot(): Promise<void> {
           timerFlight: { on: prefs.timerFlight(), set: prefs.setTimerFlight },
           chime: { on: prefs.chime(), set: prefs.setChime },
         },
+        corkNow(),
         native.kind === "tauri"
           ? {
               export: () => void exportBoard(),
@@ -5420,6 +5467,15 @@ async function boot(): Promise<void> {
        * recomputing the curve in the driver would be a second opinion about
        * the very thing under test.
        */
+      /**
+       * The board's surface — T-408, and here for the reason `flashes` is.
+       *
+       * What an export paints is by design not on screen: `paintInto` redraws
+       * the cork into a canvas at an export camera, and nothing about the live
+       * board says whether it got the colour right. A driven run can ask this
+       * directly rather than answering a save dialog to find out.
+       */
+      cork,
       windTo,
       windCurve,
       setWindCurve,
