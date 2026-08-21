@@ -35,6 +35,32 @@ pub const MSG_QUERY_AWARENESS: u64 = 3;
 /// two files have to agree on by hand down to one constant.
 pub const MSG_ASSET: u64 = 4;
 
+/// The clock exchange, which is ours — T-404. Five is the next number after
+/// `MSG_ASSET`.
+///
+/// ```text
+/// [ MSG_CLOCK ][ CLOCK_ASK  ][ t0 : varUint ]                  client -> relay
+/// [ MSG_CLOCK ][ CLOCK_TELL ][ t0 : varUint ][ t1 : varUint ]  relay -> client
+/// ```
+///
+/// `t0` is the asking machine's clock when it asked, echoed back untouched —
+/// the relay keeps no state for this and needs none. `t1` is this relay's clock
+/// when the ask arrived. The asker reads its own clock again on receipt and
+/// takes the midpoint, which is what cancels a symmetric round trip.
+///
+/// The relay is the authority because it is the one clock in the room that
+/// nobody's departure removes: elect a peer instead and every running timer's
+/// reading jumps when that peer closes their laptop.
+///
+/// A stock `y-websocket` server drops a type it does not know, so a board
+/// hosted on one exchanges no clocks and each peer keeps its own — which is
+/// what this application did before T-404 rather than a new way to fail.
+pub const MSG_CLOCK: u64 = 5;
+
+/// The two sides of a clock exchange, sub-typed the way `AUTH` is.
+pub const CLOCK_ASK: u64 = 0;
+pub const CLOCK_TELL: u64 = 1;
+
 /// Sync sub-messages, from the y-protocols sync protocol.
 pub const SYNC_STEP1: u64 = 0;
 pub const SYNC_STEP2: u64 = 1;

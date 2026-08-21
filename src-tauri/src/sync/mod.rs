@@ -36,6 +36,7 @@ use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::mpsc::{unbounded_channel, UnboundedSender};
@@ -251,6 +252,20 @@ impl Drop for Relay {
     }
 }
 
+/// This machine's wall clock, in milliseconds since the epoch — the same number
+/// `Date.now()` gives the browser, which is the whole requirement (T-404).
+///
+/// Saturating rather than panicking on a clock set before 1970. A relay is a
+/// long-lived process on somebody else's machine and a wrong system clock is
+/// exactly the condition this feature exists to handle; taking the room down
+/// over one would be an odd way to fix timers.
+fn unix_millis() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX))
+        .unwrap_or(0)
+}
+
 async fn serve(stream: TcpStream, id: u64, rooms: Arc<Mutex<Rooms>>, secret: Option<Arc<str>>) {
     // The board is in the URL, and the URL is only visible during the
     // handshake — so it has to be captured here rather than read back later.
@@ -315,11 +330,16 @@ async fn serve(stream: TcpStream, id: u64, rooms: Arc<Mutex<Rooms>>, secret: Opt
             Message::Close(_) => break,
             _ => continue,
         };
+        // Read before the lock, deliberately — T-404. This is the instant a
+        // clock ask is answered with, and every peer's timers are corrected by
+        // it; folding however long this thread waited for the mutex into that
+        // number would bias the whole room on a busy relay.
+        let now_ms = unix_millis();
         let mut locked = rooms.lock().expect("relay lock");
         let Some(room) = locked.open.get_mut(&board) else {
             break;
         };
-        let out = room.receive(id, &frame);
+        let out = room.receive(id, &frame, now_ms);
         locked.post(&board, id, out);
     }
 

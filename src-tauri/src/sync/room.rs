@@ -22,7 +22,8 @@ use yrs::{Doc, ReadTxn, StateVector, Transact, Update};
 
 use crate::sync::awareness::Awareness;
 use crate::sync::wire::{
-    write_var_bytes, write_var_uint, Reader, MSG_ASSET, MSG_AWARENESS, MSG_QUERY_AWARENESS,
+    write_var_bytes, write_var_uint, Reader, CLOCK_ASK, CLOCK_TELL, MSG_ASSET, MSG_AWARENESS,
+    MSG_CLOCK, MSG_QUERY_AWARENESS,
     MSG_SYNC, SYNC_STEP1, SYNC_STEP2, SYNC_UPDATE,
 };
 
@@ -137,7 +138,7 @@ impl Room {
     /// Every frame is its own message, so the next one arrives intact — and
     /// dropping a connection because a peer is one version ahead of us is a
     /// worse failure than ignoring a byte we do not understand.
-    pub fn receive(&mut self, from: u64, frame: &[u8]) -> Vec<Outbound> {
+    pub fn receive(&mut self, from: u64, frame: &[u8], now_ms: u64) -> Vec<Outbound> {
         let mut reader = Reader::new(frame);
         let Ok(kind) = reader.var_uint() else {
             return Vec::new();
@@ -157,6 +158,7 @@ impl Room {
                 }]
             }
             MSG_ASSET => self.receive_asset(from, &mut reader),
+            MSG_CLOCK => receive_clock(&mut reader, now_ms),
             // `AUTH` is ours to send and not ours to receive, and anything else
             // is a peer from the future.
             _ => Vec::new(),
@@ -296,6 +298,44 @@ impl Room {
     }
 }
 
+/// Answer "what does your clock say" — T-404.
+///
+/// A free function rather than a method, and that is the whole shape of the
+/// feature: the answer depends on no room state at all. There is nothing to
+/// look up, nothing to remember, and nothing about *which* board asked. The
+/// relay is being used as a clock and not as a peer.
+///
+/// `now_ms` is read by the caller the moment the frame arrives, before the room
+/// lock is taken, and passed in. That is not only the usual purity argument —
+/// though it is that, and it is what lets this be a table test. It is also
+/// accuracy: a clock read on this side of the mutex would fold however long the
+/// relay waited for the lock into an offset that every peer's timers are then
+/// corrected by, and a busy relay would quietly bias the whole room.
+///
+/// A frame we cannot read is dropped rather than answered. There is no useful
+/// reply to a truncated ask, and an answer echoing a zero we invented would be
+/// worse than silence: the asker checks the echo.
+fn receive_clock(reader: &mut Reader<'_>, now_ms: u64) -> Vec<Outbound> {
+    // Only an ask is answered. A `TELL` arriving here is a client claiming to
+    // be a relay, which is the one thing this exchange exists to stop being
+    // possible — there is one clock in the room, and it is this one.
+    if reader.var_uint() != Ok(CLOCK_ASK) {
+        return Vec::new();
+    }
+    let Ok(asked) = reader.var_uint() else {
+        return Vec::new();
+    };
+    let mut frame = Vec::new();
+    write_var_uint(&mut frame, MSG_CLOCK);
+    write_var_uint(&mut frame, CLOCK_TELL);
+    write_var_uint(&mut frame, asked);
+    write_var_uint(&mut frame, now_ms);
+    vec![Outbound {
+        target: Target::Sender,
+        frame,
+    }]
+}
+
 fn sync_frame(sub: u64, payload: &[u8]) -> Vec<u8> {
     let mut out = Vec::with_capacity(payload.len() + 4);
     write_var_uint(&mut out, MSG_SYNC);
@@ -311,12 +351,19 @@ mod tests {
 
     /// A room with two connections, each having spoken awareness for one client.
     /// 10 and 20 are the connections; 101 and 201 are the client ids they gave.
+    /// The instant a test that is not about the clock hands `receive`.
+    ///
+    /// Named rather than a bare zero at nine call sites: it says these tests
+    /// have no opinion about the time, which a literal would leave the next
+    /// reader to work out.
+    const NO_CLOCK: u64 = 0;
+
     fn two_peers() -> Room {
         let mut room = Room::new();
         room.join(10);
         room.join(20);
-        room.receive(10, &awareness_from(101));
-        room.receive(20, &awareness_from(201));
+        room.receive(10, &awareness_from(101), NO_CLOCK);
+        room.receive(20, &awareness_from(201), NO_CLOCK);
         room
     }
 
@@ -345,7 +392,7 @@ mod tests {
     #[test]
     fn an_addressed_frame_goes_to_one_connection() {
         let mut room = two_peers();
-        let out = room.receive(10, &asset(0, 201, b"chunk"));
+        let out = room.receive(10, &asset(0, 201, b"chunk"), NO_CLOCK);
 
         assert_eq!(out.len(), 1);
         assert_eq!(out[0].target, Target::Peer(20));
@@ -356,7 +403,7 @@ mod tests {
     fn a_frame_addressed_to_zero_is_for_the_room() {
         // Which is HAVE, and only HAVE. Anything carrying bytes is addressed.
         let mut room = two_peers();
-        let out = room.receive(10, &asset(0, 0, b"have"));
+        let out = room.receive(10, &asset(0, 0, b"have"), NO_CLOCK);
 
         assert_eq!(out.len(), 1);
         assert_eq!(out[0].target, Target::Others);
@@ -368,7 +415,7 @@ mod tests {
         // The whole reason `from` is worth trusting downstream: a peer writing
         // somebody else's client id into it gets its own back out.
         let mut room = two_peers();
-        let out = room.receive(10, &asset(201, 201, b"nack"));
+        let out = room.receive(10, &asset(201, 201, b"nack"), NO_CLOCK);
 
         assert_eq!(parse(&out[0].frame).0, 101);
     }
@@ -380,9 +427,9 @@ mod tests {
         let mut room = Room::new();
         room.join(10);
         room.join(20);
-        room.receive(20, &awareness_from(201));
+        room.receive(20, &awareness_from(201), NO_CLOCK);
 
-        assert!(room.receive(10, &asset(0, 201, b"want")).is_empty());
+        assert!(room.receive(10, &asset(0, 201, b"want"), NO_CLOCK).is_empty());
     }
 
     #[test]
@@ -392,7 +439,70 @@ mod tests {
         let mut room = two_peers();
         room.leave(20);
 
-        assert!(room.receive(10, &asset(0, 201, b"chunk")).is_empty());
+        assert!(room.receive(10, &asset(0, 201, b"chunk"), NO_CLOCK).is_empty());
+    }
+
+    #[test]
+    fn a_clock_ask_is_answered_with_the_askers_instant_and_ours() {
+        let mut room = Room::new();
+        let mut ask = Vec::new();
+        write_var_uint(&mut ask, MSG_CLOCK);
+        write_var_uint(&mut ask, CLOCK_ASK);
+        write_var_uint(&mut ask, 1_787_322_535_218);
+
+        let out = room.receive(10, &ask, 1_787_322_535_400);
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].target, Target::Sender);
+
+        let mut reader = Reader::new(&out[0].frame);
+        assert_eq!(reader.var_uint(), Ok(MSG_CLOCK));
+        assert_eq!(reader.var_uint(), Ok(CLOCK_TELL));
+        // Echoed untouched, which is what lets the asker refuse an answer to a
+        // question it did not put.
+        assert_eq!(reader.var_uint(), Ok(1_787_322_535_218));
+        assert_eq!(reader.var_uint(), Ok(1_787_322_535_400));
+        assert!(reader.is_empty());
+    }
+
+    #[test]
+    fn a_clock_ask_needs_no_peer_and_no_awareness() {
+        // Deliberately a room nobody has spoken awareness for — an asset frame
+        // from this connection would be dropped for want of an id. A clock ask
+        // depends on no room state at all, so it is answered on the first frame
+        // of a connection, which is when a board opened onto somebody else's
+        // running countdown needs it.
+        let mut room = Room::new();
+        let mut ask = Vec::new();
+        write_var_uint(&mut ask, MSG_CLOCK);
+        write_var_uint(&mut ask, CLOCK_ASK);
+        write_var_uint(&mut ask, 1);
+        assert_eq!(room.receive(99, &ask, 7).len(), 1);
+    }
+
+    #[test]
+    fn a_client_claiming_to_be_a_relay_is_ignored() {
+        // There is one clock in the room and it is this one. A `TELL` from a
+        // peer would be a second, and every timer on the board is corrected by
+        // whatever answer arrives.
+        let mut room = Room::new();
+        let mut tell = Vec::new();
+        write_var_uint(&mut tell, MSG_CLOCK);
+        write_var_uint(&mut tell, CLOCK_TELL);
+        write_var_uint(&mut tell, 1);
+        write_var_uint(&mut tell, 2);
+        assert!(room.receive(10, &tell, 7).is_empty());
+    }
+
+    #[test]
+    fn a_truncated_clock_ask_is_dropped_rather_than_answered() {
+        // An answer echoing a zero we invented would be worse than silence:
+        // the asker checks the echo, and half of a wrong one lands in the
+        // offset it corrects its timers by.
+        let mut room = Room::new();
+        let mut short = Vec::new();
+        write_var_uint(&mut short, MSG_CLOCK);
+        write_var_uint(&mut short, CLOCK_ASK);
+        assert!(room.receive(10, &short, 7).is_empty());
     }
 
     #[test]
@@ -402,7 +512,7 @@ mod tests {
         write_var_uint(&mut short, MSG_ASSET);
         write_var_uint(&mut short, 0);
 
-        assert!(room.receive(10, &short).is_empty());
+        assert!(room.receive(10, &short, NO_CLOCK).is_empty());
     }
 }
 

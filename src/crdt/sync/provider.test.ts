@@ -19,8 +19,13 @@ import { openBoardDoc, type BoardDoc } from "@/crdt/doc";
 import { createItems, setItemPoses } from "@/crdt/ops";
 import { isLocalOrigin, isTracked } from "@/crdt/origins";
 import { readItem } from "@/crdt/schema";
+import * as decoding from "lib0/decoding";
+
 import {
+  ClockKind,
+  MessageType,
   encodeAwareness,
+  encodeClockTell,
   encodePermissionDenied,
   encodeSyncStep1,
   encodeUpdate,
@@ -99,6 +104,13 @@ class Relay {
   /** Set to refuse every connection, with this reason. */
   refuse: string | null = null;
   /**
+   * What this relay's wall clock says — T-404.
+   *
+   * A function so a test can move it, and defaulting to this machine's own
+   * clock so every test that is not about the clock sees an offset of nothing.
+   */
+  clockAt: () => number = () => Date.now();
+  /**
    * A real y-websocket server drops a connection's awareness states when the
    * socket goes. Turn it off to stand in for a peer that does not tidy up —
    * which is the only thing the client's own goodbye insures against.
@@ -155,6 +167,17 @@ class Relay {
     this.received += 1;
     if (this.refuse !== null) {
       from.push(encodePermissionDenied(this.refuse));
+      return;
+    }
+    // The clock exchange, answered the way `src-tauri/src/sync/room.rs` answers
+    // it — T-404. It is in the double rather than in `readMessage` because a
+    // *client* must not answer one: there is one clock in a room and it belongs
+    // to the relay. `clockAt` is what this relay's wall clock says, which is the
+    // whole point of a double here — a real one cannot be told to be wrong.
+    const ask = decoding.createDecoder(bytes);
+    if (decoding.readVarUint(ask) === MessageType.CLOCK) {
+      if (decoding.readVarUint(ask) !== ClockKind.ASK) return;
+      from.push(encodeClockTell(decoding.readVarUint(ask), this.clockAt()));
       return;
     }
     const reply = readMessage(bytes, {
@@ -710,5 +733,115 @@ describe("two providers, one document", () => {
     // The two relays were never connected, and neither client was told the
     // other existed.
     expect(itemAt(onHosted.board, id)).toEqual({ x: 9, y: 9 });
+  });
+});
+
+describe("the board's clock", () => {
+  /**
+   * The offset, and the four answers that are thrown away — T-404, Q-370.
+   *
+   * `Date.now` is faked here rather than the relay's clock alone, because the
+   * arithmetic needs three instants and two of them are this machine's. With
+   * the client frozen at `T0` and no time passing across the round trip, the
+   * midpoint is `T0` exactly and the offset is `T0 - relay`, which is the one
+   * case where the answer can be asserted to the millisecond.
+   */
+  const T0 = 1_787_322_535_218;
+
+  function frozen(relay: Relay): Client {
+    // Both, and in this order — the file's convention (the global `afterEach`
+    // puts real timers back). `setSystemTime` alone mocks `Date` and leaves
+    // `advanceTimersByTimeAsync` unavailable, which is a test that measures the
+    // arithmetic correctly and cannot reach the interval at all.
+    vi.useFakeTimers();
+    vi.setSystemTime(T0);
+    return client(relay, { clockMs: 60_000 });
+  }
+
+  it("learns how far this machine is ahead of the relay", async () => {
+    const relay = new Relay();
+    relay.clockAt = () => T0 - 90_000;
+    const { provider } = frozen(relay);
+    const heard: { ahead: number; roundTripMs: number }[] = [];
+    provider.on("clock", (c) => heard.push(c));
+    provider.connect();
+    await settle();
+
+    expect(heard).toHaveLength(1);
+    expect(heard[0]!.ahead).toBe(90_000);
+    expect(heard[0]!.roundTripMs).toBe(0);
+  });
+
+  it("says so the other way round too", async () => {
+    const relay = new Relay();
+    relay.clockAt = () => T0 + 200_000;
+    const { provider } = frozen(relay);
+    const heard: number[] = [];
+    provider.on("clock", (c) => heard.push(c.ahead));
+    provider.connect();
+    await settle();
+    expect(heard).toEqual([-200_000]);
+  });
+
+  it("asks again on its own interval, and stops when the wire goes", async () => {
+    const relay = new Relay();
+    relay.clockAt = () => T0;
+    const { provider } = frozen(relay);
+    let asks = 0;
+    provider.on("clock", () => (asks += 1));
+    provider.connect();
+    await settle();
+    expect(asks).toBe(1);
+
+    await tick(60_000);
+    expect(asks).toBe(2);
+
+    relay.drop();
+    await settle();
+    const afterDrop = asks;
+    await tick(60_000);
+    // The interval is cleared with the socket. Without that it would go on
+    // writing an ask into a closed transport every minute for as long as the
+    // board stayed open.
+    expect(asks).toBe(afterDrop);
+  });
+
+  it("throws away an answer to a question it did not ask", async () => {
+    const relay = new Relay();
+    relay.clockAt = () => T0 - 90_000;
+    const { provider } = frozen(relay);
+    const heard: number[] = [];
+    provider.on("clock", (c) => heard.push(c.ahead));
+    // The echo is what ties an answer to the ask that earned it. Half of a
+    // wrong one lands in the offset every timer on the board is corrected by.
+    relay.clockAt = () => T0 - 90_000;
+    provider.connect();
+    await settle();
+    expect(heard).toEqual([90_000]);
+
+    // A relay that echoes something else entirely: the round trip computed from
+    // it is nonsense, and the answer is dropped rather than believed.
+    const conn = relay.connections.values().next().value!;
+    conn.push(encodeClockTell(T0 + 5_000_000, T0));
+    await settle();
+    expect(heard).toEqual([90_000]);
+  });
+
+  it("throws away an answer that took too long to come back", async () => {
+    const relay = new Relay();
+    relay.clockAt = () => T0;
+    const { provider } = frozen(relay);
+    const heard: number[] = [];
+    provider.on("clock", (c) => heard.push(c.ahead));
+    provider.connect();
+    await settle();
+    heard.length = 0;
+
+    // The estimate is only as good as the round trip is symmetric, and past a
+    // second the number describes the network rather than the clocks.
+    const conn = relay.connections.values().next().value!;
+    conn.push(encodeClockTell(T0 - 4_000, T0));
+    await settle();
+    expect(heard).toEqual([]);
   });
 });

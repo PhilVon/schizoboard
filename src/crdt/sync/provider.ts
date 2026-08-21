@@ -40,6 +40,7 @@ import type * as Y from "yjs";
 
 import {
   encodeAwareness,
+  encodeClockAsk,
   encodeQueryAwareness,
   encodeSyncStep1,
   encodeUpdate,
@@ -69,6 +70,19 @@ export interface SyncEvents {
   denied: string;
   /** An asset sub-message, and the client id the relay says it came from. */
   asset: { from: number; tail: Uint8Array };
+  /**
+   * How far this machine's clock runs ahead of the relay's, in milliseconds —
+   * T-404, and `state/clock.ts` for what is done with it.
+   *
+   * Emitted rather than applied here on purpose. A provider's business is the
+   * wire, and which clock the board reads its timers against is a decision for
+   * whoever owns the board — the same seam `update` and `asset` are on. It also
+   * keeps the one number a test wants to assert on out of a private field.
+   *
+   * Not emitted at all when the answer is unusable, so a listener never has to
+   * ask whether the number it was handed means anything.
+   */
+  clock: { ahead: number; roundTripMs: number };
 }
 
 export interface SyncProvider {
@@ -102,9 +116,23 @@ export interface WireProviderOptions {
   maxDelayMs?: number;
   /** How often to re-send a state vector while connected. */
   resyncMs?: number;
+  /** How often to re-ask the relay what time it is. */
+  clockMs?: number;
   /** Close a connection that has said nothing for this long. */
   healthMs?: number;
 }
+
+/**
+ * The slowest round trip whose midpoint is still worth believing — T-404.
+ *
+ * One second. The error in the estimate is bounded by half the *asymmetry* of
+ * the round trip, so a second of total travel can be half a second wrong; past
+ * that the number says more about the queue than about the clocks, and a
+ * stopwatch corrected by a congested network is a new bug rather than a fix for
+ * the old one. On the LAN this feature exists for, the real figure is under a
+ * millisecond.
+ */
+const MAX_CLOCK_ROUND_TRIP_MS = 1_000;
 
 const DEFAULTS = {
   baseDelayMs: 500,
@@ -120,6 +148,18 @@ const DEFAULTS = {
    * timer firing, which is why it must stay comfortably under `healthMs`.
    */
   resyncMs: 20_000,
+  /**
+   * How often to re-ask the relay what time it is — T-404.
+   *
+   * A minute, and deliberately slower than the resync: a wall clock drifts by
+   * seconds a day, so this is not tracking anything that moves. What it is for
+   * is the two events that move an offset all at once and without warning — a
+   * machine waking from sleep, and an NTP correction landing — and a minute
+   * bounds how long a running timer can read wrongly after either. The frame is
+   * four bytes each way and the relay holds no state for it, so the cost of
+   * asking is not what sets this number.
+   */
+  clockMs: 60_000,
   /**
    * Two missed resyncs. A half-open TCP connection — the laptop that changed
    * network without telling anyone — looks exactly like a working one from this
@@ -138,6 +178,7 @@ export class WireProvider implements SyncProvider {
   private readonly baseDelayMs: number;
   private readonly maxDelayMs: number;
   private readonly resyncMs: number;
+  private readonly clockMs: number;
   private readonly healthMs: number;
 
   private transport: SyncTransport | null = null;
@@ -154,6 +195,7 @@ export class WireProvider implements SyncProvider {
 
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   private resyncTimer: ReturnType<typeof setInterval> | null = null;
+  private clockTimer: ReturnType<typeof setInterval> | null = null;
   private healthTimer: ReturnType<typeof setTimeout> | null = null;
 
   private readonly listeners = new Map<keyof SyncEvents, Set<(value: never) => void>>();
@@ -167,6 +209,7 @@ export class WireProvider implements SyncProvider {
     this.baseDelayMs = options.baseDelayMs ?? DEFAULTS.baseDelayMs;
     this.maxDelayMs = options.maxDelayMs ?? DEFAULTS.maxDelayMs;
     this.resyncMs = options.resyncMs ?? DEFAULTS.resyncMs;
+    this.clockMs = options.clockMs ?? DEFAULTS.clockMs;
     this.healthMs = options.healthMs ?? DEFAULTS.healthMs;
 
     this.doc.on("update", this.onDocUpdate);
@@ -291,6 +334,13 @@ export class WireProvider implements SyncProvider {
 
     this.clearTimer("resyncTimer");
     this.resyncTimer = setInterval(this.resync, this.resyncMs);
+
+    // Asked at once and then on its own slow interval — T-404. At once,
+    // because a board opened onto somebody else's running countdown must read
+    // it correctly on the first face it draws rather than a minute later.
+    this.clearTimer("clockTimer");
+    this.askClock();
+    this.clockTimer = setInterval(this.askClock, this.clockMs);
   };
 
   private readonly onMessage = (bytes: Uint8Array): void => {
@@ -315,6 +365,7 @@ export class WireProvider implements SyncProvider {
       },
       onError: (error) => this.emit("error", error),
       onAsset: (from, tail) => this.emit("asset", { from, tail }),
+      onClock: (asked, relayAt) => this.readClock(asked, relayAt),
     });
 
     if (reply !== null) this.write(reply);
@@ -335,6 +386,11 @@ export class WireProvider implements SyncProvider {
     this.transport = null;
     this.open = false;
     this.clearTimer("resyncTimer");
+    // Stopped with the socket rather than left running: the offset it measures
+    // belongs to a relay we are no longer talking to, and an ask written into a
+    // closed transport is a no-op that would go on being one every minute for
+    // as long as the board stayed open (T-404).
+    this.clearTimer("clockTimer");
     this.clearTimer("healthTimer");
 
     // Every peer we knew about was known through this connection. Their state
@@ -379,6 +435,45 @@ export class WireProvider implements SyncProvider {
   private readonly resync = (): void => {
     this.write(encodeSyncStep1(this.doc));
   };
+
+  private readonly askClock = (): void => {
+    this.write(encodeClockAsk(Date.now()));
+  };
+
+  /**
+   * Three instants into one offset — T-404.
+   *
+   * `asked` is this machine's clock when the frame left, `relayAt` is the
+   * relay's clock when it arrived, and `Date.now()` here is this machine's
+   * clock now that the answer is back. The midpoint of the first and last is
+   * where this machine's clock stood at the moment the relay stamped its own,
+   * *provided the two legs took the same time* — which is the one assumption in
+   * the whole exchange and the reason the round trip is reported alongside. A
+   * lopsided round trip biases the answer by half the difference.
+   *
+   * ## What is thrown away, and why each one
+   *
+   * **An answer to a question we did not ask.** `asked` has to be an instant
+   * this machine could have written; a relay echoing something else is either
+   * confused or hostile, and half of it lands in the offset.
+   *
+   * **A round trip that took longer than the interval between asks.** Half of
+   * a slow leg is the error bar, and past a second the offset is no longer
+   * measuring the clocks — it is measuring the network. Better to keep the last
+   * good answer, or none, than to correct a timer by a queue.
+   *
+   * **Time that ran backwards.** A negative round trip is `Date.now()` moving
+   * backwards under us, which is exactly what an NTP correction landing
+   * mid-exchange looks like. The next ask is a minute away and will be clean.
+   */
+  private readClock(asked: number, relayAt: number): void {
+    const back = Date.now();
+    if (!Number.isFinite(asked) || !Number.isFinite(relayAt) || !Number.isFinite(back)) return;
+    const roundTripMs = back - asked;
+    if (roundTripMs < 0 || roundTripMs > MAX_CLOCK_ROUND_TRIP_MS) return;
+    const ahead = (asked + back) / 2 - relayAt;
+    this.emit("clock", { ahead, roundTripMs });
+  }
 
   /**
    * Restart the silence timer. A connection that has said nothing for
@@ -450,11 +545,16 @@ export class WireProvider implements SyncProvider {
     for (const listener of [...set]) (listener as (value: SyncEvents[K]) => void)(value);
   }
 
-  private clearTimer(which: "reconnectTimer" | "resyncTimer" | "healthTimer"): void {
+  private clearTimer(
+    which: "reconnectTimer" | "resyncTimer" | "clockTimer" | "healthTimer",
+  ): void {
     const handle = this[which];
     if (handle === null) return;
-    if (which === "resyncTimer") clearInterval(handle as ReturnType<typeof setInterval>);
-    else clearTimeout(handle);
+    if (which === "resyncTimer" || which === "clockTimer") {
+      clearInterval(handle as ReturnType<typeof setInterval>);
+    } else {
+      clearTimeout(handle);
+    }
     this[which] = null;
   }
 }
