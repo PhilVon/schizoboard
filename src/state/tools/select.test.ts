@@ -12,6 +12,7 @@ import { beforeEach, describe, expect, it } from "vitest";
 
 import { CAPTURE_TIMEOUT_MS } from "@/crdt/undo";
 import { DEFAULT_SLACK, MIN_SLACK, presetSlack, splitSlack } from "@/lib/slack";
+import { NO_TIMER, type TimerMode } from "@/lib/timer";
 import { Torsion } from "@/sim/torsion";
 import { Camera } from "@/state/camera";
 import { DirtySets } from "@/state/dirty";
@@ -38,6 +39,7 @@ type Write =
       split: SegmentSplit;
       settle: Map<string, WritePose>;
     }
+  | { kind: "length"; ids: string[]; runsFor: number }
   | { kind: "nodeSlack"; stringId: string; nodeId: string; slack: number }
   | { kind: "scaleNode"; stringId: string; nodeId: string; factor: number }
   | { kind: "stringSlack"; stringIds: string[]; slack: number }
@@ -321,7 +323,7 @@ beforeEach(() => {
       // tool or from paste, and a pin from the pin tool.
       createTimer: () => {},
       setTimerMode: () => {},
-      setTimerLength: () => {},
+      setTimerLength: (ids, runsFor) => writes.push({ kind: "length", ids: [...ids], runsFor }),
       startTimer: () => {},
       pauseTimer: () => {},
       resetTimer: () => {},
@@ -3649,5 +3651,103 @@ describe("cutting a clipping out of an open page", () => {
     tool.cancel(ctx);
     expect(clips).toEqual([]);
     expect(tool.clipping).toBeNull();
+  });
+});
+
+describe("winding a countdown's bezel", () => {
+  /**
+   * T-411, promoted out of B-3. The middle of the case moves the clock and the
+   * rim winds it, which is what the two parts of a real one do — and it winds
+   * only once the timer is *selected*, so the first grab of a clock still picks
+   * it up rather than silently setting its length.
+   */
+  const CENTRE = 0;
+  const W = 200;
+  const H = 140;
+  /** Comfortably outside `WIND_RIM` on both axes, so it is rim by any reading. */
+  const RIM_X = 92;
+
+  function clock(id: string, mode: TimerMode = "countdown", runsFor = 0, rot = 0): void {
+    scene.putItem(
+      {
+        id, type: "timer", z: "a0", seed: 1, assetId: null,
+        createdBy: 1, createdAt: 0, text: "", timer: { ...NO_TIMER, mode, runsFor },
+      },
+      { x: CENTRE, y: CENTRE, rot, w: W, h: H },
+    );
+  }
+
+  const lengths = (): number[] =>
+    writes.filter((w) => w.kind === "length").map((w) => (w as { runsFor: number }).runsFor);
+
+  /** A quarter turn of the rim, anticlockwise from the right-hand side. */
+  function quarterTurn(): void {
+    down(RIM_X, 0);
+    move(0, RIM_X);
+    up(0, RIM_X);
+  }
+
+  it("does not wind a timer that is not selected yet", () => {
+    // The failure this prevents is the one nobody would guess: reaching for a
+    // clock to move it and setting its countdown instead.
+    clock("t");
+    quarterTurn();
+    expect(lengths()).toEqual([]);
+  });
+
+  it("winds a selected countdown from its rim", () => {
+    clock("t");
+    selection.replace(["t"]);
+    quarterTurn();
+    const wound = lengths();
+    expect(wound.length).toBeGreaterThan(0);
+    expect(wound.at(-1)!).toBeGreaterThan(0);
+  });
+
+  it("still moves a selected countdown by its face", () => {
+    // The other half of the same rule, and the reason `WIND_RIM` is a third
+    // rather than the 9% the bezel is drawn at.
+    clock("t");
+    selection.replace(["t"]);
+    down(0, 0);
+    move(40, 40);
+    up(40, 40);
+    expect(lengths()).toEqual([]);
+    expect(writes.some((w) => w.kind === "poses")).toBe(true);
+  });
+
+  it("leaves a clock and a stopwatch alone, having nothing to run out of", () => {
+    for (const mode of ["clock", "stopwatch"] as const) {
+      writes.length = 0;
+      scene.clear();
+      clock("t", mode);
+      selection.replace(["t"]);
+      quarterTurn();
+      expect(lengths()).toEqual([]);
+    }
+  });
+
+  it("starts from where the dial already stands", () => {
+    // Absolute would snap the countdown to wherever the pointer landed the
+    // instant the rim was touched, which is the whole reason the gesture keeps
+    // the grab turn and the turn since apart.
+    clock("t", "countdown", 3 * 3_600_000);
+    selection.replace(["t"]);
+    down(RIM_X, 0);
+    move(RIM_X, 1);
+    const first = lengths()[0]!;
+    // A degree of movement, so the length must still be within a detent of
+    // where it was rather than back near zero.
+    expect(Math.abs(first - 3 * 3_600_000)).toBeLessThanOrEqual(15 * 60_000);
+    up(RIM_X, 1);
+  });
+
+  it("winds true on a clock hanging crooked", () => {
+    // `itemLocal` turns the press into the item's own frame, so the rim test
+    // and the angle are both measured against the object rather than the screen.
+    clock("t", "countdown", 0, 0.6);
+    selection.replace(["t"]);
+    quarterTurn();
+    expect(lengths().at(-1)!).toBeGreaterThan(0);
   });
 });

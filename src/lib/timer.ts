@@ -248,6 +248,20 @@ export interface TimerReading {
  * Pure and total: same arguments, same answer, no clock read, no DOM, no
  * document. That is what makes the whole feature testable as a table.
  */
+/**
+ * A duration rounded to its own step and written out — the full-resolution
+ * reading's label, in one place instead of two.
+ *
+ * `round` is `Math.floor` for a stopwatch and `Math.ceil` for a countdown,
+ * which is the split `timerReading` has always made and the reason this takes
+ * the function rather than a flag: the two callers differ in exactly that and
+ * in nothing else.
+ */
+function quantised(value: number, round: (n: number) => number): string {
+  const step = stepFor(value, true);
+  return dialLabel(round(value / step) * step, step);
+}
+
 export function timerReading(fields: TimerFields, now: number, ahead = 0): TimerReading {
   const elapsed = elapsedOf(fields, now, ahead);
   const running = fields.runFrom !== null;
@@ -265,8 +279,9 @@ export function timerReading(fields: TimerFields, now: number, ahead = 0): Timer
       // because it has not been running for a second yet — the same correction
       // `timeReference` makes before handing a transcript offset to the same
       // formatter, and for the same reason: the label must never claim a moment
-      // that has not happened.
-      label: runtimeLabel(Math.floor(elapsed / 1000)),
+      // that has not happened. Floored *by its own step*, so a stopwatch that
+      // has been running for days says `2d 07h` rather than `55:14:09`.
+      label: quantised(elapsed, Math.floor),
     };
   }
   const runsFor = ms(fields.runsFor);
@@ -282,12 +297,182 @@ export function timerReading(fields: TimerFields, now: number, ahead = 0): Timer
     // kitchen timer holds `0:01` until the second is actually gone. Exactly
     // zero ceils to zero, so the face reads `0:00` at the instant it expires
     // and not before.
-    label: runtimeLabel(Math.ceil(remaining / 1000)),
+    label: quantised(remaining, Math.ceil),
   };
 }
 
 /** One minute. The clock face's resolution, and the coarse tier's. */
 const MINUTE_MS = 60_000;
+const HOUR_MS = 3_600_000;
+const DAY_MS = 86_400_000;
+
+/**
+ * The longest a countdown may be set to — a week, Q-368.
+ *
+ * Enforced at the *writer* (`crdt/ops/timers.ts`) and deliberately not at the
+ * reader. A peer running a later build may set something longer, and the honest
+ * response to that is a face that says what the document says rather than a
+ * timer this build silently shortens. DATA-MODEL section 8.1's rule, which is
+ * the same one `readTimer` follows for every other field.
+ *
+ * A week reverses a stated position — the preset list argued that past an hour
+ * a countdown stops being a thing you watch and becomes a calendar, which
+ * DESIGN 1.4 lists as a non-goal — and that reversal is Q-368's answer rather
+ * than an oversight.
+ */
+export const MAX_COUNTDOWN_MS = 7 * DAY_MS;
+
+/**
+ * Where a bezel wound `turns` of a full turn lands, in milliseconds — T-407,
+ * T-411.
+ *
+ * ## One turn is the whole scale, because that is what a dial is
+ *
+ * A real kitchen timer covers nought to an hour in a single turn, and the
+ * reason is not economy: a dial you have to wind round fourteen times is a
+ * dial whose position tells you nothing. The scale is *readable off the
+ * pointer*, and that only works if there is one revolution of it. So a week is
+ * one turn here too, and the range is bought with a curve rather than with
+ * more turns.
+ *
+ * ## Cubic, so the short end is where the resolution is
+ *
+ * Most timers anybody sets are minutes, and a linear turn would put five
+ * minutes inside the first half-degree. At `curve` 3 the first thirty degrees
+ * are the first six minutes, a quarter turn is about two and a half hours, half
+ * a turn is most of a day, and the last quarter carries three days to seven:
+ *
+ * ```
+ *    30deg ->  6 min      90deg -> 2h 35m
+ *   180deg -> 21h        270deg -> 2d 23h       360deg -> 7d
+ * ```
+ *
+ * `curve` is an argument and not a constant because it is a *feel* parameter,
+ * and DESIGN section 5.8's rule is that feel is found by fiddling rather than
+ * derived. It arrives from `sim/tuning.ts` so the panel can turn it while the
+ * hand is on the bezel; `lib/` may not import that, and should not — this is
+ * the arithmetic, not the taste.
+ *
+ * Clamped at both ends. Winding backwards past nothing is a countdown of no
+ * length rather than a negative one, and past a full turn is a week rather than
+ * a fortnight — a dial has a stop, and running off the end of one silently is
+ * how you set a timer you did not mean.
+ */
+/**
+ * The shape of the wind, as a mutable binding — T-411.
+ *
+ * A `let` and not a `const`, on `sim/tuning.ts`'s pattern rather than in it.
+ * DESIGN section 5.8's rule is that feel is found by fiddling and the fiddling
+ * has to be fast, and this exponent is precisely that kind of number — but
+ * `sim/tuning.ts` says in its own header that it holds the *physics* constants,
+ * and a gesture curve is not one. Putting it there would also make
+ * `state/tools/` import `sim/`, which nothing does today.
+ *
+ * So it lives beside the arithmetic it shapes, and `app/main.ts` puts
+ * `setWindCurve` on the debug handle in a dev build — which is the same fast
+ * loop the panel offers, without stretching a module or crossing a layer to get
+ * it. Three is where it was left; see [`windTo`] for what that buys.
+ */
+let WIND_CURVE = 3;
+
+/** What the bezel is currently shaped like. */
+export function windCurve(): number {
+  return WIND_CURVE;
+}
+
+/** Turn the dial's feel, for a dev build with a hand on the bezel. Refused
+ *  rather than clamped when it is not a shape, so a slip cannot flatten it. */
+export function setWindCurve(curve: number): void {
+  if (Number.isFinite(curve) && curve > 0 && curve <= 12) WIND_CURVE = curve;
+}
+
+export function windTo(turns: number, curve: number = WIND_CURVE): number {
+  if (!Number.isFinite(turns) || turns <= 0) return 0;
+  const at = Math.min(1, turns);
+  const shaped = Number.isFinite(curve) && curve > 0 ? Math.pow(at, curve) : at;
+  return snapWind(shaped * MAX_COUNTDOWN_MS);
+}
+
+/**
+ * The detent a wound value falls on.
+ *
+ * A dial has stops, and these grow with the reading for the same reason the
+ * *face* does (`stepFor`): a countdown of four days set to the nearest minute
+ * is a precision nobody asked for and nobody can hold their hand still enough
+ * to hit. The two ladders are deliberately not the same one — a face under an
+ * hour shows seconds and nobody winds in seconds — so this is its own function
+ * rather than a second caller of that one.
+ */
+export function snapWind(value: number): number {
+  if (!Number.isFinite(value) || value <= 0) return 0;
+  const step =
+    value < HOUR_MS ? MINUTE_MS
+    : value < 6 * HOUR_MS ? 5 * MINUTE_MS
+    : value < DAY_MS ? 15 * MINUTE_MS
+    : HOUR_MS;
+  return Math.min(MAX_COUNTDOWN_MS, Math.round(value / step) * step);
+}
+
+/**
+ * The turn a length is already wound to — [`windTo`] backwards.
+ *
+ * A wind has to start from where the dial *is*, or every grab of the bezel
+ * would snap the countdown to wherever the pointer happened to be. This is what
+ * makes the gesture relative rather than absolute.
+ */
+export function windOf(value: number, curve: number = WIND_CURVE): number {
+  if (!Number.isFinite(value) || value <= 0) return 0;
+  const at = Math.min(1, value / MAX_COUNTDOWN_MS);
+  return Number.isFinite(curve) && curve > 0 ? Math.pow(at, 1 / curve) : at;
+}
+
+/**
+ * The resolution a duration of this size is worth printing at — T-407.
+ *
+ * The second half of the same idea T-405 established: a face should be written
+ * only as often as it actually changes. That was about how large the figures
+ * are on screen; this is about how large the *number* is. Nobody watches the
+ * seconds of a countdown with four days left, and printing them would dirty the
+ * item eighty-six thousand times a day for a face that changes hourly.
+ *
+ * `detailed` is T-405's answer — whether the figures can be read where they are
+ * drawn — and the two compose by taking the coarser: a four-day countdown too
+ * small to read is still hourly, and a four-day countdown drawn large is hourly
+ * too, because the hours are all it says.
+ *
+ * The switchover is a whole day and there is one of it, so a reading crosses at
+ * exactly the point its format changes. `1d 00h` becomes `23:59:59` and the
+ * step goes from an hour to a second in the same instant — which is a jump in
+ * what the dial says, and the right one: a countdown coming under a day is a
+ * countdown that has become watchable.
+ */
+export function stepFor(value: number, detailed: boolean): number {
+  if (Number.isFinite(value) && value >= DAY_MS) return HOUR_MS;
+  return detailed ? 1000 : MINUTE_MS;
+}
+
+/**
+ * A duration as a dial says it, at the step it is being compared at — T-407.
+ *
+ * **The only place a timer's figures are composed**, and it takes the step
+ * rather than deciding one, because the caller has already quantised by it.
+ * That is what makes the label and the dirty flag incapable of disagreeing:
+ * `timerFace` builds this out of the quantum itself, so the digits are by
+ * construction the number the tick compared.
+ *
+ * Past a day the dial gives up its seconds and says days and hours, because
+ * `runtimeLabel` would print a week as `168:00:00` — correct, and useless. Two
+ * digits on the hours so `6d 03h` and `6d 23h` are the same width, which is the
+ * same courtesy `tabular-nums` does for the figures either side of a colon.
+ */
+export function dialLabel(value: number, step: number): string {
+  if (!Number.isFinite(value) || value < 0) return runtimeLabel(0);
+  if (step >= HOUR_MS) {
+    const hours = Math.round(value / HOUR_MS);
+    return `${Math.floor(hours / 24)}d ${String(hours % 24).padStart(2, "0")}h`;
+  }
+  return runtimeLabel(Math.round(value / 1000));
+}
 
 /**
  * A reading with the number that decides whether it has *moved* — T-394, T-395.
@@ -330,13 +515,18 @@ export function readingQuantum(
     // whole-minute offset from it — which is everywhere.
     return Number.isFinite(now) ? Math.floor(now / MINUTE_MS) : 0;
   }
-  const step = detailed ? 1000 : MINUTE_MS;
   const elapsed = elapsedOf(fields, now, ahead);
   // Floored for a stopwatch and ceiled for a countdown, which is `timerReading`'s
   // split and has to stay it: a quantum that rounded the other way from the label
   // would move on the frame *beside* the one the digits change on.
-  if (fields.mode === "stopwatch") return Math.floor(elapsed / step);
-  return Math.ceil(Math.max(0, ms(fields.runsFor) - elapsed) / step);
+  //
+  // The step is taken from the value being *shown* rather than from the tier
+  // alone (T-407), so a countdown with four days left is compared hourly — the
+  // hours are all its face says, and dirtying it once a second for them would
+  // be eighty-six thousand writes a day for twenty-four changes.
+  if (fields.mode === "stopwatch") return Math.floor(elapsed / stepFor(elapsed, detailed));
+  const remaining = Math.max(0, ms(fields.runsFor) - elapsed);
+  return Math.ceil(remaining / stepFor(remaining, detailed));
 }
 
 /**
@@ -359,11 +549,16 @@ export function timerFace(
 ): TimerFace {
   const reading = timerReading(fields, now, ahead);
   const quantum = readingQuantum(fields, now, detailed, ahead);
-  // A clock is already at minute resolution and a full-tier face is already at
-  // the second, so in both of those the label `timerReading` built is the one to
-  // print and nothing is rebuilt.
-  if (detailed || reading.mode === "clock") return { ...reading, quantum };
-  return { ...reading, quantum, label: runtimeLabel(quantum * 60) };
+  // A clock is at minute resolution and says the time of day rather than a
+  // duration, so its label is not a quantised span and is not rebuilt.
+  if (reading.mode === "clock") return { ...reading, quantum };
+  // **Built out of the quantum, always** — T-407, AC-1167. Not "rebuilt when
+  // coarse", which is what this was: two expressions for one number, agreeing
+  // by inspection. The digits are now by construction the value the tick
+  // compared, so a face that changed on a frame nothing dirtied would have to
+  // be two different quanta rather than two different formatters.
+  const step = stepFor(reading.mode === "stopwatch" ? reading.elapsed : reading.remaining, detailed);
+  return { ...reading, quantum, label: dialLabel(quantum * step, step) };
 }
 
 /**

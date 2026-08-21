@@ -12,11 +12,17 @@ import { describe, expect, it } from "vitest";
 import { runtimeLabel } from "@/lib/objects";
 import {
   clockLabel,
+  dialLabel,
   elapsedOf,
   isTimerMode,
   NO_TIMER,
+  snapWind,
+  stepFor,
+  timerFace,
   timerReading,
   TIMER_MODES,
+  windOf,
+  windTo,
   type TimerFields,
 } from "@/lib/timer";
 
@@ -323,6 +329,100 @@ describe("the mode as a value", () => {
     for (const mode of TIMER_MODES) expect(isTimerMode(mode)).toBe(true);
     for (const junk of ["alarm", "", 3, null, undefined, {}, ["clock"]]) {
       expect(isTimerMode(junk)).toBe(false);
+    }
+  });
+});
+
+describe("what a dial says past an hour", () => {
+  /**
+   * T-407. `runtimeLabel` prints a week as `168:00:00` — correct, and useless
+   * on a face. Past a day the dial gives up its seconds.
+   */
+  const HOUR = 3_600_000;
+  const DAY = 86_400_000;
+
+  it("says days and hours once there is a day on it", () => {
+    expect(dialLabel(7 * DAY, HOUR)).toBe("7d 00h");
+    expect(dialLabel(6 * DAY + 23 * HOUR, HOUR)).toBe("6d 23h");
+    // Two digits on the hours, so the width does not shuffle as it counts down
+    // — the same courtesy `tabular-nums` does either side of a colon.
+    expect(dialLabel(6 * DAY + 3 * HOUR, HOUR)).toBe("6d 03h");
+  });
+
+  it("goes back to a spine's reading under a day", () => {
+    expect(dialLabel(23 * HOUR + 59 * 60_000 + 59_000, 1000)).toBe("23:59:59");
+    expect(dialLabel(90_000, 1000)).toBe("1:30");
+  });
+
+  it("compares a long countdown hourly and a short one by the second", () => {
+    // The face changes hourly past a day, so dirtying it once a second would be
+    // eighty-six thousand writes for twenty-four changes.
+    expect(stepFor(4 * DAY, true)).toBe(HOUR);
+    expect(stepFor(23 * HOUR, true)).toBe(1000);
+    // And T-405's answer still coarsens a face too small to read, both taken
+    // together rather than either winning.
+    expect(stepFor(23 * HOUR, false)).toBe(60_000);
+    expect(stepFor(4 * DAY, false)).toBe(HOUR);
+  });
+
+  it("builds the face's digits out of the very number the tick compared", () => {
+    // AC-1167, as a property rather than a promise: whatever the tier and
+    // whatever the length, the label is `dialLabel(quantum * step)`.
+    for (const runsFor of [90_000, 45 * 60_000, 5 * HOUR, 4 * DAY, 7 * DAY]) {
+      for (const detailed of [true, false]) {
+        const fields: TimerFields = { ...NO_TIMER, mode: "countdown", runsFor, runFrom: T };
+        const at = T + 1234;
+        const face = timerFace(fields, at, detailed);
+        const step = stepFor(face.remaining, detailed);
+        expect(face.label).toBe(dialLabel(face.quantum * step, step));
+      }
+    }
+  });
+});
+
+describe("winding the bezel", () => {
+  /** T-407, T-411 — one turn is the whole scale, which is what a dial is. */
+  const CURVE = 3;
+  const MIN = 60_000;
+  const HOUR = 3_600_000;
+  const DAY = 86_400_000;
+
+  it("puts a week at one full turn and nothing at none", () => {
+    expect(windTo(0, CURVE)).toBe(0);
+    expect(windTo(1, CURVE)).toBe(7 * DAY);
+  });
+
+  it("keeps the resolution at the short end, where timers actually live", () => {
+    // A linear turn would put five minutes inside the first half-degree.
+    expect(windTo(30 / 360, CURVE)).toBe(6 * MIN);
+    expect(windTo(60 / 360, CURVE)).toBe(47 * MIN);
+    expect(windTo(90 / 360, CURVE)).toBe(2 * HOUR + 40 * MIN);
+  });
+
+  it("has a stop at each end, because a dial does", () => {
+    // Running off the end of a dial silently is how you set a timer you did not
+    // mean. Backwards past nothing is no length, not a negative one.
+    expect(windTo(-0.5, CURVE)).toBe(0);
+    expect(windTo(3, CURVE)).toBe(7 * DAY);
+    expect(snapWind(9 * DAY)).toBe(7 * DAY);
+  });
+
+  it("has detents that grow with the reading", () => {
+    // Nobody can hold their hand still enough to set four days to the minute,
+    // and nobody asked to.
+    expect(snapWind(12 * MIN + 20_000)).toBe(12 * MIN);
+    expect(snapWind(3 * HOUR + 2 * MIN)).toBe(3 * HOUR);
+    expect(snapWind(10 * HOUR + 7 * MIN)).toBe(10 * HOUR);
+    expect(snapWind(4 * DAY + 40 * MIN)).toBe(4 * DAY + HOUR);
+  });
+
+  it("finds the turn a length is already at, so a wind starts from the dial", () => {
+    // Absolute would snap the countdown to wherever the pointer landed the
+    // instant the bezel was grabbed.
+    for (const turns of [0.1, 0.25, 0.5, 0.75, 1]) {
+      const value = windTo(turns, CURVE);
+      // Within one detent, which is all a round trip through a snap can promise.
+      expect(Math.abs(windTo(windOf(value, CURVE), CURVE) - value)).toBeLessThanOrEqual(HOUR);
     }
   });
 });

@@ -166,6 +166,7 @@ import { Hud, type HudStats } from "@/ui/hud";
 import { RAIL, Toolbar } from "@/ui/toolbar";
 import type { BoardStatus } from "@/ui/toolhint";
 import { ToolInfo } from "@/ui/toolinfo";
+import { setWindCurve, windCurve, windTo } from "@/lib/timer";
 import { Chime } from "@/ui/chime";
 import { Flash } from "@/ui/flash";
 import { Notice } from "@/ui/notice";
@@ -5409,6 +5410,19 @@ async function boot(): Promise<void> {
        * machine those two look identical.
        */
       chime,
+      /**
+       * The bezel's arithmetic and its feel, for a hand on the dial — T-411.
+       *
+       * `setWindCurve` is the fast loop DESIGN section 5.8 asks for without
+       * putting a gesture's exponent into `sim/tuning.ts`, whose own header
+       * says it holds the physics. `windTo` is beside it because a driven run
+       * needs to compare what the app did against what the curve says, and
+       * recomputing the curve in the driver would be a second opinion about
+       * the very thing under test.
+       */
+      windTo,
+      windCurve,
+      setWindCurve,
       search,
       flight,
       found,
