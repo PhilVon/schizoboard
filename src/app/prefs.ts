@@ -25,6 +25,7 @@
 const AGEING = "schizo.ageing";
 const TOOLBAR = "schizo.toolbar";
 const TIMER_FLIGHT = "schizo.timerflight";
+const CHIME = "schizo.chime";
 
 /**
  * Whether items age (DESIGN section 4.7).
@@ -122,5 +123,46 @@ export function setTimerFlight(on: boolean): void {
   } catch {
     // As above, and with less to lose than either: the switch holds for this
     // session, and a timer going off is the kind of thing you are present for.
+  }
+}
+
+/**
+ * Whether a timer that goes off makes a sound (`ui/chime.ts`, T-406).
+ *
+ * ## Stored as absence, on the *opposite* side of the line to `timerFlight`
+ *
+ * Those two sit next to each other in the menu and store their default in
+ * opposite ways, so the reason is worth writing down rather than leaving as an
+ * inconsistency for somebody to tidy into a bug.
+ *
+ * A flight **moves your camera**, which is an intrusion into what you were
+ * doing, so it defaults off and every failure to read a preference leaves the
+ * camera alone. A chime interrupts nothing: it announces, exactly as the flash
+ * line does, and the flash line is not a preference at all. What it is for is
+ * the case where nobody is looking at the screen — which is most of why anybody
+ * sets a kitchen timer — so a machine with site data switched off should still
+ * ring. This is `ageing`'s rule, and for `ageing`'s reason: the failure leans
+ * toward the application behaving as intended.
+ *
+ * The cost of being wrong is also asymmetric, and points the same way. A board
+ * that quietly stopped flying is a preference that did not stick; a board that
+ * quietly stopped ringing is a timer that does not work, and the person finds
+ * out by missing something.
+ */
+export function chime(): boolean {
+  try {
+    return localStorage.getItem(CHIME) !== "off";
+  } catch {
+    return true;
+  }
+}
+
+export function setChime(on: boolean): void {
+  try {
+    if (on) localStorage.removeItem(CHIME);
+    else localStorage.setItem(CHIME, "off");
+  } catch {
+    // Nothing to do and nothing to say — `setAgeing`'s note, and the switch
+    // holds for this session either way.
   }
 }

@@ -166,6 +166,7 @@ import { Hud, type HudStats } from "@/ui/hud";
 import { RAIL, Toolbar } from "@/ui/toolbar";
 import type { BoardStatus } from "@/ui/toolhint";
 import { ToolInfo } from "@/ui/toolinfo";
+import { Chime } from "@/ui/chime";
 import { Flash } from "@/ui/flash";
 import { Notice } from "@/ui/notice";
 import {
@@ -3307,6 +3308,7 @@ async function boot(): Promise<void> {
             // that is on screen now. It is read at the moment a countdown fires
             // and not before.
             timerFlight: { on: prefs.timerFlight(), set: prefs.setTimerFlight },
+            chime: { on: prefs.chime(), set: prefs.setChime },
           },
           native.kind === "tauri"
             ? {
@@ -3486,6 +3488,7 @@ async function boot(): Promise<void> {
         {
           ageing: { on: prefs.ageing(), set: setAgeing },
           timerFlight: { on: prefs.timerFlight(), set: prefs.setTimerFlight },
+          chime: { on: prefs.chime(), set: prefs.setChime },
         },
         native.kind === "tauri"
           ? {
@@ -3581,6 +3584,17 @@ async function boot(): Promise<void> {
   const flash = new Flash(world.layers.ui);
 
   /**
+   * The bell a timer rings — T-406, `ui/chime.ts`.
+   *
+   * Built here beside the flash line rather than at the top of this function
+   * with the long-lived state, and built *unconditionally* rather than only
+   * when a board has a clock on it: the constructor allocates nothing and opens
+   * nothing. The hardware audio graph is built on the first ring, so the very
+   * many boards that never have a timer on them never start one.
+   */
+  const chime = new Chime();
+
+  /**
    * A countdown going off, on the two surfaces this board already has for
    * pointing at something — T-394, and D-73 section 3 for why it is only these
    * two.
@@ -3607,6 +3621,26 @@ async function boot(): Promise<void> {
    */
   timers.onExpire(({ id, caption, lights }) => {
     flash.say(caption === "" ? "A timer has gone off" : caption);
+    /**
+     * The fourth surface, and the only one that does not need you to be looking
+     * — T-406.
+     *
+     * Read here and rung here, beside the flash line and the amber, for exactly
+     * the reason the flight below is: `state/timers.ts` takes a scene, a dirty
+     * set and a `now`, and the strongest thing about it is what it does not
+     * hold. A preference threaded into `step` would put a taste from
+     * `localStorage` inside the tick.
+     *
+     * Before the flight rather than after it, because a flight is `return`ed
+     * out of when it is switched off and a surface added below that line is a
+     * surface that silently stops working the moment somebody turns the camera
+     * off. That is not hypothetical carelessness — it is one line's distance
+     * from being the same class of bug as the one T-405 fixed.
+     *
+     * `Chime.ring` never throws and never reports. A machine that will not make
+     * a noise has three other surfaces, all of which have already fired.
+     */
+    if (prefs.chime()) chime.ring();
     const at = lights ?? id;
     found.raise(at, scene);
     /**
@@ -5366,6 +5400,15 @@ async function boot(): Promise<void> {
        * `flight.active` is the only one for whether the camera is on its way
        * somewhere or has been taken off it by a hand.
        */
+      /**
+       * The bell, and `rings` in particular — T-406.
+       *
+       * Here for exactly the reason `flashes` is, and more so: a screenshot
+       * cannot hear. Without a count there is no way for a driven run to tell a
+       * bell that rang from an expiry that never reached one, and on a silent
+       * machine those two look identical.
+       */
+      chime,
       search,
       flight,
       found,

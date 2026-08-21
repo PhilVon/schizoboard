@@ -17,7 +17,7 @@
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { setTimerFlight, timerFlight } from "@/app/prefs";
+import { chime, setChime, setTimerFlight, timerFlight } from "@/app/prefs";
 
 beforeEach(() => {
   localStorage.clear();
@@ -67,5 +67,54 @@ describe("flying to a timer that goes off", () => {
       throw new Error("site data disabled");
     });
     expect(() => setTimerFlight(true)).not.toThrow();
+  });
+});
+
+/**
+ * The bell — T-406.
+ *
+ * Its own block rather than more of the flight's, because the interesting thing
+ * about it is the one way it differs: it stores its default as **absence** and
+ * the flight stores its default as **presence**, so every failure here leans
+ * toward the board making a noise where every failure there leans toward the
+ * camera staying put. Two switches side by side in one menu, deliberately on
+ * opposite sides of that line, and `app/prefs.ts` says why.
+ */
+describe("ringing a timer that goes off", () => {
+  it("rings until somebody says not to", () => {
+    expect(chime()).toBe(true);
+  });
+
+  it("remembers being silenced, and being let ring again", () => {
+    setChime(false);
+    expect(chime()).toBe(false);
+    setChime(true);
+    expect(chime()).toBe(true);
+    // On is stored as absence, which is what makes every failure below land on
+    // the board still ringing.
+    expect(localStorage.getItem("schizo.chime")).toBeNull();
+  });
+
+  it("rings for a value no build of this wrote", () => {
+    localStorage.setItem("schizo.chime", "no");
+    expect(chime()).toBe(true);
+  });
+
+  it("rings when the store cannot be read at all", () => {
+    // A webview with site data disabled. The flight's equivalent test expects
+    // the opposite answer, and that is the whole point of having both: a board
+    // that quietly stopped flying is a preference that did not stick, and a
+    // board that quietly stopped ringing is a timer that does not work.
+    vi.spyOn(Storage.prototype, "getItem").mockImplementation(() => {
+      throw new Error("site data disabled");
+    });
+    expect(chime()).toBe(true);
+  });
+
+  it("says nothing when the store cannot be written", () => {
+    vi.spyOn(Storage.prototype, "setItem").mockImplementation(() => {
+      throw new Error("quota");
+    });
+    expect(() => setChime(false)).not.toThrow();
   });
 });

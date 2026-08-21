@@ -1014,6 +1014,7 @@ export function boardMenuRows(
     ageing: PrefSwitch;
     /** Whether a countdown going off carries this machine's camera (T-399). */
     timerFlight: PrefSwitch;
+    chime: PrefSwitch;
   },
   /**
    * `null` in a plain browser, where none of these four can happen at all.
@@ -1203,6 +1204,23 @@ export function boardMenuRows(
         ? "Stop flying to a timer that goes off"
         : "Fly to a timer when it goes off",
       run: () => prefs.timerFlight.set(!prefs.timerFlight.on),
+    });
+    /**
+     * The bell — T-406, and the same gate as the flight above it for the same
+     * reason: a board with no clock on it cannot have one go off.
+     *
+     * Under the flight rather than over it, though this is the surface that
+     * defaults *on* and that one defaults off. The order is the order a timer
+     * uses them: the noise is what reaches you when you are not looking, and
+     * the flight is what happens once you are. Reading the pair the other way
+     * round would put the rarer setting first.
+     *
+     * A verb and the label says what pressing it will do, which is this whole
+     * group's rule.
+     */
+    below.push({
+      label: prefs.chime.on ? "Silence a timer that goes off" : "Ring a timer when it goes off",
+      run: () => prefs.chime.set(!prefs.chime.on),
     });
   }
   if (invite.link !== null) {
