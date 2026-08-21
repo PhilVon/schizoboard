@@ -75,7 +75,7 @@ function board(fields: Partial<TimerFields>, text = "", primeAt: number | null =
     // is the same one timer, so "can its seconds be read" is one answer. What
     // T-405 made per-item is exercised in `dom.test.ts` and against
     // `secondsAreReadable` directly.
-    timers.step(scene, dirty, now, () => detailed, ahead);
+    timers.step(scene, dirty, now, () => detailed, () => ahead);
   if (primeAt !== null) frame(primeAt);
   dirty.clear();
   return { scene, dirty, timers, fired, frame, set };
@@ -279,7 +279,7 @@ describe("the dirty rule", () => {
     scene.putItem(cold("t", { ...NO_TIMER, mode: "stopwatch", runFrom: T0 }), pose());
     dirty.clear();
 
-    new Timers().step(scene, dirty, T0 + 5_000, () => true, 0);
+    new Timers().step(scene, dirty, T0 + 5_000, () => true, () => 0);
     expect(dirty.items.size).toBe(0);
   });
 
@@ -289,10 +289,10 @@ describe("the dirty rule", () => {
     const timers = new Timers();
     scene.putItem(cold("run", { ...NO_TIMER, mode: "stopwatch", runFrom: T0 }), pose());
     scene.putItem(cold("held", { ...NO_TIMER, mode: "stopwatch", banked: 4_000 }), pose());
-    timers.step(scene, dirty, T0, () => true, 0);
+    timers.step(scene, dirty, T0, () => true, () => 0);
     dirty.clear();
 
-    timers.step(scene, dirty, T0 + 1_000, () => true, 0);
+    timers.step(scene, dirty, T0 + 1_000, () => true, () => 0);
     // Split by id rather than counted: a run that dirtied both, or the wrong
     // one, reports the same total as the right answer.
     expect(dirty.items.has("run")).toBe(true);
@@ -350,7 +350,7 @@ describe("what the tick refuses to depend on", () => {
         pose(),
       );
 
-      for (let i = 0; i < 100; i += 1) timers.step(scene, dirty, T0 + i * 16, () => true, 0);
+      for (let i = 0; i < 100; i += 1) timers.step(scene, dirty, T0 + i * 16, () => true, () => 0);
       expect(fired).toHaveLength(1);
       // ARCHITECTURE section 3: one rAF, and nothing animates on its own. `now`
       // arrives as an argument, which is also the whole reason every assertion
@@ -373,7 +373,7 @@ describe("what the tick refuses to depend on", () => {
     // a state this could not read, so the assertion is that nothing happens at
     // all - which is what a board with no clock on it should cost.
     const look = vi.spyOn(scene, "cold");
-    new Timers().step(scene, dirty, T0, () => true, 0);
+    new Timers().step(scene, dirty, T0, () => true, () => 0);
     expect(look).not.toHaveBeenCalled();
     expect(dirty.items.size).toBe(0);
     look.mockRestore();
@@ -387,19 +387,19 @@ describe("what the tick refuses to depend on", () => {
     timers.onExpire((e) => fired.push(e));
 
     scene.putItem(cold("t", { ...NO_TIMER, mode: "countdown", runsFor: 1_000, runFrom: T0 }), pose());
-    timers.step(scene, dirty, T0, () => true, 0);
-    timers.step(scene, dirty, T0 + 1_000, () => true, 0);
+    timers.step(scene, dirty, T0, () => true, () => 0);
+    timers.step(scene, dirty, T0 + 1_000, () => true, () => 0);
     expect(fired).toHaveLength(1);
 
     scene.removeItem("t");
-    timers.step(scene, dirty, T0 + 2_000, () => true, 0);
+    timers.step(scene, dirty, T0 + 2_000, () => true, () => 0);
 
     // Put back, with the same id and the same run. An id whose fired edge had
     // been kept would sit there expired and silent; an id whose reading had been
     // kept would be first-sighted wrongly. Slots are reused and so are ids after
     // an undo, so this is the ordinary case rather than a contrived one.
     scene.putItem(cold("t", { ...NO_TIMER, mode: "countdown", runsFor: 1_000, runFrom: T0 }), pose());
-    timers.step(scene, dirty, T0 + 3_000, () => true, 0);
+    timers.step(scene, dirty, T0 + 3_000, () => true, () => 0);
     // First sight again: recorded, not announced.
     expect(fired).toHaveLength(1);
   });
@@ -448,7 +448,7 @@ describe("what the tick refuses to depend on", () => {
     // mode of the alternative is a thrown error inside the frame loop, which
     // takes the whole board down rather than one clock.
     const look = vi.spyOn(scene, "cold").mockReturnValue(null);
-    expect(() => new Timers().step(scene, dirty, T0, () => true, 0)).not.toThrow();
+    expect(() => new Timers().step(scene, dirty, T0, () => true, () => 0)).not.toThrow();
     look.mockRestore();
   });
 });

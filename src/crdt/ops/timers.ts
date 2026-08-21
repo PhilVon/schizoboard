@@ -167,6 +167,23 @@ export function startTimer(board: BoardDoc, ids: readonly string[], now: number)
       if (map === null) continue;
       if (typeof map.get("runFrom") === "number") continue;
       map.set("runFrom", now);
+      /**
+       * And whose clock that instant is in — T-410.
+       *
+       * Written beside `runFrom` and in the same transaction, because the two
+       * are one fact: an instant with no frame is a number nobody can subtract.
+       * A peer that arrived after this timer started reads both together or
+       * neither.
+       *
+       * The document's own client id, which is what awareness is keyed by — so
+       * a reader that has measured an offset to this peer can find it without
+       * a second name for the same machine.
+       *
+       * Cleared by `pauseTimer` with `runFrom`, and never written on its own:
+       * absence of `runFrom` is the paused state, and a `runBy` outliving it
+       * would be a frame for an instant that is not there.
+       */
+      map.set("runBy", board.doc.clientID);
     }
   });
 }
@@ -181,11 +198,30 @@ export function startTimer(board: BoardDoc, ids: readonly string[], now: number)
  *
  * Not running is a no-op, so pausing a paused timer does not re-bank anything.
  */
-export function pauseTimer(board: BoardDoc, ids: readonly string[], now: number): void {
+export function pauseTimer(
+  board: BoardDoc,
+  ids: readonly string[],
+  nowIn: (writer: number | null) => number,
+): void {
   mutate(board, Origin.LOCAL_USER, () => {
     for (const id of ids) {
       const map = timerMap(board, id);
       if (map === null) continue;
+      /**
+       * This instant **in the frame the start was written in** — T-410.
+       *
+       * `banked` is a duration and must come out clock-free, but it is computed
+       * as `now - runFrom` and those two are on different machines' clocks the
+       * moment one person starts a timer and another pauses it. Converting here
+       * is what keeps the subtraction inside one frame; without it a pause
+       * banks the skew between the two machines and the timer jumps by it,
+       * permanently, because `banked` is what survives.
+       *
+       * A function of the writer rather than one instant, because a selection
+       * of three timers can hold three starts written by three peers.
+       */
+      const runBy = map.get("runBy");
+      const now = nowIn(typeof runBy === "number" && Number.isFinite(runBy) ? runBy : null);
       const from = map.get("runFrom");
       if (typeof from !== "number" || !Number.isFinite(from) || from <= 0) {
         // A start this build cannot believe — `readTimer` reads it as paused
@@ -201,6 +237,9 @@ export function pauseTimer(board: BoardDoc, ids: readonly string[], now: number)
       const run = Number.isFinite(now) ? Math.max(0, now - from) : 0;
       setOrClear(map, "banked", held + run, 0);
       map.delete("runFrom");
+      // With it, for the reason `startTimer` gives: a frame for an instant that
+      // is no longer there is a key nobody can read anything from.
+      map.delete("runBy");
     }
   });
 }
@@ -218,6 +257,7 @@ export function resetTimer(board: BoardDoc, ids: readonly string[]): void {
       const map = timerMap(board, id);
       if (map === null) continue;
       map.delete("runFrom");
+      map.delete("runBy");
       map.delete("banked");
     }
   });

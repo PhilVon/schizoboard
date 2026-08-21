@@ -76,6 +76,20 @@
  */
 const MAX_SKEW_MS = 12 * 60 * 60 * 1000;
 
+/**
+ * How far above the held minimum a reading has to be before it is believed as a
+ * *new* offset rather than dismissed as a slow message — T-410.
+ *
+ * Two seconds. Below it, a larger reading is the network having a bad moment
+ * and the minimum already in hand is the better estimate. Above it, no
+ * plausible LAN delay explains the gap and the honest reading is that the
+ * peer's clock has moved — which is what waking from sleep and an NTP
+ * correction both look like from here.
+ *
+ * `state/remote.ts` makes the same trade with `SKEW_RESET_MS` on the same wire.
+ */
+const PEER_RESET_MS = 2_000;
+
 export class SharedClock {
   /**
    * How far this machine's wall clock runs ahead of the shared base, in
@@ -87,6 +101,19 @@ export class SharedClock {
    * on it — behaves exactly as this application did before T-404.
    */
   private skew = 0;
+
+  /**
+   * What this machine has measured against each peer, by Yjs client id — T-410.
+   *
+   * Keyed by the same id `runBy` names, so a timer's writer is looked up
+   * directly rather than through a second name for the same machine.
+   *
+   * Empty in the topology T-404 fixed, where no peer is dialled directly and
+   * the relay is the one clock in the room. That emptiness is not a gap: it is
+   * what makes `aheadOf` fall through to the base, which is the right answer
+   * there.
+   */
+  private readonly peers = new Map<number, number>();
 
   /** How far this machine is ahead of the board, in milliseconds. Read by the
    *  HUD, which is the only readout that two peers disagree at all. */
@@ -121,6 +148,69 @@ export class SharedClock {
   }
 
   /**
+   * How far this machine is ahead of one *peer*, learned from that peer's own
+   * clock stamp — T-410.
+   *
+   * `at` is the peer's `Date.now()` when it published, and `receivedAt` is this
+   * machine's when the state arrived. The difference is the offset plus however
+   * long the message took, and the two cannot be separated from one sample.
+   *
+   * **So the minimum is kept rather than the average**, which is the trick
+   * `state/remote.ts` already uses on the same wire for the same reason: every
+   * sample is the true offset *plus* a delay that is never negative, so the
+   * smallest reading yet seen is the one with the least delay in it and is the
+   * closest to the truth. An average would be biased by exactly the mean
+   * latency, and would get worse on a busy network rather than better.
+   *
+   * The minimum does have to be allowed to rise again, or a single early
+   * fast sample would pin the estimate for the session and a machine that
+   * slept for an hour would never be believed. `PEER_RESET_MS` is that door:
+   * a reading that far above the held minimum is not a slow message, it is a
+   * clock that has moved.
+   */
+  hear(client: number, at: number, receivedAt: number): void {
+    if (!Number.isFinite(client) || !Number.isFinite(at) || !Number.isFinite(receivedAt)) return;
+    if (at <= 0) return;
+    const measured = receivedAt - at;
+    if (Math.abs(measured) > MAX_SKEW_MS) return;
+    const held = this.peers.get(client);
+    if (held === undefined || measured < held || measured - held > PEER_RESET_MS) {
+      this.peers.set(client, measured);
+    }
+  }
+
+  /**
+   * The offset to read a timer by, given the peer whose clock wrote its start.
+   *
+   * **Falls back to this machine's own base**, which is the whole of how the
+   * two topologies live together. In a mesh there is a direct link to the
+   * writer and this returns what was measured over it; in the relay topology
+   * there is no direct link to any peer, `peers` is empty, and the base every
+   * peer shares is the right answer instead.
+   *
+   * A timer started before `runBy` existed, or by a build that does not write
+   * it, arrives as `null` and takes the base too — which is exactly what it got
+   * before this, and is correct wherever there is one base.
+   */
+  aheadOf(client: number | null): number {
+    if (client === null) return this.skew;
+    const peer = this.peers.get(client);
+    return peer === undefined ? this.skew : peer;
+  }
+
+  /** A peer went. Its offset goes with it — the next client to take that id is
+   *  a different machine, and a stale entry would be read as its. */
+  lost(client: number): void {
+    this.peers.delete(client);
+  }
+
+  /** How many peers' clocks this machine has heard. A readout — nothing on
+   *  screen says whether an offset was ever measured. */
+  get heard(): number {
+    return this.peers.size;
+  }
+
+  /**
    * A local instant, in the base every peer measures against.
    *
    * A non-finite `local` passes straight through rather than becoming a
@@ -132,9 +222,25 @@ export class SharedClock {
     return Number.isFinite(local) ? local - this.skew : local;
   }
 
-  /** The reverse, for anything that has to say a shared instant in this
-   *  machine's own terms. */
+  /** The reverse of [`shared`], for anything that has to say a base instant in
+   *  this machine's own terms. */
   local(shared: number): number {
     return Number.isFinite(shared) ? shared + this.skew : shared;
+  }
+
+  /**
+   * A local instant, said in the frame a given peer's clock keeps — T-410.
+   *
+   * The generalisation of [`shared`], which is this with no writer: `shared`
+   * converts into the *base's* frame, and this converts into *anybody's*.
+   *
+   * The one caller is the pause. `banked` comes out of `now - runFrom` and must
+   * be a plain duration, but those two are on different machines' clocks the
+   * moment one person starts a timer and another stops it — so the subtraction
+   * has to happen inside one frame or it banks the skew, permanently, because
+   * `banked` is what survives every later pause and resume.
+   */
+  inFrameOf(local: number, writer: number | null): number {
+    return Number.isFinite(local) ? local - this.aheadOf(writer) : local;
   }
 }

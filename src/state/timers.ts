@@ -153,6 +153,14 @@ export class Timers {
    * pressed start. The two are different clocks and subtracting one from the
    * other would put decades on a face.
    *
+   * `aheadFor` answers how far this machine's clock is ahead of the one a given
+   * timer's start was written by — T-410. A function of the *writer* and not one
+   * number, because a discovered-peer mesh has no single base to be ahead of:
+   * every peer measures every other directly, and each timer is read in the
+   * frame it was written in. `state/clock.ts` holds the table and falls back to
+   * this machine's base where there is no direct link, which is the topology
+   * T-404 fixed.
+   *
    * `detailedFor` answers, for one timer, whether its seconds can be read where
    * it is drawn — T-405. A function rather than the camera itself, for exactly
    * the reason `simView` is a plain rectangle and for the reason the boolean it
@@ -165,7 +173,7 @@ export class Timers {
     dirty: DirtySets,
     now: number,
     detailedFor: (id: string) => boolean,
-    ahead: number,
+    aheadFor: (writer: number | null) => number,
   ): void {
     const timers = scene.timers;
     if (timers.size === 0) {
@@ -203,6 +211,7 @@ export class Timers {
       // legible at a zoom where an ordinary one is a smudge. The caller decides
       // and the face asks the same function, which is what keeps the digits and
       // the dirty flag on one frame.
+      const ahead = aheadFor(fields.runBy);
       const reading = readingQuantum(fields, now, detailedFor(id), ahead);
       if (this.shown.get(id) !== reading) {
         this.shown.set(id, reading);

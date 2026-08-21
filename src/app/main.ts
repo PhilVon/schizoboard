@@ -756,7 +756,21 @@ async function boot(): Promise<void> {
    * Zero on a board with nobody to disagree with, which is every board this
    * application has ever opened alone.
    */
-  let frameAhead = 0;
+  /**
+   * How far this machine is ahead of whoever wrote a given timer's start —
+   * T-410, and the shape `timerSeconds` below already has.
+   *
+   * A function of the writer rather than one number, because a discovered-peer
+   * mesh has no single base: every peer measures every other directly over the
+   * link it already holds, and each timer is read in the frame it was written
+   * in. `SharedClock.aheadOf` falls back to this machine's own base for a
+   * writer it has never heard from — which is a timer started before `runBy`
+   * existed, and is every timer in the topology T-404 fixed.
+   *
+   * Defined once rather than per frame, so the tick asking it of every timer
+   * allocates nothing.
+   */
+  const timerAhead = (writer: number | null): number => sharedClock.aheadOf(writer);
   /**
    * The camera's zoom as the SIM phase saw it, and the tier it was in — T-405.
    *
@@ -875,7 +889,7 @@ async function boot(): Promise<void> {
     const fields = scene.cold(itemId)?.timer;
     return fields === null || fields === undefined
       ? null
-      : timerFace(fields, frameNow, timerSeconds(itemId), frameAhead);
+      : timerFace(fields, frameNow, timerSeconds(itemId), timerAhead(fields.runBy));
   });
 
   /**
@@ -1276,19 +1290,35 @@ async function boot(): Promise<void> {
      */
     startTimer: (ids) => {
       const snapshot = [...ids];
-      // In the shared base and not this machine's clock — T-404. The instant
-      // goes into a document another machine reads, so it has to mean the same
-      // thing there; a raw `Date.now()` here is what froze a countdown on the
-      // second peer for as long as the two clocks disagreed.
-      const at = sharedClock.shared(Date.now());
+      /**
+       * This machine's own clock, raw — and `startTimer` writes `runBy`
+       * beside it so a reader knows whose it is (T-410).
+       *
+       * T-404 normalised this into a shared base instead, which was right when
+       * there was one base: the relay's. A discovered-peer mesh has no shared
+       * base at all, and normalising into a base that is only this machine's
+       * own clock produced an instant that *claimed* to be shared and was not.
+       * An instant plus the name of its frame is the honest version of the same
+       * thing, and it needs no authority to exist.
+       */
+      const at = Date.now();
       queued.push(() => startTimer(board, snapshot, at));
     },
     pauseTimer: (ids) => {
       const snapshot = [...ids];
-      // The same base as the start it is banking, necessarily: `pauseTimer`
-      // subtracts one from the other, and two bases would bank the skew.
-      const at = sharedClock.shared(Date.now());
-      queued.push(() => pauseTimer(board, snapshot, at));
+      /**
+       * The same frame as the start it is banking, necessarily — `pauseTimer`
+       * subtracts one from the other, and two clocks would bank the skew into
+       * `banked`, where it would survive every later pause and resume.
+       *
+       * A function rather than an instant, because the op reads each timer's
+       * own `runBy` and asks for this machine's clock *in that peer's frame*.
+       * One press pausing three timers somebody else started converts three
+       * times, which is the point.
+       */
+      queued.push(() =>
+        pauseTimer(board, snapshot, (writer) => sharedClock.inFrameOf(Date.now(), writer)),
+      );
     },
     resetTimer: (ids) => {
       const snapshot = [...ids];
@@ -4459,24 +4489,50 @@ async function boot(): Promise<void> {
     "change",
     ({ added, updated, removed }: { added: number[]; updated: number[]; removed: number[] }) => {
       const arrived = performance.now();
+      /**
+       * And the wall clock, separately — T-410.
+       *
+       * `arrived` is `performance.now()` because that is what `remote.observe`
+       * compares a peer's `grab.t` against, and the two must be one clock. A
+       * peer's `clockAt` is a `Date.now()`, so measuring against it needs the
+       * other clock, read in the same breath so both describe this instant.
+       */
+      const arrivedWall = Date.now();
       const states = provider.awareness.getStates();
+      /**
+       * How far this machine is ahead of one peer, from that peer's own stamp.
+       *
+       * Skipped for our own client id: awareness delivers our own state back to
+       * us, and measuring an offset to ourselves would put the message's own
+       * latency into a number that is zero by definition.
+       */
+      const hearClock = (client: number, state: unknown): void => {
+        if (client === board.doc.clientID) return;
+        const at = (state as { clockAt?: unknown } | undefined)?.clockAt;
+        if (typeof at === "number") sharedClock.hear(client, at, arrivedWall);
+      };
       for (const client of added) {
         const state = states.get(client);
         remote.observe(client, state, arrived);
         peers.observe(client, state);
         nameFor(client, state);
+        hearClock(client, state);
       }
       for (const client of updated) {
         const state = states.get(client);
         remote.observe(client, state, arrived);
         peers.observe(client, state);
         nameFor(client, state);
+        hearClock(client, state);
       }
       // Awareness drops a peer's state on disconnect by design, and this is the
       // only notice of it there is.
       for (const client of removed) {
         remote.forget(client);
         peers.forget(client);
+        // The offset goes with them: the next client to take that id is a
+        // different machine, and a stale entry would be read as its.
+        sharedClock.lost(client);
         // Not a matching `forget`. A peer who has gone is the ordinary reason a
         // photograph is unavailable, so this is exactly when their name becomes
         // worth having (DESIGN 7.5) - `missing` keeps it and marks them absent.
@@ -4688,11 +4744,11 @@ async function boot(): Promise<void> {
     // stylesheet draws the figures *larger* — see `secondsAreReadable`.
     frameZoom = camera.zoom;
     frameCoarse = !lod.detailed;
-    // Read here rather than inside the tick, like the two above it: a value
-    // that moved between the tick and the face would put the digits and the
-    // dirty flag on different frames.
-    frameAhead = sharedClock.ahead;
-    timers.step(scene, dirty, frameNow, timerSeconds, frameAhead);
+    // The offset is no longer a frame local — T-410 made it a question about
+    // the timer's *writer* rather than one number for the board, so the tick
+    // and the face each ask `timerAhead` about the same `runBy` and cannot
+    // disagree by construction.
+    timers.step(scene, dirty, frameNow, timerSeconds, timerAhead);
     ropes.step(scene, dirty, frame.dt, simView);
   });
 

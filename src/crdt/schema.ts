@@ -570,6 +570,7 @@ export function readItem(id: string, map: YMap): ItemFields | null {
 function readTimer(map: YMap): TimerFields {
   const mode = map.get("mode");
   const runFrom = map.get("runFrom");
+  const runBy = map.get("runBy");
   return {
     // Absent is `clock` and so is anything unrecognised — a mode a later build
     // invented, or a peer's nonsense. `sourceAbout`'s rule above, for the same
@@ -583,6 +584,11 @@ function readTimer(map: YMap): TimerFields {
     // fifty-six years on the face, so a start this build cannot believe reads as
     // no start at all — which is the paused state, and the honest one.
     runFrom: typeof runFrom === "number" && Number.isFinite(runFrom) && runFrom > 0 ? runFrom : null,
+    // Whose clock `runFrom` was written by — T-410. Absent on every timer
+    // started before this existed and by any build that does not write it,
+    // which reads as null and falls back to this machine's own base offset.
+    // A Yjs client id, so it is comparable with what awareness is keyed by.
+    runBy: typeof runBy === "number" && Number.isFinite(runBy) ? runBy : null,
     banked: Math.max(0, num(map.get("banked"), 0)),
     // May dangle, and is never repaired here — DATA-MODEL section 8.1. The item
     // it names may have been deleted by a peer, which is a timer that lights
