@@ -27,6 +27,7 @@
  * an export cannot fill with a pattern. See [`pinholeLod`] and [`pinholesFor`].
  */
 
+import { corkColorOf } from "@/lib/palette";
 import { mulberry32, valueAt } from "@/lib/seed";
 import type { Camera } from "@/state/camera";
 
@@ -72,7 +73,20 @@ const GRAIN_FADE_IN = 0.45;
 
 /** Cork is warm, mid-brown and fairly desaturated. Shadows elsewhere in the
  *  app are drawn from this, never from black (DESIGN section 4.1). */
-const CORK_BASE = { r: 173, g: 130, b: 84 };
+/**
+ * What the surface is currently made of — T-408.
+ *
+ * A parameter on every generator below rather than a constant, because a tint
+ * that reached the flat fill and not the flecks would be a beige board with
+ * coloured dust on it.
+ *
+ * Everything else in this file — the fleck tints, the 0.98 on blue, the pit and
+ * dust ratios — was tuned against `natural`, which is what `lib/palette.ts`
+ * still holds it as. Those numbers are *ratios* of the base and not absolutes,
+ * which is exactly what makes tinting possible at all: multiply the base and
+ * the granules, the pale dust and the pits all move with it.
+ */
+type Base = { readonly r: number; readonly g: number; readonly b: number };
 
 /**
  * Pinholes — DESIGN section 4.2, "faint accumulated pinholes near where pins
@@ -115,8 +129,27 @@ const PINHOLE_FADE_IN = 0.85;
  * `--shadow-warm` in `base.css`. Never black — DESIGN section 4.1.
  */
 const SHADOW_WARM = "38, 24, 12";
-/** The lip of a hole, catching the light: cork, lifted, not white. */
-const CORK_LIP = "232, 208, 172";
+/**
+ * How far the lip of a hole is lifted toward white, per channel — T-408.
+ *
+ * The lip catches the light: cork, lifted, not white. It was a single baked
+ * colour (`232, 208, 172`) until the board could be tinted, at which point a
+ * warm cream ring on a slate board gave it away — a hole punched in a surface
+ * that was not the surface.
+ *
+ * Per channel and not one factor, because the original was a *warm* lightening
+ * rather than a mix toward white: the blue rises least, which is what makes the
+ * lip read as lit bark instead of lit paper. These three numbers reproduce that
+ * colour exactly from the natural base, so an unpainted board is unchanged to
+ * the byte, and any other base is lifted the same way.
+ */
+const CORK_LIP_LIFT = { r: 0.72, g: 0.624, b: 0.515 };
+
+/** The lip colour for a given surface, as the `r, g, b` a gradient stop wants. */
+function corkLip(base: Base): string {
+  const lift = (c: number, t: number): number => Math.round(c + (255 - c) * t);
+  return `${lift(base.r, CORK_LIP_LIFT.r)}, ${lift(base.g, CORK_LIP_LIFT.g)}, ${lift(base.b, CORK_LIP_LIFT.b)}`;
+}
 
 function smoothstep(t: number): number {
   return t * t * (3 - 2 * t);
@@ -262,7 +295,7 @@ export interface Pinhole {
  * So: the dark is up-left and the lit lip is down-right, which is the mirror
  * image of every item shadow in the application, and correctly so.
  */
-function pinholeSprite(seed: number, variant: number, px: number): HTMLCanvasElement {
+function pinholeSprite(seed: number, variant: number, px: number, base: Base): HTMLCanvasElement {
   const { canvas, ctx } = makeCanvas(px);
   const rng = mulberry32(saltedVariant(seed, variant));
   const c = px / 2;
@@ -300,7 +333,7 @@ function pinholeSprite(seed: number, variant: number, px: number): HTMLCanvasEle
   // because what catches the light is the wall, and a wall seen from above is
   // an arc. It carries more of the read than its alpha suggests: with the pit
   // softened, this is most of what says pit rather than speck.
-  ctx.strokeStyle = `rgba(${CORK_LIP}, 0.34)`;
+  ctx.strokeStyle = `rgba(${corkLip(base)}, 0.34)`;
   ctx.lineWidth = Math.max(0.6, pit * 0.32);
   ctx.beginPath();
   ctx.arc(c, c, pit * 0.86, -0.35, Math.PI * 0.72);
@@ -336,7 +369,7 @@ function makeCanvas(size: number): { canvas: HTMLCanvasElement; ctx: CanvasRende
  * spatial correlation to break, and flecks near an edge are drawn again on the
  * opposite side.
  */
-function grainTile(seed: number, size: number): HTMLCanvasElement {
+function grainTile(seed: number, size: number, base: Base): HTMLCanvasElement {
   const { canvas, ctx } = makeCanvas(size);
   const rng = mulberry32(seed);
   const field = fbm(size, 4, 3, rng);
@@ -347,9 +380,9 @@ function grainTile(seed: number, size: number): HTMLCanvasElement {
     const region = 0.87 + field[i]! * 0.26;
     const speck = 0.93 + rng() * 0.14;
     const k = region * speck;
-    data[p] = Math.min(255, CORK_BASE.r * k);
-    data[p + 1] = Math.min(255, CORK_BASE.g * k);
-    data[p + 2] = Math.min(255, CORK_BASE.b * k * 0.98);
+    data[p] = Math.min(255, base.r * k);
+    data[p + 1] = Math.min(255, base.g * k);
+    data[p + 2] = Math.min(255, base.b * k * 0.98);
     data[p + 3] = 255;
   }
   ctx.putImageData(image, 0, 0);
@@ -373,9 +406,9 @@ function grainTile(seed: number, size: number): HTMLCanvasElement {
     // cork has pale dust in it as well as pits.
     const tint = dark < 0.66 ? 0.55 + dark * 0.35 : 1.06 + (dark - 0.66) * 0.28;
     const alpha = 0.05 + rng() * 0.16;
-    ctx.fillStyle = `rgba(${Math.round(CORK_BASE.r * tint)},${Math.round(
-      CORK_BASE.g * tint,
-    )},${Math.round(CORK_BASE.b * tint)},${alpha.toFixed(3)})`;
+    ctx.fillStyle = `rgba(${Math.round(base.r * tint)},${Math.round(
+      base.g * tint,
+    )},${Math.round(base.b * tint)},${alpha.toFixed(3)})`;
 
     for (const dx of x < margin ? [0, size] : x > size - margin ? [0, -size] : [0]) {
       for (const dy of y < margin ? [0, size] : y > size - margin ? [0, -size] : [0]) {
@@ -468,21 +501,84 @@ export class Cork {
   private readonly holeCtx: CanvasRenderingContext2D | null;
   private readonly sprites: HTMLCanvasElement[];
   private readonly pins: () => Iterable<PinPoint>;
+  /**
+   * What this board is made of — T-408.
+   *
+   * Held on the instance rather than read from the document on each use, for
+   * the reason `pins` is a function and this is not: the pins change constantly
+   * and the colour changes when somebody chooses one. `paint` is the only thing
+   * that moves it, and it is the only thing that re-generates the tiles.
+   */
+  private base: Base;
+
+  /** The flat colour under everything, as CSS. The grain fades out at low zoom
+   *  (`grainLod`), so this is what the board actually *is* from across the
+   *  room — and it is why a tint that only reached the bitmap would vanish
+   *  exactly where the board is most visible. */
+  /** The pinhole sprites, baked from the surface they are holes in. Cheap
+   *  beside the tiles: four small canvases against a million-pixel loop. */
+  private bakeSprites(): void {
+    this.sprites.length = 0;
+    for (let v = 0; v < PINHOLE_VARIANTS; v++) {
+      this.sprites.push(pinholeSprite(this.seed, v, PINHOLE_PX, this.base));
+    }
+  }
+
+  private get flat(): string {
+    return `rgb(${this.base.r} ${this.base.g} ${this.base.b})`;
+  }
+
+  /**
+   * Paint the cork a different colour — T-408.
+   *
+   * **The one thing that re-generates the tiles after construction**, and the
+   * header of `generate` explains why that is a sentence worth being careful
+   * about: cork generation is a million-pixel loop and ten thousand ellipse
+   * fills, and T-88 caught it hitching the main thread when it was wired to
+   * every gesture end. It is safe here because choosing a colour is a thing a
+   * person does deliberately and rarely, not something a camera does.
+   *
+   * A no-op when the colour has not moved, so a `meta` observer firing for the
+   * board's title — or for a peer's edit to anything else in that map — costs
+   * one comparison rather than a re-raster.
+   */
+  paint(cork: string | null): void {
+    const next = corkColorOf(cork).base;
+    if (next.r === this.base.r && next.g === this.base.g && next.b === this.base.b) return;
+    this.base = next;
+    // The pinholes too, and forgetting them is exactly the bug this feature
+    // would otherwise have shipped: the lip of a hole is the surface *lifted*,
+    // so a board repainted without re-baking these wears cream rings punched in
+    // slate — a hole in a surface that is not the surface.
+    this.bakeSprites();
+    // The flat fill first and on this very frame: the bitmaps arrive
+    // asynchronously through `toBlob`, so without this the board would hold the
+    // old colour until the encoder came back — a visible beat between choosing
+    // and seeing, on the one action whose whole point is to be seen.
+    this.host.style.background = this.flat;
+    this.generate();
+  }
 
   /**
    * `pins` is a function rather than a value because the cork outlives every
    * pin on the board and is constructed before most of them exist. It is read
    * on the frames that need it and never held.
    */
-  constructor(host: HTMLElement, seed: number, pins: () => Iterable<PinPoint> = () => []) {
+  constructor(
+    host: HTMLElement,
+    seed: number,
+    pins: () => Iterable<PinPoint> = () => [],
+    cork: string | null = null,
+  ) {
     this.host = host;
     this.seed = seed;
     this.pins = pins;
+    this.base = corkColorOf(cork).base;
 
     // The flat cork colour belongs to the container, not to the grain bitmap.
     // The grain fades out at low zoom (see grainLod), and if the base colour
     // faded with it the board would turn into whatever is behind it.
-    host.style.background = `rgb(${CORK_BASE.r} ${CORK_BASE.g} ${CORK_BASE.b})`;
+    host.style.background = this.flat;
 
     const grain = document.createElement("div");
     grain.className = "cork-layer cork-grain";
@@ -496,9 +592,7 @@ export class Cork {
     this.holes.className = "cork-holes";
     this.holeCtx = this.holes.getContext("2d");
     this.sprites = [];
-    for (let v = 0; v < PINHOLE_VARIANTS; v++) {
-      this.sprites.push(pinholeSprite(seed, v, PINHOLE_PX));
-    }
+    this.bakeSprites();
 
     const vignette = document.createElement("div");
     // Viewport-anchored, so it takes no camera update at all.
@@ -535,7 +629,7 @@ export class Cork {
    */
   private generate(): void {
     const bitmaps = [
-      grainTile(this.seed, GRAIN_PX),
+      grainTile(this.seed, GRAIN_PX, this.base),
       blotchTile(this.seed, BLOTCH_PX),
       lightTile(this.seed, LIGHT_PX),
     ];
@@ -667,7 +761,7 @@ export class Cork {
     ctx.save();
     ctx.globalCompositeOperation = "source-over";
     ctx.globalAlpha = 1;
-    ctx.fillStyle = `rgb(${CORK_BASE.r} ${CORK_BASE.g} ${CORK_BASE.b})`;
+    ctx.fillStyle = this.flat;
     ctx.fillRect(0, 0, width, height);
 
     for (const step of this.exportLayers(camera)) {

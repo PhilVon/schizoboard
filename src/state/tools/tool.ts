@@ -188,6 +188,15 @@ export interface BoardWriter {
   setTimerMode(ids: readonly string[], mode: TimerMode): void;
   setTimerLength(ids: readonly string[], runsFor: number): void;
   /**
+   * What the board is made of — T-408, Q-369.
+   *
+   * The only write on this interface that names no item at all: it is a fact
+   * about the *board*, so it takes a colour and nothing else. `null` puts it
+   * back to the cork this application ships, which `crdt/ops/cork.ts` writes as
+   * a delete rather than as a sixth value.
+   */
+  setCorkColor(id: string | null): void;
+  /**
    * Start or resume, and stop and keep what is on it.
    *
    * `now` is not a parameter: the wiring reads one `Date.now()` for the whole

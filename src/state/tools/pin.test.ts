@@ -96,6 +96,7 @@ beforeEach(() => {
       pauseTimer: () => {},
       resetTimer: () => {},
       setTimerLights: () => {},
+      setCorkColor: () => {},
       createNote: () => {},
       placePin: () => {},
     createString: () => {},

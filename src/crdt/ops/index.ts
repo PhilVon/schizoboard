@@ -13,6 +13,7 @@
  */
 
 export * from "@/crdt/ops/clip";
+export * from "@/crdt/ops/cork";
 export * from "@/crdt/ops/ink";
 export * from "@/crdt/ops/items";
 export * from "@/crdt/ops/load";
