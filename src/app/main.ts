@@ -1,3 +1,5 @@
+import { reducedMotion } from "@/lib/motion";
+
 /**
  * Entry point. Builds the layer stack, binds the document, wires the nine
  * phases, starts the loop.
@@ -558,7 +560,15 @@ async function boot(): Promise<void> {
 
   const assetUrl = (sha256: string, screenPx: number): AssetView => {
     if (assets.isReady(sha256)) {
-      return { url: native.assetUrl(sha256, variantFor(screenPx)), phase: "ready", fraction: 0 };
+      const record = board.assets.get(sha256);
+      const width = record?.get("w");
+      const height = record?.get("h");
+      return {
+        url: native.assetUrl(sha256, variantFor(screenPx,
+          typeof width === "number" ? width : undefined,
+          typeof height === "number" ? height : undefined)),
+        phase: "ready", fraction: 0,
+      };
     }
     // Asked for a photograph we do not have the bytes of, which means an item
     // wearing it is being drawn — and culling only binds what is on screen, so
@@ -2834,7 +2844,10 @@ async function boot(): Promise<void> {
       ropesUnder.invalidate();
       ropesOver.invalidate();
     },
-    hold: () => lod.hold("full"),
+    hold: () => {
+      items.finishPromotion();
+      return lod.hold("full");
+    },
     settle: (zoom) => world.settle(zoom),
     redraw: () => dirty.everything(),
     frames: (count) =>
@@ -2851,7 +2864,7 @@ async function boot(): Promise<void> {
     // so three of them is enough for the mount and the layout and is not always
     // enough for the bitmaps — and a board photographed mid-raster comes out
     // with its ink half-drawn.
-    settling: () => boardInk.settling,
+    settling: () => boardInk.settling || items.promotionPending,
   });
 
   const printBoard = async (): Promise<void> => {
@@ -4629,16 +4642,9 @@ async function boot(): Promise<void> {
       if (camera.zoom !== lastZoom) {
         if (Number.isFinite(lastZoom)) dirty.zoomed = true;
         lastZoom = camera.zoom;
-        // Detail may arrive mid-gesture; it may not leave (T-203). Zooming in
-        // used to hold flat cards through the whole motion and then pop a
-        // hundred and forty sheets into detail on the first still frame — a
-        // change of appearance timed for the one moment nothing was moving.
-        // `Lod.rise` says why the two directions are not symmetrical.
-        // No dirty pass: the layer owes every mounted item its detail and pays
-        // that off at a budget over the following frames (`UPGRADE_BUDGET`).
-        // `dirty.everything()` here would rebind all hundred and forty on this
-        // one frame, which measured at 493 ms.
-        lod.rise(camera.zoom);
+        // Change detail before the densest view mounts. Upgrades remain
+        // budgeted; a full dirty pass here would defeat that budget.
+        lod.update(camera.zoom);
       }
       // Every camera change ends in a re-raster, not only a pointer gesture.
       // `Ctrl+0`, `F`, a resize and an undo restoring a stashed view all change
@@ -4713,6 +4719,7 @@ async function boot(): Promise<void> {
       select.carryLag,
       select.heldPivots,
       simView,
+      reducedMotion(),
     );
     // After the torsion, never before it: the translation that holds a pin
     // still while its note is laid flat is computed from the settled angle,
@@ -4749,7 +4756,7 @@ async function boot(): Promise<void> {
     // and the face each ask `timerAhead` about the same `runBy` and cannot
     // disagree by construction.
     timers.step(scene, dirty, frameNow, timerSeconds, timerAhead);
-    ropes.step(scene, dirty, frame.dt, simView);
+    ropes.step(scene, dirty, frame.dt, simView, reducedMotion());
   });
 
   /**
@@ -5012,14 +5019,14 @@ async function boot(): Promise<void> {
      */
     const writing = items.editing;
     if (writing !== null && !scene.has(writing)) items.edit(null, "");
+    items.setAssetScale(camera.zoom * devicePixelRatio);
     items.sync(scene, dirty, culler.visible);
     pins.sync(scene, camera, dirty, hoveredPin);
     applyCursor();
-    // Last in the phase, and that position is the whole of T-201: dropping
-    // `will-change` repaints the world subtree, so it has to happen *after* the
-    // writes that change what the subtree contains — otherwise the browser
-    // repaints five hundred items as they were and then again as they are.
+    // Release caches only after the final pose/detail writes have landed.
     world.flushDemote();
+    items.syncCards(scene, dirty, camera, devicePixelRatio, world.moving);
+    items.syncPromotion(world.moving);
   });
 
   /**

@@ -128,9 +128,9 @@ describe("the settle notification", () => {
 });
 
 describe("a gesture", () => {
-  it("promotes the world layer while it runs and drops it in the write phase", () => {
+  it("promotes board ink while it runs and drops it in the write phase", () => {
     const promoted = (): string =>
-      host.querySelector<HTMLElement>(".layer-world")!.style.willChange;
+      host.querySelector<HTMLElement>(".layer-board-ink")!.style.willChange;
 
     world.gestureTick(2);
     // Never left on at steady state — a layer pinned at a stale scale is the
@@ -154,7 +154,7 @@ describe("a gesture", () => {
 
   it("keeps the promotion if a new gesture started before the demote flushed", () => {
     const promoted = (): string =>
-      host.querySelector<HTMLElement>(".layer-world")!.style.willChange;
+      host.querySelector<HTMLElement>(".layer-board-ink")!.style.willChange;
 
     world.gestureTick(2);
     vi.runAllTimers();
@@ -172,7 +172,7 @@ describe("a gesture", () => {
 
   it("costs nothing on a frame with no demote queued", () => {
     const promoted = (): string =>
-      host.querySelector<HTMLElement>(".layer-world")!.style.willChange;
+      host.querySelector<HTMLElement>(".layer-board-ink")!.style.willChange;
 
     world.gestureTick(2);
     // A board at rest calls this sixty times a second and it must not undo a
@@ -193,5 +193,22 @@ describe("a gesture", () => {
     // The debounce is the whole point: the scale that matters is the one the
     // hand stopped at.
     expect(scales).toEqual([2.5 * DPR()]);
+  });
+});
+
+describe("item cache ownership", () => {
+  it("reports motion through the last DOM write without promoting the whole world", () => {
+    expect(world.moving).toBe(false);
+    world.gestureTick(0.2);
+    expect(world.moving).toBe(true);
+    expect(world.layers.world.style.willChange).toBe("");
+    vi.runAllTimers();
+    expect(world.moving).toBe(true);
+    world.gestureTick(0.3);
+    world.flushDemote();
+    expect(world.moving).toBe(true);
+    vi.runAllTimers();
+    world.flushDemote();
+    expect(world.moving).toBe(false);
   });
 });

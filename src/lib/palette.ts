@@ -129,7 +129,7 @@ export interface CorkColor {
 export const CORK_COLORS: readonly CorkColor[] = [
   // The cork this application has always shipped, and the one `render/cork.ts`
   // was tuned against. First because it is the default.
-  { id: "natural", label: "Cork", base: { r: 173, g: 130, b: 84 } },
+  { id: "natural", label: "Cork", base: { r: 147, g: 126, b: 104 } },
   // Darker bark, the colour of a board that has been on a wall for thirty
   // years — the same object, further along the ageing this board already does.
   { id: "roasted", label: "Dark cork", base: { r: 122, g: 88, b: 56 } },

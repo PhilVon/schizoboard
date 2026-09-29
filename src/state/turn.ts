@@ -1,3 +1,5 @@
+import { reducedMotion } from "@/lib/motion";
+
 /**
  * Turning paper to be worked on, and letting it back down.
  *
@@ -162,7 +164,7 @@ export class PaperTurn {
     if (id === null) return;
 
     const rising = this.target === id;
-    const step = dtMs / this.how.ms;
+    const step = reducedMotion() ? 1 : dtMs / this.how.ms;
     this.t = rising ? Math.min(1, this.t + step) : Math.max(0, this.t - step);
 
     if (!rising && this.t === 0) {

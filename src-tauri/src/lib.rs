@@ -553,15 +553,48 @@ struct AssetReady {
 /// bytes are here", not "the downscale worked" — the original is servable
 /// either way, and an item that waits forever because a thumbnail could not be
 /// encoded is a worse outcome than a slightly heavier image.
+#[derive(Default)]
+struct VariantJobs {
+    pending: std::collections::VecDeque<String>,
+    held: HashSet<String>,
+    running: bool,
+}
+
+impl VariantJobs {
+    fn enqueue(&mut self, hash: String) -> bool {
+        if !self.held.insert(hash.clone()) { return false; }
+        self.pending.push_back(hash);
+        if self.running { return false; }
+        self.running = true;
+        true
+    }
+
+    fn next(&mut self) -> Option<String> {
+        let next = self.pending.pop_front();
+        if next.is_none() { self.running = false; }
+        next
+    }
+}
+
+type VariantQueue = std::sync::Mutex<VariantJobs>;
+
 fn schedule_variants(app: &AppHandle, sha256: String) {
+    // One worker bounds full-resolution decode memory, including old-board
+    // backfills. Keep the active hash held until its event has been emitted.
+    let queue = app.state::<VariantQueue>();
+    if !queue.lock().unwrap_or_else(|e| e.into_inner()).enqueue(sha256) { return; }
     let app = app.clone();
-    tauri::async_runtime::spawn_blocking(move || {
+    tauri::async_runtime::spawn_blocking(move || loop {
+        let queue = app.state::<VariantQueue>();
+        let next = queue.lock().unwrap_or_else(|e| e.into_inner()).next();
+        let Some(sha256) = next else { break; };
         if let Some(store) = app.try_state::<AssetStore>() {
             if let Err(error) = store.build_variants(&sha256) {
                 eprintln!("assets: no variants for {sha256}: {error}");
             }
         }
-        let _ = app.emit("asset:ready", AssetReady { sha256 });
+        let _ = app.emit("asset:ready", AssetReady { sha256: sha256.clone() });
+        queue.lock().unwrap_or_else(|e| e.into_inner()).held.remove(&sha256);
     });
 }
 
@@ -769,7 +802,13 @@ async fn asset_has(app: AppHandle, hashes: Vec<String>) -> Result<Vec<bool>, Str
     // converts into, and inference gives up.
     blocking(move || -> assets::Result<Vec<bool>> {
         let store = store_of(&app).map_err(assets::Error::Unavailable)?;
-        Ok(hashes.iter().map(|hash| store.has(hash)).collect())
+        Ok(hashes.iter().map(|hash| {
+            let present = store.has(hash);
+            if present && store.resolve(hash, assets::Variant::Medium).is_some_and(|r| !r.exact) {
+                schedule_variants(&app, hash.clone());
+            }
+            present
+        }).collect())
     })
     .await
 }
@@ -2316,6 +2355,7 @@ pub fn run() {
         .setup(|app| {
             let data = data_root(app.path().app_data_dir()?);
             app.manage(AssetStore::new(data.join("assets"))?);
+            app.manage(VariantQueue::default());
             // Beside the document rather than inside it, which is what Q-75
             // settled: the secret is about who may reach this board, not about
             // what is on it, and a document handed to somebody as a bundle
@@ -2512,6 +2552,20 @@ pub fn run() {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn variant_queue_deduplicates_running_jobs_and_restarts_after_drain() {
+        let mut jobs = super::VariantJobs::default();
+        assert!(jobs.enqueue("a".into()));
+        assert!(!jobs.enqueue("b".into()));
+        assert_eq!(jobs.next().as_deref(), Some("a"));
+        assert!(!jobs.enqueue("a".into()));
+        jobs.held.remove("a");
+        assert_eq!(jobs.next().as_deref(), Some("b"));
+        jobs.held.remove("b");
+        assert_eq!(jobs.next(), None);
+        assert!(jobs.enqueue("a".into()));
+    }
+
     use super::*;
 
     /// T-290. `source` is a field in a shared document, so this is untrusted

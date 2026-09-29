@@ -780,3 +780,16 @@ describe("a pin the item does not parent", () => {
     expect(scene.driftY[over]).toBeCloseTo(scene.driftY[own]!, 4);
   });
 });
+
+describe("reduced motion", () => {
+  it("finishes an existing swing at equilibrium without moving its attachment", () => {
+    const slot = put("a"); pin("p", "a", 0, -80); arrive("a");
+    scene.rot[slot] = 0.4; dirty.item("a");
+    sim.step(scene, dirty, 16, new Set(), 0, undefined, null, true);
+    expect(sim.awake).toBe(0);
+    expect(scene.swing[slot]).toBeCloseTo(-0.4, 5);
+    scene.layoutPin(scene.pins.get("p")!);
+    expect(scene.pins.get("p")!.wx).toBeCloseTo(Math.sin(0.4) * 80, 4);
+    expect(scene.pins.get("p")!.wy).toBeCloseTo(-Math.cos(0.4) * 80, 4);
+  });
+});

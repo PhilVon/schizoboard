@@ -108,7 +108,9 @@
   inset: 0;
   /* Frame thickness is written in pixels by the view — see FRAME_SIDE. */
   /* Very slightly off-white, and warmer at the edges. */
-  background: radial-gradient(120% 100% at 50% 40%, #fdfbf6 55%, #f3ece0 100%);
+  /* The highlight stays in board space as the photograph turns. */
+  background: linear-gradient(calc(145deg + var(--turn, 0deg)), #fffdf7 0%, #f7f1e5 63%, #e7dccc 100%);
+  box-shadow: inset 0 0 0 1px rgba(61, 41, 21, 0.13);
   border-radius: 1px;
 }
 
@@ -284,7 +286,7 @@
    * that never arrives can leave the emulsion on top of nothing at all — never a
    * picture nobody can see.
    */
-  animation: film-emerge 1150ms linear var(--emerge-delay, 0ms) backwards;
+  animation: film-emerge 450ms linear var(--emerge-delay, 0ms) backwards;
 }
 
 /*
@@ -339,7 +341,7 @@
  * `linear` for the reason `film-emerge` is: the shape is in the numbers.
  */
 .item-polaroid.is-emerging .pol-film {
-  animation: film-clear 1150ms linear var(--emerge-delay, 0ms) both;
+  animation: film-clear 450ms linear var(--emerge-delay, 0ms) both;
 }
 
 @keyframes film-clear {
@@ -436,7 +438,7 @@
   inset: 0;
   pointer-events: none;
   background:
-    linear-gradient(155deg, rgba(255, 255, 255, 0.14) 0%, rgba(255, 255, 255, 0) 38%),
+    linear-gradient(calc(145deg + var(--turn, 0deg)), rgba(255, 250, 230, 0.10) 0%, rgba(255, 250, 230, 0) 36%),
     radial-gradient(120% 90% at 50% 45%, rgba(0, 0, 0, 0) 60%, rgba(20, 14, 8, 0.16) 100%);
 }
 
@@ -463,7 +465,7 @@
      was 1.15 and shaved the descenders off every caption on the board, which is
      T-306's finding kept alive in the one place that task did not look. */
   line-height: var(--hand-line);
-  color: #3f3428;
+  color: #3f392f;
   white-space: pre-wrap;
 }
 
@@ -1680,6 +1682,13 @@ textarea.item-field::-webkit-scrollbar {
   display: none;
 }
 
+/* A captioned video label reserves one complete row each for name, writing and runtime. */
+.item-case[data-kind="vhs"] .case-label:has(.case-caption:not(.is-empty)) > .case-number {
+  display: block;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
 /* Six whole lines of room, so two apiece is comfortable — and a folder's front
    panel has the paper spilling out of it above, which is why this does not take
    everything it could. */
@@ -2211,7 +2220,7 @@ textarea.item-field::-webkit-scrollbar {
      * first version of this looked shouty only because the board under them was
      * 165 and far too dark. Same spread, forty levels lighter.
      */
-    linear-gradient(calc(166deg + var(--turn, 0deg)), #eccea6 0%, #e0bf94 34%, #d5b285 68%, #c49f71 100%);
+    linear-gradient(calc(166deg + var(--turn, 0deg)), #e4cdaf 0%, #d8bea0 34%, #cdb28f 68%, #bc9f7e 100%);
 }
 
 /* The fibre. One shared tile, offset per folder by the view, so a filing
@@ -2224,7 +2233,7 @@ textarea.item-field::-webkit-scrollbar {
   mix-blend-mode: multiply;
   /* Low, because it multiplies: at 0.3 the tile alone took the face from 192 to
      165 and turned kraft into wet cardboard. */
-  opacity: 0.13;
+  opacity: 0.10;
   border-radius: inherit;
 }
 
@@ -4578,4 +4587,15 @@ textarea.item-field::-webkit-scrollbar {
    flat fill is one paint where a radial gradient is a per-pixel evaluation. */
 :is(.layer-world[data-lod], .item.is-coarse) .timer-lamp {
   background: rgba(255, 168, 38, 0.42);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .item-polaroid .pol-photo, .item-polaroid .pol-film, .item-polaroid .pol-film::after { animation: none !important; }
+  .item-polaroid.is-emerging .pol-photo { opacity: 1; filter: none; }
+  .item-polaroid.is-emerging .pol-film { opacity: 0; }
+}
+
+/* The original node remains available to editing and export. */
+.layer-world[data-lod] > .item.is-card-cached {
+  display: none;
 }

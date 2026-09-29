@@ -112,6 +112,7 @@ fn hash_of(path: &str) -> &str {
 fn variant_tag(variant: Variant) -> &'static str {
     match variant {
         Variant::Thumb => "thumb",
+        Variant::Medium => "medium",
         Variant::Display => "display",
         Variant::Original => "original",
     }
@@ -664,7 +665,7 @@ mod tests {
         // would make every range request of a 400 MB interview a fresh read.
         let (_dir, store, _) = fixture();
         let sha = film(&store);
-        for variant in ["v=original", "v=display", "v=thumb"] {
+        for variant in ["v=original", "v=display", "v=medium", "v=thumb"] {
             let response = respond(&store, &get(&format!("asset://localhost/{sha}?{variant}")));
             assert_eq!(
                 response.headers()[header::CACHE_CONTROL],

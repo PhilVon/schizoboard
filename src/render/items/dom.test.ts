@@ -1,3 +1,4 @@
+import { CardBatches } from "@/render/items/cardBatches";
 /**
  * @vitest-environment happy-dom
  */
@@ -383,6 +384,26 @@ describe("asset variants", () => {
     dirty.everything();
     layer.sync(scene, dirty, null);
     expect(asked).toEqual([{ sha: "abc", px: 2560 }]);
+    layer.destroy();
+  });
+
+  it("uses current zoom for a new photo while ink remains at its previous raster scale", () => {
+    const { asked, resolve } = recording();
+    const layer = new DomItemLayer(host, resolve);
+    layer.setRasterScale(1);
+    layer.setAssetScale(0.15 * 2);
+    add("a", { assetId: "abc" }, { w: 320, h: 240 });
+    layer.sync(scene, dirty, null);
+    expect(asked).toEqual([{ sha: "abc", px: 96 }]);
+    // A later settle must not restore the stale size for a newly visible photo.
+    asked.length = 0;
+    dirty.clear();
+    layer.setRasterScale(0.3);
+    layer.setAssetScale(4 * 2);
+    layer.setAssetScale(Number.NaN);
+    add("b", { assetId: "def" }, { w: 320, h: 240 });
+    layer.sync(scene, dirty, null);
+    expect(asked).toEqual([{ sha: "def", px: 2560 }]);
     layer.destroy();
   });
 
@@ -3538,5 +3559,152 @@ describe("a page that will not fit its sheet is written smaller", () => {
     body.style.fontSize = "0.7em";
     fitLeafBody(body);
     expect(body.style.fontSize).toBe("");
+  });
+});
+
+describe("bounded gesture caches", () => {
+  it("drains on clean frames and a new gesture interrupts the drain", () => {
+    for (let i = 0; i < 17; i++) add(String(i));
+    layer.sync(scene, dirty, null);
+    const count = (): number => Array.from(host.children).filter(
+      el => (el as HTMLElement).style.willChange === "transform",
+    ).length;
+    layer.syncPromotion(true);
+    layer.syncPromotion(true);
+    expect(count()).toBe(17);
+    dirty.clear();
+    layer.syncPromotion(false);
+    expect(count()).toBe(9);
+    expect(layer.promotionPending).toBe(true);
+    layer.syncPromotion(true);
+    layer.syncPromotion(true);
+    expect(count()).toBe(17);
+    for (let i = 0; i < 3; i++) layer.syncPromotion(false);
+    expect(count()).toBe(0);
+    expect(layer.promotionPending).toBe(false);
+    layer.syncPromotion(false);
+    expect(count()).toBe(0);
+  });
+
+  it("drops a culled object's cache before its node is recycled", () => {
+    add("a");
+    layer.sync(scene, dirty, null);
+    layer.syncPromotion(true);
+    const recycled = host.firstElementChild as HTMLElement;
+    layer.sync(scene, dirty, new Set());
+    expect(recycled.style.willChange).toBe("");
+    expect(layer.promotionPending).toBe(false);
+    add("b");
+    layer.sync(scene, dirty, new Set(["b"]));
+    expect(host.firstElementChild).toBe(recycled);
+    expect(recycled.style.willChange).toBe("");
+    layer.syncPromotion(true);
+    layer.destroy();
+    expect(recycled.style.willChange).toBe("");
+    expect(layer.promotionPending).toBe(false);
+  });
+});
+
+describe("cache start and export bounds", () => {
+  it("bounds dense startup and releases all remaining caches for export", () => {
+    for (let i = 0; i < 70; i++) add(String(i));
+    layer.sync(scene, dirty, null);
+    const count = (): number => Array.from(host.children).filter(
+      el => (el as HTMLElement).style.willChange === "transform",
+    ).length;
+    layer.syncPromotion(true);
+    expect(count()).toBe(16);
+    layer.syncPromotion(true);
+    expect(count()).toBe(32);
+    layer.finishPromotion();
+    expect(count()).toBe(0);
+    expect(layer.promotionPending).toBe(false);
+  });
+});
+
+
+describe("card cache scheduling", () => {
+  it("does not scan or redraw cached cards on clean settled frames", () => {
+    const sync = vi.spyOn(CardBatches.prototype, "sync");
+    dirty.clear();
+    const camera = { x: 0, y: 0, zoom: 0.25, width: 800, height: 600 };
+    layer.syncCards(scene, dirty, camera, 1);
+    layer.syncCards(scene, dirty, camera, 1);
+    expect(sync).not.toHaveBeenCalled();
+    sync.mockRestore();
+    layer.destroy();
+  });
+});
+
+
+describe("batch-aware gesture promotion", () => {
+  it("releases hidden photo caches and spends its budget on visible objects", () => {
+    for (let i = 0; i < 20; i++) add("batch-" + i);
+    dirty.everything(); layer.sync(scene, dirty, null);
+    layer.syncPromotion(true);
+    const elements = [...host.querySelectorAll<HTMLElement>(".item")];
+    for (const el of elements.slice(0, 16)) el.classList.add("is-card-cached");
+    layer.syncPromotion(true);
+    expect(elements.slice(0, 16).every(el => el.style.willChange === "")).toBe(true);
+    expect(elements.slice(16).every(el => el.style.willChange === "transform")).toBe(true);
+    layer.destroy();
+  });
+});
+
+
+describe("distant snapshot identity across detail transitions", () => {
+  it("retains the cache key while waiting for a photo to bind its distant appearance", () => {
+    const sync = vi.spyOn(CardBatches.prototype, "sync").mockImplementation(() => {});
+    add("photo", { assetId: "photo-bytes", text: "A caption" });
+    layer.sync(scene, dirty, null);
+    const photo = host.querySelector<HTMLImageElement>(".pol-photo")!;
+    Object.defineProperty(photo, "complete", { value: true });
+    Object.defineProperty(photo, "naturalWidth", { value: 100 });
+    const item = host.querySelector<HTMLElement>(".item")!;
+    item.classList.remove("is-waiting", "is-emerging");
+    layer.setTier("card");
+    const camera = { x: 0, y: 0, zoom: 0.25, width: 800, height: 600 };
+    layer.syncCards(scene, dirty, camera, 1);
+    const before = sync.mock.calls.at(-1)![0][0]!;
+    expect(before.eligible).toBe(false);
+    dirty.everything(); layer.sync(scene, dirty, null);
+    layer.syncCards(scene, dirty, camera, 1);
+    const after = sync.mock.calls.at(-1)![0][0]!;
+    expect(after.eligible).toBe(true);
+    expect(after.stamp).toBe(before.stamp);
+    sync.mockRestore(); layer.destroy();
+  });
+});
+
+
+describe("photo snapshot appearance keys", () => {
+  it("tracks the rendered filter through ageing changes and pooled reuse", () => {
+    const sync = vi.spyOn(CardBatches.prototype, "sync").mockImplementation(() => {});
+    layer.setTier("card");
+    layer.setAgeClock(() => 1500);
+    add("old", { seed: 49 });
+    const capture = () => {
+      layer.sync(scene, dirty, null);
+      layer.syncCards(scene, dirty, { x: 0, y: 0, zoom: 0.25, width: 800, height: 600 }, 1);
+      const stamp = sync.mock.calls.at(-1)![0][0]!.stamp;
+      const frame = host.querySelector<HTMLElement>(".pol-frame")!;
+      expect(stamp.endsWith(`|${frame.style.filter}`)).toBe(true);
+      return stamp;
+    };
+    try {
+      const oldStamp = capture();
+      const oldNode = host.querySelector(".item");
+      expect(capture()).toBe(oldStamp);
+      layer.setAgeClock(() => 0);
+      dirty.everything();
+      const freshStamp = capture();
+      expect(freshStamp).not.toBe(oldStamp);
+      scene.removeItem("old");
+      dirty.item("old");
+      layer.sync(scene, dirty, null);
+      add("new", { seed: 49 });
+      expect(capture()).toBe(freshStamp);
+      expect(host.querySelector(".item")).toBe(oldNode);
+    } finally { sync.mockRestore(); }
   });
 });

@@ -82,13 +82,12 @@ describe("the string palette", () => {
 });
 
 describe("what a board is made of", () => {
-  /** T-408, Q-369. */
-  it("keeps the cork this application was tuned against as its default", () => {
-    // `render/cork.ts`'s fleck tints, its 0.98 on blue and its pit and dust
-    // ratios were all found against this number. If it moves, that file's
-    // tuning stops meaning what its comments say it means.
+  /** T-408; quieter natural stock approved in D-77 / Q-372. */
+  it("keeps the approved quiet natural cork as its default", () => {
+    // T-415 retunes the base and grain contrast together. Keep the flat
+    // low-zoom fill and the material generators on the same approved colour.
     expect(DEFAULT_CORK.id).toBe("natural");
-    expect(DEFAULT_CORK.base).toEqual({ r: 173, g: 130, b: 84 });
+    expect(DEFAULT_CORK.base).toEqual({ r: 147, g: 126, b: 104 });
   });
 
   it("answers with the default for anything it does not know", () => {

@@ -147,17 +147,8 @@ describe("Lod", () => {
   });
 });
 
-/**
- * T-203. Detail arrives while the camera is moving; it only leaves when the
- * camera stops.
- *
- * Not symmetry, and the asymmetry is the point. A zoom in used to hold flat
- * cards through the whole motion and then pop about a hundred and forty sheets
- * into full detail on the first still frame — the one moment nothing else on
- * screen was moving. Rising is also the cheap direction, because it happens at a
- * zoom where fewer items are mounted.
- */
-describe("Lod.rise", () => {
+/** Both directions follow the camera; the renderer budgets the resulting work. */
+describe("Lod.update", () => {
   it("takes detail that has become due while the camera is still moving", () => {
     const lod = new Lod();
     const seen: Tier[] = [];
@@ -165,33 +156,25 @@ describe("Lod.rise", () => {
     lod.on((tier) => seen.push(tier));
 
     // A zoom in, frame by frame. 38.5% is the hysteresis edge.
-    expect(lod.rise(0.2)).toBe(false);
-    expect(lod.rise(0.3)).toBe(false);
-    expect(lod.rise(0.38)).toBe(false);
-    expect(lod.rise(0.4)).toBe(true);
+    expect(lod.update(0.2)).toBe(false);
+    expect(lod.update(0.3)).toBe(false);
+    expect(lod.update(0.38)).toBe(false);
+    expect(lod.update(0.4)).toBe(true);
     expect(seen).toEqual(["full"]);
     expect(lod.tier).toBe("full");
   });
 
-  it("never gives detail up, however far out the gesture goes", () => {
+  it("drops detail at the boundary before the densest view mounts", () => {
     const lod = new Lod();
     lod.settle(1);
     const listener = vi.fn();
     lod.on(listener);
-
-    // A zoom out, frame by frame, past both boundaries. Written in explicit
-    // zooms rather than `MIN_ZOOM`, because this is a statement about the tiers
-    // and the camera's floor is somebody else's decision — see the test above.
-    for (const zoom of [0.8, 0.5, 0.34, 0.2, MIN_ZOOM]) {
-      expect(lod.rise(zoom)).toBe(false);
-    }
-    expect(lod.tier).toBe("full");
-    expect(listener).not.toHaveBeenCalled();
-
-    // And the settle is what finally lets it go — where the frame is already
-    // repainting the world for the demote.
-    expect(lod.settle(MIN_ZOOM)).toBe(true);
+    expect(lod.update(0.5)).toBe(false);
+    expect(lod.update(0.34)).toBe(true);
+    expect(lod.update(MIN_ZOOM)).toBe(false);
     expect(lod.tier).toBe("card");
+    expect(listener).toHaveBeenCalledExactlyOnceWith("card");
+    expect(lod.settle(MIN_ZOOM)).toBe(false);
   });
 
   it("respects the band on the way up, exactly as settle does", () => {
@@ -200,9 +183,9 @@ describe("Lod.rise", () => {
     expect(lod.tier).toBe("card");
     // Below the band's far edge the cheaper tier still holds: a camera creeping
     // across 35% must not rebuild the board on alternate frames of one gesture.
-    expect(lod.rise(0.36)).toBe(false);
-    expect(lod.rise(0.384)).toBe(false);
-    expect(lod.rise(0.386)).toBe(true);
+    expect(lod.update(0.36)).toBe(false);
+    expect(lod.update(0.384)).toBe(false);
+    expect(lod.update(0.386)).toBe(true);
     expect(lod.tier).toBe("full");
   });
 
@@ -212,7 +195,7 @@ describe("Lod.rise", () => {
     lod.settle(1);
     const listener = vi.fn();
     lod.on(listener);
-    for (const zoom of [1.2, 2, 3, MAX_ZOOM]) expect(lod.rise(zoom)).toBe(false);
+    for (const zoom of [1.2, 2, 3, MAX_ZOOM]) expect(lod.update(zoom)).toBe(false);
     expect(listener).not.toHaveBeenCalled();
   });
 
@@ -220,7 +203,7 @@ describe("Lod.rise", () => {
     const lod = new Lod();
     // `full` is where it starts, so a rise to `full` is not a change — and the
     // one guaranteed pass every layer needs is the settle's, not this.
-    expect(lod.rise(1)).toBe(false);
+    expect(lod.update(1)).toBe(false);
   });
 
   /**
@@ -240,7 +223,7 @@ describe("Lod.rise", () => {
       expect(lod.detailed).toBe(true);
       // And the frame loop cannot argue it back down while the file is drawing.
       expect(lod.settle(0.05)).toBe(false);
-      expect(lod.rise(0.05)).toBe(false);
+      expect(lod.update(0.05)).toBe(false);
       expect(lod.tier).toBe("full");
 
       release();

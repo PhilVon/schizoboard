@@ -14,12 +14,12 @@
  * no strings. Rust sees hashes, opaque document frames and file paths.
  */
 
-export type AssetVariant = "thumb" | "display" | "original";
+export type AssetVariant = "thumb" | "medium" | "display" | "original";
 
 /**
  * Longest edge of each generated variant, in pixels.
  *
- * Mirrors `THUMB_MAX_EDGE` and `DISPLAY_MAX_EDGE` in `src-tauri/src/assets.rs`,
+ * Mirrors `THUMB_MAX_EDGE`, `MEDIUM_MAX_EDGE` and `DISPLAY_MAX_EDGE` in `src-tauri/src/assets.rs`,
  * which is a duplicated constant and cannot not be: the store decides what it
  * generates and the renderer decides what to ask for, and they are in different
  * languages. `original` is whatever was pasted, so it has no bound.
@@ -32,6 +32,7 @@ export type AssetVariant = "thumb" | "display" | "original";
  */
 export const VARIANT_MAX_EDGE: Record<AssetVariant, number> = {
   thumb: 256,
+  medium: 768,
   display: 2560,
   original: Number.POSITIVE_INFINITY,
 };
@@ -54,8 +55,16 @@ export const VARIANT_MAX_EDGE: Record<AssetVariant, number> = {
  * one that loses them: a thumbnail stretched across a 400% item is visibly
  * broken, a display variant on a tiny one is merely wasteful.
  */
-export function variantFor(screenPx: number): AssetVariant {
-  return screenPx > 0 && screenPx <= VARIANT_MAX_EDGE.thumb ? "thumb" : "display";
+export function variantFor(screenPx: number, width?: number, height?: number): AssetVariant {
+  if (!(screenPx > 0) || !Number.isFinite(screenPx)) return "display";
+  if (screenPx <= VARIANT_MAX_EDGE.thumb) return "thumb";
+  // Account conservatively for portrait and cropped panoramic photos. Unknown
+  // dimensions cannot establish that the intermediate image has enough pixels.
+  if (width && height && width > 0 && height > 0 && Number.isFinite(width + height)) {
+    const needed = screenPx * Math.max(width / height, height / width);
+    if (needed <= VARIANT_MAX_EDGE.medium) return "medium";
+  }
+  return "display";
 }
 
 /**

@@ -14,11 +14,9 @@
  * kills the repeat: you would have to pan several thousand board units to see
  * the same combination of grain, blotch and light twice.
  *
- * Those three are viewport-sized divs whose background-position tracks the
- * camera. That repaints the full viewport on any camera change, which is a real
- * cost and deliberately not optimised yet: the phase-0 fidelity spike (T-16) is
- * the thing that decides whether it needs to become a transform-only trick, and
- * guessing before measuring is how renderers end up complicated for nothing.
+ * The tiled layers keep a small overscan margin during camera movement. Pans
+ * translate it without repainting until an edge is reached; zoom changes rebase
+ * the original texture at its exact scale. Idle releases the extra surface.
  *
  * **The fourth is the exception and the reason it is worth naming them
  * separately.** Pinholes (T-231) are the one mark on this surface that is
@@ -40,6 +38,14 @@ import type { Camera } from "@/state/camera";
 const GRAIN_TILE = 512;
 const BLOTCH_TILE = 3251;
 const LIGHT_TILE = 7919;
+
+/** Three RGBA surfaces, excluding browser tile bookkeeping. Above the budget,
+ * use the original viewport-sized painting path rather than add overscan. */
+export function corkPanPadding(width: number, height: number, dpr: number): number {
+  if (![width, height, dpr].every((n) => Number.isFinite(n) && n > 0)) return 0;
+  return (width + 256) * (height + 256) * dpr * dpr * 4 * 3 <= 128 * 1024 * 1024
+    ? 128 : 0;
+}
 
 /**
  * Bitmap resolution each tile is generated at, before any zoom re-raster.
@@ -377,8 +383,9 @@ function grainTile(seed: number, size: number, base: Base): HTMLCanvasElement {
   const data = image.data;
 
   for (let i = 0, p = 0; i < size * size; i++, p += 4) {
-    const region = 0.87 + field[i]! * 0.26;
-    const speck = 0.93 + rng() * 0.14;
+    // Quieter local contrast keeps writing ahead of the surface (D-77).
+    const region = 0.90 + field[i]! * 0.20;
+    const speck = 0.947 + rng() * 0.106;
     const k = region * speck;
     data[p] = Math.min(255, base.r * k);
     data[p + 1] = Math.min(255, base.g * k);
@@ -405,7 +412,7 @@ function grainTile(seed: number, size: number, base: Base): HTMLCanvasElement {
     // Two thirds of flecks are darker than the base, a third are lighter —
     // cork has pale dust in it as well as pits.
     const tint = dark < 0.66 ? 0.55 + dark * 0.35 : 1.06 + (dark - 0.66) * 0.28;
-    const alpha = 0.05 + rng() * 0.16;
+    const alpha = 0.038 + rng() * 0.122;
     ctx.fillStyle = `rgba(${Math.round(base.r * tint)},${Math.round(
       base.g * tint,
     )},${Math.round(base.b * tint)},${alpha.toFixed(3)})`;
@@ -494,7 +501,11 @@ export class Cork {
   private readonly layers: CorkLayer[];
   private readonly host: HTMLElement;
   private readonly seed: number;
+  private readonly holePatterns = new Map<string, readonly Pinhole[]>();
   private writtenVersion = -1;
+  private panOrigin: { x: number; y: number; zoom: number; width: number; height: number; dpr: number } | null = null;
+  private lastCameraMove = 0;
+  private lastZoom = Number.NaN;
 
   /** The pinhole layer, and the sprites it blits. */
   private readonly holes: HTMLCanvasElement;
@@ -619,32 +630,36 @@ export class Cork {
    * million-pixel loop and ten thousand ellipse fills on the main thread the
    * instant a zoom gesture ended.
    *
-   * The reason it does not need it is structural. These layers are never
-   * transformed — they are viewport-sized divs whose `background-size` tracks
-   * the camera, so the browser rasterises the background afresh at the size it
-   * is actually painting. There is no cached layer to go stale. The only thing
+   * Panning translates the buffered surface without changing its scale. Every
+   * zoom change resets `background-size` to the exact camera scale, so the
+   * browser rasterises the original tile at the size it is actually painting. The only thing
    * tile resolution buys is sharpness under upscale, and the spike showed a
    * 512-pixel tile reads correctly as cork at the 400% ceiling — which is
    * unsurprising for a texture whose entire content is noise.
    */
+  private generation: Promise<void> = Promise.resolve();
+  private generationId = 0;
+
   private generate(): void {
+    const generationId = ++this.generationId;
     const bitmaps = [
       grainTile(this.seed, GRAIN_PX, this.base),
       blotchTile(this.seed, BLOTCH_PX),
       lightTile(this.seed, LIGHT_PX),
     ];
-    for (let i = 0; i < this.layers.length; i++) {
-      const layer = this.layers[i]!;
-      const previous = layer.url;
-      // Blob URLs, not data URLs: a 1024-square PNG is megabytes of base64,
-      // and the string would be retained in the style attribute.
+    // An export can be requested before the asynchronous PNG encoders finish.
+    // Ignore old colour generations which complete after a newer choice.
+    this.generation = Promise.all(this.layers.map((layer, i) => new Promise<void>((resolve) => {
       bitmaps[i]!.toBlob((blob) => {
-        if (!blob) return;
-        layer.url = URL.createObjectURL(blob);
-        layer.el.style.backgroundImage = `url(${layer.url})`;
-        if (previous) URL.revokeObjectURL(previous);
+        if (blob && generationId === this.generationId) {
+          const previous = layer.url;
+          layer.url = URL.createObjectURL(blob);
+          layer.el.style.backgroundImage = "url(" + layer.url + ")";
+          if (previous) URL.revokeObjectURL(previous);
+        }
+        resolve();
       }, "image/png");
-    }
+    }))).then(() => undefined);
     // Force the position write through on the next apply().
     this.writtenVersion = -1;
   }
@@ -660,30 +675,75 @@ export class Cork {
    * the caller is holding the frame's dirty sets.
    */
   apply(camera: Camera, pinsMoved = false): void {
+    const dpr = window.devicePixelRatio || 1;
+    const origin = this.panOrigin;
     const cameraMoved = camera.version !== this.writtenVersion;
-    if (cameraMoved) {
+    const surfaceChanged = origin !== null &&
+      (origin.width !== camera.width || origin.height !== camera.height || origin.dpr !== dpr);
+    if (cameraMoved || surfaceChanged) {
+      const force = this.writtenVersion === -1 || surfaceChanged;
       this.writtenVersion = camera.version;
+      this.lastCameraMove = performance.now();
       const z = camera.zoom;
       const ox = -camera.x * z;
       const oy = -camera.y * z;
-      for (const layer of this.layers) {
-        const size = layer.tile * z;
-        layer.el.style.backgroundSize = `${size}px ${size}px`;
-        layer.el.style.backgroundPosition = `${ox}px ${oy}px`;
-        if (layer.lod) layer.el.style.opacity = grainLod(z).toFixed(3);
+      // A scale change cannot reuse rasterised pixels. Keep zoom painting at
+      // viewport size; overscan pays for itself only during translation.
+      const zooming = Number.isFinite(this.lastZoom) && this.lastZoom !== z;
+      this.lastZoom = z;
+      const pad = zooming ? 0 : corkPanPadding(camera.width, camera.height, dpr);
+      const rebase = force || origin === null || pad === 0 || origin.zoom !== z ||
+        Math.abs(ox - origin.x) > pad || Math.abs(oy - origin.y) > pad;
+      if (rebase) {
+        this.panOrigin = pad > 0
+          ? { x: ox, y: oy, zoom: z, width: camera.width, height: camera.height, dpr }
+          : null;
+        for (const layer of this.layers) {
+          const size = layer.tile * z;
+          layer.el.style.inset = pad > 0 ? `-${pad}px` : "";
+          layer.el.style.willChange = pad > 0 ? "transform" : "";
+          layer.el.style.backgroundSize = `${size}px ${size}px`;
+          layer.el.style.backgroundPosition = `${ox + pad}px ${oy + pad}px`;
+          if (layer.lod) layer.el.style.opacity = grainLod(z).toFixed(3);
+        }
       }
+      const anchor = this.panOrigin;
+      for (const layer of this.layers) {
+        layer.el.style.transform = anchor === null ? "" :
+          `translate(${ox - anchor.x}px, ${oy - anchor.y}px)`;
+      }
+    } else if (origin !== null && performance.now() - this.lastCameraMove >= 120) {
+      // Release both the promotion hint and overscan, once, after settling.
+      for (const layer of this.layers) {
+        layer.el.style.backgroundPosition = `${-camera.x * camera.zoom}px ${-camera.y * camera.zoom}px`;
+        layer.el.style.inset = "";
+        layer.el.style.transform = "";
+        layer.el.style.willChange = "";
+      }
+      this.panOrigin = null;
     }
-    if (cameraMoved || pinsMoved) this.paintHoles(camera);
+    if (cameraMoved || surfaceChanged || pinsMoved) this.paintHoles(camera);
+  }
+
+  /** Geometry is stable for this board seed; bound retained patterns even after pin churn. */
+  private holesFor(id: string): readonly Pinhole[] {
+    const existing = this.holePatterns.get(id);
+    if (existing) return existing;
+    const pattern = pinholesFor(this.seed, id);
+    if (this.holePatterns.size >= 1024) {
+      const oldest = this.holePatterns.keys().next().value;
+      if (oldest !== undefined) this.holePatterns.delete(oldest);
+    }
+    this.holePatterns.set(id, pattern);
+    return pattern;
   }
 
   /**
    * Redraw the pinhole canvas for where the camera is now.
    *
-   * A clear and a blit per hole. That is a handful of `drawImage` calls against
-   * the three full-viewport background repaints `apply` has already asked the
-   * compositor for on the same frame, so it is not the expensive thing here and
-   * was never going to be — which is why the sprites are baked once and this
-   * loop does no drawing of its own.
+   * A clear and a blit per hole. Unlike the repeating textures, holes must
+   * follow their individual world positions each frame. Their sprites are
+   * baked once, so this loop only copies them.
    *
    * Off-screen holes are skipped rather than clipped. A board can hold any
    * number of pins and only the ones in front of you cost anything.
@@ -692,9 +752,11 @@ export class Cork {
     const ctx = this.holeCtx;
     if (ctx === null) return;
 
+    // Camera dimensions are already recorded on resize. DOM geometry reads here
+    // flush pending item/LOD styles in the middle of the write phase (T-421).
     const dpr = window.devicePixelRatio || 1;
-    const w = Math.max(1, Math.round(this.host.clientWidth * dpr));
-    const h = Math.max(1, Math.round(this.host.clientHeight * dpr));
+    const w = Math.max(1, Math.round(camera.width * dpr));
+    const h = Math.max(1, Math.round(camera.height * dpr));
     if (this.holes.width !== w || this.holes.height !== h) {
       this.holes.width = w;
       this.holes.height = h;
@@ -709,8 +771,8 @@ export class Cork {
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     const size = PINHOLE_UNITS * camera.zoom;
     const half = size / 2;
-    const width = this.host.clientWidth;
-    const height = this.host.clientHeight;
+    const width = camera.width;
+    const height = camera.height;
 
     for (const pin of this.pins()) {
       // A patch is at most `PINHOLE_SPREAD` across, so a pin that far outside
@@ -721,7 +783,7 @@ export class Cork {
       const reach = (PINHOLE_SPREAD + PINHOLE_UNITS) * camera.zoom;
       if (px < -reach || py < -reach || px > width + reach || py > height + reach) continue;
 
-      for (const hole of pinholesFor(this.seed, pin.id)) {
+      for (const hole of this.holesFor(pin.id)) {
         const sprite = this.sprites[hole.variant % this.sprites.length];
         if (sprite === undefined) continue;
         ctx.drawImage(
@@ -757,6 +819,7 @@ export class Cork {
    * and an export has no viewport. T-208 makes the same call for the print.
    */
   async paintInto(ctx: CanvasRenderingContext2D, camera: CameraPose): Promise<void> {
+    await this.generation;
     const { width, height } = ctx.canvas;
     ctx.save();
     ctx.globalCompositeOperation = "source-over";
@@ -798,7 +861,7 @@ export class Cork {
         const px = (pin.wx - camera.x) * camera.zoom;
         const py = (pin.wy - camera.y) * camera.zoom;
         if (px < -reach || py < -reach || px > width + reach || py > height + reach) continue;
-        for (const hole of pinholesFor(this.seed, pin.id)) {
+        for (const hole of this.holesFor(pin.id)) {
           const sprite = this.sprites[hole.variant % this.sprites.length];
           if (sprite === undefined) continue;
           ctx.drawImage(
@@ -840,6 +903,8 @@ export class Cork {
   }
 
   destroy(): void {
+    this.holePatterns.clear();
+    this.generationId += 1;
     for (const layer of this.layers) {
       if (layer.url) URL.revokeObjectURL(layer.url);
     }

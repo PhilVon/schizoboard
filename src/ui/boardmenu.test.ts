@@ -1191,7 +1191,7 @@ describe("the board menu on bare cork", () => {
       const chips = strip(null).choices;
       expect(chips).toHaveLength(CORK_COLORS.length + 1);
       expect(chips.at(-1)!.label).toBe("Choose a colour…");
-      expect(chips.at(-1)!.pick).toBe("#ad8254");
+      expect(chips.at(-1)!.pick).toBe("#937e68");
     });
 
     it("starts the picker from the wall you are looking at", () => {

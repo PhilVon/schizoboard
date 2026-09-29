@@ -221,12 +221,12 @@ export class PinLayer {
     const zoom = camera.zoom;
     const margin = CULL_MARGIN_PX + size;
 
-    for (const [id, view] of this.views) {
-      if (scene.pins.has(id)) continue;
+    this.views.forEach((view, id) => {
+      if (scene.pins.has(id)) return;
       this.unmount(id, view);
-    }
+    });
 
-    for (const [id, pin] of scene.pins) {
+    scene.pins.forEach((pin, id) => {
       // Inside a shut folder, or under the sheet on show — T-330. Pooled like
       // an off-screen pin rather than hidden with a class, because it is the
       // same fact: a pin nobody can see costs a node for nothing, and this one
@@ -234,7 +234,7 @@ export class PinLayer {
       if (tucked(pin, this.shownPage)) {
         const view = this.views.get(id);
         if (view) this.unmount(id, view);
-        continue;
+        return;
       }
       const sx = (pin.wx - camera.x) * zoom;
       const sy = (pin.wy - camera.y) * zoom;
@@ -246,7 +246,7 @@ export class PinLayer {
       ) {
         const view = this.views.get(id);
         if (view) this.unmount(id, view);
-        continue;
+        return;
       }
 
       let view = this.views.get(id);
@@ -258,7 +258,7 @@ export class PinLayer {
       view.bind(pin.kind, pin.color);
       view.place(sx, sy, size);
       view.hover(id === hovered);
-    }
+    });
   }
 
   /**

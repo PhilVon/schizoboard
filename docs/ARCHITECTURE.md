@@ -167,7 +167,7 @@ The dev HUD reports per-phase milliseconds, so a regression shows up as a number
 
 ### 4.1 Rust owns bytes
 
-**Asset store.** Two-level fan-out under the app data directory: `assets/<aa>/<bb>/<sha256>`. Streaming SHA-256, decode, EXIF orientation, and generated variants — a thumbnail, a display-size version, and the untouched original. Heavy decode runs on a thread pool; the UI thread never sees a multi-megabyte buffer.
+**Asset store.** Two-level fan-out under the app data directory: `assets/<aa>/<bb>/<sha256>`. Streaming SHA-256, decode, EXIF orientation, and generated variants — a 256px thumbnail, a 768px intermediate, a 2560px display-size version, and the untouched original. Aspect-aware screen selection uses the intermediate only when it has enough pixels. Missing image variants on existing boards are backfilled through a deduplicated single-worker queue; originals remain servable while it runs. Heavy decode runs off the main thread; the UI thread never sees a multi-megabyte buffer.
 
 **Document log.** Append-only, length-prefixed opaque frames, flushed on a batch. Rust doesn't need a Yjs implementation for this — it appends bytes. The frontend periodically emits a snapshot and Rust atomically swaps it in and truncates the log.
 

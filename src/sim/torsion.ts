@@ -202,6 +202,7 @@ export class Torsion {
     lag = 0,
     pivots: ReadonlyMap<string, { lx: number; ly: number }> = NO_PIVOTS,
     view: Bounds | null = null,
+    reduceMotion = false,
   ): void {
     this.applyHeld(scene, dirty, held, lag, pivots);
 
@@ -215,7 +216,7 @@ export class Torsion {
       for (const id of dirty.items) this.consider(scene, dirty, id, held);
     }
 
-    this.integrate(scene, dirty, dtMs, view);
+    this.integrate(scene, dirty, dtMs, view, reduceMotion);
   }
 
   /** Everything stops and nothing is left mid-swing. For teardown and for a
@@ -480,6 +481,7 @@ export class Torsion {
     dirty: DirtySets,
     dtMs: number,
     view: Bounds | null,
+    reduceMotion: boolean,
   ): void {
     if (this.swinging.size === 0) {
       this.accumulator = 0;
@@ -528,7 +530,7 @@ export class Torsion {
        * out of sight writes no document and syncs to nobody. DESIGN section
        * 5.1: swing is transient and derived.
        */
-      if (view !== null && !this.onScreen(scene, id, view)) {
+      if (reduceMotion || (view !== null && !this.onScreen(scene, id, view))) {
         this.swinging.delete(id);
         this.write(scene, dirty, id, slot, s.eq, s);
       }

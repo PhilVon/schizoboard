@@ -1,3 +1,5 @@
+import { reducedMotion } from "@/lib/motion";
+
 /**
  * Carrying the camera somewhere, rather than putting it there.
  *
@@ -215,7 +217,7 @@ export class Flight {
       return false;
     }
     this.elapsed += Math.max(0, dt);
-    const t = this.elapsed >= FLIGHT_MS ? 1 : this.elapsed / FLIGHT_MS;
+    const t = reducedMotion() || this.elapsed >= FLIGHT_MS ? 1 : this.elapsed / FLIGHT_MS;
     const e = smoothstep(t);
     // Landed exactly, rather than within a rounding error of the target. A
     // flight that stops a third of a unit short leaves the camera on a value

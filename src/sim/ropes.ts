@@ -360,7 +360,7 @@ export class RopeSet {
    * tests want, and it is the honest answer for any caller stepping the board
    * for a reason other than showing it to somebody.
    */
-  step(scene: Scene, dirty: DirtySets, dtMs: number, view: Bounds | null = null): void {
+  step(scene: Scene, dirty: DirtySets, dtMs: number, view: Bounds | null = null, reduceMotion = false): void {
     if (dirty.all) {
       // The mirror was rebuilt from scratch, so the rope set is too: strings
       // that are gone go, and the rest are re-read before anything is seeded.
@@ -380,6 +380,15 @@ export class RopeSet {
       for (const id of this.byString.keys()) dirty.rope(id);
     } else {
       this.wakeDisturbed(scene, dirty);
+    }
+
+    if (reduceMotion) {
+      for (const segment of this.segments) {
+        if (segment.asleep) continue;
+        this.seed(scene, segment);
+        dirty.rope(segment.string);
+      }
+      return;
     }
 
     const steps = this.clock.advance(dtMs);

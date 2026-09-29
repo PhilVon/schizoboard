@@ -1,3 +1,7 @@
+import { PhotoSnapshotStamp } from "@/render/items/photoSnapshots";
+import { CardBatches, type CardCamera, type CardEntry } from "@/render/items/cardBatches";
+import { reducedMotion } from "@/lib/motion";
+
 /**
  * The DOM item layer: four archetypes, one pool, one write phase.
  *
@@ -188,6 +192,9 @@ const COARSE = "is-coarse";
  * which is a sweep rather than a snap.
  */
 const UPGRADE_BUDGET = 6;
+/** Native 500-photo measurement: bound cache releases instead of one world repaint. */
+const DEMOTE_BUDGET = 8;
+const PROMOTE_BUDGET = 16;
 
 
 /** An item that names no asset at all. Blank film, and nothing is coming. */
@@ -1048,6 +1055,19 @@ class PolaroidView implements View {
     this.el.append(this.shadow.el, this.frame, ...this.tape.nodes);
   }
 
+  private readonly photoStamp = new PhotoSnapshotStamp();
+  private snapshotFilter = "";
+
+  snapshotStamp(w: number, h: number, rot: number): string {
+    return this.photoStamp.get(w, h, rot, this.boundWear, this.snapshotFilter);
+  }
+
+  /** Never snapshot the previous photo while a replacement is decoding. */
+  get snapshotReady(): boolean {
+    return this.boundPlain && this.photo.complete && this.photo.naturalWidth > 0 &&
+      this.photo.getAttribute("src") === this.boundAsset;
+  }
+
   bind(
     cold: ItemCold,
     _facts: AssetFacts,
@@ -1172,7 +1192,7 @@ class PolaroidView implements View {
     const cold = this.boundCold;
     if (cold === null) return;
     const first = this.firstSight(cold.id);
-    if (!first || this.screenPx < EMERGE_MIN_PX) return;
+    if (!first || reducedMotion() || this.screenPx < EMERGE_MIN_PX) return;
     // Written here rather than in `bind`, so a photograph being dragged around
     // does not rewrite a property that matters for one second of its life.
     this.el.style.setProperty("--emerge-delay", `${emergeDelay(cold.seed)}ms`);
@@ -1206,6 +1226,8 @@ class PolaroidView implements View {
     if (wear > 0) this.el.style.setProperty("--age", wear.toFixed(2));
     else this.el.style.removeProperty("--age");
     this.frame.style.filter = wearFilter(wear);
+    // Read CSS serialization once per appearance change, not for every camera frame.
+    this.snapshotFilter = this.frame.style.filter;
   }
 
   /**
@@ -1431,6 +1453,7 @@ class PolaroidView implements View {
     this.el.classList.remove(IS_AGED);
     this.el.style.removeProperty("--age");
     this.frame.style.removeProperty("filter");
+    this.snapshotFilter = "";
     this.tape.release();
     this.boundPhase = null;
     this.boundDevelop = -1;
@@ -3229,11 +3252,8 @@ class CaseView implements View {
    * name changes when a record lands.
    */
   private sizeLabels(w: number): void {
-    // Only a folder's gummed label, and that is the point of the method rather
-    // than a limitation of it. A stuck-on label is one line on a strip of a
-    // fixed size, so a long name has to be written smaller; a cassette label
-    // has ruled lines and the name carries onto the next one, which `items.css`
-    // lets it do.
+    // Fit the folder strip, and the video name when a caption needs the next row.
+    // A cassette or an uncaptioned video keeps its ruled lines for wrapping.
     const base = w * NUMBER_SIZE;
     // A name that fits one line is written as it always was; one the floor
     // would cut spills onto the strip's second line first (T-386,
@@ -3241,7 +3261,11 @@ class CaseView implements View {
     const size =
       this.archetype === "folder"
         ? fitLabelWrapped(this.number.textContent ?? "", w * LABEL_WIDTH, base, LABEL_LINES)
-        : base;
+        : this.archetype === "vhs" && (this.boundCold?.text.length ?? 0) > 0
+          // The narrow video label shares its height with the caption and runtime.
+          // Its 49% width less 10% object-relative padding leaves 39% for the name.
+          ? fitLabelWrapped(this.number.textContent ?? "", w * 0.39, base, 1)
+          : base;
     this.number.style.fontSize = `${Math.max(5, size).toFixed(1)}px`;
     // And the open page's own type, which is a different question with a
     // different answer. The label on a folder is sized to be read across a room
@@ -4285,6 +4309,70 @@ export class DomItemLayer implements ItemLayer {
    *  second resolver rather than more fields on the first. */
   private readonly assetFacts: AssetLookup;
   private readonly views = new Map<string, View>();
+  private readonly promoted = new Set<HTMLElement>();
+  private readonly cardBatches: CardBatches;
+
+  /** Distant photo runs share a canvas; every unsupported state stays in the DOM. */
+  syncCards(scene: Scene, dirty: DirtySets, camera: CardCamera, dpr: number, moving = false): void {
+    if (dirty.isClean && !this.cardBatches.pending) return;
+    const entries: CardEntry[] = [];
+    if (this.tier !== "full") for (const [id, view] of this.views) {
+      const slot = scene.slotOf(id);
+      if (slot === undefined) continue;
+      const cold = scene.coldAt(slot);
+      if (!cold) continue;
+      const w = scene.w[slot]!, h = scene.h[slot]!, rot = scene.renderRot(slot);
+      entries.push({ id, el: view.el, rank: this.rank.get(id) ?? 0,
+        x: scene.renderX(slot), y: scene.renderY(slot), rot, w, h, identity: cold,
+        stamp: view instanceof PolaroidView ? view.snapshotStamp(w, h, rot) : `${w}:${h}:${rot}:`,
+        eligible: view instanceof PolaroidView && view.snapshotReady && !scene.hasInk(id) && this.editing !== id &&
+          scene.lift[slot] === 0 &&
+          !view.el.classList.contains("is-waiting") && !view.el.classList.contains("is-emerging"),
+      });
+    }
+    this.cardBatches.sync(entries, camera, this.tier !== "full", dpr, moving);
+  }
+
+  /** End of the DOM phase: cache moving objects, then release a few per frame. */
+  syncPromotion(moving: boolean): void {
+    if (moving) {
+      let left = PROMOTE_BUDGET;
+      for (const view of this.views.values()) {
+        if (view.el.classList.contains("is-card-cached")) {
+          if (this.promoted.has(view.el)) this.releasePromotion(view);
+          continue;
+        }
+        if (this.promoted.has(view.el)) continue;
+        if (left-- === 0) break;
+        this.promoted.add(view.el);
+        view.el.style.willChange = "transform";
+      }
+      return;
+    }
+    let left = DEMOTE_BUDGET;
+    for (const el of this.promoted) {
+      if (left-- === 0) break;
+      el.style.willChange = "";
+      this.promoted.delete(el);
+    }
+  }
+
+  /** Export has no interactive frame budget and must not print a stale cache. */
+  finishPromotion(): void {
+    this.cardBatches.reveal();
+    for (const el of this.promoted) el.style.willChange = "";
+    this.promoted.clear();
+  }
+
+  /** Exports wait until every visible object is rasterised at its final scale. */
+  get promotionPending(): boolean {
+    return this.promoted.size > 0;
+  }
+
+  private releasePromotion(view: View): void {
+    view.el.style.willChange = "";
+    this.promoted.delete(view.el);
+  }
   private readonly pool: Record<Archetype, View[]> = {
     polaroid: [],
     paper: [],
@@ -4348,6 +4436,9 @@ export class DomItemLayer implements ItemLayer {
    * rather than thumbnails: wrong in the cheap direction.
    */
   private rasterScale = 1;
+
+  /** Current projected image size, independent of deferred ink re-rastering. */
+  private assetScale: number | null = null;
 
   /**
    * How much of an item to draw (`render/lod.ts`, DESIGN section 6.6).
@@ -4468,6 +4559,7 @@ export class DomItemLayer implements ItemLayer {
     readingOf: ReadingResolver = () => null,
   ) {
     this.host = host;
+    this.cardBatches = new CardBatches(host);
     this.assetUrl = assetUrl;
     this.assetFacts = assetFacts;
     this.editor = editor ? new TextEditor(editor) : null;
@@ -4879,6 +4971,7 @@ export class DomItemLayer implements ItemLayer {
       // node being pooled; `release` takes the element back out, and pressing
       // play again picks up where it was.
       if (id === this.deck.loaded && !scene.has(id)) this.hush();
+      this.releasePromotion(view);
       view.release();
       view.el.remove();
       this.pool[view.archetype].push(view);
@@ -4984,6 +5077,7 @@ export class DomItemLayer implements ItemLayer {
       // record can land a beat after the item that names it — so an object
       // arrives as a photograph of nothing and becomes a folder when its record
       // does. Swapping is exactly the right response to both.
+      this.releasePromotion(view);
       view.release();
       view.el.remove();
       this.pool[view.archetype].push(view);
@@ -5024,7 +5118,7 @@ export class DomItemLayer implements ItemLayer {
       }
       // The longest edge this item is about to occupy, in device pixels. What
       // the resolver does with it is the resolver's business.
-      const screenPx = Math.max(scene.w[slot]!, scene.h[slot]!) * this.rasterScale;
+      const screenPx = Math.max(scene.w[slot]!, scene.h[slot]!) * (this.assetScale ?? this.rasterScale);
       view.bind(
         cold,
         facts,
@@ -5346,6 +5440,11 @@ export class DomItemLayer implements ItemLayer {
    * The caller is expected to make the next frame dirty; this only records the
    * number, so that nothing is written outside the DOM phase.
    */
+  /** New mounts should request thumbnails while zooming out, not wait for settle. */
+  setAssetScale(scale: number): void {
+    if (Number.isFinite(scale) && scale > 0) this.assetScale = scale;
+  }
+
   setRasterScale(scale: number): void {
     if (Number.isFinite(scale) && scale > 0) this.rasterScale = scale;
   }
@@ -5458,7 +5557,7 @@ export class DomItemLayer implements ItemLayer {
       const cold = slot === undefined ? null : scene.coldAt(slot);
       if (slot === undefined || !cold) continue;
       view.el.classList.remove(COARSE);
-      const screenPx = Math.max(scene.w[slot]!, scene.h[slot]!) * this.rasterScale;
+      const screenPx = Math.max(scene.w[slot]!, scene.h[slot]!) * (this.assetScale ?? this.rasterScale);
       // `plain` from the tier alone now, which is the whole of the upgrade: at
       // `card` or `flat` the item was already right and `bind` returns early on
       // its own guard, so a board zoomed out pays nothing here.
@@ -5485,6 +5584,7 @@ export class DomItemLayer implements ItemLayer {
   }
 
   destroy(): void {
+    this.cardBatches.destroy();
     // Before the views, since it takes the field out of one of them.
     this.editor?.destroy();
     this.editorView = null;
@@ -5498,6 +5598,7 @@ export class DomItemLayer implements ItemLayer {
     // alive until the collector gets to it, and a torn-down layer still holding
     // megabytes is the kind of leak that only shows up in a long session.
     for (const view of this.views.values()) {
+      this.releasePromotion(view);
       view.release();
       view.el.remove();
     }

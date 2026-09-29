@@ -144,7 +144,7 @@ body {
 /* Breaks the grain's repeat. Anchored to the world at a 4x longer period. */
 .cork-blotch {
   mix-blend-mode: overlay;
-  opacity: 0.4;
+  opacity: 0.19;
 }
 
 /* Pinholes (T-231). A canvas rather than a background, because these are the
@@ -166,7 +166,7 @@ body {
  * panning moves across a surface that is not uniformly lit. */
 .cork-light {
   mix-blend-mode: soft-light;
-  opacity: 0.55;
+  opacity: 0.36;
 }
 
 /* Viewport-anchored, so it never moves and costs no camera update. */
@@ -174,10 +174,10 @@ body {
   position: absolute;
   inset: 0;
   background: radial-gradient(
-    ellipse at 50% 42%,
-    rgba(var(--shadow-warm), 0) 42%,
-    rgba(var(--shadow-warm), 0.18) 72%,
-    rgba(var(--shadow-warm), 0.46) 100%
+    ellipse at 42% 35%,
+    rgba(var(--shadow-warm), 0) 36%,
+    rgba(var(--shadow-warm), 0.12) 73%,
+    rgba(var(--shadow-warm), 0.30) 100%
   );
 }
 
@@ -693,10 +693,10 @@ body {
   flex-direction: column;
   align-items: stretch;
   gap: 3px;
-  padding: 4px;
-  border-radius: 7px;
-  background: rgba(16, 12, 9, 0.86);
-  backdrop-filter: blur(6px);
+  padding: 5px;
+  border: 1px solid #71654f;
+  border-radius: 12px;
+  background: #27241e;
   color: #d9cfc2;
   font-family: var(--ui-mono);
 }
@@ -738,8 +738,9 @@ body {
  * glance out of the corner of an eye, and a border reads as a shape while a
  * change of tone reads as a state. */
 .toolbar-btn.is-on {
-  background: rgba(255, 255, 255, 0.15);
-  color: #f4ece0;
+  background: #e6dbc1;
+  color: #29261e;
+  box-shadow: inset 3px 0 0 #8e7144;
 }
 
 .toolbar-glyph {
@@ -754,7 +755,7 @@ body {
   font-size: 9px;
   line-height: 1;
   letter-spacing: 0.04em;
-  opacity: 0.5;
+  opacity: 0.78;
 }
 
 .toolbar-btn.is-on .toolbar-key {
@@ -1545,3 +1546,16 @@ body {
     filter: none !important;
   }
 }
+
+/* D-77: keyboard focus has a shape on both pale object controls and dark UI. */
+:where(button, input, select, textarea, a[href]):focus-visible {
+  outline: 2px solid #f5ead1;
+  outline-offset: 2px;
+  box-shadow: 0 0 0 4px #493c2c;
+}
+.toolbar-btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+  background-image: repeating-linear-gradient(135deg, transparent 0 5px, rgba(230,219,193,.12) 5px 6px);
+}
+.toolinfo-row:not(.is-live) { opacity: 0.75; }

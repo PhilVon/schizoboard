@@ -1,43 +1,8 @@
 /**
- * The layer stack and the one camera transform.
- *
- * docs/DESIGN.md section 6.2, bottom to top:
- *
- *   cork background            (DOM)
- *   board ink                  (DOM)  <- camera transform, tile canvases (T-61)
- *   ropes-under canvas         (screen space)
- *   world wrapper              (DOM)  <- ONE camera transform lives here
- *     item nodes: image, paper texture, ink canvas, all inside the rotation
- *   ropes-over canvas          (screen space)
- *   overlay canvas             (cursors, ghosts, wet ink)
- *   pins                       (DOM, hit targets)
- *   ui chrome                  (DOM)
- *
- * Items position themselves inside the wrapper in board coordinates and never
- * know about the camera. The canvases are full-viewport and apply the camera
- * per-point at draw time, which is what keeps line widths crisp at every zoom.
- *
- * ## Two transformed layers, not one
- *
- * DESIGN section 6.2's stack predates board ink and has no layer for it. The
- * position is forced by what board ink *is* — a mark on the cork, so under the
- * string and under the paper — and the stack has no way to put a child of the
- * world wrapper below a sibling of it. So there is a second transformed layer,
- * carrying the same camera and doing the same thing with `will-change`, sitting
- * where its content belongs. It is not a second camera: `applyCamera` writes the
- * one transform to both, in the same statement, from the same numbers.
- *
- * ## The will-change rule
- *
- * A DOM subtree under a CSS scale() rasterises at its pre-scale resolution.
- * `will-change: transform` pins that cached layer at whatever scale it was
- * promoted at — so the property everyone reaches for to make zoom smooth is
- * also the one that makes zoomed-in content permanently blurry.
- *
- * The rule (DESIGN section 6.6) is hard: **will-change goes on at gesture
- * start and comes off on a debounced gesture end**, at which point the world
- * layer re-rasterises and everything holding its own bitmap is told to
- * re-raster at devicePixelRatio * zoom. Never leave it on at steady state.
+ * The layer stack and its shared camera transform.
+ * Item promotion is owned by DomItemLayer: releasing one promoted world
+ * subtree forces hundreds of photos to rasterise in a single frame (T-420).
+ * Board ink keeps its gesture cache; item caches drain in bounded batches.
  */
 
 import type { Camera } from "@/state/camera";
@@ -93,6 +58,11 @@ export class World {
   private writtenVersion = -1;
   private gestureTimer = 0;
   private gesturing = false;
+
+  /** True until the gesture's final DOM writes have landed. */
+  get moving(): boolean {
+    return this.gesturing || this.demotePending;
+  }
   private readonly rasterizeListeners: RasterizeListener[] = [];
   private readonly settleListeners: SettleListener[] = [];
   /** Scale the promoted layers were last rasterised at. */
@@ -136,13 +106,12 @@ export class World {
 
   /**
    * Call on every frame in which a pan or zoom gesture produced input. Promotes
-   * the world layer for the duration of the gesture and schedules the
+   * board ink for the duration of the gesture and schedules the
    * re-raster that ends it.
    */
   gestureTick(scale: number): void {
     if (!this.gesturing) {
       this.gesturing = true;
-      this.layers.world.style.willChange = "transform";
       // Board ink is under a scale() too, so it goes blurry in exactly the same
       // way and is promoted and demoted on exactly the same schedule.
       this.layers.boardInk.style.willChange = "transform";
@@ -186,10 +155,7 @@ export class World {
     this.gesturing = false;
 
 
-    // Before the raster gate below, and outside it. This is the frame the whole
-    // world subtree repaints on regardless, which is exactly when changing how
-    // much of an item is drawn is free — and the gate would swallow the small
-    // swings that cross a tier boundary.
+    // Outside the raster gate: even a small change can cross a tier boundary.
     for (const fn of this.settleListeners) fn(scale);
 
     // Queued rather than written. `flushDemote` says why.
@@ -205,36 +171,7 @@ export class World {
   }
 
 
-  /**
-   * DOM phase (5), **last**. Drop `will-change` if the debounce has expired.
-   *
-   * ## Why the demote is not written where it is decided
-   *
-   * Dropping `will-change` throws away the cached layer, so the browser repaints
-   * the whole world subtree. Everything a gesture end triggers — the LOD tier,
-   * the re-raster, `dirty.everything()` — changes what that subtree *contains*.
-   * Written in the order they used to be, the two collided and cost **two** full
-   * repaints of five hundred items rather than one (D-33 section 8):
-   *
-   *     562-625 ms   will-change comes off; the browser repaints 500 FULL items
-   *     694-743 ms   next frame writes the flat cards; it repaints all 500 AGAIN
-   *
-   * The first of those is unavoidable and predates LOD. The second is entirely
-   * waste: it repaints the same five hundred items, and the content the first one
-   * so expensively rasterised was already on its way to being thrown out.
-   *
-   * So the demote is *queued* at the debounce and written here, at the end of the
-   * write phase, after `items.sync` has put the new content in. The layer stays
-   * promoted for one extra frame, the browser paints once, and what it paints is
-   * the cheap version.
-   *
-   * This also puts the write where the architecture already says it belongs.
-   * `will-change` is a DOM write, and it was being made from a `setTimeout` —
-   * outside the one phase that is allowed to write (ARCHITECTURE section 3).
-   *
-   * Idempotent, and free on every frame that has nothing to do: a board at rest
-   * costs one boolean test per frame.
-   */
+  /** Finish the gesture after its DOM writes, then release the board-ink cache. */
   flushDemote(): void {
     if (!this.demotePending) return;
     this.demotePending = false;
@@ -242,7 +179,6 @@ export class World {
     // demoting mid-gesture is the blur trap DESIGN section 6.6 is about, and the
     // new gesture has its own debounce which will queue its own demote.
     if (this.gesturing) return;
-    this.layers.world.style.willChange = "";
     this.layers.boardInk.style.willChange = "";
   }
 
@@ -281,6 +217,7 @@ export class World {
     // A queued demote that never flushed would otherwise be a promoted layer
     // left behind, which is the one state DESIGN section 6.6 calls a hard rule.
     this.demotePending = false;
+    this.gesturing = false;
     this.host.replaceChildren();
     this.rasterizeListeners.length = 0;
     this.settleListeners.length = 0;

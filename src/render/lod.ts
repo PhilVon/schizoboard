@@ -55,20 +55,12 @@
  * chatter. Unlike culling's band this one costs nothing at rest: it changes
  * *when* the switch happens, never how much is drawn afterwards.
  *
- * ## Where it is evaluated, and why the two directions differ
+ * ## When it changes
  *
- * A **fall** — losing detail — happens at gesture end, with the re-raster
- * (`render/world.ts`), because it is a full repaint of every mounted item and
- * that frame is already a full repaint. It is deliberately **not** hung off
- * `onRasterize`, which fires only when the scale swings by more than 1.25x: 0.36
- * to 0.34 crosses the boundary and is a swing of 1.06, so a tier that listened
- * there would silently never switch at the one place it matters most.
- *
- * A **rise** happens *during* the gesture, and [`Lod.rise`] is the argument. The
- * short of it: this file originally said a mid-gesture tier change would be paid
- * for and never seen, and the second half was backwards. Mid-gesture is precisely
- * when a change of detail is invisible, and doing it at rest put a board-wide pop
- * on the one frame nothing else was moving (T-203).
+ * Both directions follow the moving camera with hysteresis (T-420). A fall
+ * happens before the zoom mounts the densest view. Detail upgrades and item
+ * cache releases are bounded separately by DomItemLayer.
+
  */
 
 /**
@@ -200,7 +192,7 @@ export function tierAt(zoom: number, previous: Tier): Tier {
 
 /**
  * How much of an item each tier draws, most to least. Only the *order* is used —
- * see [`Lod.rise`], which is the one thing that needs to know that `full` is more
+ * see [`Lod.update`], which is the one thing that needs to know that `full` is more
  * than `card`, and which would otherwise have to compare two strings and hope.
  *
  * Exported for `render/items/dom.ts`, which asks the same question of a tier it
@@ -242,43 +234,15 @@ export class Lod {
   }
 
   /**
-   * The camera is *moving* and has reached this zoom — take any detail that has
-   * become due, but do not give any up (T-203).
-   *
-   * ## Why detail rises during a gesture and only falls at rest
-   *
-   * The two directions are nothing alike, and treating them alike is what
-   * produced the one thing left on this board that Phil could see. Going up, the
-   * tier used to change on the frame the camera *stopped*, so a zoom in from 5%
-   * held flat cards through the whole motion and then, on the first still frame,
-   * about a hundred and forty sheets simultaneously grew a torn edge, a ruling, a
-   * grain, tape and a per-letter lean. A board-wide pop, at the one moment nothing
-   * else on screen was moving.
-   *
-   * T-197's note had it backwards. It said a mid-gesture tier change would be paid
-   * for and never seen; the paying is true and the seeing is the wrong way round —
-   * mid-gesture is exactly when a change of detail is invisible, because the whole
-   * board is in motion. So detail arrives while it cannot be watched arriving.
-   *
-   * The other direction stays at the settle, and for a reason that is not
-   * symmetry:
-   *
-   *   - **Rising is cheap.** It happens at a zoom where the camera is closing in
-   *     and the culler has fewer items mounted, and there is only one rise there
-   *     is to make: `card` to `full`.
-   *   - **Falling is expensive.** It happens at a zoom where five hundred items
-   *     are mounted, and the settle frame is the one already repainting the whole
-   *     world subtree for the demote. There is nothing to gain by moving it, and a
-   *     board's detail *leaving* while you pull away from it is not a pop anybody
-   *     minds.
-   *
-   * Returns whether anything changed, so the caller raises its dirty pass only
-   * when there is something to see.
+   * Follow both directions while moving, using the same hysteresis as settle.
+   * Falling at 35% changes fewer mounted items than waiting until 15%; cache
+   * release is now per item, so a fall no longer shares one world repaint.
+   * Rising still pays its detail debt over subsequent frames.
    */
-  rise(zoom: number): boolean {
+  update(zoom: number): boolean {
     if (this.held) return false;
     const next = tierAt(zoom, this.current);
-    if (DETAIL[next] <= DETAIL[this.current]) return false;
+    if (next === this.current) return false;
     return this.apply(next);
   }
 

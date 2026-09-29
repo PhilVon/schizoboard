@@ -224,12 +224,13 @@ function bake(kind: PinKind, color: string): PinSprite {
   //    round rather than as a circle.
   const sx = c - LIGHT_DX * head * 0.4;
   const sy = c - LIGHT_DY * head * 0.4;
-  const spec = ctx.createRadialGradient(sx, sy, 0, sx, sy, head * 0.34);
+  // A small polished glint preserves the coloured cap around it (D-77).
+  const spec = ctx.createRadialGradient(sx, sy, 0, sx, sy, head * 0.27);
   spec.addColorStop(0, "rgba(255, 255, 255, 0.85)");
   spec.addColorStop(1, "rgba(255, 255, 255, 0)");
   ctx.fillStyle = spec;
   ctx.beginPath();
-  ctx.arc(sx, sy, head * 0.34, 0, Math.PI * 2);
+  ctx.arc(sx, sy, head * 0.27, 0, Math.PI * 2);
   ctx.fill();
 
   return { url: canvas.toDataURL("image/png"), canvas };
@@ -327,7 +328,7 @@ function drawDome(ctx: CanvasRenderingContext2D, c: number, head: number, rgb: R
   const gx = c - LIGHT_DX * head * 0.34;
   const gy = c - LIGHT_DY * head * 0.34;
   const fill = ctx.createRadialGradient(gx, gy, head * 0.05, gx, gy, head * 1.45);
-  fill.addColorStop(0, shade(rgb, 0.42));
+  fill.addColorStop(0, shade(rgb, 0.34));
   fill.addColorStop(0.45, shade(rgb, 0.04));
   fill.addColorStop(1, shade(rgb, -0.45));
   ctx.fillStyle = fill;

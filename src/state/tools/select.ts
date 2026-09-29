@@ -1,3 +1,5 @@
+import { reducedMotion } from "@/lib/motion";
+
 /**
  * The select tool — `V`, and the one the board starts in.
  *
@@ -122,8 +124,9 @@ export const LIVE_WRITE_MS = 300;
 
 /** Time constants for the carry. Picking up is quicker than putting down,
  *  which is what reads as weight rather than as a lag spike. */
-const LIFT_RISE_MS = 55;
-const LIFT_FALL_MS = 130;
+// Exponential time constants: 95% of pickup in 90ms, placement in 165ms.
+const LIFT_RISE_MS = 30;
+const LIFT_FALL_MS = 55;
 
 /**
  * The lag. `LAG_PER_VELOCITY` is radians per screen-pixel-per-millisecond of
@@ -227,7 +230,7 @@ type GesturePhase =
   | "pin";
 
 function approach(current: number, target: number, dt: number, tau: number): number {
-  return current + (target - current) * (1 - Math.exp(-dt / tau));
+  return reducedMotion() ? target : current + (target - current) * (1 - Math.exp(-dt / tau));
 }
 
 /**
@@ -2036,7 +2039,7 @@ export class SelectTool implements Tool {
     );
     // Rotation is deliberate, so it gets the lift but not the lag; a turning
     // item that also leaned would read as two things happening at once.
-    this.lag = approach(this.lag, this.phase === "dragging" ? lagTarget : 0, dt, LAG_TAU_MS);
+    this.lag = reducedMotion() ? 0 : approach(this.lag, this.phase === "dragging" ? lagTarget : 0, dt, LAG_TAU_MS);
 
     for (const id of this.animating) {
       const slot = ctx.scene.slotOf(id);
@@ -2048,7 +2051,7 @@ export class SelectTool implements Tool {
       // `starts` is populated by begin() and emptied by release(), so
       // membership is exactly "this gesture is holding it".
       const held = this.starts.has(id);
-      const liftTarget = held ? 1 : 0;
+      const liftTarget = held && !reducedMotion() ? 1 : 0;
 
       const lift = approach(
         ctx.scene.lift[slot]!,
@@ -2070,7 +2073,7 @@ export class SelectTool implements Tool {
       // Eased from the target rather than from `this.lag`, even though the two
       // are the same calculation: chaining them would put a second first-order
       // filter in the path and the carry would visibly lose its snap.
-      const swingTarget = held && this.phase === "dragging" ? lagTarget : 0;
+      const swingTarget = !reducedMotion() && held && this.phase === "dragging" ? lagTarget : 0;
       const swing = hangs
         ? ctx.scene.swing[slot]!
         : approach(ctx.scene.swing[slot]!, swingTarget, dt, LAG_TAU_MS);

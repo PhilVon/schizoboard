@@ -78,6 +78,7 @@ const DISPLAY_MAX_EDGE: u32 = 2560;
 /// Longest edge of the thumbnail. Feeds the flat-rectangle treatment below 15%
 /// zoom (DESIGN section 9.1) and, later, search results.
 const THUMB_MAX_EDGE: u32 = 256;
+const MEDIUM_MAX_EDGE: u32 = 768;
 
 const JPEG_QUALITY_DISPLAY: u8 = 88;
 const JPEG_QUALITY_THUMB: u8 = 78;
@@ -499,6 +500,7 @@ pub struct Resolved {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Variant {
     Thumb,
+    Medium,
     Display,
     Original,
 }
@@ -509,6 +511,7 @@ impl Variant {
     pub fn parse(value: Option<&str>) -> Self {
         match value {
             Some("thumb") => Variant::Thumb,
+            Some("medium") => Variant::Medium,
             Some("original") => Variant::Original,
             _ => Variant::Display,
         }
@@ -517,6 +520,7 @@ impl Variant {
     fn suffix(self) -> &'static str {
         match self {
             Variant::Thumb => "thumb",
+            Variant::Medium => "medium",
             Variant::Display => "display",
             Variant::Original => "",
         }
@@ -2220,6 +2224,12 @@ impl AssetStore {
         // meant a second pass whose cost scaled with the *source*, which is the
         // one property this whole road was just rid of. When there is no display
         // variant the original is already inside 2560 and bounded anyway.
+        // Drop this bounded intermediate before preparing the thumbnail; the
+        // display encode remains the largest derivative allocation.
+        {
+            let medium = downscale(&display, MEDIUM_MAX_EDGE);
+            self.write_variant(sha256, Variant::Medium, &medium, JPEG_QUALITY_DISPLAY)?;
+        }
         let thumb = downscale(&display, THUMB_MAX_EDGE);
         self.write_variant(sha256, Variant::Thumb, &thumb, JPEG_QUALITY_THUMB)?;
         Ok(())
@@ -3141,7 +3151,7 @@ mod tests {
         // handler turns into `immutable`, and a video plays by asking for one
         // range after another for the length of the file — the wrong answer
         // here is re-reading a 400 MB interview off the disk all afternoon.
-        for variant in [Variant::Original, Variant::Display, Variant::Thumb] {
+        for variant in [Variant::Original, Variant::Display, Variant::Medium, Variant::Thumb] {
             let resolved = store.resolve(&meta.sha256, variant).unwrap();
             assert_eq!(resolved.mime, "video/mp4");
             assert!(resolved.exact, "{variant:?}");
@@ -3441,6 +3451,30 @@ mod tests {
             store.resolve(&meta.sha256, Variant::Thumb).unwrap().mime,
             "image/jpeg"
         );
+    }
+
+    #[test]
+    fn intermediate_backfill_preserves_original_and_transparency() {
+        let (_dir, store) = store();
+        let original = png(1200, 600);
+        let meta = store.ingest_bytes(&original, None).unwrap();
+        let before = store.resolve(&meta.sha256, Variant::Medium).unwrap();
+        assert!(!before.exact);
+        assert_eq!(fs::read(&before.path).unwrap(), original);
+        store.build_variants(&meta.sha256).unwrap();
+        let after = store.resolve(&meta.sha256, Variant::Medium).unwrap();
+        assert!(after.exact);
+        assert_eq!(image::image_dimensions(&after.path).unwrap(), (768, 384));
+        assert_eq!(fs::read(store.original_path(&meta.sha256)).unwrap(), original);
+
+        let mut transparent = Vec::new();
+        DynamicImage::ImageRgba8(RgbaImage::from_pixel(1000, 500, image::Rgba([9, 9, 9, 80])))
+            .write_to(&mut io::Cursor::new(&mut transparent), ImageFormat::Png).unwrap();
+        let alpha = store.ingest_bytes(&transparent, None).unwrap();
+        store.build_variants(&alpha.sha256).unwrap();
+        let result = store.resolve(&alpha.sha256, Variant::Medium).unwrap();
+        assert_eq!(result.mime, "image/png");
+        assert_eq!(image::open(result.path).unwrap().to_rgba8().get_pixel(0, 0)[3], 80);
     }
 
     #[test]
@@ -3821,6 +3855,7 @@ mod tests {
     #[test]
     fn variant_defaults_to_display_for_anything_it_does_not_recognise() {
         assert_eq!(Variant::parse(Some("thumb")), Variant::Thumb);
+        assert_eq!(Variant::parse(Some("medium")), Variant::Medium);
         assert_eq!(Variant::parse(Some("original")), Variant::Original);
         assert_eq!(Variant::parse(Some("nonsense")), Variant::Display);
         assert_eq!(Variant::parse(None), Variant::Display);

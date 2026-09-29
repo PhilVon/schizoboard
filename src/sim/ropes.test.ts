@@ -873,3 +873,17 @@ describe("the frame clock", () => {
     expect(ropes.awake).toBe(1);
   });
 });
+
+describe("reduced motion", () => {
+  it("moves a disturbed endpoint to its analytical rope and leaves idle frames clean", () => {
+    string("s1"); dirty.clear();
+    pin("p2", 260, 40); dirty.pin("p2");
+    ropes.step(scene, dirty, FRAME, null, true);
+    const ends = points("s1");
+    expect(ends.at(-1)![0]).toBeCloseTo(260, 4);
+    expect(ends.at(-1)![1]).toBeCloseTo(40, 4);
+    expect(ropes.awake).toBe(0);
+    dirty.clear(); ropes.step(scene, dirty, FRAME, null, true);
+    expect(dirty.ropes.size).toBe(0);
+  });
+});

@@ -3,6 +3,18 @@ import { describe, expect, it } from "vitest";
 import { VARIANT_MAX_EDGE, variantFor } from "@/platform/types";
 
 describe("variantFor", () => {
+  it("uses intermediate pixels only when both image axes have enough detail", () => {
+    expect(variantFor(300, 1500, 1000)).toBe("medium");
+    expect(variantFor(300, 1000, 1500)).toBe("medium");
+    expect(variantFor(768, 1000, 1000)).toBe("medium");
+    expect(variantFor(769, 1000, 1000)).toBe("display");
+    expect(variantFor(300, 3000, 500)).toBe("display");
+    expect(variantFor(600, 1000, 1500)).toBe("display");
+    for (const invalid of [undefined, 0, -1, Number.NaN, Infinity]) {
+      expect(variantFor(300, invalid, 1000)).toBe("display");
+      expect(variantFor(300, 1000, invalid)).toBe("display");
+    }
+  });
   it("takes the thumbnail only while the thumbnail has enough pixels", () => {
     expect(variantFor(1)).toBe("thumb");
     expect(variantFor(120)).toBe("thumb");

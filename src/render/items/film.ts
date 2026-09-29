@@ -155,7 +155,7 @@ export const EMERGE_MIN_PX = 96;
  * on screen landing within a few frames of each other, and without the scatter
  * the whole viewport flashes as one object.
  */
-const EMERGE_STAGGER_MS = 260;
+const EMERGE_STAGGER_MS = 80;
 
 /**
  * This item's share of that scatter, in milliseconds.

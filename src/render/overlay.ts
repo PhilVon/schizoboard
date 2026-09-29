@@ -1,3 +1,5 @@
+import { reducedMotion } from "@/lib/motion";
+
 /**
  * The overlay canvas — phase 8.
  *
@@ -210,7 +212,7 @@ const FLASH_STRING_LIT = 0.6;
 
 /** Full for the first third of the life, then away. See [`FLASH_HOLD`]. */
 function alphaOf(life: number): number {
-  return Math.min(1, life * FLASH_HOLD);
+  return reducedMotion() ? (life > 0 ? 1 : 0) : Math.min(1, life * FLASH_HOLD);
 }
 
 /**
@@ -1347,7 +1349,7 @@ export class Overlay {
       // not the defensive one.
       if (slot === undefined) continue;
 
-      const pad = FLASH_PAD + (1 - life) * FLASH_SPREAD;
+      const pad = FLASH_PAD + (reducedMotion() ? 0 : (1 - life) * FLASH_SPREAD);
       const scale = carryScale(scene.lift[slot]!);
       const hw = (scene.w[slot]! * camera.zoom * scale) / 2 + pad;
       const hh = (scene.h[slot]! * camera.zoom * scale) / 2 + pad;
@@ -1377,7 +1379,7 @@ export class Overlay {
     for (const [id, life] of flashes.pins) {
       const pin = scene.pins.get(id);
       if (pin === undefined) continue;
-      const radius = head + FLASH_PAD + (1 - life) * FLASH_SPREAD;
+      const radius = head + FLASH_PAD + (reducedMotion() ? 0 : (1 - life) * FLASH_SPREAD);
       const at = camera.boardToScreen(pin.wx, pin.wy, this.a);
       if (at.x + radius < 0 || at.x - radius > camera.width) continue;
       if (at.y + radius < 0 || at.y - radius > camera.height) continue;
