@@ -3569,27 +3569,28 @@ describe("bounded gesture caches", () => {
     const count = (): number => Array.from(host.children).filter(
       el => (el as HTMLElement).style.willChange === "transform",
     ).length;
-    layer.syncPromotion(true);
-    layer.syncPromotion(true);
+    // Promoted mid-zoom at scale 1, settled at scale 2: every cache is stale.
+    layer.syncPromotion(true, 1);
+    layer.syncPromotion(true, 1);
     expect(count()).toBe(17);
     dirty.clear();
-    layer.syncPromotion(false);
+    layer.syncPromotion(false, 2);
     expect(count()).toBe(9);
     expect(layer.promotionPending).toBe(true);
-    layer.syncPromotion(true);
-    layer.syncPromotion(true);
+    layer.syncPromotion(true, 1);
+    layer.syncPromotion(true, 1);
     expect(count()).toBe(17);
-    for (let i = 0; i < 3; i++) layer.syncPromotion(false);
+    for (let i = 0; i < 3; i++) layer.syncPromotion(false, 2);
     expect(count()).toBe(0);
     expect(layer.promotionPending).toBe(false);
-    layer.syncPromotion(false);
+    layer.syncPromotion(false, 2);
     expect(count()).toBe(0);
   });
 
   it("drops a culled object's cache before its node is recycled", () => {
     add("a");
     layer.sync(scene, dirty, null);
-    layer.syncPromotion(true);
+    layer.syncPromotion(true, 1);
     const recycled = host.firstElementChild as HTMLElement;
     layer.sync(scene, dirty, new Set());
     expect(recycled.style.willChange).toBe("");
@@ -3598,7 +3599,7 @@ describe("bounded gesture caches", () => {
     layer.sync(scene, dirty, new Set(["b"]));
     expect(host.firstElementChild).toBe(recycled);
     expect(recycled.style.willChange).toBe("");
-    layer.syncPromotion(true);
+    layer.syncPromotion(true, 1);
     layer.destroy();
     expect(recycled.style.willChange).toBe("");
     expect(layer.promotionPending).toBe(false);
@@ -3612,13 +3613,169 @@ describe("cache start and export bounds", () => {
     const count = (): number => Array.from(host.children).filter(
       el => (el as HTMLElement).style.willChange === "transform",
     ).length;
-    layer.syncPromotion(true);
+    layer.syncPromotion(true, 1);
     expect(count()).toBe(16);
-    layer.syncPromotion(true);
+    layer.syncPromotion(true, 1);
     expect(count()).toBe(32);
     layer.finishPromotion();
     expect(count()).toBe(0);
     expect(layer.promotionPending).toBe(false);
+  });
+});
+
+describe("promotions kept at the settled scale (T-432)", () => {
+  const promotedCount = (): number => Array.from(host.children).filter(
+    el => (el as HTMLElement).style.willChange === "transform",
+  ).length;
+  /** Idle frames until the layer reports nothing pending, bounded. */
+  const settle = (scale: number): number => {
+    let frames = 0;
+    do { layer.syncPromotion(false, scale); frames++; } while (layer.promotionPending && frames < 50);
+    return frames;
+  };
+
+  it("keeps a pure pan's promotions through idle, so the next pan starts without a burst", () => {
+    for (let i = 0; i < 20; i++) add("pan-" + i);
+    layer.sync(scene, dirty, null);
+    layer.syncPromotion(true, 1);
+    layer.syncPromotion(true, 1);
+    expect(promotedCount()).toBe(20);
+    dirty.clear();
+    settle(1);
+    expect(promotedCount()).toBe(20);
+    // Settled: nothing pending, so the export and idle checks are not held up,
+    // and further idle frames write nothing.
+    expect(layer.promotionPending).toBe(false);
+    const before = Array.from(host.children).map(el => (el as HTMLElement).style.willChange);
+    for (let i = 0; i < 5; i++) layer.syncPromotion(false, 1);
+    // The next pan writes nothing either: every visible node is already promoted.
+    layer.syncPromotion(true, 1);
+    expect(Array.from(host.children).map(el => (el as HTMLElement).style.willChange)).toEqual(before);
+    layer.destroy();
+  });
+
+  it("re-takes each kept layer once at rest, a bounded few per frame", () => {
+    for (let i = 0; i < 20; i++) add("rest-" + i);
+    layer.sync(scene, dirty, null);
+    layer.syncPromotion(true, 1);
+    layer.syncPromotion(true, 1);
+    dirty.clear();
+    const lowered = new Map<Element, number>();
+    const seen = (): void => {
+      for (const el of Array.from(host.children)) {
+        if ((el as HTMLElement).style.willChange === "") lowered.set(el, (lowered.get(el) ?? 0) + 1);
+      }
+    };
+    layer.syncPromotion(false, 1);
+    expect(promotedCount()).toBe(12);
+    seen();
+    let frames = 1;
+    while (layer.promotionPending && frames < 50) { layer.syncPromotion(false, 1); seen(); frames++; }
+    expect(frames).toBeLessThan(10);
+    expect(promotedCount()).toBe(20);
+    // Every node was lowered, each for exactly one frame.
+    expect(lowered.size).toBe(20);
+    expect([...lowered.values()].every(n => n === 1)).toBe(true);
+    layer.destroy();
+  });
+
+  it("raises a layer lowered for its refresh if a pan starts before it is raised", () => {
+    for (let i = 0; i < 4; i++) add("again-" + i);
+    layer.sync(scene, dirty, null);
+    layer.syncPromotion(true, 1);
+    dirty.clear();
+    layer.syncPromotion(false, 1);
+    expect(promotedCount()).toBe(0);
+    layer.syncPromotion(true, 1);
+    expect(promotedCount()).toBe(4);
+    layer.destroy();
+  });
+
+  it("releases every promotion once a zoom settles at a new scale", () => {
+    for (let i = 0; i < 20; i++) add("zoom-" + i);
+    layer.sync(scene, dirty, null);
+    layer.syncPromotion(true, 1);
+    layer.syncPromotion(true, 1.5);
+    expect(promotedCount()).toBe(20);
+    dirty.clear();
+    layer.syncPromotion(false, 1.5);
+    // The 16 promoted at scale 1 are stale and released eight a frame; the 4
+    // promoted at 1.5 are current and kept.
+    expect(promotedCount()).toBe(12);
+    expect(layer.promotionPending).toBe(true);
+    settle(1.5);
+    expect(promotedCount()).toBe(4);
+    expect(layer.promotionPending).toBe(false);
+    // A later change of scale at rest (a DPI change) re-examines the kept set.
+    layer.syncPromotion(false, 3);
+    expect(promotedCount()).toBe(0);
+    layer.destroy();
+  });
+
+  it("releases a kept promotion when its node is culled and recycled", () => {
+    add("a");
+    layer.sync(scene, dirty, null);
+    layer.syncPromotion(true, 1);
+    dirty.clear();
+    settle(1);
+    const node = host.firstElementChild as HTMLElement;
+    expect(node.style.willChange).toBe("transform");
+    dirty.everything();
+    layer.sync(scene, dirty, new Set());
+    expect(node.style.willChange).toBe("");
+    expect(layer.promotionPending).toBe(false);
+    add("b");
+    layer.sync(scene, dirty, new Set(["b"]));
+    expect(host.firstElementChild).toBe(node);
+    settle(1);
+    expect(node.style.willChange).toBe("");
+    layer.destroy();
+  });
+
+  it("releases a kept promotion whose photo is hidden behind its snapshot", () => {
+    for (let i = 0; i < 3; i++) add("snap-" + i);
+    layer.sync(scene, dirty, null);
+    layer.syncPromotion(true, 1);
+    dirty.clear();
+    settle(1);
+    expect(promotedCount()).toBe(3);
+    const first = host.querySelector<HTMLElement>(".item")!;
+    first.classList.add("is-card-cached");
+    dirty.everything();
+    layer.syncCards(scene, dirty, { x: 0, y: 0, zoom: 1, width: 800, height: 600 }, 1);
+    dirty.clear();
+    settle(1);
+    expect(first.style.willChange).toBe("");
+    expect(promotedCount()).toBe(2);
+    layer.destroy();
+  });
+
+  it("export clears kept promotions and waits for any made while it poses the camera", () => {
+    for (let i = 0; i < 20; i++) add("export-" + i);
+    layer.sync(scene, dirty, null);
+    layer.syncPromotion(true, 1);
+    layer.syncPromotion(true, 1);
+    dirty.clear();
+    settle(1);
+    expect(promotedCount()).toBe(20);
+    layer.finishPromotion();
+    expect(promotedCount()).toBe(0);
+    expect(layer.promotionPending).toBe(false);
+    // The export's camera pose is a gesture: it promotes, at the same scale.
+    layer.syncPromotion(true, 1);
+    expect(layer.promotionPending).toBe(true);
+    layer.syncPromotion(false, 1);
+    expect(layer.promotionPending).toBe(true);
+    layer.syncPromotion(false, 1);
+    expect(promotedCount()).toBe(0);
+    expect(layer.promotionPending).toBe(false);
+    // After the export, a pan's promotions are kept again.
+    layer.releasePromotionHold();
+    layer.syncPromotion(true, 1);
+    settle(1);
+    expect(promotedCount()).toBe(16);
+    expect(layer.promotionPending).toBe(false);
+    layer.destroy();
   });
 });
 
@@ -3641,10 +3798,10 @@ describe("batch-aware gesture promotion", () => {
   it("releases hidden photo caches and spends its budget on visible objects", () => {
     for (let i = 0; i < 20; i++) add("batch-" + i);
     dirty.everything(); layer.sync(scene, dirty, null);
-    layer.syncPromotion(true);
+    layer.syncPromotion(true, 1);
     const elements = [...host.querySelectorAll<HTMLElement>(".item")];
     for (const el of elements.slice(0, 16)) el.classList.add("is-card-cached");
-    layer.syncPromotion(true);
+    layer.syncPromotion(true, 1);
     expect(elements.slice(0, 16).every(el => el.style.willChange === "")).toBe(true);
     expect(elements.slice(16).every(el => el.style.willChange === "transform")).toBe(true);
     layer.destroy();

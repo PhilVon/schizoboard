@@ -2846,7 +2846,11 @@ async function boot(): Promise<void> {
     },
     hold: () => {
       items.finishPromotion();
-      return lod.hold("full");
+      const release = lod.hold("full");
+      return () => {
+        items.releasePromotionHold();
+        release();
+      };
     },
     settle: (zoom) => world.settle(zoom),
     redraw: () => dirty.everything(),
@@ -5026,7 +5030,7 @@ async function boot(): Promise<void> {
     // Release caches only after the final pose/detail writes have landed.
     world.flushDemote();
     items.syncCards(scene, dirty, camera, devicePixelRatio, world.moving);
-    items.syncPromotion(world.moving);
+    items.syncPromotion(world.moving, camera.zoom * devicePixelRatio);
   });
 
   /**

@@ -4309,7 +4309,34 @@ export class DomItemLayer implements ItemLayer {
    *  second resolver rather than more fields on the first. */
   private readonly assetFacts: AssetLookup;
   private readonly views = new Map<string, View>();
-  private readonly promoted = new Set<HTMLElement>();
+  /**
+   * Promoted item nodes, and the raster scale (`zoom * devicePixelRatio`) each
+   * was promoted at (T-432).
+   *
+   * A settled camera used to release every promotion, and the next pan then
+   * re-promoted every visible photo in one burst (D-84: 1-4 missed vsyncs at
+   * the start of every pan). Two things made that release necessary, and both
+   * are handled without it. `will-change: transform` freezes a layer's raster
+   * scale, so a promotion made at another zoom is released. And a layer
+   * rasterised mid-pan keeps that frame's sub-pixel offset, so at rest it is
+   * composited with resampling and reads visibly soft (measured: up to 131
+   * levels per pixel against the unpromoted photo). Each kept promotion is
+   * therefore re-taken once at rest, lowered one frame and raised the next, so
+   * its raster is made at the resting position.
+   */
+  private readonly promoted = new Map<HTMLElement, number>();
+  /** Kept promotions whose raster was taken while the camera moved. */
+  private readonly unsettled = new Set<HTMLElement>();
+  /** Lowered this idle frame, to be raised again on the next. */
+  private readonly lowered = new Set<HTMLElement>();
+  /** Set by `finishPromotion` for an export, which clears and keeps nothing. */
+  private promotionHeld = false;
+  /**
+   * The scale at which an idle pass last found nothing left to do, so the walk
+   * is skipped until something moves or the scale changes (a DPI change moves
+   * the scale without moving the camera). NaN while work is owed.
+   */
+  private promotionCleanAt = Number.NaN;
   private readonly cardBatches: CardBatches;
 
   /** Distant photo runs share a canvas; every unsupported state stays in the DOM. */
@@ -4331,11 +4358,27 @@ export class DomItemLayer implements ItemLayer {
       });
     }
     this.cardBatches.sync(entries, camera, this.tier !== "full", dpr, moving);
+    // A photo can be hidden behind its snapshot at rest, once preparation lands;
+    // its promotion is then released by the next idle walk rather than kept.
+    this.promotionCleanAt = Number.NaN;
   }
 
-  /** End of the DOM phase: cache moving objects, then release a few per frame. */
-  syncPromotion(moving: boolean): void {
+  /**
+   * End of the DOM phase: cache moving objects, then settle them a few per frame.
+   *
+   * `scale` is the camera's `zoom * devicePixelRatio`. At rest, promotions made
+   * at another scale are released, eight a frame, exactly as before. Those made
+   * at the resting scale are kept, and re-taken once at the resting position
+   * (see `promoted`), also eight a frame. The kept set is bounded by what is
+   * mounted: unmounting, pooling and snapshot caching all release it.
+   */
+  syncPromotion(moving: boolean, scale: number): void {
     if (moving) {
+      this.promotionCleanAt = Number.NaN;
+      // A layer lowered for its refresh is still ours: raise it before it moves.
+      for (const el of this.lowered) el.style.willChange = "transform";
+      this.lowered.clear();
+      for (const el of this.promoted.keys()) this.unsettled.add(el);
       let left = PROMOTE_BUDGET;
       for (const view of this.views.values()) {
         if (view.el.classList.contains("is-card-cached")) {
@@ -4344,34 +4387,72 @@ export class DomItemLayer implements ItemLayer {
         }
         if (this.promoted.has(view.el)) continue;
         if (left-- === 0) break;
-        this.promoted.add(view.el);
+        this.promoted.set(view.el, scale);
+        this.unsettled.add(view.el);
         view.el.style.willChange = "transform";
       }
       return;
     }
+    if (this.promotionCleanAt === scale) return;
+    // Raise last frame's refreshes; their raster is taken at this position.
+    for (const el of this.lowered) if (this.promoted.has(el)) el.style.willChange = "transform";
+    this.lowered.clear();
     let left = DEMOTE_BUDGET;
-    for (const el of this.promoted) {
-      if (left-- === 0) break;
+    for (const [el, at] of this.promoted) {
+      if (!this.promotionHeld && at === scale && !el.classList.contains("is-card-cached")) continue;
+      if (left-- === 0) return;
       el.style.willChange = "";
       this.promoted.delete(el);
+      this.unsettled.delete(el);
     }
+    left = DEMOTE_BUDGET;
+    for (const el of this.unsettled) {
+      if (left-- === 0) break;
+      this.unsettled.delete(el);
+      if (!this.promoted.has(el)) continue;
+      el.style.willChange = "";
+      this.lowered.add(el);
+    }
+    if (this.unsettled.size === 0 && this.lowered.size === 0) this.promotionCleanAt = scale;
   }
 
-  /** Export has no interactive frame budget and must not print a stale cache. */
+  /**
+   * Export has no interactive frame budget and must not print a stale cache.
+   * Clears every promotion, kept ones included, and holds promotion off the
+   * keep rule until `releasePromotionHold`: anything promoted while the export
+   * poses the camera is released again before `promotionPending` reads false.
+   */
   finishPromotion(): void {
     this.cardBatches.reveal();
-    for (const el of this.promoted) el.style.willChange = "";
+    for (const el of this.promoted.keys()) el.style.willChange = "";
     this.promoted.clear();
+    this.unsettled.clear();
+    this.lowered.clear();
+    this.promotionHeld = true;
+    this.promotionCleanAt = Number.NaN;
   }
 
-  /** Exports wait until every visible object is rasterised at its final scale. */
+  /** The export is over; promotions at the settled scale may be kept again. */
+  releasePromotionHold(): void {
+    this.promotionHeld = false;
+    this.promotionCleanAt = Number.NaN;
+  }
+
+  /**
+   * Promotions still changing: to be released (stale scale, or any while an
+   * export holds) or re-taken at rest. Settled kept promotions are not pending,
+   * so a board at rest reads false and exports and idle checks do not wait.
+   */
   get promotionPending(): boolean {
-    return this.promoted.size > 0;
+    if (this.promotionHeld) return this.promoted.size > 0;
+    return Number.isNaN(this.promotionCleanAt) && this.promoted.size > 0;
   }
 
   private releasePromotion(view: View): void {
     view.el.style.willChange = "";
     this.promoted.delete(view.el);
+    this.unsettled.delete(view.el);
+    this.lowered.delete(view.el);
   }
   private readonly pool: Record<Archetype, View[]> = {
     polaroid: [],
