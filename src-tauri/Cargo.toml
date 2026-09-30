@@ -1,6 +1,6 @@
 [package]
 name = "schizoboard"
-version = "1.2.0"
+version = "1.3.0"
 description = "An infinite corkboard for organising information that hasn't decided what shape it is yet."
 authors = ["Phil Wheatley"]
 edition = "2021"
